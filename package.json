@@ -1,0 +1,19 @@
+{
+  "name": "editify",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "server"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:server": "npm run dev -w @editify/server",
+    "dev:mobile": "npm run start -w @editify/mobile",
+    "seed": "npm run seed -w @editify/server"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Editify",
+    "slug": "editify",
+    "version": "1.0.0",
+    "orientation": "default",
+    "scheme": "editify",
+    "userInterfaceStyle": "dark",
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": ["expo-router", "expo-document-picker"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

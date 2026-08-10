@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.expo/
+*.log
+.DS_Store
+server/data/
+server/.env
+test-clips/
