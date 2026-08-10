@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { Project } from '@editify/shared';
+import { EDITING_PRESETS, type EditingPreset, type Project } from '@editify/shared';
 import type { ToolDef } from './tools.js';
 import { generateMockInsights } from '../services/insight-service.js';
 
@@ -256,15 +256,26 @@ export class MockToolProvider implements ToolProvider {
       ]);
     }
 
+    const normalizedPrompt = prompt.replaceAll('-', '_').replaceAll(' ', '_');
+    const matchingPreset = EDITING_PRESETS.find((preset) => normalizedPrompt.includes(preset.name)
+      || preset.targetContent.some((target) => {
+        const phrase = target.replaceAll('_', ' ');
+        return prompt.includes(phrase) || normalizedPrompt.includes(target);
+      })) ?? (/\bpunchy\b/.test(prompt) ? EDITING_PRESETS[0] : undefined);
+    if (matchingPreset && !called('get_preset')) {
+      return calls('preset', [{ name: 'get_preset', input: { name: matchingPreset.name } }]);
+    }
+
     const assets = latestToolResult<Array<{ id: string; originalName: string; duration: number }>>(messages, 'list_assets') ?? [];
     const project = latestToolResult<Project>(messages, 'get_project');
     const styleDoc = latestToolResult<string | null>(messages, 'get_style_profile');
+    const preset = latestToolResult<EditingPreset>(messages, 'get_preset');
     const videoTrack = project?.tracks.find((track) => track.kind === 'video');
     const videoClips = videoTrack?.clips ?? [];
     const wantsBuild = /\b(build|style)\b/.test(prompt)
-      || /\bmake\b.*\b(cut|video|edit)\b/.test(prompt);
+      || /\bmake\b.*\b(cut|video|edit)\b/.test(prompt) || Boolean(matchingPreset);
     const wantsPunch = /punch|chopp|fast/.test(prompt);
-    const wantsCaptions = /caption|subtitle|bold/.test(prompt) || /caption/i.test(styleDoc ?? '');
+    const wantsCaptions = /caption|subtitle|bold/.test(prompt) || /caption/i.test(styleDoc ?? '') || Boolean(preset);
     const wantsVertical = /vertical|9\s*:\s*16/.test(prompt);
 
     type InsightResult = {
@@ -284,7 +295,7 @@ export class MockToolProvider implements ToolProvider {
       })));
     }
 
-    if (wantsBuild && videoClips.length === 0 && !called('add_clip')) {
+    if (wantsBuild && videoClips.length === 0 && !called('add_clips')) {
       const insightsByAsset = new Map(insightResults.map(({ input, result }) => {
         const assetId = typeof input === 'object' && input !== null && 'assetId' in input ? String(input.assetId) : '';
         return [assetId, result] as const;
@@ -294,7 +305,7 @@ export class MockToolProvider implements ToolProvider {
         ? assets.filter((asset) => !asset.originalName.startsWith('seed-') && insightsByAsset.get(asset.id)?.assetId === asset.id)
         : assets).filter((asset) => asset.duration > 0);
       let start = 0;
-      const requests = candidates.map((asset, index) => {
+      const clips = candidates.map((asset, index) => {
         const insight = insightsByAsset.get(asset.id);
         const span = insight?.hook ?? [...(insight?.highlights ?? [])].sort((a, b) => b.score - a.score)[0];
         const sourceIn = span ? Math.min(Math.max(0, span.start - 0.3), Math.max(0, asset.duration - 0.1)) : 0;
@@ -303,11 +314,7 @@ export class MockToolProvider implements ToolProvider {
           : Math.min(asset.duration, 4);
         const safeOut = Math.min(asset.duration, Math.max(sourceIn + 0.1, sourceOut));
         const duration = safeOut - sourceIn;
-        const request = {
-          name: 'add_clip',
-          input: {
-            trackId: videoTrack?.id ?? 'video-main',
-            clip: {
+        const clip = {
               id: `clip-${index + 1}`,
               assetId: asset.id,
               start,
@@ -315,42 +322,69 @@ export class MockToolProvider implements ToolProvider {
               out: safeOut,
               volume: 1,
               speed: 1,
-            },
-          },
         };
         start += duration;
-        return request;
+        return clip;
       });
-      if (requests.length) return calls('build', requests);
+      if (clips.length) return calls('build', [{ name: 'add_clips', input: { trackId: videoTrack?.id ?? 'video-main', clips } }]);
     }
 
-    const mutationNames = ['add_clip', 'split_clip', 'set_speed', 'caption_clip_from_transcript'] as const;
+    const mutationNames = ['add_clips', 'split_clips', 'set_clip_properties', 'remove_silence', 'close_gaps', 'caption_clip_from_transcript'] as const;
     const latestMutation = callIndex(messages, mutationNames);
     const latestProjectRead = callIndex(messages, ['get_project']);
     if (latestMutation > latestProjectRead && (wantsPunch || wantsCaptions)) {
       return calls('refresh', [{ name: 'get_project', input: {} }]);
     }
 
-    if (wantsPunch && videoClips.length && !called('set_speed')) {
-      const requests: Array<{ name: string; input: unknown }> = [];
+    if (preset?.silenceTrim.enabled && videoClips.length && !called('remove_silence')) {
+      return calls('silence', [{ name: 'remove_silence', input: {
+        minSilenceSeconds: preset.silenceTrim.minSilenceSeconds,
+        padSeconds: preset.silenceTrim.padSeconds,
+        protectLoudGaps: preset.silenceTrim.protectLoudGaps,
+      } }]);
+    }
+
+    const shotCap = Math.min(preset?.maxShotSeconds ?? Number.POSITIVE_INFINITY, wantsPunch ? 2.5 : Number.POSITIVE_INFINITY);
+    if (Number.isFinite(shotCap) && videoClips.some((clip) => (clip.out - clip.in) / (clip.speed ?? 1) > shotCap)
+      && !called('split_clips')) {
+      const cuts: Array<{ clipId: string; at: number; newClipId: string }> = [];
       for (const clip of videoClips) {
         const duration = (clip.out - clip.in) / (clip.speed ?? 1);
-        if (duration > 2.5) {
-          const newClipId = `${clip.id}-cut-2`;
-          requests.push({ name: 'split_clip', input: { clipId: clip.id, at: clip.start + duration / 2, newClipId } });
-          requests.push({ name: 'set_speed', input: { clipId: clip.id, speed: 1.25 } });
-          requests.push({ name: 'set_speed', input: { clipId: newClipId, speed: 1.25 } });
-        } else {
-          requests.push({ name: 'set_speed', input: { clipId: clip.id, speed: 1.25 } });
+        let remaining = duration;
+        let currentId = clip.id;
+        let cursor = clip.start;
+        let part = 2;
+        while (remaining > shotCap) {
+          const nextId = `${clip.id}-cut-${part}`;
+          cursor += shotCap;
+          cuts.push({ clipId: currentId, at: cursor, newClipId: nextId });
+          currentId = nextId;
+          remaining -= shotCap;
+          part += 1;
         }
       }
-      return calls('pace', requests);
+      if (cuts.length) return calls('split', [{ name: 'split_clips', input: { cuts } }]);
+    }
+
+    if ((wantsPunch || preset?.punchIn.enabled) && videoClips.length && !called('set_clip_properties')) {
+      const updates = videoClips.map((clip, index) => ({
+        clipId: clip.id,
+        ...(wantsPunch ? { speed: 1.25 } : {}),
+        ...(preset?.punchIn.enabled && preset.punchIn.alternateScalePct
+          && index % (preset.punchIn.everyNCuts ?? 2) === (preset.punchIn.everyNCuts ?? 2) - 1
+          ? { transform: { scale: preset.punchIn.alternateScalePct / 100, x: 0, y: -0.04 } } : {}),
+      })).filter((update) => Object.keys(update).length > 1);
+      if (updates.length) return calls('pace', [{ name: 'set_clip_properties', input: { updates } }]);
+    }
+
+    if (wantsPunch && videoClips.length && called('set_clip_properties') && !called('close_gaps')) {
+      return calls('gaps', [{ name: 'close_gaps', input: { trackId: videoTrack?.id ?? 'video-main' } }]);
     }
 
     if (wantsCaptions && videoClips.length && !called('caption_clip_from_transcript')) {
       return calls('caption', videoClips.map((clip) => ({
         name: 'caption_clip_from_transcript',
-        input: { clipId: clip.id, wordsPerChunk: 3 },
+        input: { clipId: clip.id, ...(preset ? { preset: preset.name } : { wordsPerChunk: 3 }) },
       })));
     }
 
@@ -359,7 +393,7 @@ export class MockToolProvider implements ToolProvider {
     }
 
     const applied = previousCalls.filter((call) => ![
-      'list_assets', 'get_project', 'get_style_profile', 'get_insights', 'get_transcript',
+      'list_assets', 'get_project', 'get_style_profile', 'get_insights', 'get_transcript', 'get_preset', 'list_presets',
     ].includes(call.name));
     const reply = applied.length
       ? `I built the cut through ${applied.length} live editor operations, including ${[...new Set(applied.map((call) => call.name.replaceAll('_', ' ')))].join(', ')}.`

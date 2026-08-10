@@ -20,6 +20,7 @@ export class VersionConflictError extends Error {
 interface ProjectRow { doc_json: string }
 interface LogRow {
   id: string;
+  batch_id: string;
   op_json: string;
   before_doc_json: string;
 }
@@ -85,36 +86,52 @@ export class ProjectStore {
       if (!project) throw new OperationError(`Project ${projectId} was not found`);
       if (project.version !== baseVersion) throw new VersionConflictError(baseVersion, project.version);
 
+      const operations = rawOperations.map((operation) => operationSchema.parse(operation));
+      if (!operations.length) throw new OperationError('At least one operation is required');
+      if (operations.some((operation) => operation.type === 'undo') && operations.length !== 1) {
+        throw new OperationError('Undo must be applied by itself');
+      }
       const batchId = randomUUID();
-      rawOperations.forEach((rawOperation, sequence) => {
-        const operation = operationSchema.parse(rawOperation);
+      const pendingLogs: Array<{ operation: Operation; before: Project; after: Project; sequence: number }> = [];
+      operations.forEach((operation, sequence) => {
         const before = project as Project;
-        let undoneLogId: string | undefined;
         let after: Project;
 
         if (operation.type === 'undo') {
           const previous = this.database.prepare(`
-            SELECT id, op_json, before_doc_json FROM operation_log
+            SELECT id, batch_id, op_json, before_doc_json FROM operation_log
             WHERE project_id = ? AND undone = 0 AND json_extract(op_json, '$.type') != 'undo'
             ORDER BY rowid DESC LIMIT 1
           `).get(projectId) as LogRow | undefined;
           if (!previous) throw new OperationError('There is no operation to undo');
-          const snapshot = projectSchema.parse(JSON.parse(previous.before_doc_json));
+          const firstInBatch = this.database.prepare(`
+            SELECT id, batch_id, op_json, before_doc_json FROM operation_log
+            WHERE project_id = ? AND batch_id = ? ORDER BY sequence ASC LIMIT 1
+          `).get(projectId, previous.batch_id) as LogRow;
+          const snapshot = projectSchema.parse(JSON.parse(firstInBatch.before_doc_json));
           after = { ...snapshot, version: before.version + 1 };
-          undoneLogId = previous.id;
+          this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND batch_id = ?')
+            .run(projectId, previous.batch_id);
         } else {
           after = applyOperation(before, operation);
+          after.version = baseVersion;
         }
+        pendingLogs.push({ operation, before, after, sequence });
+        project = after;
+      });
 
-        const now = new Date().toISOString();
+      if (operations[0]?.type !== 'undo') project.version = baseVersion + 1;
+      const now = new Date().toISOString();
+      for (const entry of pendingLogs) {
+        const loggedAfter = entry.sequence === pendingLogs.length - 1
+          ? project
+          : { ...entry.after, version: project.version };
         this.database.prepare(`
           INSERT INTO operation_log
             (id, batch_id, project_id, sequence, op_json, before_doc_json, after_doc_json, undone, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-        `).run(randomUUID(), batchId, projectId, sequence, JSON.stringify(operation), JSON.stringify(before), JSON.stringify(after), now);
-        if (undoneLogId) this.database.prepare('UPDATE operation_log SET undone = 1 WHERE id = ?').run(undoneLogId);
-        project = after;
-      });
+        `).run(randomUUID(), batchId, projectId, entry.sequence, JSON.stringify(entry.operation), JSON.stringify(entry.before), JSON.stringify(loggedAfter), now);
+      }
 
       this.database.prepare('UPDATE projects SET title = ?, doc_json = ?, updated_at = ? WHERE id = ?')
         .run(project.title, JSON.stringify(project), new Date().toISOString(), projectId);

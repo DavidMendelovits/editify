@@ -7,6 +7,8 @@
  * `unknown` and every read goes through a narrowing helper.
  */
 
+import { presetTitle } from './presets';
+
 export interface AgentTraceStep {
   tool: string;
   input: unknown;
@@ -16,35 +18,54 @@ export interface AgentTraceStep {
 
 /** Visual family for a step — drives the glyph and tint in the step feed. */
 export type TraceKind =
-  | 'read' | 'add' | 'remove' | 'cut' | 'move'
+  | 'read' | 'transcript' | 'insight' | 'preset'
+  | 'add' | 'remove' | 'cut' | 'move' | 'batch'
   | 'audio' | 'speed' | 'frame' | 'caption' | 'format' | 'undo' | 'other';
 
 const TOOL_KIND: Record<string, TraceKind> = {
   get_project: 'read',
   list_assets: 'read',
   get_style_profile: 'read',
+  // Wave 2 read tools — transcript space, insights and presets (SPEC-WAVE2 §C/§D).
+  get_transcript: 'transcript',
+  get_timeline_transcript: 'transcript',
+  get_insights: 'insight',
+  list_presets: 'preset',
+  get_preset: 'preset',
   add_clip: 'add',
+  add_clips: 'add',
   remove_clip: 'remove',
+  remove_words: 'remove',
   split_clip: 'cut',
+  split_clips: 'cut',
   trim_clip: 'cut',
+  ripple_delete_ranges: 'cut',
   move_clip: 'move',
   reorder_clips: 'move',
+  close_gaps: 'move',
+  set_clip_properties: 'batch',
   set_volume: 'audio',
+  remove_silence: 'audio',
   set_speed: 'speed',
   set_transform: 'frame',
   add_caption: 'caption',
   update_caption: 'caption',
   remove_caption: 'caption',
+  caption_clip_from_transcript: 'caption',
   set_format: 'format',
   undo: 'undo',
 };
 
 const KIND_GLYPH: Record<TraceKind, string> = {
   read: '◎',
+  transcript: '¶',
+  insight: '★',
+  preset: '◆',
   add: '+',
   remove: '×',
   cut: '✂',
   move: '⇄',
+  batch: '≡',
   audio: '♪',
   speed: '◔',
   frame: '⤢',
@@ -53,6 +74,9 @@ const KIND_GLYPH: Record<TraceKind, string> = {
   undo: '↺',
   other: '•',
 };
+
+/** Kinds that only observe the project — rendered muted in the step feed. */
+const READ_KINDS: ReadonlySet<TraceKind> = new Set<TraceKind>(['read', 'transcript', 'insight', 'preset']);
 
 /** Warning glyph used for any step that came back `ok: false`. */
 export const ERROR_GLYPH = '!';
@@ -68,7 +92,7 @@ export function traceGlyph(step: AgentTraceStep): string {
 
 /** Read tools observe the project; everything else mutates it. */
 export function isReadStep(step: AgentTraceStep): boolean {
-  return traceKind(step) === 'read';
+  return READ_KINDS.has(traceKind(step));
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -93,8 +117,59 @@ function toolInput(step: AgentTraceStep): Record<string, unknown> {
   return typeof params === 'object' && params !== null ? params as Record<string, unknown> : raw;
 }
 
+function asArray(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
 function seconds(value: number): string {
   return `${value.toFixed(1)}s`;
+}
+
+function plural(count: number, word: string): string {
+  return count === 1 ? `1 ${word}` : `${count} ${word}s`;
+}
+
+/**
+ * Batch tools report their counts in the *result*, which the trace does not
+ * carry — but the server's own summary line does ("cut 3 gaps"). Pull the
+ * number out of it when it is there rather than inventing one.
+ */
+function countInSummary(step: AgentTraceStep, pattern: RegExp): number | undefined {
+  const match = pattern.exec(step.summary);
+  const value = match?.[1];
+  if (value === undefined) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Total seconds covered by a `[{start, end}]` range list. */
+function totalRangeSeconds(ranges: unknown[]): number {
+  return ranges.reduce<number>((total, range) => {
+    const record = asRecord(range);
+    const start = asNumber(record['start']);
+    const end = asNumber(record['end']);
+    return start !== undefined && end !== undefined && end > start ? total + (end - start) : total;
+  }, 0);
+}
+
+/** `remove_words` takes `[index | [from, to]]`; count the words that covers. */
+function countWordIndexes(value: unknown): number | undefined {
+  const entries = asArray(value);
+  if (!entries) return undefined;
+  return entries.reduce<number>((total, entry) => {
+    if (typeof entry === 'number') return total + 1;
+    const span = asArray(entry);
+    const from = asNumber(span?.[0]);
+    const to = asNumber(span?.[1]);
+    return from !== undefined && to !== undefined && to >= from ? total + (to - from + 1) : total;
+  }, 0);
+}
+
+/** `video-main` → `video track`, so gap-hygiene steps read like sentences. */
+function trackLabel(trackId: string): string {
+  const words = trackId.replace(/-(main|\d+)$/, '').replaceAll('-', ' ').trim().toLowerCase();
+  if (words.length === 0) return 'the track';
+  return words.endsWith('track') ? words : `${words} track`;
 }
 
 function truncate(value: string, max: number): string {
@@ -120,15 +195,76 @@ export function describeTraceStep(step: AgentTraceStep): string {
       return 'Listed the media library';
     case 'get_style_profile':
       return 'Read the style profile';
+    case 'get_transcript':
+      return 'Read the source transcript';
+    case 'get_timeline_transcript':
+      return 'Read the timeline transcript';
+    case 'get_insights':
+      return 'Read the hook and highlights';
+    case 'list_presets':
+      return 'Listed the editing presets';
+    case 'get_preset': {
+      const name = asText(input['name']);
+      return name ? `Loaded the ${presetTitle(name)} preset` : 'Loaded an editing preset';
+    }
     case 'add_clip': {
       const start = asNumber(asRecord(input['clip'])['start']);
       return start === undefined ? 'Added a clip' : `Added clip at ${seconds(start)}`;
+    }
+    case 'add_clips': {
+      const clips = asArray(input['clips']);
+      return clips ? `Added ${plural(clips.length, 'clip')}` : 'Added clips';
     }
     case 'remove_clip':
       return `Removed ${clipRef(input)}`;
     case 'split_clip': {
       const at = asNumber(input['at']);
       return at === undefined ? `Split ${clipRef(input)}` : `Split clip at ${seconds(at)}`;
+    }
+    case 'split_clips': {
+      const cuts = asArray(input['cuts']);
+      return cuts ? `Made ${plural(cuts.length, 'cut')}` : 'Split several clips';
+    }
+    case 'ripple_delete_ranges': {
+      const ranges = asArray(input['ranges']);
+      if (!ranges || ranges.length === 0) return 'Rippled out a range';
+      const total = totalRangeSeconds(ranges);
+      return total > 0
+        ? `Rippled out ${plural(ranges.length, 'range')} (${seconds(total)})`
+        : `Rippled out ${plural(ranges.length, 'range')}`;
+    }
+    case 'remove_words': {
+      const matches = asArray(input['matches'])?.flatMap((value) => {
+        const text = asText(value);
+        return text ? [text] : [];
+      });
+      if (matches && matches.length > 0) {
+        return `Removed ${matches.slice(0, 3).map((word) => `“${word}”`).join(', ')}${matches.length > 3 ? '…' : ''}`;
+      }
+      const count = countWordIndexes(input['wordIndexes']);
+      return count === undefined ? 'Removed words' : `Removed ${plural(count, 'word')}`;
+    }
+    case 'remove_silence': {
+      const gaps = countInSummary(step, /(\d+)\s+gaps?/i);
+      if (gaps !== undefined) return `Removed silence (${plural(gaps, 'gap')})`;
+      const minimum = asNumber(input['minSilenceSeconds']);
+      return minimum === undefined ? 'Removed silence' : `Removed silence over ${seconds(minimum)}`;
+    }
+    case 'close_gaps': {
+      const trackId = asText(input['trackId']);
+      return trackId ? `Closed gaps on ${trackLabel(trackId)}` : 'Closed the gaps';
+    }
+    case 'set_clip_properties': {
+      const updates = asArray(input['updates']);
+      return updates ? `Updated ${plural(updates.length, 'clip')}` : 'Updated clip properties';
+    }
+    case 'caption_clip_from_transcript': {
+      const preset = asText(input['preset']);
+      if (preset) return `Captioned from transcript · ${presetTitle(preset)}`;
+      const perChunk = asNumber(input['wordsPerChunk']);
+      return perChunk === undefined
+        ? 'Captioned a clip from the transcript'
+        : `Captioned from transcript (${perChunk} words per chunk)`;
     }
     case 'trim_clip': {
       const from = asNumber(input['in']);

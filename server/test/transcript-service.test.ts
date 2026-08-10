@@ -26,12 +26,14 @@ describe('transcript service', () => {
       words: [{ w: 'hello', s: 0, e: 0.5 }],
       segments: [{ text: 'hello', s: 0, e: 0.5 }],
     }));
-    const service = new TranscriptService(new TranscriptStore(database), runner);
+    const energyRunner = vi.fn(async () => ({ cellSeconds: 0.05 as const, rmsDb: [-30, -20] }));
+    const service = new TranscriptService(new TranscriptStore(database), runner, energyRunner);
     await service.transcribe(asset);
     await service.transcribe(asset);
     expect(runner).toHaveBeenCalledTimes(1);
     await service.transcribe(asset, true);
     expect(runner).toHaveBeenCalledTimes(2);
+    expect(energyRunner).toHaveBeenCalledTimes(2);
     expect(service.get(asset.id)).toMatchObject({ assetId: asset.id, language: 'en' });
   });
 });

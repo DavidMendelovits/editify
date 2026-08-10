@@ -23,6 +23,8 @@ const inputs: Record<Operation['type'], unknown> = {
   add_caption: { trackId: 'captions', clip: { id: 'caption-new', start: 0, in: 0, out: 2, text: 'Hello' } },
   update_caption: { clipId: 'caption-a', text: 'Updated' },
   remove_caption: { clipId: 'caption-a' },
+  ripple_delete_ranges: { trackId: 'video-main', ranges: [{ start: 1, end: 2 }] },
+  set_clip_properties: { updates: [{ clipId: 'clip-a', speed: 1.1, start: 0 }] },
   set_format: { format: '1:1' },
   undo: {},
 };
@@ -40,6 +42,8 @@ describe('agent tool registry', () => {
     assets = new AssetStore(database);
     transcripts = new TranscriptService(new TranscriptStore(database), async () => {
       throw new Error('Whisper must not run in unit tests');
+    }, async () => {
+      throw new Error('ffmpeg must not run in unit tests');
     });
     insights = new InsightService(new InsightStore(database), transcripts, new MockToolProvider());
   });
@@ -97,5 +101,21 @@ describe('agent tool registry', () => {
     const result = await tool?.execute(ctx, { clipId: 'clip-a', speed: 0 });
     expect(result).toMatchObject({ ok: false });
     expect(projects.get(ctx.projectId)?.version).toBe(0);
+  });
+
+  it('applies add_clips as one versioned batch and returns a structural delta', async () => {
+    const ctx = context('set_format');
+    const tool = createToolRegistry().find((candidate) => candidate.name === 'add_clips');
+    const result = await tool?.execute(ctx, {
+      trackId: 'video-main',
+      clips: [
+        { id: 'batch-1', start: 5, in: 0, out: 1 },
+        { id: 'batch-2', start: 6, in: 0, out: 1 },
+      ],
+    });
+    expect(result).toMatchObject({ ok: true, version: 1, removedClipIds: [], shifted: [] });
+    expect((result as { changedClips: unknown[] }).changedClips).toHaveLength(2);
+    expect(result).not.toHaveProperty('tracks');
+    expect(projects.get(ctx.projectId)?.version).toBe(1);
   });
 });

@@ -43,6 +43,69 @@ function validateTrim(clip: Clip): void {
   if (clip.out <= clip.in) throw new OperationError('Clip out point must be after its in point');
 }
 
+export interface TimeRange { start: number; end: number }
+
+export function mergeTimeRanges(ranges: TimeRange[]): TimeRange[] {
+  const sorted = ranges.map((range) => ({ ...range })).sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: TimeRange[] = [];
+  for (const range of sorted) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+    else merged.push(range);
+  }
+  return merged;
+}
+
+function removedBefore(ranges: TimeRange[], time: number): number {
+  return ranges.reduce((total, range) => total + Math.max(0, Math.min(time, range.end) - range.start), 0);
+}
+
+function keptPieces(start: number, end: number, ranges: TimeRange[]): TimeRange[] {
+  let cursor = start;
+  const pieces: TimeRange[] = [];
+  for (const range of ranges) {
+    if (range.end <= cursor) continue;
+    if (range.start >= end) break;
+    if (range.start > cursor) pieces.push({ start: cursor, end: Math.min(range.start, end) });
+    cursor = Math.max(cursor, range.end);
+    if (cursor >= end) break;
+  }
+  if (cursor < end) pieces.push({ start: cursor, end });
+  return pieces.filter((piece) => piece.end > piece.start);
+}
+
+function rippleTrack(track: Track, ranges: TimeRange[], allClipIds: Set<string>): void {
+  const next: Clip[] = [];
+  for (const original of track.clips) {
+    const speed = original.speed ?? 1;
+    const timelineEnd = original.start + clipTimelineDuration(original);
+    const pieces = keptPieces(original.start, timelineEnd, ranges);
+    pieces.forEach((piece, pieceIndex) => {
+      const sourceOffsetStart = (piece.start - original.start) * speed;
+      const sourceOffsetEnd = (piece.end - original.start) * speed;
+      let id = pieceIndex === 0 ? original.id : `${original.id}-ripple-${pieceIndex + 1}`;
+      let suffix = pieceIndex + 1;
+      while (pieceIndex > 0 && allClipIds.has(id)) id = `${original.id}-ripple-${++suffix}`;
+      allClipIds.add(id);
+      const words = original.style?.words?.filter((word) => word.s >= piece.start && word.s < piece.end)
+        .map((word) => ({
+          ...word,
+          s: word.s - removedBefore(ranges, word.s),
+          e: Math.min(word.e, piece.end) - removedBefore(ranges, Math.min(word.e, piece.end)),
+        })).filter((word) => word.e > word.s);
+      next.push({
+        ...original,
+        id,
+        start: piece.start - removedBefore(ranges, piece.start),
+        in: original.in + sourceOffsetStart,
+        out: original.in + sourceOffsetEnd,
+        ...(original.style ? { style: { ...original.style, ...(words ? { words } : {}) } } : {}),
+      });
+    });
+  }
+  track.clips = next.sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+}
+
 export function applyOperation(input: Project, operation: Operation): Project {
   if (operation.type === 'undo') {
     throw new OperationError('Undo requires operation history and must be applied by ProjectStore');
@@ -149,6 +212,28 @@ export function applyOperation(input: Project, operation: Operation): Project {
       const { track, index } = findClip(project, operation.params.clipId);
       if (track.kind !== 'caption') throw new OperationError('remove_caption only accepts caption clips');
       track.clips.splice(index, 1);
+      break;
+    }
+    case 'ripple_delete_ranges': {
+      const target = findTrack(project, operation.params.trackId);
+      if (target.kind === 'caption') throw new OperationError('ripple_delete_ranges requires a video or audio track');
+      const ranges = mergeTimeRanges(operation.params.ranges);
+      const allClipIds = new Set(project.tracks.flatMap((track) => track.clips.map((clip) => clip.id)));
+      rippleTrack(target, ranges, allClipIds);
+      for (const track of project.tracks.filter((candidate) => candidate.kind === 'caption')) {
+        rippleTrack(track, ranges, allClipIds);
+      }
+      break;
+    }
+    case 'set_clip_properties': {
+      const resolved = operation.params.updates.map((update) => ({ update, clip: findClip(project, update.clipId).clip }));
+      for (const { update, clip } of resolved) {
+        if (update.volume !== undefined) clip.volume = update.volume;
+        if (update.speed !== undefined) clip.speed = update.speed;
+        if (update.transform !== undefined) clip.transform = update.transform;
+        if (update.start !== undefined) clip.start = update.start;
+        validateTrim(clip);
+      }
       break;
     }
     case 'set_format': {

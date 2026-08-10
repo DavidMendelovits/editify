@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import { EDITING_PRESETS } from '@editify/shared';
 import { ZodError } from 'zod';
 import { createProvider } from './agent/providers.js';
 import { AgentService } from './agent/service.js';
@@ -42,6 +43,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });
 
   app.get('/health', async () => ({ ok: true, provider: createProvider().name }));
+  app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   registerProjectRoutes(app, projects, renderQueue);
   registerAssetRoutes(app, assets, transcripts, insights);
   registerRenderRoutes(app, renders);

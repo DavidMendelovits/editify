@@ -6,7 +6,7 @@ import {
   type Project,
 } from '@editify/shared';
 import type { LoopMessage, ToolProvider } from './providers.js';
-import { createToolRegistry, type ToolContext, type ToolDef } from './tools.js';
+import { createMutationDelta, createToolRegistry, type ToolContext, type ToolDef } from './tools.js';
 
 const MAX_ITERATIONS = 24;
 
@@ -34,11 +34,16 @@ function summarizeResult(tool: string, result: unknown, ok: boolean): string {
   if (tool === 'get_style_profile') return result === null ? 'No style profile is available.' : 'Loaded the current style profile.';
   if (tool === 'get_transcript' && isRecord(result)) return `Loaded ${String(result.wordCount)} timed words.`;
   if (tool === 'get_insights' && isRecord(result)) return 'Loaded transcript hook and highlight insights.';
+  if (tool === 'get_timeline_transcript' && isRecord(result)) return `Loaded ${Array.isArray(result.words) ? result.words.length : 0} timeline words.`;
+  if (tool === 'list_presets' && Array.isArray(result)) return `Found ${result.length} editing presets.`;
+  if (tool === 'get_preset' && isRecord(result)) return `Loaded the ${String(result.name)} preset.`;
   if (tool === 'caption_clip_from_transcript' && isRecord(result)) {
     return `Added ${String(result.captionsAdded)} transcript captions; project is now version ${String(result.version)}.`;
   }
   if (isRecord(result) && result.ok === true) {
-    return `Applied ${tool}; project is now version ${String(result.version)}.`;
+    const changed = Array.isArray(result.changedClips) ? result.changedClips.length : 0;
+    const removed = Array.isArray(result.removedClipIds) ? result.removedClipIds.length : 0;
+    return `Applied ${tool}; project is now version ${String(result.version)} (${changed} changed, ${removed} removed).`;
   }
   return 'Tool completed successfully.';
 }
@@ -62,6 +67,10 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'When a tool reports an error, inspect fresh state as needed, correct the input, and try again.',
     'Use readable unique clip IDs. Keep edits faithful to the user request and finish with a concise, honest description.',
     'Asset transcripts and transcript insights may be available. Strong edits trim to highlight spans, lead with the hook, and use caption_clip_from_transcript for speech captions.',
+    'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes.',
+    'You are told exactly what changed after every edit — do not re-read the project between your own edits; re-read only after an error.',
+    'set_speed and trim_clip change a clip duration but never move its neighbors — after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
+    'When the user names a style or content type, fetch the matching preset and follow its parameters. Presets are guidance, not law.',
     styleDoc ? `Editing style profile: ${styleDoc}` : 'No editing style profile is available.',
     `Initial project summary: ${projectSummary(project)}`,
   ].join('\n');
@@ -89,8 +98,15 @@ async function executeCall(
     };
   }
   try {
+    const before = ctx.projects.get(ctx.projectId);
+    const appliedBefore = ctx.appliedOperations?.length ?? 0;
     const result = await tool.execute(ctx, validated.data);
-    return { result, parsedInput: validated.data, ok: resultSucceeded(result) };
+    const appliedAfter = ctx.appliedOperations?.length ?? 0;
+    const after = appliedAfter > appliedBefore ? ctx.projects.get(ctx.projectId) : undefined;
+    const structuralResult = before && after && !(isRecord(result) && Array.isArray(result.changedClips))
+      ? { ...createMutationDelta(before, after), ...(isRecord(result) ? result : {}) }
+      : result;
+    return { result: structuralResult, parsedInput: validated.data, ok: resultSucceeded(structuralResult) };
   } catch (error) {
     return {
       result: { ok: false, error: errorMessage(error) },

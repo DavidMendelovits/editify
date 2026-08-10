@@ -25,6 +25,8 @@ describe('mock agent loop', () => {
     transcriptStore = new TranscriptStore(database);
     transcripts = new TranscriptService(transcriptStore, async () => {
       throw new Error('Whisper must not run in unit tests');
+    }, async () => {
+      throw new Error('ffmpeg must not run in unit tests');
     });
     insights = new InsightService(new InsightStore(database), transcripts, new MockToolProvider());
   });

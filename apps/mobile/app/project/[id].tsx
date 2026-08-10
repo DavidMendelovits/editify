@@ -11,9 +11,12 @@ import { AgentTrace } from '../../src/components/AgentTrace';
 import { Brand } from '../../src/components/Brand';
 import { GradientButton } from '../../src/components/GradientButton';
 import { ImportSheet } from '../../src/components/ImportSheet';
+import { InsightsPanel } from '../../src/components/InsightsPanel';
+import { PresetPicker } from '../../src/components/PresetPicker';
 import { Screen } from '../../src/components/Screen';
 import { api, uploadAsset, type ChatMessage } from '../../src/lib/api';
 import type { AgentTraceStep } from '../../src/lib/agent';
+import { presetPrompt } from '../../src/lib/presets';
 import { colors } from '../../src/lib/theme';
 
 export default function EditorScreen() {
@@ -24,6 +27,8 @@ export default function EditorScreen() {
   const [selectedId, setSelectedId] = useState<string>();
   const [playhead, setPlayhead] = useState(0);
   const [chatText, setChatText] = useState('');
+  /** Preset whose prompt is sitting in the composer — cleared once the text no longer matches. */
+  const [selectedPreset, setSelectedPreset] = useState<string>();
   const [optimisticMessage, setOptimisticMessage] = useState<string>();
   const [uploading, setUploading] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -61,7 +66,7 @@ export default function EditorScreen() {
   });
   const sendChat = useMutation({
     mutationFn: (message: string) => api.chat(id, message),
-    onMutate: (message) => { setOptimisticMessage(message); setChatText(''); setLatestTrace(undefined); },
+    onMutate: (message) => { setOptimisticMessage(message); setChatText(''); setSelectedPreset(undefined); setLatestTrace(undefined); },
     onSuccess: async (response) => {
       queryClient.setQueryData(['project', id], response.doc);
       setLatestTrace(response.trace ?? []);
@@ -87,6 +92,12 @@ export default function EditorScreen() {
     } finally {
       setUploading(false);
     }
+  }
+
+  /** Any hand-edit that walks the text away from the preset's phrasing deselects the card. */
+  function setChatDraft(text: string): void {
+    setChatText(text);
+    setSelectedPreset((current) => (current !== undefined && text === presetPrompt(current) ? current : undefined));
   }
 
   function send(): void {
@@ -169,6 +180,8 @@ export default function EditorScreen() {
             </ScrollView>
             {apply.error && <Text style={styles.error}>{apply.error.message}</Text>}
           </View>
+
+          <InsightsPanel assetIds={assetIds} />
         </View>
 
         <View style={styles.chatPanel}>
@@ -185,9 +198,13 @@ export default function EditorScreen() {
             {optimisticMessage && <Message message={{ id: 'optimistic', role: 'user', content: optimisticMessage, createdAt: '' }} trace={undefined} />}
             {sendChat.isPending && <AgentActivity />}
           </ScrollView>
-          <View style={styles.prompts}><Prompt text="add bold captions" onPress={setChatText} /><Prompt text="make it choppier" onPress={setChatText} /><Prompt text="speed this up" onPress={setChatText} /></View>
+          <PresetPicker
+            selected={selectedPreset}
+            onSelect={(preset) => { setChatText(presetPrompt(preset.name)); setSelectedPreset(preset.name); }}
+          />
+          <View style={styles.prompts}><Prompt text="add bold captions" onPress={setChatDraft} /><Prompt text="remove the silence" onPress={setChatDraft} /><Prompt text="speed this up" onPress={setChatDraft} /></View>
           <View style={styles.inputWrap}>
-            <TextInput value={chatText} onChangeText={setChatText} onSubmitEditing={send} placeholder="Describe an edit…" placeholderTextColor={colors.muted} multiline style={styles.input} />
+            <TextInput value={chatText} onChangeText={setChatDraft} onSubmitEditing={send} placeholder="Describe an edit…" placeholderTextColor={colors.muted} multiline style={styles.input} />
             <Pressable onPress={send} disabled={!chatText.trim() || sendChat.isPending} style={styles.send}><Text style={styles.sendText}>↑</Text></Pressable>
           </View>
           {sendChat.error && <Text style={styles.error}>{sendChat.error.message}</Text>}

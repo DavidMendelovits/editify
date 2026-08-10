@@ -53,6 +53,8 @@ describe('transcript agent tools', () => {
     transcriptStore = new TranscriptStore(database);
     const transcripts = new TranscriptService(transcriptStore, async () => {
       throw new Error('Whisper must not run in unit tests');
+    }, async () => {
+      throw new Error('ffmpeg must not run in unit tests');
     });
     const insights = new InsightService(new InsightStore(database), transcripts, new MockToolProvider());
     assets.insert({
@@ -78,7 +80,7 @@ describe('transcript agent tools', () => {
     transcriptStore.put('asset-1', transcript);
     const tool = createToolRegistry().find((candidate) => candidate.name === 'caption_clip_from_transcript');
     const result = await tool?.execute(ctx, { clipId: 'clip-a', wordsPerChunk: 2 });
-    expect(result).toMatchObject({ ok: true, captionsAdded: 3, version: 4 });
+    expect(result).toMatchObject({ ok: true, captionsAdded: 3, version: 1 });
     const captions = projects.get(ctx.projectId)?.tracks.find((track) => track.kind === 'caption')?.clips ?? [];
     expect(captions.map((caption) => caption.id)).toEqual(['cap-clip-a-1', 'cap-clip-a-2', 'cap-clip-a-3']);
     expect(captions[0]).toMatchObject({ text: 'HELLO THERE', start: 4.05, out: 0.25 });

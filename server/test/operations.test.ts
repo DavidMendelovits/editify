@@ -40,6 +40,62 @@ describe('operation math', () => {
     expect(moved.tracks[0]?.clips[0]).toMatchObject({ start: 4, in: 2.5, out: 5 });
     expect(moved.duration).toBe(6.5);
   });
+
+  it('merges ripple ranges, cuts multiple clips, shifts later clips, and trims captions', () => {
+    const input: Project = {
+      id: 'ripple', title: 'Ripple', format: '9:16', fps: 30, duration: 10, version: 0,
+      tracks: [
+        { id: 'video-main', kind: 'video', clips: [
+          { id: 'a', assetId: 'asset', start: 0, in: 0, out: 4 },
+          { id: 'b', assetId: 'asset', start: 4, in: 0, out: 4 },
+          { id: 'c', assetId: 'asset', start: 8, in: 0, out: 2 },
+        ] },
+        { id: 'captions', kind: 'caption', clips: [
+          { id: 'inside', start: 2, in: 0, out: 1, text: 'gone' },
+          { id: 'left-edge', start: 0.5, in: 0, out: 1, text: 'trim' },
+          { id: 'right-edge', start: 4.5, in: 0, out: 1, text: 'trim' },
+        ] },
+      ],
+    };
+    const result = applyOperation(input, {
+      type: 'ripple_delete_ranges', params: { trackId: 'video-main', ranges: [{ start: 1, end: 3 }, { start: 2, end: 5 }] },
+    });
+    expect(result.tracks[0]?.clips).toMatchObject([
+      { id: 'a', start: 0, in: 0, out: 1 },
+      { id: 'b', start: 1, in: 1, out: 4 },
+      { id: 'c', start: 4, in: 0, out: 2 },
+    ]);
+    expect(result.tracks[1]?.clips).toMatchObject([
+      { id: 'left-edge', start: 0.5, in: 0, out: 0.5 },
+      { id: 'right-edge', start: 1, in: 0.5, out: 1 },
+    ]);
+    expect(result.duration).toBe(6);
+    expect(result.version).toBe(1);
+  });
+
+  it('applies batch clip properties all-or-nothing', () => {
+    const database = createDatabase(':memory:');
+    const store = new ProjectStore(database);
+    const created = store.insert(project());
+    expect(() => store.applyOperations(created.id, [{
+      type: 'set_clip_properties', params: { updates: [{ clipId: 'clip-a', speed: 2 }, { clipId: 'missing', volume: 0.5 }] },
+    }], 0)).toThrow('Clip missing was not found');
+    expect(store.get(created.id)?.tracks[0]?.clips[0]?.speed).toBe(1);
+    expect(store.get(created.id)?.version).toBe(0);
+    database.close();
+  });
+
+  it('rejects an invalid ripple batch atomically', () => {
+    const database = createDatabase(':memory:');
+    const store = new ProjectStore(database);
+    const created = store.insert(project());
+    expect(() => store.applyOperations(created.id, [{
+      type: 'ripple_delete_ranges',
+      params: { trackId: 'video-main', ranges: [{ start: 1, end: 2 }, { start: 4, end: 3 }] },
+    } as never], 0)).toThrow();
+    expect(store.get(created.id)).toEqual(created);
+    database.close();
+  });
 });
 
 describe('versioning and undo', () => {
@@ -68,5 +124,17 @@ describe('versioning and undo', () => {
     expect(log).toHaveLength(2);
     expect(log[0]?.undone).toBe(true);
     expect(log[1]?.operation.type).toBe('undo');
+  });
+
+  it('treats a multi-operation apply call as one version and one undo step', () => {
+    const created = store.create({ title: 'Batch', format: '9:16', fps: 30 });
+    const changed = store.applyOperations(created.id, [
+      { type: 'add_clip', params: { trackId: 'video-main', clip: { id: 'one', start: 0, in: 0, out: 1 } } },
+      { type: 'add_clip', params: { trackId: 'video-main', clip: { id: 'two', start: 1, in: 0, out: 1 } } },
+    ], 0);
+    expect(changed.version).toBe(1);
+    const undone = store.applyOperations(created.id, [{ type: 'undo', params: {} }], 1);
+    expect(undone.version).toBe(2);
+    expect(undone.tracks[0]?.clips).toEqual([]);
   });
 });

@@ -9,6 +9,16 @@ export const captionStyleSchema = z.object({
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#FFFFFF'),
   position: z.enum(['top', 'center', 'bottom']).default('bottom'),
   emphasis: z.enum(['none', 'bold', 'highlight']).default('bold'),
+  anchorPct: z.number().min(0).max(100).optional(),
+  sizePct: z.number().min(1).max(25).optional(),
+  strokeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  strokePx: z.number().min(0).max(20).optional(),
+  emphasisColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  words: z.array(z.object({
+    w: z.string().min(1),
+    s: z.number().min(0),
+    e: z.number().min(0),
+  }).refine((word) => word.e > word.s, { message: 'word end must be after start' })).optional(),
 });
 export type CaptionStyle = z.infer<typeof captionStyleSchema>;
 
@@ -68,6 +78,22 @@ export type NewProject = z.infer<typeof newProjectSchema>;
 
 const clipIdParams = z.object({ clipId: z.string().min(1) });
 
+const rippleRangeSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().positive(),
+}).refine((range) => range.end > range.start, { message: 'range end must be after start', path: ['end'] });
+
+const clipPropertyUpdateSchema = clipIdParams.extend({
+  volume: z.number().min(0).max(1).optional(),
+  speed: z.number().min(0.1).max(8).optional(),
+  transform: transformSchema.optional(),
+  start: z.number().min(0).optional(),
+}).refine(
+  (update) => update.volume !== undefined || update.speed !== undefined
+    || update.transform !== undefined || update.start !== undefined,
+  { message: 'Each update must set at least one property' },
+);
+
 export const operationParamsSchemas = {
   add_clip: z.object({ trackId: z.string().min(1), clip: clipSchema }),
   remove_clip: clipIdParams,
@@ -90,6 +116,21 @@ export const operationParamsSchemas = {
     style: captionStyleSchema.optional(),
   }),
   remove_caption: clipIdParams,
+  ripple_delete_ranges: z.object({
+    trackId: z.string().min(1),
+    ranges: z.array(rippleRangeSchema).min(1).max(50),
+  }),
+  set_clip_properties: z.object({
+    updates: z.array(clipPropertyUpdateSchema).min(1).max(100),
+  }).superRefine((value, ctx) => {
+    const seen = new Set<string>();
+    value.updates.forEach((update, index) => {
+      if (seen.has(update.clipId)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'clipId may appear only once', path: ['updates', index, 'clipId'] });
+      }
+      seen.add(update.clipId);
+    });
+  }),
   set_format: z.object({ format: projectFormatSchema }),
   undo: z.object({}).strict(),
 } as const;
@@ -107,6 +148,8 @@ export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('add_caption'), params: operationParamsSchemas.add_caption }),
   z.object({ type: z.literal('update_caption'), params: operationParamsSchemas.update_caption }),
   z.object({ type: z.literal('remove_caption'), params: operationParamsSchemas.remove_caption }),
+  z.object({ type: z.literal('ripple_delete_ranges'), params: operationParamsSchemas.ripple_delete_ranges }),
+  z.object({ type: z.literal('set_clip_properties'), params: operationParamsSchemas.set_clip_properties }),
   z.object({ type: z.literal('set_format'), params: operationParamsSchemas.set_format }),
   z.object({ type: z.literal('undo'), params: operationParamsSchemas.undo }),
 ]);
@@ -202,4 +245,7 @@ export const OPERATION_CATALOG = [
   'add_clip', 'remove_clip', 'split_clip', 'trim_clip', 'move_clip',
   'reorder_clips', 'set_volume', 'set_speed', 'set_transform', 'add_caption',
   'update_caption', 'remove_caption', 'set_format', 'undo',
+  'ripple_delete_ranges', 'set_clip_properties',
 ] as const;
+
+export * from './presets.js';

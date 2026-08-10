@@ -58,6 +58,7 @@ function migrate(database: EditifyDatabase): void {
       language TEXT NOT NULL,
       words TEXT NOT NULL,
       segments TEXT NOT NULL,
+      energy_json TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -95,4 +96,9 @@ function migrate(database: EditifyDatabase): void {
       created_at TEXT NOT NULL
     );
   `);
+
+  const transcriptColumns = database.prepare('PRAGMA table_info(transcripts)').all() as Array<{ name: string }>;
+  if (!transcriptColumns.some((column) => column.name === 'energy_json')) {
+    database.exec('ALTER TABLE transcripts ADD COLUMN energy_json TEXT');
+  }
 }

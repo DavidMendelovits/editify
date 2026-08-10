@@ -1,5 +1,6 @@
 import type { AssetMetadata, NewProject, Operation, Project } from '@editify/shared';
 import type { AgentTraceStep } from './agent';
+import type { EditPreset } from './presets';
 
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
@@ -47,11 +48,41 @@ export interface StyleProfile {
   createdAt: string;
 }
 
+/**
+ * Local mirror of `assetInsightsSchema` (SPEC-TRANSCRIPT.md §B1) — kept here so
+ * the panel does not depend on `@editify/shared` re-exporting it. All times are
+ * source-time seconds; `score` is 0–1.
+ */
+export interface InsightHook { start: number; end: number; text: string; reason: string }
+export interface InsightHighlight { start: number; end: number; text: string; score: number; label: string }
+export interface AssetInsights {
+  assetId: string;
+  hook: InsightHook | null;
+  highlights: InsightHighlight[];
+  summary: string;
+  generatedAt: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body ? `${response.status}: ${body}` : `Request failed with ${response.status}`);
+  }
+  return await response.json() as T;
+}
+
+/**
+ * `request` for endpoints where "not there" is an ordinary answer: a 404 becomes
+ * `null` instead of an error. Covers assets with no insights yet and the preset
+ * routes before the server ships them.
+ */
+async function requestOptional<T>(path: string): Promise<T | null> {
+  const response = await fetch(`${API_URL}${path}`, { headers: { 'Content-Type': 'application/json' } });
+  if (response.status === 404) return null;
   if (!response.ok) {
     const body = await response.text();
     throw new Error(body ? `${response.status}: ${body}` : `Request failed with ${response.status}`);
@@ -79,6 +110,10 @@ export const api = {
     method: 'POST', body: JSON.stringify({ resolution }),
   }),
   getRender: (id: string) => request<RenderRecord>(`/renders/${id}`),
+  /** `null` while the server-side preset routes are still landing (SPEC-WAVE2 §D). */
+  listPresets: () => requestOptional<EditPreset[]>('/presets'),
+  /** `null` when the asset has no transcript to analyse yet. */
+  getInsights: (assetId: string) => requestOptional<AssetInsights>(`/assets/${assetId}/insights`),
   getStyle: () => request<StyleProfile>('/style-profile'),
   analyzeStyle: (assetIds: string[]) => request<StyleProfile>('/style-profile/analyze', {
     method: 'POST', body: JSON.stringify({ assetIds }),

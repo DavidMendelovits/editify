@@ -91,9 +91,14 @@ export async function renderProject(
     if (asset.hasAudio) {
       const audioIndex = audioLabels.length;
       const delayMs = Math.round(clip.start * 1000);
+      // 8ms edge fades make butt-joined cuts inaudible (UIST 2013 uses 5ms; jumpcutter ~9ms).
+      const fade = 0.008;
+      const segmentSeconds = (clip.out - clip.in) / speed;
+      const fadeOutStart = Math.max(0, segmentSeconds - fade);
       filters.push(
         `[${inputIndex}:a]atrim=start=${clip.in}:end=${clip.out},asetpts=PTS-STARTPTS,${atempoChain(speed)},` +
-        `volume=${clip.volume ?? 1},adelay=${delayMs}|${delayMs}[aclip${audioIndex}]`,
+        `volume=${clip.volume ?? 1},afade=t=in:curve=hsin:d=${fade},afade=t=out:curve=hsin:st=${fadeOutStart}:d=${fade},` +
+        `adelay=${delayMs}|${delayMs}[aclip${audioIndex}]`,
       );
       audioLabels.push(`[aclip${audioIndex}]`);
     }
