@@ -156,6 +156,26 @@ export const assetMetadataSchema = z.object({
 });
 export type AssetMetadata = z.infer<typeof assetMetadataSchema>;
 
+export const assetInsightsSchema = z.object({
+  assetId: z.string(),
+  hook: z.object({
+    start: z.number(),
+    end: z.number(),
+    text: z.string(),
+    reason: z.string(),
+  }).nullable(),
+  highlights: z.array(z.object({
+    start: z.number(),
+    end: z.number(),
+    text: z.string(),
+    score: z.number().min(0).max(1),
+    label: z.string(),
+  })),
+  summary: z.string(),
+  generatedAt: z.string(),
+});
+export type AssetInsights = z.infer<typeof assetInsightsSchema>;
+
 export const renderRequestSchema = z.object({
   resolution: z.enum(['720p', '1080p', '4k']).default('1080p'),
 });

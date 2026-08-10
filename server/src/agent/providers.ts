@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { Project } from '@editify/shared';
 import type { ToolDef } from './tools.js';
+import { generateMockInsights } from '../services/insight-service.js';
 
 export interface ToolCallRequest { id: string; name: string; input: unknown }
 export interface LoopTurn { text?: string; toolCalls: ToolCallRequest[] }
@@ -16,6 +17,7 @@ export type LoopMessage =
 export interface ToolProvider {
   readonly name: 'anthropic' | 'openai' | 'mock';
   runTurn(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Promise<LoopTurn>;
+  completeText(system: string, user: string): Promise<string>;
 }
 
 function loadServerEnv(): void {
@@ -104,6 +106,10 @@ export class AnthropicToolProvider implements ToolProvider {
       .map((block) => ({ id: block.id, name: block.name, input: block.input }));
     return { ...(text ? { text } : {}), toolCalls };
   }
+
+  async completeText(system: string, user: string): Promise<string> {
+    return (await this.runTurn(system, [{ role: 'user', content: user }], [])).text?.trim() ?? '';
+  }
 }
 
 function openAIMessages(messages: LoopMessage[]): Array<Record<string, unknown>> {
@@ -161,6 +167,10 @@ export class OpenAIToolProvider implements ToolProvider {
     const text = message?.content?.trim();
     return { ...(text ? { text } : {}), toolCalls };
   }
+
+  async completeText(system: string, user: string): Promise<string> {
+    return (await this.runTurn(system, [{ role: 'user', content: user }], [])).text?.trim() ?? '';
+  }
 }
 
 function toolCalls(messages: LoopMessage[]): ToolCallRequest[] {
@@ -174,6 +184,23 @@ function latestToolResult<T>(messages: LoopMessage[], name: string): T | undefin
     try { return JSON.parse(message.content) as T; } catch { return undefined; }
   }
   return undefined;
+}
+
+function toolResults<T>(messages: LoopMessage[], name: string): Array<{ input: unknown; result: T }> {
+  const callsById = new Map<string, ToolCallRequest>();
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls) callsById.set(call.id, call);
+    }
+  }
+  const results: Array<{ input: unknown; result: T }> = [];
+  for (const message of messages) {
+    if (message.role !== 'tool' || message.name !== name) continue;
+    const call = callsById.get(message.toolCallId);
+    if (!call) continue;
+    try { results.push({ input: call.input, result: JSON.parse(message.content) as T }); } catch { /* ignore malformed tool output */ }
+  }
+  return results;
 }
 
 function callIndex(messages: LoopMessage[], names: readonly string[]): number {
@@ -192,6 +219,25 @@ function calls(prefix: string, requests: Array<{ name: string; input: unknown }>
 
 export class MockToolProvider implements ToolProvider {
   readonly name = 'mock' as const;
+
+  async completeText(system: string, user: string): Promise<string> {
+    if (system.startsWith('Distill these ffmpeg-only video metrics')) {
+      return 'Fast-punch pacing with short shots, strong loudness, clean framing, and bold creator captions.';
+    }
+    if (system.startsWith('Analyze this timed transcript')) {
+      const payload = JSON.parse(user.split('\nPrevious response was invalid:')[0] ?? '{}') as {
+        assetId?: string;
+        words?: Array<{ w: string; s: number; e: number }>;
+        segments?: Array<{ text: string; s: number; e: number }>;
+        generatedAt?: string;
+      };
+      return JSON.stringify(generateMockInsights(payload.assetId ?? '', {
+        words: payload.words ?? [],
+        segments: payload.segments ?? [],
+      }, payload.generatedAt));
+    }
+    return '';
+  }
 
   async runTurn(system: string, messages: LoopMessage[], _toolDefs: ToolDef[]): Promise<LoopTurn> {
     if (system.startsWith('Distill these ffmpeg-only video metrics')) {
@@ -221,10 +267,42 @@ export class MockToolProvider implements ToolProvider {
     const wantsCaptions = /caption|subtitle|bold/.test(prompt) || /caption/i.test(styleDoc ?? '');
     const wantsVertical = /vertical|9\s*:\s*16/.test(prompt);
 
+    type InsightResult = {
+      assetId?: string;
+      hook?: { start: number; end: number } | null;
+      highlights?: Array<{ start: number; end: number; score: number }>;
+      ok?: boolean;
+    };
+    const insightResults = toolResults<InsightResult>(messages, 'get_insights');
+    const inspectedAssetIds = new Set(insightResults.map(({ input }) => (
+      typeof input === 'object' && input !== null && 'assetId' in input ? String(input.assetId) : ''
+    )));
+
+    if (wantsBuild && videoClips.length === 0 && assets.some((asset) => !inspectedAssetIds.has(asset.id))) {
+      return calls('insights', assets.filter((asset) => !inspectedAssetIds.has(asset.id)).map((asset) => ({
+        name: 'get_insights', input: { assetId: asset.id },
+      })));
+    }
+
     if (wantsBuild && videoClips.length === 0 && !called('add_clip')) {
+      const insightsByAsset = new Map(insightResults.map(({ input, result }) => {
+        const assetId = typeof input === 'object' && input !== null && 'assetId' in input ? String(input.assetId) : '';
+        return [assetId, result] as const;
+      }));
+      const transcriptCount = assets.filter((asset) => insightsByAsset.get(asset.id)?.assetId === asset.id).length;
+      const candidates = (transcriptCount >= 3
+        ? assets.filter((asset) => !asset.originalName.startsWith('seed-') && insightsByAsset.get(asset.id)?.assetId === asset.id)
+        : assets).filter((asset) => asset.duration > 0);
       let start = 0;
-      const requests = assets.map((asset, index) => {
-        const duration = Math.max(0.1, Math.min(asset.duration, 4));
+      const requests = candidates.map((asset, index) => {
+        const insight = insightsByAsset.get(asset.id);
+        const span = insight?.hook ?? [...(insight?.highlights ?? [])].sort((a, b) => b.score - a.score)[0];
+        const sourceIn = span ? Math.min(Math.max(0, span.start - 0.3), Math.max(0, asset.duration - 0.1)) : 0;
+        const sourceOut = span
+          ? Math.min(asset.duration, span.end + 0.3, sourceIn + 6)
+          : Math.min(asset.duration, 4);
+        const safeOut = Math.min(asset.duration, Math.max(sourceIn + 0.1, sourceOut));
+        const duration = safeOut - sourceIn;
         const request = {
           name: 'add_clip',
           input: {
@@ -233,8 +311,8 @@ export class MockToolProvider implements ToolProvider {
               id: `clip-${index + 1}`,
               assetId: asset.id,
               start,
-              in: 0,
-              out: duration,
+              in: sourceIn,
+              out: safeOut,
               volume: 1,
               speed: 1,
             },
@@ -246,7 +324,7 @@ export class MockToolProvider implements ToolProvider {
       if (requests.length) return calls('build', requests);
     }
 
-    const mutationNames = ['add_clip', 'split_clip', 'set_speed', 'add_caption'] as const;
+    const mutationNames = ['add_clip', 'split_clip', 'set_speed', 'caption_clip_from_transcript'] as const;
     const latestMutation = callIndex(messages, mutationNames);
     const latestProjectRead = callIndex(messages, ['get_project']);
     if (latestMutation > latestProjectRead && (wantsPunch || wantsCaptions)) {
@@ -269,20 +347,10 @@ export class MockToolProvider implements ToolProvider {
       return calls('pace', requests);
     }
 
-    if (wantsCaptions && videoClips.length && !called('add_caption')) {
-      return calls('caption', videoClips.map((clip, index) => ({
-        name: 'add_caption',
-        input: {
-          trackId: 'captions',
-          clip: {
-            id: `caption-${clip.id}`,
-            start: clip.start,
-            in: 0,
-            out: Math.max(0.1, (clip.out - clip.in) / (clip.speed ?? 1)),
-            text: `Caption ${index + 1}`,
-            style: { font: 'Montserrat', size: 52, color: '#FFFFFF', position: 'bottom', emphasis: 'bold' },
-          },
-        },
+    if (wantsCaptions && videoClips.length && !called('caption_clip_from_transcript')) {
+      return calls('caption', videoClips.map((clip) => ({
+        name: 'caption_clip_from_transcript',
+        input: { clipId: clip.id, wordsPerChunk: 3 },
       })));
     }
 
@@ -290,7 +358,9 @@ export class MockToolProvider implements ToolProvider {
       return calls('format', [{ name: 'set_format', input: { format: '9:16' } }]);
     }
 
-    const applied = previousCalls.filter((call) => !['list_assets', 'get_project', 'get_style_profile'].includes(call.name));
+    const applied = previousCalls.filter((call) => ![
+      'list_assets', 'get_project', 'get_style_profile', 'get_insights', 'get_transcript',
+    ].includes(call.name));
     const reply = applied.length
       ? `I built the cut through ${applied.length} live editor operations, including ${[...new Set(applied.map((call) => call.name.replaceAll('_', ' ')))].join(', ')}.`
       : 'I inspected the project and assets, but there was no safe edit to apply for that request.';

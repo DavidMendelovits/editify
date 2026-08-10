@@ -9,6 +9,8 @@ import { z } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { assetsRoot, mediaImportDir } from '../config.js';
 import { createProxyAndThumbnail, probeMedia } from '../media/process.js';
+import type { InsightService } from '../services/insight-service.js';
+import type { TranscriptService } from '../services/transcript-service.js';
 
 function publicAsset(asset: StoredAsset): AssetMetadata {
   const { originalPath: _originalPath, proxyPath: _proxyPath, thumbnailPath: _thumbnailPath, ...metadata } = asset;
@@ -20,6 +22,7 @@ function sendFile(reply: FastifyReply, path: string, type: string): FastifyReply
 }
 
 const importRequestSchema = z.object({ name: z.string().trim().min(1).max(255) }).strict();
+const forceRequestSchema = z.object({ force: z.boolean().optional().default(false) }).strict();
 const videoExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
 const videoMimeTypes: Record<string, string> = {
   '.mp4': 'video/mp4',
@@ -69,7 +72,25 @@ async function processAsset(
   }
 }
 
-export function registerAssetRoutes(app: FastifyInstance, assets: AssetStore): void {
+async function transcribeQuietly(
+  app: FastifyInstance,
+  transcripts: TranscriptService,
+  asset: StoredAsset,
+): Promise<void> {
+  if (!asset.hasAudio) return;
+  try {
+    await transcripts.transcribe(asset);
+  } catch (error) {
+    app.log.warn({ err: error, assetId: asset.id }, 'Asset transcription failed; media import will continue');
+  }
+}
+
+export function registerAssetRoutes(
+  app: FastifyInstance,
+  assets: AssetStore,
+  transcripts: TranscriptService,
+  insights: InsightService,
+): void {
   app.post('/assets', async (request, reply) => {
     const part = await request.file({ limits: { fileSize: 2 * 1024 * 1024 * 1024, files: 1 } });
     if (!part) return await reply.code(400).send({ error: 'A multipart media file is required' });
@@ -89,6 +110,7 @@ export function registerAssetRoutes(app: FastifyInstance, assets: AssetStore): v
         mimeType: part.mimetype,
         originalPath,
       }, id);
+      await transcribeQuietly(app, transcripts, asset);
       return await reply.code(201).send(publicAsset(asset));
     } catch (error) {
       await rm(directory, { recursive: true, force: true });
@@ -127,7 +149,10 @@ export function registerAssetRoutes(app: FastifyInstance, assets: AssetStore): v
       return await reply.code(400).send({ error: 'Only video files can be imported' });
     }
     const existing = assets.getByOriginalName(name);
-    if (existing) return publicAsset(existing);
+    if (existing) {
+      await transcribeQuietly(app, transcripts, existing);
+      return publicAsset(existing);
+    }
 
     let sourcePath: string;
     try {
@@ -147,7 +172,36 @@ export function registerAssetRoutes(app: FastifyInstance, assets: AssetStore): v
       mimeType: videoMimeTypes[extension] ?? 'video/mp4',
       originalPath: sourcePath,
     });
+    await transcribeQuietly(app, transcripts, asset);
     return await reply.code(201).send(publicAsset(asset));
+  });
+
+  app.get<{ Params: { id: string } }>('/assets/:id/transcript', async (request, reply) => {
+    if (!assets.get(request.params.id)) return await reply.code(404).send({ error: 'Asset not found' });
+    return transcripts.get(request.params.id) ?? await reply.code(404).send({ error: 'No transcript' });
+  });
+
+  app.post<{ Params: { id: string } }>('/assets/:id/transcribe', async (request, reply) => {
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    if (!asset.hasAudio) return await reply.code(422).send({ error: 'Asset has no audio' });
+    const { force } = forceRequestSchema.parse(request.body ?? {});
+    return await transcripts.transcribe(asset, force);
+  });
+
+  app.get<{ Params: { id: string } }>('/assets/:id/insights', async (request, reply) => {
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    const result = await insights.getOrCreate(asset);
+    return result ?? await reply.code(404).send({ error: 'No transcript' });
+  });
+
+  app.post<{ Params: { id: string } }>('/assets/:id/insights', async (request, reply) => {
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    const { force } = forceRequestSchema.parse(request.body ?? {});
+    const result = await insights.getOrCreate(asset, force);
+    return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id', async (request, reply) => {

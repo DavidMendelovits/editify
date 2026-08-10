@@ -1,9 +1,9 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Clip, Project } from '@editify/shared';
-import { clipTimelineDuration } from '@editify/shared';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { rendersRoot } from '../config.js';
+import { writeAssFile } from './ass.js';
 import { runProcess } from './process.js';
 
 type Resolution = '720p' | '1080p' | '4k';
@@ -15,8 +15,8 @@ function dimensions(format: Project['format'], resolution: Resolution): [number,
   return [Math.round(short * 16 / 9), short];
 }
 
-function ffmpegEscape(value: string): string {
-  return value.replaceAll('\\', '\\\\').replaceAll(':', '\\:').replaceAll("'", "\\'").replaceAll('%', '\\%');
+function filterPath(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll(':', '\\:').replaceAll("'", "\\'").replaceAll(',', '\\,');
 }
 
 function atempoChain(speed: number): string {
@@ -99,23 +99,14 @@ export async function renderProject(
     }
   }
 
-  let captionNumber = 0;
-  for (const track of project.tracks.filter((candidate) => candidate.kind === 'caption')) {
-    for (const caption of track.clips) {
-      if (!caption.text) continue;
-      const style = caption.style ?? { font: 'Montserrat', size: 52, color: '#FFFFFF', position: 'bottom', emphasis: 'bold' };
-      const end = caption.start + clipTimelineDuration(caption);
-      const y = style.position === 'top' ? 'h*0.12' : style.position === 'center' ? '(h-text_h)/2' : 'h-text_h-h*0.12';
-      const outputLabel = `vcaption${captionNumber}`;
-      filters.push(
-        `[${currentVideo}]drawtext=text='${ffmpegEscape(caption.text)}':font='${ffmpegEscape(style.font)}':` +
-        `fontsize=${Math.round(style.size * width / 1080)}:fontcolor=${style.color}:` +
-        `borderw=${style.emphasis === 'none' ? 0 : 4}:bordercolor=black@0.75:x=(w-text_w)/2:y=${y}:` +
-        `enable='between(t,${caption.start},${end})'[${outputLabel}]`,
-      );
-      currentVideo = outputLabel;
-      captionNumber += 1;
-    }
+  const hasCaptions = project.tracks.some((track) => track.kind === 'caption'
+    && track.clips.some((clip) => Boolean(clip.text)));
+  if (hasCaptions) {
+    const assPath = join(destinationDirectory, 'captions.ass');
+    const font = await writeAssFile(project, width, height, assPath);
+    const fontsDir = font.directory ? `:fontsdir='${filterPath(font.directory)}'` : '';
+    filters.push(`[${currentVideo}]subtitles='${filterPath(assPath)}'${fontsDir}[vsubtitles]`);
+    currentVideo = 'vsubtitles';
   }
 
   filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,atrim=0:${duration}[aout]`);

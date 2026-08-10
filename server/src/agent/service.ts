@@ -12,7 +12,6 @@ export class AgentService {
 
   async distillStyle(project: Project, metrics: unknown): Promise<string> {
     const system = 'Distill these ffmpeg-only video metrics into one short editing style profile. Do not claim to have watched video.';
-    const turn = await this.provider.runTurn(system, [{ role: 'user', content: JSON.stringify({ project, metrics }) }], []);
-    return turn.text?.trim() ?? '';
+    return (await this.provider.completeText(system, JSON.stringify({ project, metrics }))).trim();
   }
 }

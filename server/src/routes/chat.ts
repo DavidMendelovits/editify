@@ -5,6 +5,8 @@ import type { AssetStore } from '../db/asset-store.js';
 import type { ChatStore } from '../db/chat-store.js';
 import type { ProjectStore } from '../db/project-store.js';
 import type { StyleService } from '../services/style-service.js';
+import type { InsightService } from '../services/insight-service.js';
+import type { TranscriptService } from '../services/transcript-service.js';
 
 export function registerChatRoutes(
   app: FastifyInstance,
@@ -13,6 +15,8 @@ export function registerChatRoutes(
   chats: ChatStore,
   agent: AgentService,
   styles: StyleService,
+  transcripts: TranscriptService,
+  insights: InsightService,
 ): void {
   app.post<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
     const project = projects.get(request.params.id);
@@ -25,6 +29,8 @@ export function registerChatRoutes(
       assets,
       styleDoc: styles.latest()?.styleDoc ?? null,
       currentVersion: project.version,
+      transcripts,
+      insights,
     }, message);
     chats.add(project.id, 'assistant', response.reply, response.opsApplied, response.trace);
     return response;

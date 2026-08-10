@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { OPERATION_CATALOG, type Operation } from '@editify/shared';
 import { createToolRegistry, type ToolContext } from '../src/agent/tools.js';
+import { MockToolProvider } from '../src/agent/providers.js';
 import { AssetStore } from '../src/db/asset-store.js';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
+import { InsightStore } from '../src/db/insight-store.js';
 import { ProjectStore } from '../src/db/project-store.js';
+import { TranscriptStore } from '../src/db/transcript-store.js';
+import { InsightService } from '../src/services/insight-service.js';
+import { TranscriptService } from '../src/services/transcript-service.js';
 
 const inputs: Record<Operation['type'], unknown> = {
   add_clip: { trackId: 'video-main', clip: { id: 'clip-new', assetId: 'asset-2', start: 4, in: 0, out: 2 } },
@@ -26,11 +31,17 @@ describe('agent tool registry', () => {
   let database: EditifyDatabase;
   let projects: ProjectStore;
   let assets: AssetStore;
+  let transcripts: TranscriptService;
+  let insights: InsightService;
 
   beforeEach(() => {
     database = createDatabase(':memory:');
     projects = new ProjectStore(database);
     assets = new AssetStore(database);
+    transcripts = new TranscriptService(new TranscriptStore(database), async () => {
+      throw new Error('Whisper must not run in unit tests');
+    });
+    insights = new InsightService(new InsightStore(database), transcripts, new MockToolProvider());
   });
 
   afterEach(() => database.close());
@@ -56,9 +67,9 @@ describe('agent tool registry', () => {
     });
     if (type === 'undo') {
       const changed = projects.applyOperations(project.id, [{ type: 'set_format', params: { format: '16:9' } }], 0);
-      return { projectId: project.id, projects, assets, styleDoc: null, currentVersion: changed.version };
+      return { projectId: project.id, projects, assets, transcripts, insights, styleDoc: null, currentVersion: changed.version };
     }
-    return { projectId: project.id, projects, assets, styleDoc: null, currentVersion: project.version };
+    return { projectId: project.id, projects, assets, transcripts, insights, styleDoc: null, currentVersion: project.version };
   }
 
   it.each(OPERATION_CATALOG)('%s validates, applies, and bumps the live version', async (name) => {

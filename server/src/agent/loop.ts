@@ -1,13 +1,12 @@
 import {
   chatResponseSchema,
-  operationSchema,
   type AgentTraceStep,
   type ChatResponse,
   type Operation,
   type Project,
 } from '@editify/shared';
 import type { LoopMessage, ToolProvider } from './providers.js';
-import { createToolRegistry, isOperationTool, type ToolContext, type ToolDef } from './tools.js';
+import { createToolRegistry, type ToolContext, type ToolDef } from './tools.js';
 
 const MAX_ITERATIONS = 24;
 
@@ -33,6 +32,11 @@ function summarizeResult(tool: string, result: unknown, ok: boolean): string {
   }
   if (tool === 'list_assets' && Array.isArray(result)) return `Found ${result.length} available assets.`;
   if (tool === 'get_style_profile') return result === null ? 'No style profile is available.' : 'Loaded the current style profile.';
+  if (tool === 'get_transcript' && isRecord(result)) return `Loaded ${String(result.wordCount)} timed words.`;
+  if (tool === 'get_insights' && isRecord(result)) return 'Loaded transcript hook and highlight insights.';
+  if (tool === 'caption_clip_from_transcript' && isRecord(result)) {
+    return `Added ${String(result.captionsAdded)} transcript captions; project is now version ${String(result.version)}.`;
+  }
   if (isRecord(result) && result.ok === true) {
     return `Applied ${tool}; project is now version ${String(result.version)}.`;
   }
@@ -57,6 +61,7 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'Inspect the project and assets before editing. Use operation tools for every mutation; never invent that an edit succeeded.',
     'When a tool reports an error, inspect fresh state as needed, correct the input, and try again.',
     'Use readable unique clip IDs. Keep edits faithful to the user request and finish with a concise, honest description.',
+    'Asset transcripts and transcript insights may be available. Strong edits trim to highlight spans, lead with the hook, and use caption_clip_from_transcript for speech captions.',
     styleDoc ? `Editing style profile: ${styleDoc}` : 'No editing style profile is available.',
     `Initial project summary: ${projectSummary(project)}`,
   ].join('\n');
@@ -109,6 +114,7 @@ export async function runAgentLoop(
   const toolsByName = new Map(toolRegistry.map((tool) => [tool.name, tool]));
   const trace: AgentTraceStep[] = [];
   const opsApplied: Operation[] = [];
+  ctx.appliedOperations = [];
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
     const turn = await provider.runTurn(system, messages, toolRegistry);
@@ -129,6 +135,7 @@ export async function runAgentLoop(
     }
 
     for (const call of turn.toolCalls) {
+      const appliedBefore = ctx.appliedOperations.length;
       const executed = await executeCall(toolsByName, ctx, call);
       trace.push({
         tool: call.name,
@@ -136,10 +143,7 @@ export async function runAgentLoop(
         ok: executed.ok,
         summary: summarizeResult(call.name, executed.result, executed.ok),
       });
-      if (executed.ok && isOperationTool(call.name)) {
-        const operation = operationSchema.safeParse({ type: call.name, params: executed.parsedInput });
-        if (operation.success) opsApplied.push(operation.data);
-      }
+      opsApplied.push(...ctx.appliedOperations.slice(appliedBefore));
       messages.push({
         role: 'tool',
         toolCallId: call.id,
