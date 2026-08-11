@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -224,16 +224,21 @@ function ClipPlayer({ uri, clip, onProgress, onEnd }: { uri: string; clip: Clip;
     instance.currentTime = clip.in;
     instance.timeUpdateEventInterval = 0.1;
   });
+  // The callbacks are re-created on every render and every tick re-renders the
+  // editor, so subscribing on their identity would tear the listener down 10×/s
+  // mid-playback. Read them through a ref and subscribe once per player.
+  const latest = useRef({ clip, onProgress, onEnd });
+  latest.current = { clip, onProgress, onEnd };
   useEffect(() => {
     const timeSubscription = player.addListener('timeUpdate', ({ currentTime }) => {
-      onProgress(currentTime);
-      if (currentTime >= clip.out) {
+      latest.current.onProgress(currentTime);
+      if (currentTime >= latest.current.clip.out) {
         player.pause();
-        onEnd();
+        latest.current.onEnd();
       }
     });
     return () => timeSubscription.remove();
-  }, [clip.out, onEnd, onProgress, player]);
+  }, [player]);
   return <VideoView player={player} style={styles.video} nativeControls contentFit="contain" />;
 }
 

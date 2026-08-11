@@ -1,4 +1,3 @@
-import { createReadStream } from 'node:fs';
 import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,6 +8,7 @@ import { z } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { assetsRoot, mediaImportDir } from '../config.js';
 import { createProxyAndThumbnail, probeMedia } from '../media/process.js';
+import { sendMediaFile } from '../media/send-file.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 
@@ -17,8 +17,9 @@ function publicAsset(asset: StoredAsset): AssetMetadata {
   return metadata;
 }
 
-function sendFile(reply: FastifyReply, path: string, type: string): FastifyReply {
-  return reply.type(type).header('Cache-Control', 'public, max-age=31536000, immutable').send(createReadStream(path));
+async function sendFile(reply: FastifyReply, path: string, type: string, range: string | undefined): Promise<FastifyReply> {
+  reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return await sendMediaFile(reply, path, type, range);
 }
 
 const importRequestSchema = z.object({ name: z.string().trim().min(1).max(255) }).strict();
@@ -211,16 +212,16 @@ export function registerAssetRoutes(
 
   app.get<{ Params: { id: string } }>('/assets/:id/proxy.mp4', async (request, reply) => {
     const asset = assets.get(request.params.id);
-    return asset ? sendFile(reply, asset.proxyPath, 'video/mp4') : await reply.code(404).send({ error: 'Asset not found' });
+    return asset ? await sendFile(reply, asset.proxyPath, 'video/mp4', request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/thumb.jpg', async (request, reply) => {
     const asset = assets.get(request.params.id);
-    return asset ? sendFile(reply, asset.thumbnailPath, 'image/jpeg') : await reply.code(404).send({ error: 'Asset not found' });
+    return asset ? await sendFile(reply, asset.thumbnailPath, 'image/jpeg', request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/original', async (request, reply) => {
     const asset = assets.get(request.params.id);
-    return asset ? sendFile(reply, asset.originalPath, asset.mimeType) : await reply.code(404).send({ error: 'Asset not found' });
+    return asset ? await sendFile(reply, asset.originalPath, asset.mimeType, request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
   });
 }
