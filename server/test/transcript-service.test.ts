@@ -14,7 +14,7 @@ describe('transcript service', () => {
       id: 'asset-1', originalName: 'speech.mp4', mimeType: 'video/mp4', duration: 1,
       width: 1920, height: 1080, fps: 30, hasAudio: true,
       originalPath: '/not/read.mp4', proxyPath: '/not/read-proxy.mp4', thumbnailPath: '/not/read.jpg',
-      originalUrl: '', proxyUrl: '', thumbnailUrl: '', createdAt: new Date(0).toISOString(),
+      originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: new Date(0).toISOString(),
     });
   });
 

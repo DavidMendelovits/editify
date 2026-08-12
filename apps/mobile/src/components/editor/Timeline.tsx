@@ -1,0 +1,392 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import type { AssetMetadata, Clip, Operation, Project, Track } from '@editify/shared';
+import { clipTimelineDuration } from '@editify/shared';
+import { CaptionChip, DragGhost, DragTooltip, EmptyLane, TimelineClip, type DragMode } from './TimelineClip';
+import { Inspector } from './Inspector';
+import { useHorizontalDrag } from './useHorizontalDrag';
+import { colors } from '../../lib/theme';
+import {
+  CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
+  captionRows, clampStart, clipEnd, closeGapUpdates, findClip, formatTimecode, patchClip, patchStarts,
+  removeClip, snapTargets, snapTime, sortClips, tickStep, trackOfClip, trimInPreview, trimOutPreview,
+} from '../../lib/timeline';
+
+const RULER_HEIGHT = 24;
+const LANE_PADDING = 6;
+/** Below this much travel a release counts as a click, not a drag. */
+const CLICK_SLOP = 4;
+
+interface Props {
+  project: Project;
+  assets: Record<string, AssetMetadata | undefined>;
+  playhead: number;
+  playing: boolean;
+  selectedId: string | undefined;
+  pending: boolean;
+  errorMessage: string | undefined;
+  onSeek: (time: number) => void;
+  onSelect: (clipId: string | undefined) => void;
+  /** Applies ops on the server; `optimistic` paints the result before the round trip. */
+  onApply: (ops: Operation[], optimistic?: (project: Project) => Project) => void;
+  onImport: () => void;
+}
+
+interface DragState { clipId: string; mode: DragMode; dx: number }
+
+interface Lane { track: Track; height: number; label: string; sublabel: string; rowCount: number }
+
+const round6 = (value: number): number => Number(value.toFixed(6));
+
+/**
+ * The timeline: ruler, one lane per track, absolutely positioned clip blocks,
+ * a draggable playhead, and the edit toolbar.
+ *
+ * Zoom is `pxPerSec`; every block is `left = start * pxPerSec` wide
+ * `timelineDuration * pxPerSec`. Drags are previewed locally (ghost + tooltip)
+ * and only committed as operations on release.
+ */
+export function Timeline({
+  project, assets, playhead, playing, selectedId, pending, errorMessage, onSeek, onSelect, onApply, onImport,
+}: Props) {
+  const [pxPerSec, setPxPerSec] = useState(40);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [drag, setDrag] = useState<DragState>();
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollX = useRef(0);
+  const scrubStart = useRef(0);
+  const fitted = useRef(false);
+
+  const lanes = useMemo<Lane[]>(() => project.tracks.flatMap((track) => {
+    if (track.kind === 'audio' && track.clips.length === 0) return [];
+    if (track.kind === 'caption') {
+      const rowCount = captionRows(track.clips).rowCount;
+      return [{ track, height: rowCount * CAPTION_ROW_HEIGHT + (rowCount - 1) * 2, label: 'CC', sublabel: 'CAPTIONS', rowCount }];
+    }
+    return [{
+      track,
+      height: VIDEO_LANE_HEIGHT,
+      label: track.kind === 'video' ? 'V1' : 'A1',
+      sublabel: track.kind.toUpperCase(),
+      rowCount: 1,
+    }];
+  }), [project.tracks]);
+
+  const videoTrack = project.tracks.find((track) => track.kind === 'video');
+  const selected = findClip(project, selectedId);
+  const selectedTrack = selectedId ? trackOfClip(project, selectedId) : undefined;
+  const duration = Math.max(project.duration, 1);
+  const contentWidth = Math.max(viewportWidth, duration * pxPerSec + 160);
+  const lanesHeight = lanes.reduce((total, lane) => total + lane.height + LANE_PADDING * 2, 0);
+
+  // Default zoom fits the whole project into the viewport, once per project.
+  useEffect(() => {
+    if (fitted.current || viewportWidth <= 0 || project.duration <= 0) return;
+    fitted.current = true;
+    setPxPerSec(clampZoom((viewportWidth - 24) / project.duration));
+  }, [project.duration, viewportWidth]);
+
+  // Keep the playhead on screen while the transport is running.
+  useEffect(() => {
+    if (!playing || viewportWidth <= 0) return;
+    const x = playhead * pxPerSec;
+    if (x < scrollX.current + 40 || x > scrollX.current + viewportWidth - 90) {
+      scrollRef.current?.scrollTo({ x: Math.max(0, x - viewportWidth * 0.35), animated: false });
+    }
+  }, [playhead, playing, pxPerSec, viewportWidth]);
+
+  const ruler = useHorizontalDrag({
+    onStart: (localX) => { scrubStart.current = localX / pxPerSec; onSeek(Math.max(0, scrubStart.current)); },
+    onMove: (dx) => onSeek(Math.max(0, scrubStart.current + dx / pxPerSec)),
+  });
+
+  function moveTarget(track: Track | undefined, clip: Clip, deltaSeconds: number): number {
+    const tolerance = SNAP_PX / pxPerSec;
+    const targets = snapTargets(track, clip.id, playhead);
+    const raw = Math.max(0, clip.start + deltaSeconds);
+    const span = clipTimelineDuration(clip);
+    const byStart = snapTime(raw, targets, tolerance);
+    const byEnd = snapTime(raw + span, targets, tolerance) - span;
+    const chosen = Math.abs(byStart - raw) <= Math.abs(byEnd - raw) ? byStart : byEnd;
+    return clampStart(track, clip, Math.max(0, chosen));
+  }
+
+  /** Snapped edge travel for a trim, in timeline seconds. */
+  function trimDelta(track: Track | undefined, clip: Clip, mode: DragMode, deltaSeconds: number): number {
+    const tolerance = SNAP_PX / pxPerSec;
+    const targets = snapTargets(track, clip.id, playhead);
+    const edge = mode === 'in' ? clip.start : clipEnd(clip);
+    return snapTime(edge + deltaSeconds, targets, tolerance) - edge;
+  }
+
+  /** The clip as it should be drawn right now — drag preview applied. */
+  function previewClip(clip: Clip, track: Track): Clip {
+    if (!drag || drag.clipId !== clip.id) return clip;
+    const delta = drag.dx / pxPerSec;
+    if (drag.mode === 'move') return { ...clip, start: moveTarget(track, clip, delta) };
+    const asset = clip.assetId ? assets[clip.assetId] : undefined;
+    const trim = drag.mode === 'in'
+      ? trimInPreview(track, clip, trimDelta(track, clip, 'in', delta))
+      : trimOutPreview(track, clip, trimDelta(track, clip, 'out', delta), asset?.duration);
+    return { ...clip, in: trim.in, out: trim.out, start: trim.start };
+  }
+
+  function commit(clip: Clip, track: Track, mode: DragMode, dx: number): void {
+    setDrag(undefined);
+    onSelect(clip.id);
+    if (Math.abs(dx) < CLICK_SLOP) return;
+    const delta = dx / pxPerSec;
+
+    if (mode === 'move') {
+      const start = round6(moveTarget(track, clip, delta));
+      if (Math.abs(start - clip.start) < 1e-4) return;
+      const operation: Operation = track.kind === 'caption'
+        ? { type: 'update_caption', params: { clipId: clip.id, start } }
+        : { type: 'set_clip_properties', params: { updates: [{ clipId: clip.id, start }] } };
+      onApply([operation], (current) => patchClip(current, clip.id, { start }));
+      return;
+    }
+
+    const asset = clip.assetId ? assets[clip.assetId] : undefined;
+    const trim = mode === 'in'
+      ? trimInPreview(track, clip, trimDelta(track, clip, 'in', delta))
+      : trimOutPreview(track, clip, trimDelta(track, clip, 'out', delta), asset?.duration);
+    if (Math.abs(trim.in - clip.in) < 1e-4 && Math.abs(trim.out - clip.out) < 1e-4) return;
+    const ops: Operation[] = [{
+      type: 'trim_clip',
+      params: mode === 'in' ? { clipId: clip.id, in: round6(trim.in) } : { clipId: clip.id, out: round6(trim.out) },
+    }];
+    if (Math.abs(trim.start - clip.start) > 1e-6) {
+      ops.push({ type: 'set_clip_properties', params: { updates: [{ clipId: clip.id, start: round6(trim.start) }] } });
+    }
+    onApply(ops, (current) => patchClip(current, clip.id, { in: trim.in, out: trim.out, start: trim.start }));
+  }
+
+  const splitTarget = selected && selectedTrack?.kind !== 'caption'
+    && playhead > selected.start + 0.05 && playhead < clipEnd(selected) - 0.05 ? selected : undefined;
+  const gapUpdates = closeGapUpdates(videoTrack);
+
+  function split(): void {
+    if (!splitTarget) return;
+    onApply([{ type: 'split_clip', params: { clipId: splitTarget.id, at: round6(playhead), newClipId: `${splitTarget.id}-s${Date.now()}` } }]);
+  }
+  function remove(): void {
+    if (!selected || !selectedTrack) return;
+    const operation: Operation = selectedTrack.kind === 'caption'
+      ? { type: 'remove_caption', params: { clipId: selected.id } }
+      : { type: 'remove_clip', params: { clipId: selected.id } };
+    onApply([operation], (current) => removeClip(current, selected.id));
+    onSelect(undefined);
+  }
+  function closeGaps(): void {
+    if (!videoTrack || gapUpdates.length === 0) return;
+    onApply(
+      [{ type: 'set_clip_properties', params: { updates: gapUpdates } }],
+      (current) => patchStarts(current, gapUpdates),
+    );
+  }
+  function zoom(factor: number): void {
+    setPxPerSec((current) => clampZoom(current * factor));
+  }
+  function fit(): void {
+    if (viewportWidth > 0 && project.duration > 0) setPxPerSec(clampZoom((viewportWidth - 24) / project.duration));
+  }
+
+  const step = tickStep(pxPerSec);
+  const tickCount = Math.ceil(contentWidth / pxPerSec / step) + 1;
+
+  return (
+    <View style={styles.panel}>
+      <View style={styles.toolbar}>
+        <Text style={styles.zoneLabel}>TIMELINE</Text>
+        <View style={styles.toolGroup}>
+          <Tool label="split" hint="at playhead" onPress={split} disabled={!splitTarget || pending} />
+          <Tool label="delete" hint="selected" onPress={remove} disabled={!selected || pending} danger />
+          <Tool label="close gaps" hint={gapUpdates.length ? `${gapUpdates.length} moves` : 'none'} onPress={closeGaps} disabled={gapUpdates.length === 0 || pending} />
+          {/* `undo` is an operation, not a route — POST /projects/:id/ops carries it. */}
+          <Tool label="undo" hint="last batch" onPress={() => onApply([{ type: 'undo', params: {} }])} disabled={pending} />
+        </View>
+        <View style={styles.toolGroup}>
+          <Tool label="−" hint="zoom" compact onPress={() => zoom(1 / 1.6)} disabled={pxPerSec <= MIN_PX_PER_SEC} />
+          <Text style={styles.zoomValue}>{Math.round(pxPerSec)} px/s</Text>
+          <Tool label="+" hint="zoom" compact onPress={() => zoom(1.6)} disabled={pxPerSec >= MAX_PX_PER_SEC} />
+          <Tool label="fit" hint="viewport" compact onPress={fit} />
+          <Tool label="import" hint="media" compact onPress={onImport} />
+        </View>
+      </View>
+
+      <View style={styles.body}>
+        <View style={styles.gutter}>
+          <View style={{ height: RULER_HEIGHT }} />
+          {lanes.map((lane) => (
+            <View key={lane.track.id} style={[styles.gutterLane, { height: lane.height + LANE_PADDING * 2 }]}>
+              <Text style={styles.laneName}>{lane.label}</Text>
+              <Text style={styles.laneKind}>{lane.sublabel}</Text>
+            </View>
+          ))}
+        </View>
+
+        <ScrollView
+          ref={scrollRef}
+          horizontal
+          showsHorizontalScrollIndicator
+          scrollEventThrottle={16}
+          onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => { scrollX.current = event.nativeEvent.contentOffset.x; }}
+          onLayout={(event) => setViewportWidth(event.nativeEvent.layout.width)}
+          style={styles.scroll}
+          contentContainerStyle={{ width: contentWidth }}
+        >
+          <View style={{ width: contentWidth }}>
+            <View {...ruler} style={[styles.ruler, { width: contentWidth }]}>
+              {Array.from({ length: tickCount }, (_unused, index) => index * step).map((time) => (
+                // Ticks must not become the touch target: the scrub position is
+                // read from `locationX`, which is relative to whatever was hit.
+                <View key={time} pointerEvents="none" style={[styles.tick, { left: time * pxPerSec }]}>
+                  <View style={styles.tickMark} />
+                  <Text style={styles.tickLabel}>{formatTimecode(time, step < 1)}</Text>
+                </View>
+              ))}
+            </View>
+
+            {lanes.map((lane) => (
+              <View key={lane.track.id} style={[styles.lane, { height: lane.height + LANE_PADDING * 2 }]}>
+                <View style={[styles.laneInner, { height: lane.height }]}>
+                  {lane.track.kind === 'caption'
+                    ? captionRows(lane.track.clips).rows.map(({ clip, row, overlapping }) => (
+                      <CaptionChip
+                        key={clip.id}
+                        clip={previewClip(clip, lane.track)}
+                        pxPerSec={pxPerSec}
+                        row={row}
+                        height={CAPTION_ROW_HEIGHT}
+                        overlapping={overlapping}
+                        selected={clip.id === selectedId}
+                        onSelect={() => onSelect(clip.id)}
+                        onDragStart={() => { onSelect(clip.id); setDrag({ clipId: clip.id, mode: 'move', dx: 0 }); }}
+                        onDragMove={(mode, dx) => setDrag({ clipId: clip.id, mode, dx })}
+                        onDragEnd={(mode, dx) => commit(clip, lane.track, mode, dx)}
+                      />
+                    ))
+                    : sortClips(lane.track.clips).map((clip, index) => (
+                      <TimelineClip
+                        key={clip.id}
+                        clip={previewClip(clip, lane.track)}
+                        asset={clip.assetId ? assets[clip.assetId] : undefined}
+                        index={index}
+                        pxPerSec={pxPerSec}
+                        height={lane.height}
+                        selected={clip.id === selectedId}
+                        dragging={drag?.clipId === clip.id}
+                        onSelect={() => onSelect(clip.id)}
+                        onDragStart={(mode) => { onSelect(clip.id); setDrag({ clipId: clip.id, mode, dx: 0 }); }}
+                        onDragMove={(mode, dx) => setDrag({ clipId: clip.id, mode, dx })}
+                        onDragEnd={(mode, dx) => commit(clip, lane.track, mode, dx)}
+                      />
+                    ))}
+                  {lane.track.kind === 'video' && lane.track.clips.length === 0 && <EmptyLane onPress={onImport} />}
+                  {lane.track.kind === 'caption' && lane.track.clips.length === 0 && (
+                    <Text style={styles.laneHint}>ask the agent to “add captions”</Text>
+                  )}
+                  {drag && drag.clipId && lane.track.clips.some((clip) => clip.id === drag.clipId) && (() => {
+                    const original = lane.track.clips.find((clip) => clip.id === drag.clipId) as Clip;
+                    return (
+                      <DragGhost
+                        left={original.start * pxPerSec}
+                        width={Math.max(6, clipTimelineDuration(original) * pxPerSec)}
+                        height={lane.track.kind === 'caption' ? CAPTION_ROW_HEIGHT : lane.height}
+                      />
+                    );
+                  })()}
+                </View>
+              </View>
+            ))}
+
+            <View pointerEvents="none" style={[styles.playhead, { left: playhead * pxPerSec, height: RULER_HEIGHT + lanesHeight }]}>
+              <View style={styles.playheadHead} />
+              <View style={styles.playheadLine} />
+            </View>
+
+            {drag && (() => {
+              const clip = findClip(project, drag.clipId);
+              const track = trackOfClip(project, drag.clipId);
+              if (!clip || !track) return null;
+              const preview = previewClip(clip, track);
+              const label = drag.mode === 'move'
+                ? formatTimecode(preview.start)
+                : `${clipTimelineDuration(preview).toFixed(2)}s`;
+              return <DragTooltip left={preview.start * pxPerSec} label={label} />;
+            })()}
+          </View>
+        </ScrollView>
+      </View>
+
+      <Inspector
+        clip={selected}
+        asset={selected?.assetId ? assets[selected.assetId] : undefined}
+        isCaption={selectedTrack?.kind === 'caption'}
+        onApply={(ops, patch) => onApply(ops, (current) => (selected ? patchClip(current, selected.id, patch) : current))}
+      />
+      {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
+    </View>
+  );
+}
+
+function Tool({ label, hint, onPress, disabled, danger, compact }: {
+  label: string; hint: string; onPress: () => void; disabled?: boolean; danger?: boolean; compact?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${label} ${hint}`}
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.tool, compact && styles.toolCompact, danger && styles.toolDanger,
+        pressed && styles.pressed, disabled && styles.toolDisabled,
+      ]}
+    >
+      <Text style={[styles.toolLabel, danger && styles.toolLabelDanger]}>{label}</Text>
+      {!compact && <Text style={styles.toolHint}>{hint}</Text>}
+    </Pressable>
+  );
+}
+
+function clampZoom(value: number): number {
+  return Math.max(MIN_PX_PER_SEC, Math.min(MAX_PX_PER_SEC, value));
+}
+
+const styles = StyleSheet.create({
+  panel: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 10, gap: 8, minHeight: 0 },
+  toolbar: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
+  zoneLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5, marginRight: 'auto' },
+  toolGroup: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  tool: {
+    minWidth: 62, borderRadius: 7, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 5,
+  },
+  toolCompact: { minWidth: 30, alignItems: 'center', justifyContent: 'center' },
+  toolDanger: { borderColor: '#5A2836' },
+  toolDisabled: { opacity: 0.38 },
+  toolLabel: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10 },
+  toolLabelDanger: { color: colors.danger },
+  toolHint: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 7, marginTop: 1 },
+  zoomValue: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 8, minWidth: 46, textAlign: 'center' },
+  body: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: '#0D0D13', overflow: 'hidden' },
+  gutter: { width: LANE_GUTTER, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: '#101017' },
+  gutterLane: { justifyContent: 'center', paddingLeft: 8, borderTopWidth: 1, borderTopColor: '#1E1D2A' },
+  laneName: { color: colors.purple, fontFamily: 'Montserrat_800ExtraBold', fontSize: 9 },
+  laneKind: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 6, letterSpacing: 0.8, marginTop: 2 },
+  scroll: { flex: 1 },
+  ruler: { height: RULER_HEIGHT, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: '#101017' },
+  tick: { position: 'absolute', top: 0, bottom: 0, flexDirection: 'row', alignItems: 'flex-end', paddingBottom: 3 },
+  tickMark: { width: 1, height: 7, backgroundColor: '#3A3850' },
+  tickLabel: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 8, marginLeft: 4, fontVariant: ['tabular-nums'] },
+  lane: { justifyContent: 'center', paddingVertical: LANE_PADDING, borderTopWidth: 1, borderTopColor: '#1E1D2A' },
+  laneInner: { position: 'relative' },
+  laneHint: { position: 'absolute', left: 6, top: 4, color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  playhead: { position: 'absolute', top: 0, width: 1, alignItems: 'center', zIndex: 30 },
+  playheadLine: { flex: 1, width: 1, backgroundColor: colors.pink },
+  playheadHead: { width: 9, height: 9, borderRadius: 2, backgroundColor: colors.pink, transform: [{ rotate: '45deg' }], marginBottom: -3 },
+  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 10 },
+  pressed: { opacity: 0.65 },
+});

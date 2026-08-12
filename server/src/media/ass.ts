@@ -80,6 +80,42 @@ function captionClips(project: Project): Clip[] {
     .sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
 }
 
+interface CaptionEvent {
+  clip: Clip;
+  style: NonNullable<Clip['style']>;
+  alignment: number;
+  marginV: number;
+  size: number;
+  end: number;
+}
+
+// Last line of defence against stacked captions: two events sharing a vertical anchor cannot
+// overlap in time. Events at different anchors (top vs bottom) legitimately coexist.
+function captionEvents(clips: Clip[], fontFamily: string, width: number, height: number, safeMargin: number): CaptionEvent[] {
+  const events = clips.map<CaptionEvent>((clip) => {
+    const style = clip.style ?? { font: fontFamily, size: 52, color: '#FFFFFF', position: 'bottom' as const, emphasis: 'bold' as const };
+    const alignment = style.anchorPct !== undefined ? 5 : style.position === 'top' ? 8 : style.position === 'center' ? 5 : 2;
+    return {
+      clip,
+      style,
+      alignment,
+      marginV: style.position === 'center' || style.anchorPct !== undefined ? 0 : safeMargin,
+      size: Math.max(10, Math.round(style.sizePct !== undefined ? height * style.sizePct / 100 : style.size * width / 1080)),
+      end: clip.start + clipTimelineDuration(clip),
+    };
+  });
+  const byAnchor = new Map<string, CaptionEvent[]>();
+  for (const event of events) {
+    const key = `${event.alignment}:${event.style.anchorPct ?? ''}:${event.marginV}`;
+    const lane = byAnchor.get(key) ?? [];
+    const previous = lane.at(-1);
+    if (previous && previous.end > event.clip.start) previous.end = Math.max(previous.clip.start, event.clip.start);
+    lane.push(event);
+    byAnchor.set(key, lane);
+  }
+  return events;
+}
+
 export function generateAss(
   project: Project,
   width: number,
@@ -91,7 +127,7 @@ export function generateAss(
     ?? Number(process.env.safeAreaBottomPct ?? process.env.SAFE_AREA_BOTTOM_PCT ?? 12);
   const safeAreaBottomPct = Number.isFinite(configuredSafeArea) ? configuredSafeArea : 12;
   const safeMargin = Math.max(0, Math.round(height * safeAreaBottomPct / 100));
-  const clips = captionClips(project);
+  const events = captionEvents(captionClips(project), fontFamily, width, height, safeMargin);
   const header = [
     '[Script Info]',
     'ScriptType: v4.00+',
@@ -103,26 +139,20 @@ export function generateAss(
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
   ];
-  const styles = clips.map((clip, index) => {
-    const style = clip.style ?? { font: fontFamily, size: 52, color: '#FFFFFF', position: 'bottom', emphasis: 'bold' };
-    const alignment = style.anchorPct !== undefined ? 5 : style.position === 'top' ? 8 : style.position === 'center' ? 5 : 2;
-    const marginV = style.position === 'center' || style.anchorPct !== undefined ? 0 : safeMargin;
-    const size = Math.max(10, Math.round(style.sizePct !== undefined ? height * style.sizePct / 100 : style.size * width / 1080));
-    return `Style: Caption${index + 1},${fontFamily},${size},${assColor(style.color)},${assColor(style.emphasisColor ?? '#FACC15')},${assColor(style.strokeColor ?? '#000000')},&H64000000,${style.emphasis === 'none' ? 0 : -1},0,0,0,100,100,0,0,1,${style.strokePx ?? 3},1,${alignment},40,40,${marginV},1`;
-  });
-  const events = [
+  const styles = events.map((event, index) =>
+    `Style: Caption${index + 1},${fontFamily},${event.size},${assColor(event.style.color)},${assColor(event.style.emphasisColor ?? '#FACC15')},${assColor(event.style.strokeColor ?? '#000000')},&H64000000,${event.style.emphasis === 'none' ? 0 : -1},0,0,0,100,100,0,0,1,${event.style.strokePx ?? 3},1,${event.alignment},40,40,${event.marginV},1`);
+  const dialogue = [
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
-    ...clips.map((clip, index) => {
-      const end = clip.start + clipTimelineDuration(clip);
-      const position = clip.style?.anchorPct !== undefined
-        ? `{\\pos(${Math.round(width / 2)},${Math.round(height * clip.style.anchorPct / 100)})}` : '';
-      return `Dialogue: 0,${formatAssTime(clip.start)},${formatAssTime(end)},Caption${index + 1},,0,0,0,,${position}${karaokeText(clip) ?? assText(clip.text ?? '')}`;
+    ...events.map((event, index) => {
+      const position = event.style.anchorPct !== undefined
+        ? `{\\pos(${Math.round(width / 2)},${Math.round(height * event.style.anchorPct / 100)})}` : '';
+      return `Dialogue: 0,${formatAssTime(event.clip.start)},${formatAssTime(event.end)},Caption${index + 1},,0,0,0,,${position}${karaokeText(event.clip) ?? assText(event.clip.text ?? '')}`;
     }),
     '',
   ];
-  return [...header, ...styles, ...events].join('\n');
+  return [...header, ...styles, ...dialogue].join('\n');
 }
 
 export async function writeAssFile(project: Project, width: number, height: number, path: string): Promise<AssFont> {

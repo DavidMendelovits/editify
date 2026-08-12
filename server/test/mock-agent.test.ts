@@ -28,7 +28,7 @@ describe('mock agent loop', () => {
     }, async () => {
       throw new Error('ffmpeg must not run in unit tests');
     });
-    insights = new InsightService(new InsightStore(database), transcripts, new MockToolProvider());
+    insights = new InsightService(new InsightStore(database), transcripts, () => new MockToolProvider());
   });
 
   afterEach(() => database.close());
@@ -51,6 +51,7 @@ describe('mock agent loop', () => {
         originalUrl: '',
         proxyUrl: '',
         thumbnailUrl: '',
+        filmstripUrl: '',
         createdAt: new Date(0).toISOString(),
       });
       transcriptStore.put(`asset-${index + 1}`, {
@@ -68,7 +69,7 @@ describe('mock agent loop', () => {
       });
     }
 
-    const response = await new AgentService(new MockToolProvider()).edit({
+    const response = await new AgentService(() => new MockToolProvider()).edit({
       projectId: project.id,
       projects,
       assets,

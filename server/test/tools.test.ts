@@ -45,7 +45,7 @@ describe('agent tool registry', () => {
     }, async () => {
       throw new Error('ffmpeg must not run in unit tests');
     });
-    insights = new InsightService(new InsightStore(database), transcripts, new MockToolProvider());
+    insights = new InsightService(new InsightStore(database), transcripts, () => new MockToolProvider());
   });
 
   afterEach(() => database.close());

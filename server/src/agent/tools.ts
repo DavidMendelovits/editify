@@ -115,7 +115,7 @@ export function chunkTranscriptForClip(
   }
   const speed = clip.speed ?? 1;
   const timelineEnd = clip.start + (clip.out - clip.in) / speed;
-  return groups.flatMap((group) => {
+  const chunks = groups.flatMap((group) => {
     const first = group[0];
     const last = group.at(-1);
     if (!first || !last) return [];
@@ -136,6 +136,26 @@ export function chunkTranscriptForClip(
       })),
     }];
   });
+  return clampChunkOverlaps(chunks);
+}
+
+const CHUNK_GAP_SEC = 0.001;
+const MIN_CHUNK_DURATION_SEC = 0.15;
+
+// minDurationSec can push a chunk past the next chunk's start, which renders as stacked captions.
+// Clamping only shortens chunks, so the postcondition start_{i+1} >= start_i + duration_i survives drops.
+function clampChunkOverlaps(chunks: TranscriptCaptionChunk[]): TranscriptCaptionChunk[] {
+  const sorted = [...chunks].sort((left, right) => left.start - right.start);
+  const kept: TranscriptCaptionChunk[] = [];
+  for (const [index, chunk] of sorted.entries()) {
+    const next = sorted[index + 1];
+    if (!next) { kept.push(chunk); continue; }
+    const limit = next.start - CHUNK_GAP_SEC;
+    if (chunk.start + chunk.duration <= limit) { kept.push(chunk); continue; }
+    const duration = limit - chunk.start;
+    if (duration >= MIN_CHUNK_DURATION_SEC) kept.push({ ...chunk, duration });
+  }
+  return kept;
 }
 
 interface ClipSnapshot {
@@ -389,8 +409,13 @@ async function captionClipFromTranscript(ctx: ToolContext, rawInput: unknown): P
     if (!transcript) return { ok: false, error: `No transcript for asset ${videoClip.assetId}` };
 
     const prefix = `cap-${videoClip.id}-`;
+    const clipStart = videoClip.start;
+    const clipEnd = videoClip.start + clipTimelineDuration(videoClip);
+    // Replace, never stack: anything already covering this clip's timeline span goes, whoever made it.
     const existingIds = project.tracks.filter((track) => track.kind === 'caption')
-      .flatMap((track) => track.clips.filter((caption) => caption.id.startsWith(prefix)).map((caption) => caption.id));
+      .flatMap((track) => track.clips.filter((caption) => caption.id.startsWith(prefix)
+        || (caption.start < clipEnd && caption.start + clipTimelineDuration(caption) > clipStart))
+        .map((caption) => caption.id));
     const preset = input.preset ? PRESETS_BY_NAME[input.preset] : undefined;
     const chunks = chunkTranscriptForClip(transcript.words, videoClip, preset ? {
       wordsPerChunk: preset.captions.wordsPerChunk.target,
@@ -424,9 +449,11 @@ async function captionClipFromTranscript(ctx: ToolContext, rawInput: unknown): P
         },
       }));
     }
-    if (!operations.length) return { ...createMutationDelta(project, project), captionsAdded: 0 };
+    const notes = existingIds.length
+      ? [`Removed ${existingIds.length} existing caption clip(s) overlapping ${videoClip.id} before inserting.`] : [];
+    if (!operations.length) return { ...createMutationDelta(project, project, notes), captionsAdded: 0 };
     const after = applyMany(ctx, operations);
-    return { ...createMutationDelta(project, after), captionsAdded: chunks.length };
+    return { ...createMutationDelta(project, after, notes), captionsAdded: chunks.length };
   } catch (error) {
     if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) {
       return { ok: false, error: error.message };

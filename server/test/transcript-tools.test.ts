@@ -56,12 +56,12 @@ describe('transcript agent tools', () => {
     }, async () => {
       throw new Error('ffmpeg must not run in unit tests');
     });
-    const insights = new InsightService(new InsightStore(database), transcripts, new MockToolProvider());
+    const insights = new InsightService(new InsightStore(database), transcripts, () => new MockToolProvider());
     assets.insert({
       id: 'asset-1', originalName: 'speech.mp4', mimeType: 'video/mp4', duration: 3,
       width: 1080, height: 1920, fps: 30, hasAudio: true,
       originalPath: '/not/read.mp4', proxyPath: '/not/read-proxy.mp4', thumbnailPath: '/not/read.jpg',
-      originalUrl: '', proxyUrl: '', thumbnailUrl: '', createdAt: new Date(0).toISOString(),
+      originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: new Date(0).toISOString(),
     });
     const project = projects.insert({
       id: 'transcript-project', title: 'Transcript tools', format: '9:16', fps: 30, duration: 2,

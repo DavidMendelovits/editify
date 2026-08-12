@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface ProbeResult {
@@ -87,6 +87,31 @@ export async function createProxyAndThumbnail(
     ]);
   }
   return { proxyPath, thumbnailPath };
+}
+
+export const FILMSTRIP_TILES = 20;
+export const FILMSTRIP_TILE_HEIGHT = 160;
+
+/**
+ * Render a filmstrip: FILMSTRIP_TILES frames sampled evenly across [0, duration], tiled
+ * FILMSTRIP_TILES x 1 left to right, each tile FILMSTRIP_TILE_HEIGHT tall (width follows aspect).
+ * Written atomically so a concurrent reader never sees a half-encoded JPEG.
+ */
+export async function createFilmstrip(
+  sourcePath: string,
+  destinationPath: string,
+  source: { duration: number; fps: number },
+): Promise<string> {
+  const frames = Math.max(1, Math.round(source.duration * source.fps));
+  const step = Math.max(1, Math.floor(frames / FILMSTRIP_TILES));
+  const pending = `${destinationPath}.${process.pid}.tmp.jpg`;
+  await runProcess('ffmpeg', [
+    '-y', '-i', sourcePath, '-an',
+    '-vf', `select='not(mod(n\\,${step}))',scale=-2:${FILMSTRIP_TILE_HEIGHT},tile=${FILMSTRIP_TILES}x1`,
+    '-frames:v', '1', '-q:v', '4', '-fps_mode', 'vfr', pending,
+  ]);
+  await rename(pending, destinationPath);
+  return destinationPath;
 }
 
 export async function analyzeScenes(path: string, duration: number): Promise<{

@@ -1,5 +1,8 @@
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { EDITING_PRESETS, type EditingPreset, type Project } from '@editify/shared';
@@ -15,7 +18,7 @@ export type LoopMessage =
   | { role: 'tool'; toolCallId: string; name: string; content: string };
 
 export interface ToolProvider {
-  readonly name: 'anthropic' | 'openai' | 'mock';
+  readonly name: 'anthropic' | 'openai' | 'claude-cli' | 'codex-cli' | 'mock';
   runTurn(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Promise<LoopTurn>;
   completeText(system: string, user: string): Promise<string>;
 }
@@ -402,8 +405,175 @@ export class MockToolProvider implements ToolProvider {
   }
 }
 
-export function createProvider(): ToolProvider {
-  if (process.env.ANTHROPIC_API_KEY) return new AnthropicToolProvider(process.env.ANTHROPIC_API_KEY);
-  if (process.env.OPENAI_API_KEY) return new OpenAIToolProvider(process.env.OPENAI_API_KEY);
-  return new MockToolProvider();
+export type AgentCli = 'claude' | 'codex';
+
+const CLI_TIMEOUT_MS = Number(process.env.EDITIFY_AGENT_CLI_TIMEOUT_MS ?? 240_000);
+
+/** Everything after the first balanced `{`, so a chatty preamble or a code fence cannot break the turn. */
+export function extractJsonObject(raw: string): unknown {
+  const text = raw.replace(/^\s*```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  const start = text.indexOf('{');
+  if (start < 0) return undefined;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) { escaped = false; continue; }
+    if (char === '\\' && inString) { escaped = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, index + 1)); } catch { return undefined; }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** A CLI reply that is not the agreed JSON is treated as a final answer, which ends the loop cleanly. */
+export function parseCliTurn(raw: string): LoopTurn {
+  const parsed = extractJsonObject(raw);
+  if (!isRecord(parsed)) return raw.trim() ? { text: raw.trim(), toolCalls: [] } : { toolCalls: [] };
+  const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
+  const toolCalls = (Array.isArray(parsed.toolCalls) ? parsed.toolCalls : [])
+    .filter(isRecord)
+    .filter((call): call is { name: string; input?: unknown } => typeof call.name === 'string')
+    .map((call, index) => ({ id: `cli-${index}`, name: call.name, input: call.input ?? {} }));
+  return { ...(text ? { text } : {}), toolCalls };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The loop's message list flattened into one prompt — the CLIs are stateless between turns. */
+function cliPrompt(messages: LoopMessage[], toolDefs: ToolDef[]): string {
+  const transcript = messages.map((message) => {
+    if (message.role === 'user') return `USER:\n${message.content}`;
+    if (message.role === 'tool') return `TOOL RESULT (${message.name}):\n${message.content}`;
+    const calls = message.toolCalls.length
+      ? `\nTOOL CALLS: ${JSON.stringify(message.toolCalls.map(({ name, input }) => ({ name, input })))}`
+      : '';
+    return `ASSISTANT:\n${message.content ?? ''}${calls}`;
+  }).join('\n\n');
+
+  return [
+    toolDefs.length ? `# Available tools\n${JSON.stringify(
+      toolDefs.map((tool) => ({ name: tool.name, description: tool.description, input_schema: jsonSchema(tool) })),
+    )}` : '',
+    `# Conversation so far\n${transcript}`,
+    '# Your reply',
+    'Respond with a single JSON object and nothing else — no prose, no code fence:',
+    '{"text": "<message to the user>", "toolCalls": [{"name": "<tool>", "input": {}}]}',
+    'Put the tools you want run next in toolCalls; their results come back on the next turn.',
+    'When the work is done, return an empty toolCalls array and your final message in text.',
+  ].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Uses the locally installed Claude Code or Codex CLI as the model, so the app
+ * runs on a developer's existing subscription with no API key.
+ *
+ * Neither CLI exposes a tool-call protocol we can plug into, so each loop turn
+ * is flattened into one prompt and the JSON reply is parsed back into tool
+ * calls. Both are launched isolated — no MCP servers, no user settings, no
+ * tools of their own, in a throwaway working directory — so they answer instead
+ * of wandering off and editing files.
+ *
+ * ponytail: every turn replays the whole conversation to a fresh process, which
+ * is simple but pays for the same input tokens each time. `claude --resume
+ * <session_id>` would send only the new tool results; do that if turn cost bites.
+ */
+export class CliToolProvider implements ToolProvider {
+  readonly name: 'claude-cli' | 'codex-cli';
+
+  constructor(private readonly cli: AgentCli) {
+    this.name = cli === 'claude' ? 'claude-cli' : 'codex-cli';
+  }
+
+  async runTurn(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Promise<LoopTurn> {
+    return parseCliTurn(await this.invoke(system, cliPrompt(messages, toolDefs)));
+  }
+
+  async completeText(system: string, user: string): Promise<string> {
+    return (await this.invoke(system, user)).trim();
+  }
+
+  private async invoke(system: string, prompt: string): Promise<string> {
+    const workDir = await mkdtemp(join(tmpdir(), 'editify-agent-'));
+    const model = process.env.EDITIFY_AGENT_CLI_MODEL;
+    try {
+      if (this.cli === 'codex') {
+        // Codex has no system-prompt flag, so it rides along at the top of the prompt.
+        const outputPath = join(workDir, 'reply.txt');
+        await run('codex', [
+          'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
+          ...(model ? ['-m', model] : []), '-o', outputPath,
+        ], `${system}\n\n${prompt}`, workDir);
+        return await readFile(outputPath, 'utf8');
+      }
+      const stdout = await run('claude', [
+        '-p', '--output-format', 'json',
+        '--model', model ?? 'claude-sonnet-5',
+        // Isolate: no MCP servers, no user/project settings, no built-in tools.
+        '--strict-mcp-config', '--setting-sources', '', '--allowed-tools', '',
+        '--system-prompt', system,
+      ], prompt, workDir);
+      const envelope = extractJsonObject(stdout);
+      if (!isRecord(envelope)) throw new Error(`Claude CLI returned no JSON envelope: ${stdout.slice(0, 400)}`);
+      if (envelope.is_error) throw new Error(`Claude CLI reported an error: ${String(envelope.result ?? '')}`);
+      return typeof envelope.result === 'string' ? envelope.result : '';
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }
+}
+
+function run(command: string, args: string[], stdin: string, cwd: string): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      rejectPromise(new Error(`${command} timed out after ${CLI_TIMEOUT_MS}ms`));
+    }, CLI_TIMEOUT_MS);
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on('error', (error) => { clearTimeout(timer); rejectPromise(error); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise(stdout);
+      else rejectPromise(new Error(`${command} exited with ${String(code)}: ${(stderr || stdout).slice(0, 400)}`));
+    });
+    child.stdin.end(stdin);
+  });
+}
+
+export type AgentProviderId = ToolProvider['name'];
+
+/** What runs when nothing has been picked in the UI: the env var, then keys, then mock. */
+export function defaultProviderId(): AgentProviderId {
+  if (process.env.EDITIFY_AGENT_CLI === 'claude') return 'claude-cli';
+  if (process.env.EDITIFY_AGENT_CLI === 'codex') return 'codex-cli';
+  if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
+  if (process.env.OPENAI_API_KEY ?? process.env.OPENAI_BASE_URL) return 'openai';
+  return 'mock';
+}
+
+export function createProvider(id: AgentProviderId = defaultProviderId()): ToolProvider {
+  switch (id) {
+    case 'claude-cli': return new CliToolProvider('claude');
+    case 'codex-cli': return new CliToolProvider('codex');
+    // Key-based providers fall back rather than construct something that cannot authenticate.
+    case 'anthropic': return process.env.ANTHROPIC_API_KEY
+      ? new AnthropicToolProvider(process.env.ANTHROPIC_API_KEY) : new MockToolProvider();
+    case 'openai': return (process.env.OPENAI_API_KEY ?? process.env.OPENAI_BASE_URL)
+      ? new OpenAIToolProvider(process.env.OPENAI_API_KEY ?? 'local') : new MockToolProvider();
+    default: return new MockToolProvider();
+  }
 }

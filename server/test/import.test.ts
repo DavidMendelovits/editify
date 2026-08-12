@@ -24,7 +24,7 @@ describe('local media import', () => {
         id, originalName: `${id}.mp4`, mimeType: 'video/mp4', duration: 1,
         width: 100, height: 100, fps: 30, hasAudio,
         originalPath: '/not/read.mp4', proxyPath: '/not/read-proxy.mp4', thumbnailPath: '/not/read.jpg',
-        originalUrl: '', proxyUrl: '', thumbnailUrl: '', createdAt: new Date(0).toISOString(),
+        originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: new Date(0).toISOString(),
       });
     }
     new TranscriptStore(database).put('speech', {

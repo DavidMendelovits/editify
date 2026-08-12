@@ -4,8 +4,15 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '../lib/theme';
 
-export function Screen({ children, scroll = true, header }: PropsWithChildren<{ scroll?: boolean; header?: ReactNode }>) {
-  const content = <View style={styles.content}>{header}{children}</View>;
+interface Props {
+  scroll?: boolean;
+  header?: ReactNode;
+  /** Editor chrome: drop the reading-width cap and tighten the padding. */
+  bleed?: boolean;
+}
+
+export function Screen({ children, scroll = true, header, bleed = false }: PropsWithChildren<Props>) {
+  const content = <View style={[styles.content, bleed && styles.bleed]}>{header}{children}</View>;
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <LinearGradient colors={['#111226', colors.background, colors.background]} locations={[0, 0.35, 1]} style={StyleSheet.absoluteFill} />
@@ -18,4 +25,5 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   scroll: { flexGrow: 1 },
   content: { width: '100%', maxWidth: 1280, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 14, paddingBottom: 48, gap: 24 },
+  bleed: { flex: 1, maxWidth: 1920, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 12 },
 });

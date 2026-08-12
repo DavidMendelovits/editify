@@ -195,6 +195,8 @@ export const assetMetadataSchema = z.object({
   originalUrl: z.string(),
   proxyUrl: z.string(),
   thumbnailUrl: z.string(),
+  // 20 frames tiled 20x1, ordered left to right over [0, duration]; tile k covers [k*duration/20, (k+1)*duration/20).
+  filmstripUrl: z.string(),
   createdAt: z.string(),
 });
 export type AssetMetadata = z.infer<typeof assetMetadataSchema>;

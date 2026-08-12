@@ -89,7 +89,8 @@ export class InsightService {
   constructor(
     readonly store: InsightStore,
     private readonly transcripts: TranscriptService,
-    private readonly provider: ToolProvider,
+    /** Resolved per call so the UI's provider picker applies without a restart. */
+    private readonly provider: () => ToolProvider,
   ) {}
 
   getStored(assetId: string): AssetInsights | undefined {
@@ -125,7 +126,7 @@ export class InsightService {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const user = `${JSON.stringify(payload)}${validationError ? `\nPrevious response was invalid: ${validationError}` : ''}`;
       try {
-        const parsed = assetInsightsSchema.parse(parseJsonResponse(await this.provider.completeText(system, user)));
+        const parsed = assetInsightsSchema.parse(parseJsonResponse(await this.provider().completeText(system, user)));
         if (parsed.assetId !== asset.id) throw new Error(`assetId must be ${asset.id}`);
         return this.store.put(parsed);
       } catch (error) {

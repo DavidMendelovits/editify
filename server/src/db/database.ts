@@ -95,6 +95,11 @@ function migrate(database: EditifyDatabase): void {
       style_doc TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   const transcriptColumns = database.prepare('PRAGMA table_info(transcripts)').all() as Array<{ name: string }>;

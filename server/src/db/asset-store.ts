@@ -63,6 +63,7 @@ export class AssetStore {
       originalUrl: `${publicBaseUrl}/assets/${row.id}/original`,
       proxyUrl: `${publicBaseUrl}/assets/${row.id}/proxy.mp4`,
       thumbnailUrl: `${publicBaseUrl}/assets/${row.id}/thumb.jpg`,
+      filmstripUrl: `${publicBaseUrl}/assets/${row.id}/filmstrip.jpg`,
       createdAt: row.created_at,
     };
   }

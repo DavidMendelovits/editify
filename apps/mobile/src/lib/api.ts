@@ -16,6 +16,23 @@ export interface ChatMessage {
 
 export interface ChatResponse { reply: string; trace: AgentTraceStep[]; opsApplied: Operation[]; doc: Project }
 
+export type AgentProviderId = 'claude-cli' | 'codex-cli' | 'anthropic' | 'openai' | 'mock';
+
+export interface ProviderOption {
+  id: AgentProviderId;
+  label: string;
+  available: boolean;
+  /** How it runs, or what is missing — shown under the option. */
+  detail: string;
+}
+
+export interface ProviderStatus {
+  active: AgentProviderId;
+  /** Present when the saved choice is no longer usable and something else is running. */
+  requested?: AgentProviderId;
+  options: ProviderOption[];
+}
+
 /** An entry from `GET /assets/importable` — a file sitting in MEDIA_IMPORT_DIR. */
 export interface ImportableFile { name: string; size: number; alreadyImported: boolean }
 
@@ -63,6 +80,21 @@ export interface AssetInsights {
   generatedAt: string;
 }
 
+/**
+ * `GET /assets/:id/filmstrip.jpg` — 20 frames tiled 20x1, left→right across
+ * `[0, duration]` (SPEC-WAVE3 §B). Built here rather than read off the asset
+ * metadata so the timeline can render before the server exposes `filmstripUrl`;
+ * the UI falls back to `thumb.jpg` when the request 404s.
+ */
+export function assetFilmstripUrl(assetId: string): string {
+  return `${API_URL}/assets/${assetId}/filmstrip.jpg`;
+}
+
+/** `GET /assets/:id/thumb.jpg` — poster frame, used on project cards. */
+export function assetThumbUrl(assetId: string): string {
+  return `${API_URL}/assets/${assetId}/thumb.jpg`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -91,6 +123,10 @@ async function requestOptional<T>(path: string): Promise<T | null> {
 }
 
 export const api = {
+  getAgentProvider: () => request<ProviderStatus>('/agent/provider'),
+  setAgentProvider: (provider: AgentProviderId) => request<ProviderStatus>('/agent/provider', {
+    method: 'PUT', body: JSON.stringify({ provider }),
+  }),
   listProjects: () => request<Project[]>('/projects'),
   createProject: (input: NewProject) => request<Project>('/projects', { method: 'POST', body: JSON.stringify(input) }),
   getProject: (id: string) => request<Project>(`/projects/${id}`),

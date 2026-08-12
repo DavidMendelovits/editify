@@ -1,12 +1,14 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import type { NewProject, ProjectFormat } from '@editify/shared';
+import type { NewProject, Project, ProjectFormat } from '@editify/shared';
 import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
+import { ImportSheet } from '../src/components/ImportSheet';
 import { Screen } from '../src/components/Screen';
-import { API_URL, api } from '../src/lib/api';
+import { api, assetThumbUrl } from '../src/lib/api';
 import { colors } from '../src/lib/theme';
 
 const formats: Array<{ label: string; format: ProjectFormat; eyebrow: string; ratio: string; tint: readonly [string, string] }> = [
@@ -19,6 +21,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const client = useQueryClient();
   const { width } = useWindowDimensions();
+  const [importOpen, setImportOpen] = useState(false);
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   const create = useMutation({
     mutationFn: (input: NewProject) => api.createProject(input),
@@ -33,7 +36,10 @@ export default function HomeScreen() {
     <Screen header={
       <View style={styles.header}>
         <Brand />
-        <GradientButton secondary style={styles.styleButton} onPress={() => router.push('/style')}>✦  learn my style</GradientButton>
+        <View style={styles.headerActions}>
+          <GradientButton secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>↓  import media</GradientButton>
+          <GradientButton secondary style={styles.styleButton} onPress={() => router.push('/style')}>✦  learn my style</GradientButton>
+        </View>
       </View>
     }>
       <View style={styles.hero}>
@@ -69,19 +75,45 @@ export default function HomeScreen() {
       {projects.data?.length === 0 && (
         <View style={styles.emptyCard}><Text style={styles.emptyIcon}>◫</Text><Text style={styles.emptyTitle}>Your first cut starts above.</Text><Text style={styles.empty}>Choose a format and Editify will build the timeline.</Text></View>
       )}
-      <View style={styles.projectList}>
-        {projects.data?.map((project) => {
-          const assetId = project.tracks.flatMap((track) => track.clips).find((clip) => clip.assetId)?.assetId;
-          return (
-            <Pressable key={project.id} onPress={() => router.push({ pathname: '/project/[id]', params: { id: project.id } })} style={({ pressed }) => [styles.projectRow, pressed && styles.pressed]}>
-              <View style={styles.thumb}>{assetId ? <Image source={{ uri: `${API_URL}/assets/${assetId}/thumb.jpg` }} style={styles.thumbImage} /> : <Text style={styles.thumbText}>{project.format}</Text>}</View>
-              <View style={styles.projectCopy}><Text style={styles.projectTitle}>{project.title}</Text><Text style={styles.projectMeta}>{project.tracks.reduce((sum, track) => sum + track.clips.length, 0)} clips · {project.version} edits</Text></View>
-              <Text style={styles.duration}>{formatDuration(project.duration)}</Text><Text style={styles.chevron}>›</Text>
-            </Pressable>
-          );
-        })}
+      <View style={styles.projectGrid}>
+        {projects.data?.map((project) => (
+          <ProjectCard
+            key={project.id}
+            project={project}
+            onPress={() => router.push({ pathname: '/project/[id]', params: { id: project.id } })}
+          />
+        ))}
       </View>
+      <ImportSheet
+        visible={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => { void client.invalidateQueries({ queryKey: ['importable'] }); }}
+      />
     </Screen>
+  );
+}
+
+/** Recent-project tile: poster frame, title, format badge, duration, clip count. */
+function ProjectCard({ project, onPress }: { project: Project; onPress: () => void }) {
+  const assetId = project.tracks.flatMap((track) => track.clips).find((clip) => clip.assetId)?.assetId;
+  const clipCount = project.tracks.reduce((total, track) => total + track.clips.length, 0);
+  const captionCount = project.tracks.filter((track) => track.kind === 'caption').reduce((total, track) => total + track.clips.length, 0);
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.projectCard, pressed && styles.pressed]}>
+      <View style={styles.poster}>
+        {assetId
+          ? <Image source={{ uri: assetThumbUrl(assetId) }} style={styles.posterImage} resizeMode="cover" />
+          : <Text style={styles.posterText}>EMPTY TIMELINE</Text>}
+        <View style={styles.formatBadge}><Text style={styles.formatBadgeText}>{project.format}</Text></View>
+        <View style={styles.durationBadge}><Text style={styles.durationBadgeText}>{formatDuration(project.duration)}</Text></View>
+      </View>
+      <View style={styles.projectCopy}>
+        <Text style={styles.projectTitle} numberOfLines={1}>{project.title}</Text>
+        <Text style={styles.projectMeta}>
+          {clipCount} clips · {captionCount} captions · v{project.version}
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -114,16 +146,19 @@ const styles = StyleSheet.create({
   sectionKicker: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.6, marginBottom: 6 },
   sectionTitle: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 24, letterSpacing: -0.8 },
   count: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 10, letterSpacing: 1.3 },
-  projectList: { gap: 10 },
-  projectRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 12, backgroundColor: colors.panel, borderRadius: 18, borderWidth: 1, borderColor: colors.border },
-  thumb: { width: 78, height: 52, borderRadius: 11, overflow: 'hidden', backgroundColor: '#28253C', alignItems: 'center', justifyContent: 'center' },
-  thumbImage: { width: '100%', height: '100%' },
-  thumbText: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 11 },
-  projectCopy: { flex: 1, gap: 4 },
+  projectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  projectCard: { flexGrow: 1, flexBasis: 250, maxWidth: 340, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  poster: { height: 132, backgroundColor: '#1B1826', alignItems: 'center', justifyContent: 'center' },
+  posterImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  posterText: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.4 },
+  formatBadge: { position: 'absolute', top: 8, left: 8, borderRadius: 5, backgroundColor: '#00000099', paddingHorizontal: 7, paddingVertical: 3 },
+  formatBadgeText: { color: '#FFFFFF', fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 0.8 },
+  durationBadge: { position: 'absolute', bottom: 8, right: 8, borderRadius: 5, backgroundColor: '#00000099', paddingHorizontal: 7, paddingVertical: 3 },
+  durationBadgeText: { color: '#FFFFFF', fontFamily: 'Montserrat_600SemiBold', fontSize: 8, fontVariant: ['tabular-nums'] },
+  projectCopy: { padding: 12, gap: 4 },
   projectTitle: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 14 },
-  projectMeta: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 11 },
-  duration: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
-  chevron: { color: colors.muted, fontSize: 26 },
+  projectMeta: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   emptyCard: { alignItems: 'center', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed', borderRadius: 20, padding: 36, gap: 8 },
   emptyIcon: { color: colors.purple, fontSize: 28 },
   emptyTitle: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 15 },

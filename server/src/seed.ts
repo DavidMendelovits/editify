@@ -49,6 +49,7 @@ for (const [index, name] of SEED_CLIPS.entries()) {
       originalUrl: `/assets/${id}/original`,
       proxyUrl: `/assets/${id}/proxy.mp4`,
       thumbnailUrl: `/assets/${id}/thumb.jpg`,
+      filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
     });
   }

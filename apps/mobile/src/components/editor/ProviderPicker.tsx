@@ -1,0 +1,105 @@
+import { useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, type AgentProviderId, type ProviderStatus } from '../../lib/api';
+import { colors } from '../../lib/theme';
+
+/** Short enough for the collapsed chip; the full label lives in the open list. */
+const SHORT: Record<AgentProviderId, string> = {
+  'claude-cli': 'claude cli',
+  'codex-cli': 'codex cli',
+  anthropic: 'anthropic api',
+  openai: 'openai api',
+  mock: 'offline mock',
+};
+
+/**
+ * Chooses which model runs the agent. The server owns the list — it probes for
+ * the CLIs and the API keys — so unavailable options stay visible but disabled
+ * with the reason attached, rather than silently missing.
+ */
+export function ProviderPicker() {
+  const [open, setOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({ queryKey: ['agent-provider'], queryFn: () => api.getAgentProvider() });
+  const select = useMutation({
+    mutationFn: (provider: AgentProviderId) => api.setAgentProvider(provider),
+    onSuccess: (status: ProviderStatus) => {
+      queryClient.setQueryData(['agent-provider'], status);
+      setOpen(false);
+    },
+  });
+
+  const status = statusQuery.data;
+  const active = status?.active;
+
+  return (
+    <View style={styles.wrap}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="choose the model running the agent"
+        onPress={() => setOpen((current) => !current)}
+        style={({ pressed }) => [styles.chip, pressed && styles.pressed]}
+      >
+        <View style={[styles.dot, active === 'mock' && styles.dotMock]} />
+        <Text style={styles.chipText}>{active ? SHORT[active] : 'loading…'}</Text>
+        <Text style={styles.caret}>{open ? '▴' : '▾'}</Text>
+      </Pressable>
+
+      {status?.requested && (
+        <Text style={styles.warning}>{SHORT[status.requested]} is unavailable — running {SHORT[status.active]}</Text>
+      )}
+
+      {open && (
+        <View style={styles.list}>
+          {status?.options.map((option) => (
+            <Pressable
+              key={option.id}
+              accessibilityRole="button"
+              accessibilityLabel={option.label}
+              disabled={!option.available || select.isPending}
+              onPress={() => select.mutate(option.id)}
+              style={({ pressed }) => [
+                styles.option,
+                option.id === active && styles.optionActive,
+                !option.available && styles.optionDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={styles.optionHead}>
+                <Text style={styles.optionLabel}>{option.label}</Text>
+                {option.id === active && <Text style={styles.activeTag}>ACTIVE</Text>}
+                {select.isPending && select.variables === option.id && <ActivityIndicator size="small" color={colors.purple} />}
+              </View>
+              <Text style={styles.optionDetail}>{option.detail}</Text>
+            </Pressable>
+          ))}
+          {select.error && <Text style={styles.warning}>{select.error.message}</Text>}
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { gap: 5 },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+    borderRadius: 7, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 4,
+  },
+  dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.purple },
+  dotMock: { backgroundColor: colors.muted },
+  chipText: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
+  caret: { color: colors.muted, fontSize: 8 },
+  list: { gap: 4, borderRadius: 9, borderWidth: 1, borderColor: colors.border, backgroundColor: '#0D0D13', padding: 6 },
+  option: { borderRadius: 7, borderWidth: 1, borderColor: 'transparent', paddingHorizontal: 8, paddingVertical: 6, gap: 2 },
+  optionActive: { borderColor: colors.purple, backgroundColor: colors.panelRaised },
+  optionDisabled: { opacity: 0.4 },
+  optionHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  optionLabel: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10 },
+  activeTag: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 7, letterSpacing: 0.8 },
+  optionDetail: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 8 },
+  warning: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 8 },
+  pressed: { opacity: 0.65 },
+});

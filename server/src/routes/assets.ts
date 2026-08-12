@@ -1,5 +1,6 @@
+import { existsSync } from 'node:fs';
 import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -7,7 +8,7 @@ import type { AssetMetadata } from '@editify/shared';
 import { z } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { assetsRoot, mediaImportDir } from '../config.js';
-import { createProxyAndThumbnail, probeMedia } from '../media/process.js';
+import { createFilmstrip, createProxyAndThumbnail, probeMedia } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
@@ -65,6 +66,7 @@ async function processAsset(
       originalUrl: `/assets/${id}/original`,
       proxyUrl: `/assets/${id}/proxy.mp4`,
       thumbnailUrl: `/assets/${id}/thumb.jpg`,
+      filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -218,6 +220,23 @@ export function registerAssetRoutes(
   app.get<{ Params: { id: string } }>('/assets/:id/thumb.jpg', async (request, reply) => {
     const asset = assets.get(request.params.id);
     return asset ? await sendFile(reply, asset.thumbnailPath, 'image/jpeg', request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
+  });
+
+  // Lazily generated and cached beside the proxy: 20 tiles, left to right over [0, duration].
+  // Clients map clip.in/clip.out to tile offsets; in-flight generations are shared so a burst
+  // of timeline requests spawns one ffmpeg per asset.
+  const filmstrips = new Map<string, Promise<string>>();
+  app.get<{ Params: { id: string } }>('/assets/:id/filmstrip.jpg', async (request, reply) => {
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    const path = join(dirname(asset.proxyPath), 'filmstrip.jpg');
+    if (!existsSync(path)) {
+      const pending = filmstrips.get(asset.id)
+        ?? createFilmstrip(asset.proxyPath, path, asset).finally(() => filmstrips.delete(asset.id));
+      filmstrips.set(asset.id, pending);
+      await pending;
+    }
+    return await sendFile(reply, path, 'image/jpeg', request.headers.range);
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/original', async (request, reply) => {

@@ -4,7 +4,12 @@ import type { ToolProvider } from './providers.js';
 import type { ToolContext } from './tools.js';
 
 export class AgentService {
-  constructor(readonly provider: ToolProvider) {}
+  /** Resolved per call so the UI's provider picker applies without a restart. */
+  constructor(private readonly resolveProvider: () => ToolProvider) {}
+
+  get provider(): ToolProvider {
+    return this.resolveProvider();
+  }
 
   async edit(ctx: ToolContext, message: string): Promise<ChatResponse> {
     return await runAgentLoop(this.provider, ctx, message);
