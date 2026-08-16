@@ -23,26 +23,53 @@ export interface ToolProvider {
   completeText(system: string, user: string): Promise<string>;
 }
 
+/**
+ * Env files, nearest first and `.env.local` before `.env`. Already-set variables
+ * always win, so an earlier file (and the real environment) beats a later one —
+ * the repo-root `.env.local` is where a shared ANTHROPIC_API_KEY lives.
+ */
 function loadServerEnv(): void {
-  const path = resolve(dirname(fileURLToPath(import.meta.url)), '../../.env');
-  if (!existsSync(path)) return;
-  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!match?.[1] || process.env[match[1]] !== undefined) continue;
-    let value = match[2] ?? '';
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    } else {
-      value = value.replace(/\s+#.*$/, '');
+  const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  for (const candidate of ['.env.local', '.env', '../.env.local', '../.env']) {
+    const path = resolve(serverRoot, candidate);
+    if (!existsSync(path)) continue;
+    for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+      if (!match?.[1] || process.env[match[1]] !== undefined) continue;
+      let value = match[2] ?? '';
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      } else {
+        value = value.replace(/\s+#.*$/, '');
+      }
+      process.env[match[1]] = value;
     }
-    process.env[match[1]] = value;
   }
 }
 
 loadServerEnv();
 
+/**
+ * zod-to-json-schema tops out at draft-7, but the Anthropic API validates
+ * against draft 2020-12: tuples must be `prefixItems`, and the old openApi3
+ * target's boolean `exclusiveMinimum` is likewise rejected. Draft-7 output
+ * needs only the tuple rewrite.
+ */
+function toDraft2020(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(toDraft2020);
+  if (typeof node !== 'object' || node === null) return node;
+  const source = { ...node } as Record<string, unknown>;
+  if (Array.isArray(source.items)) {
+    source.prefixItems = source.items;
+    source.items = source.additionalItems ?? false;
+    delete source.additionalItems;
+  }
+  return Object.fromEntries(Object.entries(source).map(([key, value]) => [key, toDraft2020(value)]));
+}
+
 function jsonSchema(tool: ToolDef): Record<string, unknown> {
-  return zodToJsonSchema(tool.schema, { $refStrategy: 'none', target: 'openApi3' }) as Record<string, unknown>;
+  const { $schema: _$schema, ...schema } = zodToJsonSchema(tool.schema, { $refStrategy: 'none' }) as Record<string, unknown>;
+  return toDraft2020(schema) as Record<string, unknown>;
 }
 
 type AnthropicBlock =

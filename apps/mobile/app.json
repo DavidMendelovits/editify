@@ -10,7 +10,11 @@
       "bundler": "metro",
       "output": "static"
     },
-    "plugins": ["expo-router", "expo-document-picker"],
+    "plugins": [
+      "expo-router",
+      "expo-document-picker",
+      ["expo-image-picker", { "photosPermission": "Editify adds clips from your photo library to the timeline." }]
+    ],
     "experiments": {
       "typedRoutes": true
     }

@@ -2,18 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as DocumentPicker from 'expo-document-picker';
 import type { AssetMetadata, Operation, Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
 import { GradientButton } from '../../src/components/GradientButton';
 import { ImportSheet } from '../../src/components/ImportSheet';
 import { InsightsPanel } from '../../src/components/InsightsPanel';
+import { LIBRARY_ROOT, MediaLibrary } from '../../src/components/MediaLibrary';
 import { Screen } from '../../src/components/Screen';
 import { ChatDock } from '../../src/components/editor/ChatDock';
 import { PreviewPlayer } from '../../src/components/editor/PreviewPlayer';
 import { Timeline } from '../../src/components/editor/Timeline';
 import { usePlayback } from '../../src/components/editor/usePlayback';
-import { api, uploadAsset } from '../../src/lib/api';
+import { api } from '../../src/lib/api';
+import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
 import type { AgentTraceStep } from '../../src/lib/agent';
 import { colors } from '../../src/lib/theme';
 
@@ -37,6 +38,9 @@ export default function EditorScreen() {
   const [selectedId, setSelectedId] = useState<string>();
   const [importOpen, setImportOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string>();
+  /** Only set while a multi-file import is running. */
+  const [progress, setProgress] = useState<{ done: number; total: number }>();
   const [optimisticMessage, setOptimisticMessage] = useState<string>();
   // Covers the gap between the chat mutation resolving and the history refetch.
   const [latestTrace, setLatestTrace] = useState<AgentTraceStep[]>();
@@ -58,10 +62,16 @@ export default function EditorScreen() {
     ),
     enabled: assetIds.length > 0,
     staleTime: 5 * 60 * 1000,
+    // A clip can land on the timeline while its proxy is still encoding; keep
+    // polling until every asset is ready so the player picks the video up.
+    refetchInterval: (query) => (Object.values(query.state.data ?? {}).some((asset) => asset.status === 'processing') ? 2000 : false),
   });
   const assets: Record<string, AssetMetadata | undefined> = assetsQuery.data ?? {};
 
-  const { playhead, playing, seek, toggle, stop } = usePlayback(project?.duration ?? 0);
+  // `clock` is an external store, not state: the playhead ticks at ~60Hz and
+  // only the components that draw it subscribe, so this screen does not
+  // re-render during playback.
+  const { clock, playing, seek, toggle, stop } = usePlayback(project?.duration ?? 0);
   const lastAssistantId = useMemo(
     () => chatQuery.data?.filter((message) => message.role === 'assistant').at(-1)?.id,
     [chatQuery.data],
@@ -89,6 +99,13 @@ export default function EditorScreen() {
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
     },
     onSettled: () => setOptimisticMessage(undefined),
+  });
+  // Follow the running turn's steps so the trace fills in while the agent works.
+  const liveQuery = useQuery({
+    queryKey: ['chat-live', id],
+    queryFn: () => api.getChatLive(id),
+    enabled: sendChat.isPending,
+    refetchInterval: 900,
   });
 
   // Flash the timeline whenever a new project version lands, so an agent edit
@@ -120,30 +137,40 @@ export default function EditorScreen() {
     apply.mutate(optimistic ? { ops, optimistic } : { ops });
   }
 
-  /** Drops a freshly imported/uploaded asset at the end of the video track. */
-  function appendAsset(asset: AssetMetadata): void {
-    if (!project) return;
-    const clipId = `clip-${Date.now()}`;
-    applyOps([{
-      type: 'add_clip',
-      params: {
-        trackId: project.tracks.find((track) => track.kind === 'video')?.id ?? 'video-main',
-        clip: { id: clipId, assetId: asset.id, start: project.duration, in: 0, out: asset.duration, volume: 1, speed: 1 },
-      },
-    }]);
-    setSelectedId(clipId);
+  /** Lays imported assets back-to-back at the end of the video track, in one batch. */
+  function appendAssets(assetList: AssetMetadata[]): void {
+    // A probe that could not read a duration would make an invalid clip; skip those.
+    const added = assetList.filter((asset) => asset.duration > 0);
+    if (!project || added.length === 0) return;
+    const trackId = project.tracks.find((track) => track.kind === 'video')?.id ?? 'video-main';
+    const stamp = Date.now();
+    let start = project.duration;
+    const ops = added.map((asset, index): Operation => {
+      const clip = { id: `clip-${stamp}-${index}`, assetId: asset.id, start, in: 0, out: asset.duration, volume: 1, speed: 1 };
+      start += asset.duration;
+      return { type: 'add_clip', params: { trackId, clip } };
+    });
+    applyOps(ops);
+    setSelectedId(`clip-${stamp}-${added.length - 1}`);
   }
 
-  async function uploadMedia(): Promise<void> {
-    const picked = await DocumentPicker.getDocumentAsync({ type: ['video/*', 'audio/*'], copyToCacheDirectory: true });
-    if (picked.canceled || !project) return;
-    const file = picked.assets[0];
-    if (!file) return;
+  /** Run a source picker, then land whatever it uploaded in the library and on the timeline. */
+  async function addFrom(pick: (projectId: string, onProgress: PickProgress) => Promise<PickResult>): Promise<void> {
+    if (!project) return;
     setUploading(true);
+    setUploadError(undefined);
+    setProgress(undefined);
     try {
-      appendAsset(await uploadAsset({ uri: file.uri, name: file.name, ...(file.mimeType ? { mimeType: file.mimeType } : {}) }));
+      // One clip needs no counter; a batch does.
+      const { assets: added, failed } = await pick(id, (done, total) => setProgress(total > 1 ? { done, total } : undefined));
+      appendAssets(added);
+      if (added.length > 0) await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
+      if (failed.length > 0) setUploadError(`Could not import ${failed.length} of ${added.length + failed.length}: ${failed.join(', ')}`);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Could not add that media');
     } finally {
       setUploading(false);
+      setProgress(undefined);
     }
   }
 
@@ -166,8 +193,8 @@ export default function EditorScreen() {
         </View>
       </View>
       <View style={styles.headerActions}>
-        <GradientButton secondary style={styles.headerButton} onPress={() => void uploadMedia()} disabled={uploading}>
-          {uploading ? 'processing…' : '+ media'}
+        <GradientButton secondary style={styles.headerButton} onPress={() => void addFrom(pickFromPhotos)} disabled={uploading}>
+          {progress ? `${progress.done}/${progress.total}…` : uploading ? 'processing…' : '+ photos'}
         </GradientButton>
         <GradientButton style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
           export ↗
@@ -181,7 +208,7 @@ export default function EditorScreen() {
       <Timeline
         project={project}
         assets={assets}
-        playhead={playhead}
+        clock={clock}
         playing={playing}
         selectedId={selectedId}
         pending={apply.isPending}
@@ -200,6 +227,7 @@ export default function EditorScreen() {
       messages={chatQuery.data}
       latestTrace={latestTrace}
       latestAssistantId={lastAssistantId}
+      liveTrace={sendChat.isPending ? liveQuery.data?.steps : undefined}
       optimisticMessage={optimisticMessage}
       pending={sendChat.isPending}
       error={sendChat.error?.message}
@@ -214,10 +242,20 @@ export default function EditorScreen() {
           <PreviewPlayer
             project={project}
             assets={assets}
-            playhead={playhead}
+            clock={clock}
             playing={playing}
             onTogglePlay={toggle}
             onSeek={seek}
+          />
+          <MediaLibrary
+            projectId={id}
+            busy={uploading}
+            {...(progress ? { progress } : {})}
+            {...(uploadError ? { error: uploadError } : {})}
+            onPickPhotos={() => void addFrom(pickFromPhotos)}
+            onPickFiles={() => void addFrom(pickFromFiles)}
+            onOpenFolder={() => setImportOpen(true)}
+            onAdd={(asset) => appendAssets([asset])}
           />
           {timeline}
           <InsightsPanel assetIds={assetIds} />
@@ -225,9 +263,13 @@ export default function EditorScreen() {
         <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>{dock}</View>
       </View>
       <ImportSheet
+        projectId={id}
         visible={importOpen}
         onClose={() => setImportOpen(false)}
-        onImported={(asset) => appendAsset(asset)}
+        onImported={(asset) => {
+          appendAssets([asset]);
+          void queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
+        }}
       />
     </Screen>
   );

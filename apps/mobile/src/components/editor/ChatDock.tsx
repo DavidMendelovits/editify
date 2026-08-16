@@ -19,6 +19,8 @@ interface Props {
   /** Trace for the newest assistant turn before the chat history refetches. */
   latestTrace: AgentTraceStep[] | undefined;
   latestAssistantId: string | undefined;
+  /** Steps of the turn still running, polled from `/chat/live`; replaced by `latestTrace` when it lands. */
+  liveTrace: AgentTraceStep[] | undefined;
   optimisticMessage: string | undefined;
   pending: boolean;
   error: string | undefined;
@@ -30,7 +32,7 @@ interface Props {
  * chips, the composer, and the render strip. The project query is refreshed by
  * the parent when a turn lands, so the timeline animates itself.
  */
-export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, optimisticMessage, pending, error, onSend }: Props) {
+export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend }: Props) {
   const [text, setText] = useState('');
   const [preset, setPreset] = useState<string>();
   const scroller = useRef<ScrollView>(null);
@@ -86,6 +88,9 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
           <Message message={{ id: 'optimistic', role: 'user', content: optimisticMessage, createdAt: '' }} trace={undefined} />
         )}
         {pending && <AgentActivity />}
+        {pending && liveTrace && liveTrace.length > 0 && (
+          <View style={styles.agentMessage}><AgentTrace steps={liveTrace} /></View>
+        )}
       </ScrollView>
 
       <RenderStrip projectId={projectId} />

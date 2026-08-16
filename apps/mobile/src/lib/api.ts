@@ -16,6 +16,9 @@ export interface ChatMessage {
 
 export interface ChatResponse { reply: string; trace: AgentTraceStep[]; opsApplied: Operation[]; doc: Project }
 
+/** `GET /projects/:id/chat/live` — steps of the turn currently running, if any. */
+export interface ChatLive { running: boolean; steps: AgentTraceStep[] }
+
 export type AgentProviderId = 'claude-cli' | 'codex-cli' | 'anthropic' | 'openai' | 'mock';
 
 export interface ProviderOption {
@@ -134,14 +137,24 @@ export const api = {
     method: 'POST', body: JSON.stringify({ ops, baseVersion }),
   }),
   getAsset: (id: string) => request<AssetMetadata>(`/assets/${id}`),
+  /** This project's media, or every asset on the server when `projectId` is omitted. Newest first. */
+  listAssets: (projectId?: string) => request<AssetMetadata[]>(projectId ? `/assets?projectId=${encodeURIComponent(projectId)}` : '/assets'),
+  /** Adopts an asset from another project into this one. */
+  linkAsset: (projectId: string, assetId: string) => request<AssetMetadata>(`/assets/${assetId}/link`, {
+    method: 'POST', body: JSON.stringify({ projectId }),
+  }),
+  setAssetLabel: (id: string, label: string) => request<AssetMetadata>(`/assets/${id}`, {
+    method: 'PATCH', body: JSON.stringify({ label }),
+  }),
   listImportable: () => request<ImportableFile[]>('/assets/importable'),
-  importAsset: (name: string) => request<AssetMetadata>('/assets/import', {
-    method: 'POST', body: JSON.stringify({ name }),
+  importAsset: (name: string, projectId?: string) => request<AssetMetadata>('/assets/import', {
+    method: 'POST', body: JSON.stringify(projectId ? { name, projectId } : { name }),
   }),
   chat: (id: string, message: string) => request<ChatResponse>(`/projects/${id}/chat`, {
     method: 'POST', body: JSON.stringify({ message }),
   }),
   getChat: (id: string) => request<ChatMessage[]>(`/projects/${id}/chat`),
+  getChatLive: (id: string) => request<ChatLive>(`/projects/${id}/chat/live`),
   render: (id: string, resolution: RenderRecord['resolution']) => request<RenderRecord>(`/projects/${id}/render`, {
     method: 'POST', body: JSON.stringify({ resolution }),
   }),
@@ -156,7 +169,7 @@ export const api = {
   }),
 };
 
-export async function uploadAsset(asset: { uri: string; name: string; mimeType?: string }): Promise<AssetMetadata> {
+export async function uploadAsset(asset: { uri: string; name: string; mimeType?: string; projectId?: string }): Promise<AssetMetadata> {
   const form = new FormData();
   if (typeof File !== 'undefined' && asset.uri.startsWith('blob:')) {
     const blob = await fetch(asset.uri).then(async (response) => await response.blob());
@@ -168,7 +181,8 @@ export async function uploadAsset(asset: { uri: string; name: string; mimeType?:
       type: asset.mimeType ?? 'application/octet-stream',
     } as unknown as Blob);
   }
-  const response = await fetch(`${API_URL}/assets`, { method: 'POST', body: form });
+  const query = asset.projectId ? `?projectId=${encodeURIComponent(asset.projectId)}` : '';
+  const response = await fetch(`${API_URL}/assets${query}`, { method: 'POST', body: form });
   if (!response.ok) throw new Error(await response.text());
   return await response.json() as AssetMetadata;
 }

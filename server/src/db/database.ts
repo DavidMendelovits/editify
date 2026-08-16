@@ -53,6 +53,16 @@ function migrate(database: EditifyDatabase): void {
       created_at TEXT NOT NULL
     );
 
+    -- Which assets belong to which project. An asset can be linked to several
+    -- projects (pull a clip from another shoot), but a project only ever sees
+    -- its own links, so imports never leak between projects.
+    CREATE TABLE IF NOT EXISTS project_assets (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, asset_id)
+    );
+
     CREATE TABLE IF NOT EXISTS transcripts (
       asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
       language TEXT NOT NULL,
@@ -105,5 +115,34 @@ function migrate(database: EditifyDatabase): void {
   const transcriptColumns = database.prepare('PRAGMA table_info(transcripts)').all() as Array<{ name: string }>;
   if (!transcriptColumns.some((column) => column.name === 'energy_json')) {
     database.exec('ALTER TABLE transcripts ADD COLUMN energy_json TEXT');
+  }
+
+  const assetColumns = database.prepare('PRAGMA table_info(assets)').all() as Array<{ name: string }>;
+  if (!assetColumns.some((column) => column.name === 'label')) {
+    database.exec('ALTER TABLE assets ADD COLUMN label TEXT');
+  }
+  // Imports respond before their proxy exists; anything already on disk is ready.
+  if (!assetColumns.some((column) => column.name === 'status')) {
+    database.exec("ALTER TABLE assets ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'");
+  }
+
+  backfillProjectAssets(database);
+}
+
+/**
+ * Projects that predate `project_assets` have no links, which would show them an
+ * empty media library. Seed each one from the assets its timeline already uses.
+ */
+function backfillProjectAssets(database: EditifyDatabase): void {
+  if ((database.prepare('SELECT COUNT(*) AS count FROM project_assets').get() as { count: number }).count > 0) return;
+  const projects = database.prepare('SELECT id, doc_json FROM projects').all() as Array<{ id: string; doc_json: string }>;
+  const known = new Set((database.prepare('SELECT id FROM assets').all() as Array<{ id: string }>).map((row) => row.id));
+  const link = database.prepare('INSERT OR IGNORE INTO project_assets (project_id, asset_id, created_at) VALUES (?, ?, ?)');
+  const now = new Date().toISOString();
+  for (const project of projects) {
+    // Read the ids straight out of the stored document — no schema import needed.
+    for (const assetId of new Set([...project.doc_json.matchAll(/"assetId":"([^"]+)"/g)].map((match) => match[1]))) {
+      if (assetId && known.has(assetId)) link.run(project.id, assetId, now);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import type { ChatResponse, Project } from '@editify/shared';
+import type { AgentTraceStep, ChatResponse, Project } from '@editify/shared';
 import { runAgentLoop } from './loop.js';
 import type { ToolProvider } from './providers.js';
 import type { ToolContext } from './tools.js';
@@ -11,8 +11,8 @@ export class AgentService {
     return this.resolveProvider();
   }
 
-  async edit(ctx: ToolContext, message: string): Promise<ChatResponse> {
-    return await runAgentLoop(this.provider, ctx, message);
+  async edit(ctx: ToolContext, message: string, onStep?: (step: AgentTraceStep) => void): Promise<ChatResponse> {
+    return await runAgentLoop(this.provider, ctx, message, onStep ? { onStep } : {});
   }
 
   async distillStyle(project: Project, metrics: unknown): Promise<string> {

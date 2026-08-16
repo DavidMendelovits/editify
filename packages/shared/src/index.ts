@@ -168,6 +168,8 @@ export const agentResponseSchema = z.object({
 export type AgentResponse = z.infer<typeof agentResponseSchema>;
 
 export const agentTraceStepSchema = z.object({
+  /** 'thought' carries the model's own reasoning text in `summary`; everything else is a tool call. */
+  kind: z.literal('thought').optional(),
   tool: z.string(),
   input: z.unknown(),
   ok: z.boolean(),
@@ -192,6 +194,14 @@ export const assetMetadataSchema = z.object({
   height: z.number().int().min(0),
   fps: z.number().min(0),
   hasAudio: z.boolean(),
+  /**
+   * Proxy/thumbnail generation runs after the import responds, so a fresh asset
+   * is 'processing' until its media is on disk. Rows that predate this default
+   * to 'ready'.
+   */
+  status: z.enum(['processing', 'ready', 'error']).default('ready'),
+  /** User-given name in the media library; falls back to `originalName` when unset. */
+  label: z.string().optional(),
   originalUrl: z.string(),
   proxyUrl: z.string(),
   thumbnailUrl: z.string(),

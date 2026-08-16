@@ -50,7 +50,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   registerAgentRoutes(app, registry);
   registerProjectRoutes(app, projects, renderQueue);
-  registerAssetRoutes(app, assets, transcripts, insights);
+  registerAssetRoutes(app, assets, projects, transcripts, insights);
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights);

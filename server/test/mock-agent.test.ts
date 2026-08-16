@@ -54,6 +54,8 @@ describe('mock agent loop', () => {
         filmstripUrl: '',
         createdAt: new Date(0).toISOString(),
       });
+      // The agent only sees media linked to the project it is editing.
+      assets.link(project.id, `asset-${index + 1}`);
       transcriptStore.put(`asset-${index + 1}`, {
         language: 'en',
         durationProcessedSeconds: duration,

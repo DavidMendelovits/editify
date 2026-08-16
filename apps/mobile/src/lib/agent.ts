@@ -10,6 +10,8 @@
 import { presetTitle } from './presets';
 
 export interface AgentTraceStep {
+  /** 'thought' steps carry the agent's own reasoning text in `summary`. */
+  kind?: 'thought';
   tool: string;
   input: unknown;
   ok: boolean;
@@ -18,6 +20,7 @@ export interface AgentTraceStep {
 
 /** Visual family for a step — drives the glyph and tint in the step feed. */
 export type TraceKind =
+  | 'thought'
   | 'read' | 'transcript' | 'insight' | 'preset'
   | 'add' | 'remove' | 'cut' | 'move' | 'batch'
   | 'audio' | 'speed' | 'frame' | 'caption' | 'format' | 'undo' | 'other';
@@ -57,6 +60,7 @@ const TOOL_KIND: Record<string, TraceKind> = {
 };
 
 const KIND_GLYPH: Record<TraceKind, string> = {
+  thought: '✻',
   read: '◎',
   transcript: '¶',
   insight: '★',
@@ -76,12 +80,13 @@ const KIND_GLYPH: Record<TraceKind, string> = {
 };
 
 /** Kinds that only observe the project — rendered muted in the step feed. */
-const READ_KINDS: ReadonlySet<TraceKind> = new Set<TraceKind>(['read', 'transcript', 'insight', 'preset']);
+const READ_KINDS: ReadonlySet<TraceKind> = new Set<TraceKind>(['thought', 'read', 'transcript', 'insight', 'preset']);
 
 /** Warning glyph used for any step that came back `ok: false`. */
 export const ERROR_GLYPH = '!';
 
 export function traceKind(step: AgentTraceStep): TraceKind {
+  if (step.kind === 'thought') return 'thought';
   return TOOL_KIND[step.tool] ?? 'other';
 }
 
@@ -187,6 +192,7 @@ export function humanizeToolName(tool: string): string {
 
 /** Human-readable one-liner for a step, e.g. "Split clip at 4.2s". */
 export function describeTraceStep(step: AgentTraceStep): string {
+  if (step.kind === 'thought') return step.summary;
   const input = toolInput(step);
   switch (step.tool) {
     case 'get_project':

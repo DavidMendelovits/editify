@@ -593,12 +593,13 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'list_assets',
-      description: 'List imported media assets available for clips. Use an asset id from this result as add_clip.assetId. Duration is source-time seconds.',
+      description: 'List this project\'s media assets, the only ones you may cut with. Use an asset id from this result as add_clip.assetId. Duration is source-time seconds.',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
         emptyInputSchema.parse(input);
-        return ctx.assets.list().map(({ id, originalName, duration, width, height, hasAudio }) => ({
-          id, originalName, duration, width, height, hasAudio,
+        // Scoped to the project: another project's footage is not yours to cut.
+        return ctx.assets.listForProject(ctx.projectId).map(({ id, originalName, label, duration, width, height, hasAudio }) => ({
+          id, originalName, label, duration, width, height, hasAudio,
         }));
       },
     },

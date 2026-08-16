@@ -7,8 +7,9 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { AssetMetadata } from '@editify/shared';
 import { z } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
+import type { ProjectStore } from '../db/project-store.js';
 import { assetsRoot, mediaImportDir } from '../config.js';
-import { createFilmstrip, createProxyAndThumbnail, probeMedia } from '../media/process.js';
+import { createFilmstrip, createProxyAndThumbnail, probeMedia, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
@@ -23,8 +24,14 @@ async function sendFile(reply: FastifyReply, path: string, type: string, range: 
   return await sendMediaFile(reply, path, type, range);
 }
 
-const importRequestSchema = z.object({ name: z.string().trim().min(1).max(255) }).strict();
+const importRequestSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  /** Links the imported file to this project so it stays out of other libraries. */
+  projectId: z.string().min(1).optional(),
+}).strict();
 const forceRequestSchema = z.object({ force: z.boolean().optional().default(false) }).strict();
+const labelRequestSchema = z.object({ label: z.string().max(120) }).strict();
+const linkRequestSchema = z.object({ projectId: z.string().min(1) }).strict();
 const videoExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
 const videoMimeTypes: Record<string, string> = {
   '.mp4': 'video/mp4',
@@ -40,8 +47,43 @@ function isInside(root: string, candidate: string): boolean {
   return pathFromRoot !== '' && !pathFromRoot.startsWith('..') && !isAbsolute(pathFromRoot);
 }
 
-async function processAsset(
+/**
+ * Background work per asset id: proxy, thumbnail and transcription. Imports do
+ * not wait for it — the row is already in the library, marked `processing`.
+ * Exposed so tests can await an import deterministically.
+ */
+export const pendingAssetWork = new Map<string, Promise<void>>();
+
+/** Runs after the import responded, and moves the row to `ready` or `error`. */
+function queueAssetWork(
+  app: FastifyInstance,
   assets: AssetStore,
+  transcripts: TranscriptService,
+  asset: StoredAsset,
+  probe: ProbeResult,
+): void {
+  const pending = (async () => {
+    try {
+      const generated = await createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe);
+      assets.setStatus(asset.id, 'ready', generated);
+    } catch (error) {
+      assets.setStatus(asset.id, 'error');
+      app.log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
+      return;
+    }
+    await transcribeQuietly(app, transcripts, asset);
+  })().finally(() => pendingAssetWork.delete(asset.id));
+  pendingAssetWork.set(asset.id, pending);
+}
+
+/**
+ * Probe synchronously — it is fast and gives the duration the timeline needs —
+ * then hand the slow encode off to the background.
+ */
+async function processAsset(
+  app: FastifyInstance,
+  assets: AssetStore,
+  transcripts: TranscriptService,
   input: { originalName: string; mimeType: string; originalPath: string },
   id = randomUUID(),
 ): Promise<StoredAsset> {
@@ -50,8 +92,7 @@ async function processAsset(
   try {
     const probe = await probeMedia(input.originalPath);
     if (!probe.hasVideo && !probe.hasAudio) throw new Error('The media file has no video or audio streams');
-    const generated = await createProxyAndThumbnail(input.originalPath, directory, probe);
-    return assets.insert({
+    const asset = assets.insert({
       id,
       originalName: input.originalName,
       mimeType: input.mimeType,
@@ -60,15 +101,18 @@ async function processAsset(
       height: probe.height,
       fps: probe.fps,
       hasAudio: probe.hasAudio,
+      status: 'processing',
       originalPath: input.originalPath,
-      proxyPath: generated.proxyPath,
-      thumbnailPath: generated.thumbnailPath,
+      proxyPath: join(directory, 'proxy.mp4'),
+      thumbnailPath: join(directory, 'thumb.jpg'),
       originalUrl: `/assets/${id}/original`,
       proxyUrl: `/assets/${id}/proxy.mp4`,
       thumbnailUrl: `/assets/${id}/thumb.jpg`,
       filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
     });
+    queueAssetWork(app, assets, transcripts, asset, probe);
+    return asset;
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
     throw error;
@@ -91,10 +135,24 @@ async function transcribeQuietly(
 export function registerAssetRoutes(
   app: FastifyInstance,
   assets: AssetStore,
+  projects: ProjectStore,
   transcripts: TranscriptService,
   insights: InsightService,
 ): void {
-  app.post('/assets', async (request, reply) => {
+  /** Reads `?projectId=` and refuses ids that do not exist, so links cannot dangle. */
+  function requireProject(id: unknown, reply: FastifyReply): string | undefined | null {
+    if (id === undefined || id === '') return undefined;
+    const projectId = String(id);
+    if (!projects.get(projectId)) {
+      void reply.code(404).send({ error: 'Project not found' });
+      return null;
+    }
+    return projectId;
+  }
+
+  app.post<{ Querystring: { projectId?: string } }>('/assets', async (request, reply) => {
+    const projectId = requireProject(request.query.projectId, reply);
+    if (projectId === null) return reply;
     const part = await request.file({ limits: { fileSize: 2 * 1024 * 1024 * 1024, files: 1 } });
     if (!part) return await reply.code(400).send({ error: 'A multipart media file is required' });
     if (!part.mimetype.startsWith('video/') && !part.mimetype.startsWith('audio/') && part.mimetype !== 'application/octet-stream') {
@@ -108,17 +166,45 @@ export function registerAssetRoutes(
     const originalPath = join(directory, `original${extension}`);
     try {
       await pipeline(part.file, (await import('node:fs')).createWriteStream(originalPath));
-      const asset = await processAsset(assets, {
+      const asset = await processAsset(app, assets, transcripts, {
         originalName: part.filename,
         mimeType: part.mimetype,
         originalPath,
       }, id);
-      await transcribeQuietly(app, transcripts, asset);
+      if (projectId) assets.link(projectId, asset.id);
       return await reply.code(201).send(publicAsset(asset));
     } catch (error) {
       await rm(directory, { recursive: true, force: true });
       throw error;
     }
+  });
+
+  // The media library. With `?projectId=` it is scoped to that project's own
+  // imports; without it, every asset on the server, for the "all clips" browser.
+  // Newest first either way.
+  app.get<{ Querystring: { projectId?: string } }>('/assets', async (request, reply) => {
+    const projectId = requireProject(request.query.projectId, reply);
+    if (projectId === null) return reply;
+    const list = projectId ? assets.listForProject(projectId) : assets.list();
+    return list.reverse().map(publicAsset);
+  });
+
+  // Pull an asset from another project into this one — the only way media
+  // crosses a project boundary, and always because the user asked for it.
+  app.post<{ Params: { id: string } }>('/assets/:id/link', async (request, reply) => {
+    const projectId = requireProject(linkRequestSchema.parse(request.body).projectId, reply);
+    if (projectId === null) return reply;
+    if (!projectId) return await reply.code(400).send({ error: 'projectId is required' });
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    assets.link(projectId, asset.id);
+    return publicAsset(asset);
+  });
+
+  app.patch<{ Params: { id: string } }>('/assets/:id', async (request, reply) => {
+    const { label } = labelRequestSchema.parse(request.body);
+    const updated = assets.setLabel(request.params.id, label);
+    return updated ? publicAsset(updated) : await reply.code(404).send({ error: 'Asset not found' });
   });
 
   app.get('/assets/importable', async () => {
@@ -141,7 +227,9 @@ export function registerAssetRoutes(
   });
 
   app.post('/assets/import', async (request, reply) => {
-    const { name } = importRequestSchema.parse(request.body);
+    const { name, projectId: requestedProject } = importRequestSchema.parse(request.body);
+    const projectId = requireProject(requestedProject, reply);
+    if (projectId === null) return reply;
     const importRoot = resolve(mediaImportDir);
     const requestedPath = resolve(importRoot, name);
     if (!isInside(importRoot, requestedPath)) {
@@ -153,7 +241,9 @@ export function registerAssetRoutes(
     }
     const existing = assets.getByOriginalName(name);
     if (existing) {
-      await transcribeQuietly(app, transcripts, existing);
+      if (projectId) assets.link(projectId, existing.id);
+      // Already on disk — a missing transcript can catch up in the background.
+      void transcribeQuietly(app, transcripts, existing);
       return publicAsset(existing);
     }
 
@@ -170,12 +260,12 @@ export function registerAssetRoutes(
       }
       throw error;
     }
-    const asset = await processAsset(assets, {
+    const asset = await processAsset(app, assets, transcripts, {
       originalName: name,
       mimeType: videoMimeTypes[extension] ?? 'video/mp4',
       originalPath: sourcePath,
     });
-    await transcribeQuietly(app, transcripts, asset);
+    if (projectId) assets.link(projectId, asset.id);
     return await reply.code(201).send(publicAsset(asset));
   });
 
@@ -212,14 +302,28 @@ export function registerAssetRoutes(
     return asset ? publicAsset(asset) : await reply.code(404).send({ error: 'Asset not found' });
   });
 
+  /** Generated media is written in the background, so "not yet" is a 409, not a crash. */
+  function notReady(reply: FastifyReply, asset: StoredAsset): FastifyReply {
+    return reply.code(409).send({
+      error: asset.status === 'error'
+        ? 'Asset processing failed'
+        : 'Asset is still processing',
+      status: asset.status,
+    });
+  }
+
   app.get<{ Params: { id: string } }>('/assets/:id/proxy.mp4', async (request, reply) => {
     const asset = assets.get(request.params.id);
-    return asset ? await sendFile(reply, asset.proxyPath, 'video/mp4', request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    if (!existsSync(asset.proxyPath)) return notReady(reply, asset);
+    return await sendFile(reply, asset.proxyPath, 'video/mp4', request.headers.range);
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/thumb.jpg', async (request, reply) => {
     const asset = assets.get(request.params.id);
-    return asset ? await sendFile(reply, asset.thumbnailPath, 'image/jpeg', request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    if (!existsSync(asset.thumbnailPath)) return notReady(reply, asset);
+    return await sendFile(reply, asset.thumbnailPath, 'image/jpeg', request.headers.range);
   });
 
   // Lazily generated and cached beside the proxy: 20 tiles, left to right over [0, duration].
@@ -229,6 +333,7 @@ export function registerAssetRoutes(
   app.get<{ Params: { id: string } }>('/assets/:id/filmstrip.jpg', async (request, reply) => {
     const asset = assets.get(request.params.id);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    if (!existsSync(asset.proxyPath)) return notReady(reply, asset);
     const path = join(dirname(asset.proxyPath), 'filmstrip.jpg');
     if (!existsSync(path)) {
       const pending = filmstrips.get(asset.id)

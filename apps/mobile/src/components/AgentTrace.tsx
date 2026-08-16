@@ -58,7 +58,11 @@ function TraceRow({ step, last }: { step: AgentTraceStep; last: boolean }) {
         {!last && <View style={styles.railLine} />}
       </View>
       <View style={[styles.body, failed && styles.bodyError]}>
-        <Text style={[styles.label, read && styles.labelRead, failed && styles.labelError]} numberOfLines={2}>
+        {/* Thoughts are prose, not a one-liner — give them room and their own voice. */}
+        <Text
+          style={[styles.label, read && styles.labelRead, step.kind === 'thought' && styles.labelThought, failed && styles.labelError]}
+          numberOfLines={step.kind === 'thought' ? 6 : 2}
+        >
           {describeTraceStep(step)}
         </Text>
         {failed && step.summary.length > 0 && (
@@ -87,6 +91,7 @@ const styles = StyleSheet.create({
   bodyError: { borderRadius: 8, backgroundColor: '#3A1B24', borderWidth: 1, borderColor: '#5A2836', paddingHorizontal: 8, paddingVertical: 6, marginBottom: 5 },
   label: { color: colors.text, fontFamily: 'Montserrat_500Medium', fontSize: 11, lineHeight: 16 },
   labelRead: { color: colors.muted },
+  labelThought: { color: '#B6ADD0', fontFamily: 'Montserrat_400Regular', fontStyle: 'italic' },
   labelError: { color: colors.danger, fontFamily: 'Montserrat_600SemiBold' },
   errorText: { color: '#FFA8B4', fontFamily: 'Montserrat_400Regular', fontSize: 10, lineHeight: 14 },
   toggle: { alignSelf: 'flex-start', borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingHorizontal: 9, paddingVertical: 4, marginTop: 2 },

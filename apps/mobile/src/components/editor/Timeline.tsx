@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import type { AssetMetadata, Clip, Operation, Project, Track } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { CaptionChip, DragGhost, DragTooltip, EmptyLane, TimelineClip, type DragMode } from './TimelineClip';
 import { Inspector } from './Inspector';
 import { useHorizontalDrag } from './useHorizontalDrag';
+import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 import { colors } from '../../lib/theme';
 import {
   CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
@@ -20,7 +21,7 @@ const CLICK_SLOP = 4;
 interface Props {
   project: Project;
   assets: Record<string, AssetMetadata | undefined>;
-  playhead: number;
+  clock: PlayheadClock;
   playing: boolean;
   selectedId: string | undefined;
   pending: boolean;
@@ -45,9 +46,13 @@ const round6 = (value: number): number => Number(value.toFixed(6));
  * Zoom is `pxPerSec`; every block is `left = start * pxPerSec` wide
  * `timelineDuration * pxPerSec`. Drags are previewed locally (ghost + tooltip)
  * and only committed as operations on release.
+ *
+ * The playhead is deliberately not a prop: only `PlayheadCursor` subscribes to
+ * it per frame, so the lanes and their filmstrips are untouched during
+ * playback. Everything here reads the current time imperatively.
  */
 export function Timeline({
-  project, assets, playhead, playing, selectedId, pending, errorMessage, onSeek, onSelect, onApply, onImport,
+  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onSelect, onApply, onImport,
 }: Props) {
   const [pxPerSec, setPxPerSec] = useState(40);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -86,15 +91,6 @@ export function Timeline({
     setPxPerSec(clampZoom((viewportWidth - 24) / project.duration));
   }, [project.duration, viewportWidth]);
 
-  // Keep the playhead on screen while the transport is running.
-  useEffect(() => {
-    if (!playing || viewportWidth <= 0) return;
-    const x = playhead * pxPerSec;
-    if (x < scrollX.current + 40 || x > scrollX.current + viewportWidth - 90) {
-      scrollRef.current?.scrollTo({ x: Math.max(0, x - viewportWidth * 0.35), animated: false });
-    }
-  }, [playhead, playing, pxPerSec, viewportWidth]);
-
   const ruler = useHorizontalDrag({
     onStart: (localX) => { scrubStart.current = localX / pxPerSec; onSeek(Math.max(0, scrubStart.current)); },
     onMove: (dx) => onSeek(Math.max(0, scrubStart.current + dx / pxPerSec)),
@@ -102,7 +98,7 @@ export function Timeline({
 
   function moveTarget(track: Track | undefined, clip: Clip, deltaSeconds: number): number {
     const tolerance = SNAP_PX / pxPerSec;
-    const targets = snapTargets(track, clip.id, playhead);
+    const targets = snapTargets(track, clip.id, clock.get());
     const raw = Math.max(0, clip.start + deltaSeconds);
     const span = clipTimelineDuration(clip);
     const byStart = snapTime(raw, targets, tolerance);
@@ -114,7 +110,7 @@ export function Timeline({
   /** Snapped edge travel for a trim, in timeline seconds. */
   function trimDelta(track: Track | undefined, clip: Clip, mode: DragMode, deltaSeconds: number): number {
     const tolerance = SNAP_PX / pxPerSec;
-    const targets = snapTargets(track, clip.id, playhead);
+    const targets = snapTargets(track, clip.id, clock.get());
     const edge = mode === 'in' ? clip.start : clipEnd(clip);
     return snapTime(edge + deltaSeconds, targets, tolerance) - edge;
   }
@@ -162,13 +158,22 @@ export function Timeline({
     onApply(ops, (current) => patchClip(current, clip.id, { in: trim.in, out: trim.out, start: trim.start }));
   }
 
-  const splitTarget = selected && selectedTrack?.kind !== 'caption'
-    && playhead > selected.start + 0.05 && playhead < clipEnd(selected) - 0.05 ? selected : undefined;
+  // A boolean, not a time: the selector runs on every tick but only re-renders
+  // the toolbar when the playhead enters or leaves the selected clip.
+  const splittable = usePlayheadSelector(clock, useCallback(
+    (time: number) => Boolean(
+      selected && selectedTrack?.kind !== 'caption'
+      && time > selected.start + 0.05 && time < clipEnd(selected) - 0.05,
+    ),
+    [selected, selectedTrack],
+  ));
   const gapUpdates = closeGapUpdates(videoTrack);
 
   function split(): void {
-    if (!splitTarget) return;
-    onApply([{ type: 'split_clip', params: { clipId: splitTarget.id, at: round6(playhead), newClipId: `${splitTarget.id}-s${Date.now()}` } }]);
+    const at = clock.get();
+    if (!selected || selectedTrack?.kind === 'caption') return;
+    if (at <= selected.start + 0.05 || at >= clipEnd(selected) - 0.05) return;
+    onApply([{ type: 'split_clip', params: { clipId: selected.id, at: round6(at), newClipId: `${selected.id}-s${Date.now()}` } }]);
   }
   function remove(): void {
     if (!selected || !selectedTrack) return;
@@ -200,7 +205,7 @@ export function Timeline({
       <View style={styles.toolbar}>
         <Text style={styles.zoneLabel}>TIMELINE</Text>
         <View style={styles.toolGroup}>
-          <Tool label="split" hint="at playhead" onPress={split} disabled={!splitTarget || pending} />
+          <Tool label="split" hint="at playhead" onPress={split} disabled={!splittable || pending} />
           <Tool label="delete" hint="selected" onPress={remove} disabled={!selected || pending} danger />
           <Tool label="close gaps" hint={gapUpdates.length ? `${gapUpdates.length} moves` : 'none'} onPress={closeGaps} disabled={gapUpdates.length === 0 || pending} />
           {/* `undo` is an operation, not a route — POST /projects/:id/ops carries it. */}
@@ -301,10 +306,15 @@ export function Timeline({
               </View>
             ))}
 
-            <View pointerEvents="none" style={[styles.playhead, { left: playhead * pxPerSec, height: RULER_HEIGHT + lanesHeight }]}>
-              <View style={styles.playheadHead} />
-              <View style={styles.playheadLine} />
-            </View>
+            <PlayheadCursor
+              clock={clock}
+              pxPerSec={pxPerSec}
+              height={RULER_HEIGHT + lanesHeight}
+              playing={playing}
+              viewportWidth={viewportWidth}
+              scrollRef={scrollRef}
+              scrollX={scrollX}
+            />
 
             {drag && (() => {
               const clip = findClip(project, drag.clipId);
@@ -327,6 +337,38 @@ export function Timeline({
         onApply={(ops, patch) => onApply(ops, (current) => (selected ? patchClip(current, selected.id, patch) : current))}
       />
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
+    </View>
+  );
+}
+
+/**
+ * The only part of the timeline that follows the playhead. It re-renders on
+ * every transport tick — a line, a head, and the auto-scroll that keeps them on
+ * screen — while the lanes above it stay put.
+ */
+function PlayheadCursor({ clock, pxPerSec, height, playing, viewportWidth, scrollRef, scrollX }: {
+  clock: PlayheadClock;
+  pxPerSec: number;
+  height: number;
+  playing: boolean;
+  viewportWidth: number;
+  scrollRef: { current: ScrollView | null };
+  scrollX: { current: number };
+}) {
+  const x = usePlayhead(clock) * pxPerSec;
+
+  // Keep the playhead on screen while the transport is running.
+  useEffect(() => {
+    if (!playing || viewportWidth <= 0) return;
+    if (x < scrollX.current + 40 || x > scrollX.current + viewportWidth - 90) {
+      scrollRef.current?.scrollTo({ x: Math.max(0, x - viewportWidth * 0.35), animated: false });
+    }
+  }, [playing, scrollRef, scrollX, viewportWidth, x]);
+
+  return (
+    <View pointerEvents="none" style={[styles.playhead, { left: x, height }]}>
+      <View style={styles.playheadHead} />
+      <View style={styles.playheadLine} />
     </View>
   );
 }

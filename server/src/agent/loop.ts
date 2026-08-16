@@ -69,6 +69,7 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'Asset transcripts and transcript insights may be available. Strong edits trim to highlight spans, lead with the hook, and use caption_clip_from_transcript for speech captions.',
     'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes.',
     'You are told exactly what changed after every edit — do not re-read the project between your own edits; re-read only after an error.',
+    'Whenever a reply contains tool calls, open it with one or two plain sentences saying what you are about to do and why — that text is shown to the user as your thinking.',
     'set_speed and trim_clip change a clip duration but never move its neighbors — after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
     'When the user names a style or content type, fetch the matching preset and follow its parameters. Presets are guidance, not law.',
     styleDoc ? `Editing style profile: ${styleDoc}` : 'No editing style profile is available.',
@@ -116,12 +117,19 @@ async function executeCall(
   }
 }
 
+export interface AgentLoopOptions {
+  toolRegistry?: ToolDef[];
+  /** Called as each trace step is recorded, so a run can be followed live. */
+  onStep?: (step: AgentTraceStep) => void;
+}
+
 export async function runAgentLoop(
   provider: ToolProvider,
   ctx: ToolContext,
   userMessage: string,
-  toolRegistry: ToolDef[] = createToolRegistry(),
+  options: AgentLoopOptions = {},
 ): Promise<ChatResponse> {
+  const toolRegistry = options.toolRegistry ?? createToolRegistry();
   const initialProject = ctx.projects.get(ctx.projectId);
   if (!initialProject) throw new Error(`Project ${ctx.projectId} was not found`);
   ctx.currentVersion = initialProject.version;
@@ -129,6 +137,10 @@ export async function runAgentLoop(
   const messages: LoopMessage[] = [{ role: 'user', content: userMessage }];
   const toolsByName = new Map(toolRegistry.map((tool) => [tool.name, tool]));
   const trace: AgentTraceStep[] = [];
+  const record = (step: AgentTraceStep): void => {
+    trace.push(step);
+    options.onStep?.(step);
+  };
   const opsApplied: Operation[] = [];
   ctx.appliedOperations = [];
 
@@ -150,10 +162,14 @@ export async function runAgentLoop(
       });
     }
 
+    // Text alongside tool calls is the model's plan for them — show it first.
+    const thought = turn.text?.trim();
+    if (thought) record({ kind: 'thought', tool: 'thinking', input: undefined, ok: true, summary: thought });
+
     for (const call of turn.toolCalls) {
       const appliedBefore = ctx.appliedOperations.length;
       const executed = await executeCall(toolsByName, ctx, call);
-      trace.push({
+      record({
         tool: call.name,
         input: executed.parsedInput,
         ok: executed.ok,
