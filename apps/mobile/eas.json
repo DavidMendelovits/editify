@@ -1,0 +1,23 @@
+{
+  "cli": {
+    "version": ">= 20.5.1",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "environment": "preview",
+      "ios": { "simulator": false },
+      "android": { "buildType": "apk" },
+      "env": { "EXPO_PUBLIC_API_URL": "https://editify-dm.fly.dev" }
+    },
+    "production": {
+      "environment": "production",
+      "autoIncrement": true,
+      "env": { "EXPO_PUBLIC_API_URL": "https://editify-dm.fly.dev" }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
