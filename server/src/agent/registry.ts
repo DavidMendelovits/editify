@@ -110,8 +110,12 @@ export class ProviderRegistry {
     return await this.status();
   }
 
-  /** Synchronous so the agent loop and insight service can call it inline. */
-  resolve(): ToolProvider {
-    return createProvider(this.stored());
+  /**
+   * The provider a turn will actually run with. Mirrors `status().active` —
+   * an unavailable stored choice falls back instead of dying in spawn.
+   */
+  async resolve(): Promise<ToolProvider> {
+    const { active } = await this.status();
+    return createProvider(active);
   }
 }

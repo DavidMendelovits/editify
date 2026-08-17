@@ -7,3 +7,4 @@ server/data/
 .env
 .env.local
 test-clips/
+*.swp

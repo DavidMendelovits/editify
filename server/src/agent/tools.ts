@@ -1,13 +1,16 @@
 import {
   EDITING_PRESETS,
   OPERATION_CATALOG,
+  PACKETS_BY_ID,
   PRESETS_BY_NAME,
+  STYLE_PACKETS,
   captionStyleSchema,
   clipSchema,
   clipTimelineDuration,
   operationParamsSchemas,
   operationSchema,
   presetSchema,
+  stylePacketSchema,
   type Operation,
   type CaptionStyle,
   type Clip,
@@ -16,12 +19,23 @@ import {
   type Project,
 } from '@editify/shared';
 import { z, ZodError, type ZodTypeAny } from 'zod';
-import type { AssetStore } from '../db/asset-store.js';
+import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { ProjectStore, VersionConflictError } from '../db/project-store.js';
 import type { TranscriptWord } from '../db/transcript-store.js';
+import { ensureSoundLibrary } from '../media/sound-library.js';
 import { OperationError } from '../operations/apply.js';
+import {
+  buildTimelineTranscript,
+  normalizeWord,
+  planSilenceRanges,
+  planWordRemovalRanges,
+} from '../services/cleanup.js';
+import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
+
+export { buildTimelineTranscript, planWordCutRanges } from '../services/cleanup.js';
+export type { TimelineTranscript, TimelineTranscriptWord } from '../services/cleanup.js';
 
 export interface ToolContext {
   projectId: string;
@@ -31,6 +45,7 @@ export interface ToolContext {
   currentVersion: number;
   transcripts: TranscriptService;
   insights: InsightService;
+  dissections?: DissectService;
   appliedOperations?: Operation[];
 }
 
@@ -67,7 +82,20 @@ const removeSilenceSchema = z.object({
   padSeconds: z.number().min(0).max(2).default(0.15),
   protectLoudGaps: z.boolean().default(true),
 }).strict();
+const cutToBeatsSchema = z.object({
+  clipId: z.string().min(1),
+  maxCuts: z.number().int().min(1).max(30).default(12),
+}).strict();
 const presetNameSchema = z.object({ name: presetSchema.shape.name }).strict();
+/**
+ * Either a built-in id or a whole packet inline — a look derived from a saved
+ * style profile or a dissected reference is a packet like any other, it just
+ * has no entry in the built-in table.
+ */
+const applyPacketSchema = z.object({
+  packetId: z.string().min(1).optional(),
+  packet: stylePacketSchema.optional(),
+}).strict();
 
 export interface TranscriptCaptionChunk {
   text: string;
@@ -178,6 +206,10 @@ function compactClip(trackId: string, clip: Clip): Record<string, unknown> {
     ...(clip.style ? { style: clip.style } : {}),
     ...(clip.transform && (clip.transform.scale !== 1 || clip.transform.x !== 0 || clip.transform.y !== 0)
       ? { transform: clip.transform } : {}),
+    ...(clip.transformEnd ? { transformEnd: clip.transformEnd } : {}),
+    ...(clip.overlay ? { overlay: clip.overlay } : {}),
+    ...(clip.transition ? { transition: clip.transition } : {}),
+    ...(clip.duck ? { duck: true } : {}),
   };
 }
 
@@ -225,7 +257,7 @@ export function createMutationDelta(before: Project, after: Project, extraNotes:
 }
 
 const operationDescriptions: Record<Operation['type'], string> = {
-  add_clip: 'Add a media clip to a video or audio track. assetId must come from list_assets and clip.id must be unique; use readable IDs such as clip-hook-1. clip.in and clip.out are source-time seconds, clip.start is an absolute timeline second, and timeline duration is (out-in)/speed.',
+  add_clip: 'Add a media clip to a video, audio, or overlay track. assetId must come from list_assets and clip.id must be unique; use readable IDs such as clip-hook-1. clip.in and clip.out are source-time seconds, clip.start is an absolute timeline second, and timeline duration is (out-in)/speed. Overlay-track stickers use trackId `overlays` with in=0 and out=<display seconds>, plus either an image assetId or emoji `text`, and an optional `overlay` placement {x,y,width,rotation}.',
   remove_clip: 'Remove a non-caption clip by its unique clipId.',
   split_clip: 'Split a clip at an absolute timeline second `at` strictly inside the clip. Optionally provide a unique readable newClipId for the right-hand clip. This is timeline time, not source time.',
   trim_clip: 'Change a clip source range. `in` and `out` are source-time seconds and out must remain greater than in. Timeline duration becomes (out-in)/speed.',
@@ -233,12 +265,14 @@ const operationDescriptions: Record<Operation['type'], string> = {
   reorder_clips: 'Reorder every clip in a track. clipIds must contain each current clip ID exactly once; the operation lays clips sequentially from timeline second 0.',
   set_volume: 'Set a clip volume from 0 (silent) to 1 (full volume).',
   set_speed: 'Set playback speed as a 0.1–8 multiplier. Timeline duration is (out-in)/speed, so 1.25 is 25% faster.',
-  set_transform: 'Set a clip crop/placement transform: scale 0.1–10, x -1–1, and y -1–1.',
+  set_transform: 'Set a clip crop/zoom pose: scale 1–10 (values under 1 render as 1), x -1–1, and y -1–1. Supplying transformEnd animates linearly from transform to transformEnd across the clip — the dynamic-zoom primitive. A tasteful punch-in goes from scale 1 to 1.08–1.15; omit transformEnd to clear any zoom.',
+  set_overlay: 'Reposition an overlay-track sticker: x/y are the sticker centre as 0–1 fractions of the frame, width is the sticker width as a 0.04–1 fraction of frame width, rotation is clockwise degrees.',
+  set_transition: 'Set or clear (transition: null) the transition INTO a video-track clip at its start. `crossfade` overlaps the previous clip by borrowing source frames past its out point — timeline positions never move; `dip` fades through black around the cut. duration 0.1–2s (0.3–0.5 reads snappy). For a whoosh-cut, keep the hard cut and add a whoosh from the sound library at the cut instead.',
   add_caption: 'Add a timed caption. Use a unique readable clip.id, absolute timeline seconds for clip.start, and a caption-local range where clip.in is normally 0 and clip.out is its duration. Prefer trackId `captions`; style supports font, size, color, position, and emphasis.',
   update_caption: 'Update an existing caption by clipId. start is an absolute timeline second; in/out are caption-local seconds and out must remain greater than in.',
   remove_caption: 'Remove an existing caption by its clipId.',
   ripple_delete_ranges: 'Atomically delete and close multiple absolute timeline ranges on one video/audio track. Overlaps are merged; intersecting clips are split or trimmed, later clips shift left, and captions are cut and shifted with the deleted time.',
-  set_clip_properties: 'Atomically batch-update 1-100 clips. Each update names clipId and one or more of volume, speed, transform, or absolute timeline start. Any invalid update rejects the entire operation.',
+  set_clip_properties: 'Atomically batch-update 1-100 clips. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, or duck (true ducks all other audio beneath this clip while it plays — the voiceover treatment). Any invalid update rejects the entire operation.',
   set_format: 'Set the project canvas format to 9:16, 1:1, or 16:9.',
   undo: 'Undo the latest non-undone project operation using project history. Input must be an empty object.',
 };
@@ -290,110 +324,6 @@ async function executeBatch(ctx: ToolContext, operations: Operation[], notes: st
     }
     throw error;
   }
-}
-
-export interface TimelineTranscriptWord {
-  index: number;
-  text: string;
-  timelineStart: number;
-  timelineEnd: number;
-  sourceStart: number;
-  sourceEnd: number;
-  clipId: string;
-  trackId: string;
-  assetId: string;
-}
-
-export interface TimelineTranscript {
-  words: TimelineTranscriptWord[];
-  rows: Array<[number, string, number]>;
-  segments: Array<[number, string, number, number]>;
-}
-
-export function buildTimelineTranscript(project: Project, getTranscript: (assetId: string) => ReturnType<TranscriptService['get']>): TimelineTranscript {
-  const words: TimelineTranscriptWord[] = [];
-  const segments: Array<[number, string, number, number]> = [];
-  const clips = project.tracks.filter((track) => track.kind === 'video')
-    .flatMap((track) => track.clips.map((clip) => ({ trackId: track.id, clip })))
-    .sort((left, right) => left.clip.start - right.clip.start || left.trackId.localeCompare(right.trackId) || left.clip.id.localeCompare(right.clip.id));
-  for (const { trackId, clip } of clips) {
-    if (!clip.assetId) continue;
-    const transcript = getTranscript(clip.assetId);
-    if (!transcript) continue;
-    const speed = clip.speed ?? 1;
-    const clipWords = transcript.words.filter((word) => word.s >= clip.in && word.s < clip.out && word.e > word.s);
-    const firstIndex = words.length;
-    for (const word of clipWords) {
-      words.push({
-        index: words.length,
-        text: word.w,
-        timelineStart: clip.start + (word.s - clip.in) / speed,
-        timelineEnd: clip.start + (Math.min(word.e, clip.out) - clip.in) / speed,
-        sourceStart: word.s,
-        sourceEnd: Math.min(word.e, clip.out),
-        clipId: clip.id,
-        trackId,
-        assetId: clip.assetId,
-      });
-    }
-    for (const segment of transcript.segments) {
-      const included = words.slice(firstIndex).filter((word) => word.sourceStart >= segment.s && word.sourceStart < segment.e);
-      const first = included[0];
-      const last = included.at(-1);
-      if (!first || !last) continue;
-      segments.push([first.index, included.map((word) => word.text).join(' '), first.timelineStart, last.timelineEnd]);
-    }
-  }
-  return { words, rows: words.map((word) => [word.index, word.text, word.timelineStart]), segments };
-}
-
-export function planWordCutRanges(
-  words: Array<{ start: number; end: number; selected: boolean }>,
-  clipStart: number,
-  clipEnd: number,
-  keptGapMs = 150,
-): Array<{ start: number; end: number }> {
-  const halfGap = keptGapMs / 2000;
-  const ranges: Array<{ start: number; end: number }> = [];
-  let index = 0;
-  while (index < words.length) {
-    if (!words[index]?.selected) { index += 1; continue; }
-    const first = index;
-    while (index + 1 < words.length && words[index + 1]?.selected) index += 1;
-    const last = index;
-    const runStart = words[first]?.start ?? clipStart;
-    const runEnd = words[last]?.end ?? clipEnd;
-    const left = first > 0 ? words[first - 1]?.end ?? clipStart : clipStart;
-    const right = last + 1 < words.length ? words[last + 1]?.start ?? clipEnd : clipEnd;
-    const start = Math.max(clipStart, runStart - Math.min(Math.max(0, runStart - left), halfGap));
-    const end = Math.min(clipEnd, runEnd + Math.min(Math.max(0, right - runEnd), halfGap));
-    if (end > start) ranges.push({ start, end });
-    index += 1;
-  }
-  return mergeRanges(ranges);
-}
-
-function mergeRanges(ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> {
-  const result: Array<{ start: number; end: number }> = [];
-  for (const range of [...ranges].sort((left, right) => left.start - right.start || left.end - right.end)) {
-    const previous = result.at(-1);
-    if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
-    else result.push({ ...range });
-  }
-  return result;
-}
-
-function median(values: number[]): number {
-  if (!values.length) return Number.NEGATIVE_INFINITY;
-  const sorted = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] as number : ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2;
-}
-
-function energyCells(rmsDb: number[], cellSeconds: number, start: number, end: number): Array<{ index: number; db: number }> {
-  const first = Math.max(0, Math.floor(start / cellSeconds));
-  const last = Math.min(rmsDb.length, Math.ceil(end / cellSeconds));
-  return rmsDb.slice(first, last).map((db, offset) => ({ index: first + offset, db }));
 }
 
 async function captionClipFromTranscript(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
@@ -475,10 +405,9 @@ async function removeWords(ctx: ToolContext, rawInput: unknown): Promise<unknown
         for (let index = start; index <= end; index += 1) selected.add(index);
       }
     } else {
-      const normalize = (value: string): string => value.toLowerCase().replace(/^\W+|\W+$/g, '');
-      const timelineTokens = transcript.words.map((word) => normalize(word.text));
+      const timelineTokens = transcript.words.map((word) => normalizeWord(word.text));
       for (const match of input.matches ?? []) {
-        const phrase = match.split(/\s+/).map(normalize).filter(Boolean);
+        const phrase = match.split(/\s+/).map(normalizeWord).filter(Boolean);
         if (!phrase.length) continue;
         for (let start = 0; start + phrase.length <= timelineTokens.length; start += 1) {
           if (phrase.every((token, offset) => timelineTokens[start + offset] === token)) {
@@ -489,28 +418,9 @@ async function removeWords(ctx: ToolContext, rawInput: unknown): Promise<unknown
     }
     if (!selected.size) return { ...createMutationDelta(project, project, ['No matching timeline words were found.']), wordsRemoved: 0 };
 
-    const operations: Operation[] = [];
-    const tracks = new Map<string, Array<{ start: number; end: number }>>();
-    const byClip = new Map<string, TimelineTranscriptWord[]>();
-    for (const word of transcript.words) {
-      const list = byClip.get(word.clipId) ?? [];
-      list.push(word);
-      byClip.set(word.clipId, list);
-    }
-    for (const clipWords of byClip.values()) {
-      if (!clipWords.some((word) => selected.has(word.index))) continue;
-      const clip = project.tracks.flatMap((track) => track.clips).find((candidate) => candidate.id === clipWords[0]?.clipId);
-      if (!clip) continue;
-      const ranges = planWordCutRanges(clipWords.map((word) => ({
-        start: word.timelineStart, end: word.timelineEnd, selected: selected.has(word.index),
-      })), clip.start, clip.start + clipTimelineDuration(clip), input.keptGapMs);
-      const list = tracks.get(clipWords[0]?.trackId ?? '') ?? [];
-      list.push(...ranges);
-      tracks.set(clipWords[0]?.trackId ?? '', list);
-    }
-    for (const [trackId, ranges] of tracks) {
-      operations.push(operationSchema.parse({ type: 'ripple_delete_ranges', params: { trackId, ranges: mergeRanges(ranges) } }));
-    }
+    const tracks = planWordRemovalRanges(project, transcript.words, selected, input.keptGapMs);
+    const operations: Operation[] = [...tracks].map(([trackId, ranges]) =>
+      operationSchema.parse({ type: 'ripple_delete_ranges', params: { trackId, ranges } }));
     if (!operations.length) return { ...createMutationDelta(project, project), wordsRemoved: 0 };
     const after = applyMany(ctx, operations);
     return {
@@ -528,49 +438,265 @@ async function removeSilence(ctx: ToolContext, rawInput: unknown): Promise<unkno
     const input = removeSilenceSchema.parse(rawInput);
     const project = requireProject(ctx);
     const timeline = buildTimelineTranscript(project, (assetId) => ctx.transcripts.get(assetId));
-    const rangesByTrack = new Map<string, Array<{ start: number; end: number }>>();
-    let gapsCut = 0;
-    let gapsProtected = 0;
-    for (let index = 0; index + 1 < timeline.words.length; index += 1) {
-      const left = timeline.words[index];
-      const right = timeline.words[index + 1];
-      if (!left || !right || left.clipId !== right.clipId || left.trackId !== right.trackId) continue;
-      const gapDuration = right.timelineStart - left.timelineEnd;
-      if (gapDuration < input.minSilenceSeconds) continue;
-      const asset = ctx.assets.get(left.assetId);
-      if (!asset) continue;
-      const speed = project.tracks.flatMap((track) => track.clips).find((clip) => clip.id === left.clipId)?.speed ?? 1;
-      const stored = ctx.transcripts.get(left.assetId);
-      if (!stored) continue;
-      const energy = input.protectLoudGaps ? (stored.energy ?? await ctx.transcripts.ensureEnergy(asset)) : undefined;
-      const gapCells = energy ? energyCells(energy.rmsDb, energy.cellSeconds, left.sourceEnd, right.sourceStart) : [];
-      const speechCells = energy ? timeline.words.filter((word) => word.assetId === left.assetId && word.clipId === left.clipId)
-        .flatMap((word) => energyCells(energy.rmsDb, energy.cellSeconds, word.sourceStart, word.sourceEnd).map((cell) => cell.db)) : [];
-      const isLoud = Boolean(energy) && median(gapCells.map((cell) => cell.db)) >= median(speechCells) - 12;
-      const list = rangesByTrack.get(left.trackId) ?? [];
-      if (isLoud && energy) {
-        gapsProtected += 1;
-        if (gapDuration > 2 && gapCells.length) {
-          const peak = gapCells.reduce((best, cell) => cell.db > best.db ? cell : best, gapCells[0] as { index: number; db: number });
-          const keepThroughSource = (peak.index + 1) * energy.cellSeconds + 0.4 * speed;
-          const cutStart = left.timelineEnd + Math.max(0, keepThroughSource - left.sourceEnd) / speed;
-          const cutEnd = right.timelineStart - input.padSeconds;
-          if (cutEnd > cutStart) { list.push({ start: cutStart, end: cutEnd }); gapsCut += 1; }
-        }
-      } else {
-        const start = left.timelineEnd + input.padSeconds;
-        const end = right.timelineStart - input.padSeconds;
-        if (end > start) { list.push({ start, end }); gapsCut += 1; }
-      }
-      rangesByTrack.set(left.trackId, list);
-    }
+    const { rangesByTrack, gapsCut, gapsProtected } = await planSilenceRanges(project, timeline.words, ctx, input);
     const operations = [...rangesByTrack].filter(([, ranges]) => ranges.length).map(([trackId, ranges]) =>
-      operationSchema.parse({ type: 'ripple_delete_ranges', params: { trackId, ranges: mergeRanges(ranges) } }));
-    const merged = [...rangesByTrack.values()].flatMap(mergeRanges);
+      operationSchema.parse({ type: 'ripple_delete_ranges', params: { trackId, ranges } }));
+    const merged = [...rangesByTrack.values()].flat();
     const removedSec = merged.reduce((total, range) => total + range.end - range.start, 0);
     if (!operations.length) return { ...createMutationDelta(project, project), removedSec: 0, gapsCut, gapsProtected };
     const after = applyMany(ctx, operations);
     return { ...createMutationDelta(project, after), removedSec, gapsCut, gapsProtected };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+/** A cut this close to a clip edge — or to the previous cut — reads as a stutter, not a beat. */
+const BEAT_MIN_SPACING_SEC = 0.25;
+
+async function cutToBeats(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
+  try {
+    const input = cutToBeatsSchema.parse(rawInput);
+    const project = requireProject(ctx);
+    const clip = project.tracks.filter((track) => track.kind === 'video')
+      .flatMap((track) => track.clips)
+      .find((candidate) => candidate.id === input.clipId);
+    if (!clip) return { ok: false, error: `Video clip ${input.clipId} was not found` };
+    if (!clip.assetId) return { ok: false, error: `Video clip ${input.clipId} has no asset` };
+    if (!ctx.dissections) return { ok: false, error: 'Dissection service is not available' };
+    const asset = ctx.assets.get(clip.assetId);
+    if (!asset) return { ok: false, error: `Asset ${clip.assetId} was not found` };
+    // Same path as dissect_asset: an unmeasured asset gets measured here (slow once, then cached).
+    const dissection = await ctx.dissections.getOrCreate(asset);
+
+    const speed = clip.speed ?? 1;
+    const end = clip.start + clipTimelineDuration(clip);
+    const spaced: number[] = [];
+    for (const peak of [...dissection.energyPeaks].sort((left, right) => left - right)) {
+      if (peak <= clip.in || peak >= clip.out) continue;
+      const at = Number((clip.start + (peak - clip.in) / speed).toFixed(6));
+      if (at - clip.start < BEAT_MIN_SPACING_SEC || end - at < BEAT_MIN_SPACING_SEC) continue;
+      if (at - (spaced.at(-1) ?? Number.NEGATIVE_INFINITY) < BEAT_MIN_SPACING_SEC) continue;
+      spaced.push(at);
+    }
+    // Thinning rule: keep every Nth beat rather than ranking peak strength.
+    // energyPeaks carries no amplitude, so "strongest" would be invented; an
+    // even stride keeps the cuts spread across the whole clip.
+    const stride = Math.max(1, Math.ceil(spaced.length / input.maxCuts));
+    const cutTimes = spaced.filter((_unused, index) => index % stride === 0);
+    if (!cutTimes.length) {
+      return { ...createMutationDelta(project, project, [`No usable audio onsets inside ${clip.id}.`]), cutTimes: [] };
+    }
+
+    // Descending: each split leaves the left-hand piece under the original id,
+    // so every earlier cut point is still inside `clip.id` when its turn comes.
+    const operations = [...cutTimes].reverse().map((at, index) => operationSchema.parse({
+      type: 'split_clip',
+      params: { clipId: clip.id, at, newClipId: `${clip.id}-beat-${cutTimes.length - index}` },
+    }));
+    const after = applyMany(ctx, operations);
+    const notes = spaced.length > cutTimes.length
+      ? [`Thinned ${spaced.length} onsets to ${cutTimes.length} by keeping 1 in every ${stride}.`]
+      : [];
+    return { ...createMutationDelta(project, after, notes), cutTimes, tempoBpm: dissection.tempoBpm };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+/** A hit this close to a cut is the same hit — a re-apply must not stack SFX. */
+const SFX_DEDUPE_SEC = 0.15;
+/** Trailing sliver of music shorter than this is not worth a clip. */
+const BED_MIN_TILE_SEC = 0.01;
+
+/**
+ * Ids for the clips a packet sweep mints. Skipping ids already on the timeline
+ * keeps a second packet from colliding with the first one's bed or cut SFX — an
+ * add_clip id clash would reject the whole atomic batch.
+ */
+function createIdAllocator(project: Project): (prefix: string) => string {
+  const taken = new Set(project.tracks.flatMap((track) => track.clips.map((clip) => clip.id)));
+  const counters = new Map<string, number>();
+  return (prefix) => {
+    let next = counters.get(prefix) ?? 0;
+    let id: string;
+    do { next += 1; id = `${prefix}-${next}`; } while (taken.has(id));
+    counters.set(prefix, next);
+    taken.add(id);
+    return id;
+  };
+}
+
+/** Resolve a library sound, synthesizing the library once if it was never generated. */
+async function resolveSound(ctx: ToolContext, soundId: string): Promise<StoredAsset | undefined> {
+  const existing = ctx.assets.get(soundId);
+  if (existing) return existing;
+  await ensureSoundLibrary(ctx.assets);
+  return ctx.assets.get(soundId);
+}
+
+async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
+  try {
+    const input = applyPacketSchema.parse(rawInput);
+    const packet = input.packet ?? (input.packetId ? PACKETS_BY_ID.get(input.packetId) : undefined);
+    if (!packet) {
+      const ids = STYLE_PACKETS.map((candidate) => candidate.id).join(', ');
+      return {
+        ok: false,
+        error: input.packetId
+          ? `Unknown style packet ${input.packetId}. Valid ids: ${ids}`
+          : `Pass packetId (one of: ${ids}) or an inline packet object.`,
+      };
+    }
+    const project = requireProject(ctx);
+    const { typography, zoom } = packet;
+    const nextId = createIdAllocator(project);
+    const operations: Operation[] = [];
+    const notes: string[] = [];
+    const guidance: string[] = [];
+
+    // Typography. update_caption REPLACES the style object, so the merge starts
+    // from the clip's own style — that is what carries `words`, and losing it
+    // would silently destroy karaoke timing.
+    const captions = project.tracks.filter((track) => track.kind === 'caption').flatMap((track) => track.clips);
+    for (const caption of captions) {
+      const style = captionStyleSchema.parse({
+        ...caption.style,
+        font: 'Montserrat',
+        sizePct: typography.sizePct,
+        color: typography.color,
+        emphasisColor: typography.emphasisColor,
+        strokeColor: typography.strokeColor,
+        strokePx: typography.strokePx,
+        anchorPct: typography.anchorPct,
+        emphasis: typography.emphasis,
+      });
+      operations.push(operationSchema.parse({
+        type: 'update_caption',
+        params: {
+          clipId: caption.id,
+          ...(caption.text ? { text: typography.uppercase ? caption.text.toUpperCase() : caption.text } : {}),
+          style,
+        },
+      }));
+    }
+
+    const videoTrack = project.tracks.find((track) => track.kind === 'video');
+    const videoClips = [...(videoTrack?.clips ?? [])].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+    const videoEnd = videoClips.reduce((end, clip) => Math.max(end, clip.start + clipTimelineDuration(clip)), 0);
+    const audioTrack = project.tracks.find((track) => track.kind === 'audio');
+    // add_clip only auto-creates the `overlays` track, so without an audio track
+    // there is nowhere to put a bed or a cut hit.
+    if (!audioTrack && (packet.music.soundId || packet.transition.soundId)) {
+      guidance.push('This project has no audio track, so the music bed and cut SFX were skipped — add_clip cannot create one. Add an audio track to the project, then re-apply the packet.');
+    }
+
+    // Music bed, tiled back-to-back under the video.
+    if (audioTrack && packet.music.soundId && videoEnd > 0) {
+      const bed = await resolveSound(ctx, packet.music.soundId);
+      if (!bed?.duration) notes.push(`Music bed skipped — sound ${packet.music.soundId} is unavailable.`);
+      else if (audioTrack.clips.some((clip) => clip.assetId === bed.id)) {
+        notes.push(`Music bed skipped — ${bed.id} is already on ${audioTrack.id}.`);
+      } else {
+        ctx.assets.link(ctx.projectId, bed.id);
+        for (let cursor = 0; videoEnd - cursor > BED_MIN_TILE_SEC; cursor += bed.duration) {
+          operations.push(operationSchema.parse({
+            type: 'add_clip',
+            params: {
+              trackId: audioTrack.id,
+              clip: {
+                id: nextId('music-bed'), assetId: bed.id, start: cursor, in: 0,
+                out: Math.min(bed.duration, videoEnd - cursor), volume: packet.music.volume,
+              },
+            },
+          }));
+        }
+      }
+    }
+
+    // Transitions at every adjacent cut, plus the packet's cut hit.
+    const cutStarts: number[] = [];
+    for (const [index, clip] of videoClips.entries()) {
+      const previous = videoClips[index - 1];
+      if (!previous) continue;
+      const previousEnd = previous.start + clipTimelineDuration(previous);
+      if (Math.abs(clip.start - previousEnd) > 1 / project.fps) continue;
+      operations.push(operationSchema.parse({
+        type: 'set_transition',
+        params: {
+          clipId: clip.id,
+          transition: packet.transition.type === 'cut'
+            ? null
+            : { type: packet.transition.type, duration: packet.transition.duration },
+        },
+      }));
+      cutStarts.push(clip.start);
+    }
+
+    if (audioTrack && packet.transition.soundId && cutStarts.length) {
+      const sfx = await resolveSound(ctx, packet.transition.soundId);
+      if (!sfx?.duration) notes.push(`Cut SFX skipped — sound ${packet.transition.soundId} is unavailable.`);
+      else {
+        ctx.assets.link(ctx.projectId, sfx.id);
+        const placed = audioTrack.clips.filter((clip) => clip.assetId === sfx.id).map((clip) => clip.start);
+        let added = 0;
+        for (const at of cutStarts) {
+          if (placed.some((existing) => Math.abs(existing - at) <= SFX_DEDUPE_SEC)) continue;
+          operations.push(operationSchema.parse({
+            type: 'add_clip',
+            params: {
+              trackId: audioTrack.id,
+              clip: {
+                id: nextId('sfx-cut'), assetId: sfx.id, start: at, in: 0,
+                out: sfx.duration, volume: packet.transition.soundVolume,
+              },
+            },
+          }));
+          added += 1;
+        }
+        if (added < cutStarts.length) notes.push(`${cutStarts.length - added} cut(s) already carried a ${sfx.id} hit.`);
+      }
+    }
+
+    // Punch-in cadence. An existing transformEnd is a deliberate move — leave it.
+    if (zoom.cadence !== 'off') {
+      for (const [index, clip] of videoClips.entries()) {
+        if (zoom.cadence === 'sparse' && index % 3 !== 0) continue;
+        if (clip.transformEnd) continue;
+        operations.push(operationSchema.parse({
+          type: 'set_transform',
+          params: {
+            clipId: clip.id,
+            transform: { scale: 1, x: 0, y: 0 },
+            transformEnd: { scale: zoom.scale, x: 0, y: 0 },
+          },
+        }));
+      }
+    }
+
+    // The creative half: what the packet wants that only judgment can place.
+    const missingWords = captions.filter((caption) => !caption.style?.words?.length).length;
+    if (typography.karaoke && missingWords) {
+      guidance.push(`Karaoke is part of this look but ${missingWords} caption clip(s) carry no word timings — run caption_clip_from_transcript with wordsPerChunk 3 on the source video clips, then re-apply this packet.`);
+    }
+    if (packet.callouts.density !== 'off') {
+      const cadence = packet.callouts.density === 'every-line' ? 'roughly one per caption line' : 'roughly one per scene';
+      guidance.push(`Callouts (${packet.callouts.density} — ${cadence}): add_clip on trackId 'overlays' with the callout line as clip.text, callout: {variant: 'check' | 'x' | 'card'}, and overlay: {x: 0.5, y: 0.3, width: 0.56, rotation: 0}; in: 0 and out: the seconds it holds. Use 'check' for the right way (${packet.colors.good ?? packet.colors.accent}), 'x' for the wrong way (${packet.colors.bad ?? packet.colors.accent}), and 'card' for a neutral card (${packet.colors.accent}).`);
+    }
+    if (packet.broll.density !== 'off') {
+      const cadence = packet.broll.density === 'frequent' ? 'a cutaway every few shots' : 'only where the words name something visual';
+      guidance.push(`B-roll (${packet.broll.density} — ${cadence}): cover narration moments with full-frame overlay clips — add_clip on trackId 'overlays' with a video assetId from list_assets, overlay: {x: 0.5, y: 0.5, width: 1, rotation: 0}, in: the source second to start from, and out: in plus the cutaway seconds.`);
+    }
+    const averageShot = videoClips.length ? videoEnd / videoClips.length : 0;
+    const target = packet.pacing.targetShotSeconds;
+    if (target && averageShot > target * 1.5) {
+      guidance.push(`Pacing: shots average ${averageShot.toFixed(1)}s against this look's ${target}s target — tighten with cut_to_beats on the long clips, or split_clip plus trim_clip, until the average lands near ${target}s.`);
+    }
+
+    const after = operations.length ? applyMany(ctx, operations) : project;
+    return { ...createMutationDelta(project, after, notes), guidance };
   } catch (error) {
     if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
     throw error;
@@ -598,8 +724,8 @@ export function createToolRegistry(): ToolDef[] {
       execute: async (ctx, input) => {
         emptyInputSchema.parse(input);
         // Scoped to the project: another project's footage is not yours to cut.
-        return ctx.assets.listForProject(ctx.projectId).map(({ id, originalName, label, duration, width, height, hasAudio }) => ({
-          id, originalName, label, duration, width, height, hasAudio,
+        return ctx.assets.listForProject(ctx.projectId).map(({ id, originalName, label, duration, width, height, hasAudio, mimeType }) => ({
+          id, originalName, label, duration, width, height, hasAudio, mimeType,
         }));
       },
     },
@@ -657,6 +783,24 @@ export function createToolRegistry(): ToolDef[] {
       },
     },
     {
+      name: 'dissect_asset',
+      description: 'Measure a source video with ffmpeg only: scene-cut timestamps and cadence, audio energy curve and onset peaks, estimated tempo BPM, loudness, and spans where burned-in text/graphics sit (top/bottom zones). Use it to mirror a reference video\'s rhythm — cut on its cadence, land edits on its energy peaks. All times are source seconds. Slow on first call; cached afterwards.',
+      schema: assetInputSchema,
+      execute: async (ctx, input) => {
+        const { assetId } = assetInputSchema.parse(input);
+        const asset = ctx.assets.get(assetId);
+        if (!asset) return { ok: false, error: `Asset ${assetId} was not found` };
+        if (!ctx.dissections) return { ok: false, error: 'Dissection service is not available' };
+        const dissection = await ctx.dissections.getOrCreate(asset);
+        // Compact for the context window: cuts and peaks rounded, energy kept coarse.
+        return {
+          ...dissection,
+          cuts: dissection.cuts.map((cut) => Math.round(cut * 100) / 100),
+          energy: { cellSeconds: dissection.energy.cellSeconds, rmsDb: dissection.energy.rmsDb.map((db) => Math.round(db)) },
+        };
+      },
+    },
+    {
       name: 'list_presets',
       description: 'List the built-in editing presets with their target content. Fetch a matching preset before applying a named style or content-specific edit.',
       schema: emptyInputSchema,
@@ -670,6 +814,15 @@ export function createToolRegistry(): ToolDef[] {
       description: 'Get every actionable parameter and rationale for one built-in editing preset. Presets guide editorial judgment; they are not rigid law.',
       schema: presetNameSchema,
       execute: async (_ctx, input) => PRESETS_BY_NAME[presetNameSchema.parse(input).name],
+    },
+    {
+      name: 'get_style_packets',
+      description: 'List the built-in style packets — a creator\'s repeatable look captured as data: typography, colour system, music bed, transition habit, punch-in cadence, and callout/b-roll density. Read one before calling apply_style_packet.',
+      schema: emptyInputSchema,
+      execute: async (_ctx, input) => {
+        emptyInputSchema.parse(input);
+        return STYLE_PACKETS;
+      },
     },
   ];
 
@@ -691,6 +844,18 @@ export function createToolRegistry(): ToolDef[] {
         const input = splitClipsSchema.parse(rawInput);
         return await executeBatch(ctx, input.cuts.map((params) => operationSchema.parse({ type: 'split_clip', params })));
       },
+    },
+    {
+      name: 'cut_to_beats',
+      description: 'Split one video clip on its measured audio onsets so the cuts land on the beat — the montage-pacing primitive. Beats come from the asset dissection (computed on first use, cached after); cuts stay at least 0.25s from the clip edges and from each other, and maxCuts (default 12, max 30) thins them evenly across the clip. Right-hand pieces are named <clipId>-beat-1..N left to right. Follow with reorder_clips, trim_clip, or set_speed to shape the rhythm.',
+      schema: cutToBeatsSchema,
+      execute: cutToBeats,
+    },
+    {
+      name: 'apply_style_packet',
+      description: 'Apply one style packet — either `packetId` for a built-in from get_style_packets, or a whole `packet` object inline (the shape get_style_packets returns; that is how a look derived from the user\'s style profile or a dissected reference arrives, usually pasted into the message). Runs in one atomic batch: restyle every caption to its typography (karaoke word timings are preserved), tile its music bed under the video, set its transition and cut SFX at every adjacent cut, and set its punch-in cadence. Returns the timeline delta plus `guidance` — the creative half (callouts, b-roll, pacing) that you still have to author yourself.',
+      schema: applyPacketSchema,
+      execute: applyStylePacket,
     },
     {
       name: 'remove_words',

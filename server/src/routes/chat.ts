@@ -5,6 +5,7 @@ import type { AssetStore } from '../db/asset-store.js';
 import type { ChatStore } from '../db/chat-store.js';
 import type { ProjectStore } from '../db/project-store.js';
 import type { StyleService } from '../services/style-service.js';
+import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 
@@ -23,6 +24,7 @@ export function registerChatRoutes(
   styles: StyleService,
   transcripts: TranscriptService,
   insights: InsightService,
+  dissections: DissectService,
 ): void {
   app.post<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
     const project = projects.get(request.params.id);
@@ -41,7 +43,14 @@ export function registerChatRoutes(
         currentVersion: project.version,
         transcripts,
         insights,
+        dissections,
       }, message, (step) => run.steps.push(step));
+    } catch (error) {
+      // The loop may have applied ops before dying; a chat record has to say
+      // so, or the timeline changes with no explanation in the history.
+      const reason = error instanceof Error ? error.message : String(error);
+      chats.add(project.id, 'assistant', `The agent hit an error mid-turn: ${reason}`, [], run.steps);
+      throw error;
     } finally {
       activeRuns.delete(project.id);
     }

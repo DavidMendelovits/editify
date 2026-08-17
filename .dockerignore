@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+server/data
+apps/mobile/dist
+apps/mobile/.expo
+test-clips
+research
+.git
+.env
+.env.local
+*.log
+.DS_Store

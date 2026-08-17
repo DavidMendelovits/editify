@@ -86,11 +86,13 @@ function parseJsonResponse(text: string): unknown {
 }
 
 export class InsightService {
+  private readonly inFlight = new Map<string, Promise<AssetInsights>>();
+
   constructor(
     readonly store: InsightStore,
     private readonly transcripts: TranscriptService,
     /** Resolved per call so the UI's provider picker applies without a restart. */
-    private readonly provider: () => ToolProvider,
+    private readonly provider: () => Promise<ToolProvider>,
   ) {}
 
   getStored(assetId: string): AssetInsights | undefined {
@@ -102,7 +104,15 @@ export class InsightService {
     if (existing && !force) return existing;
     const transcript = this.transcripts.get(asset.id);
     if (!transcript) return undefined;
+    // ponytail: like transcribe(), a force=true call that lands mid-run joins
+    // the in-flight run rather than paying for a second provider round trip.
+    const pending = this.inFlight.get(asset.id) ?? this.analyze(asset, transcript)
+      .finally(() => this.inFlight.delete(asset.id));
+    this.inFlight.set(asset.id, pending);
+    return await pending;
+  }
 
+  private async analyze(asset: StoredAsset, transcript: StoredTranscript): Promise<AssetInsights> {
     const generatedAt = new Date().toISOString();
     const system = [
       'Analyze this timed transcript for a short-form video edit.',
@@ -126,19 +136,22 @@ export class InsightService {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const user = `${JSON.stringify(payload)}${validationError ? `\nPrevious response was invalid: ${validationError}` : ''}`;
       try {
-        const parsed = assetInsightsSchema.parse(parseJsonResponse(await this.provider().completeText(system, user)));
+        const provider = await this.provider();
+        const parsed = assetInsightsSchema.parse(parseJsonResponse(await provider.completeText(system, user)));
         if (parsed.assetId !== asset.id) throw new Error(`assetId must be ${asset.id}`);
         return this.store.put(parsed);
       } catch (error) {
         validationError = error instanceof Error ? error.message : String(error);
       }
     }
-    return this.store.put({
+    // Deliberately NOT persisted: a transient provider failure must not poison
+    // the cache forever — the next request simply retries.
+    return {
       assetId: asset.id,
       hook: null,
       highlights: [],
       summary: 'Analysis unavailable',
       generatedAt,
-    });
+    };
   }
 }

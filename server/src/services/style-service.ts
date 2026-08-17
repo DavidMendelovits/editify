@@ -25,17 +25,53 @@ export interface StyleProfile {
   createdAt: string;
 }
 
+/** Run state of the background analysis; `error` is set only when status is 'error'. */
+export interface StyleRunState { status: 'idle' | 'processing' | 'error'; error?: string }
+
 const emptyProject: Project = {
   id: 'style-analysis', title: 'Style analysis', format: '9:16', fps: 30,
   duration: 0, version: 0, tracks: [],
 };
 
 export class StyleService {
+  // ponytail: in-memory job state, lost on restart — client just re-triggers
+  private run: StyleRunState = { status: 'idle' };
+  private inFlight: Promise<void> | null = null;
+
   constructor(
     private readonly database: EditifyDatabase,
     private readonly assets: AssetStore,
     private readonly agent: AgentService,
   ) {}
+
+  /** The first unknown id, so a route can 4xx before any ffmpeg work starts. */
+  missingAsset(assetIds: string[]): string | undefined {
+    return assetIds.find((assetId) => !this.assets.get(assetId));
+  }
+
+  state(): StyleRunState {
+    return this.run;
+  }
+
+  /**
+   * Starts an analysis in the background and reports the run state right away.
+   * A second call while one is running joins the live run instead of starting a
+   * rival scan — the client is polling anyway, so it just keeps waiting (the
+   * newly requested assetIds are ignored; re-trigger once the run settles).
+   * Validate ids with `missingAsset` first: unknown ones fail the run, not the call.
+   */
+  start(assetIds: string[]): StyleRunState {
+    if (!this.inFlight) {
+      this.run = { status: 'processing' };
+      this.inFlight = this.analyze(assetIds)
+        .then(() => { this.run = { status: 'idle' }; })
+        .catch((error: unknown) => {
+          this.run = { status: 'error', error: error instanceof Error ? error.message : String(error) };
+        })
+        .finally(() => { this.inFlight = null; });
+    }
+    return this.run;
+  }
 
   async analyze(assetIds: string[]): Promise<StyleProfile> {
     const metrics: StyleMetric[] = [];

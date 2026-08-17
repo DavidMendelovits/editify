@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import type { AssetMetadata } from '@editify/shared';
-import { assetFilmstripUrl } from '../../lib/api';
+import { assetFilmstripUrl, assetThumbUrl } from '../../lib/api';
 import { FILMSTRIP_TILES, stripCells } from '../../lib/timeline';
 import { colors } from '../../lib/theme';
 
@@ -23,13 +23,13 @@ interface Props {
  * clip re-frames the strip instead of squashing it. If the endpoint is not
  * there yet (404) the whole strip degrades to the single `thumb.jpg`.
  */
-export function Filmstrip({ asset, in: inPoint, out, width, height }: Props) {
+export const Filmstrip = memo(function Filmstrip({ asset, in: inPoint, out, width, height }: Props) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [asset?.id]);
 
   if (!asset || width <= 1) return <View style={[styles.blank, { height }]} />;
   if (failed) {
-    return <Image source={{ uri: asset.thumbnailUrl }} style={[styles.fallback, { width, height }]} resizeMode="cover" />;
+    return <Image source={{ uri: assetThumbUrl(asset.id) }} style={[styles.fallback, { width, height }]} resizeMode="cover" />;
   }
 
   const uri = assetFilmstripUrl(asset.id);
@@ -55,7 +55,7 @@ export function Filmstrip({ asset, in: inPoint, out, width, height }: Props) {
       ))}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', backgroundColor: '#000000' },

@@ -62,7 +62,7 @@ describe('Wave 2 timeline tools', () => {
     transcripts = new TranscriptService(transcriptStore, async () => { throw new Error('Whisper must not run'); }, async () => {
       throw new Error('ffmpeg must not run');
     });
-    const insights = new InsightService(new InsightStore(database), transcripts, () => new MockToolProvider());
+    const insights = new InsightService(new InsightStore(database), transcripts, async () => new MockToolProvider());
     assets.insert({
       id: 'speech', originalName: 'speech.mp4', mimeType: 'video/mp4', duration: 5,
       width: 1920, height: 1080, fps: 30, hasAudio: true,

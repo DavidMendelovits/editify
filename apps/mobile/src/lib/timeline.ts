@@ -40,6 +40,38 @@ export function clipAt(clips: readonly Clip[], time: number): Clip | undefined {
 }
 
 /**
+ * Per-frame variants for pre-sorted lists: these run inside playhead selectors
+ * ~60 times a second, so they must not sort or allocate.
+ * ponytail: linear scans — clip counts are tens, not thousands.
+ */
+export function clipIndexAtSorted(clips: readonly Clip[], time: number): number {
+  for (let index = 0; index < clips.length; index += 1) {
+    const clip = clips[index] as Clip;
+    if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) return index;
+  }
+  return -1;
+}
+
+/** Pool anchor: the active clip, else the clip the playhead is heading into. */
+export function anchorIndexAtSorted(clips: readonly Clip[], time: number): number {
+  const active = clipIndexAtSorted(clips, time);
+  if (active >= 0) return active;
+  for (let index = 0; index < clips.length; index += 1) {
+    if ((clips[index] as Clip).start > time) return index;
+  }
+  return Math.max(0, clips.length - 1);
+}
+
+/** Comma-joined ids of the clips visible at `time` — a comparable signature for selectors. */
+export function visibleIdsAt(clips: readonly Clip[], time: number): string {
+  let ids = '';
+  for (const clip of clips) {
+    if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) ids += ids ? `,${clip.id}` : clip.id;
+  }
+  return ids;
+}
+
+/**
  * Ruler tick spacing: the smallest human-readable step that still leaves at
  * least `minPx` between labels at the current zoom.
  */
@@ -59,12 +91,58 @@ export function formatTimecode(seconds: number, tenths = true): string {
     : `${minutes}:${whole}`;
 }
 
-/** Every time a dragged edge should magnet to: neighbouring edges, playhead, zero. */
-export function snapTargets(track: Track | undefined, movingClipId: string, playhead: number): number[] {
+/**
+ * Every time a dragged edge should magnet to: neighbouring edges, playhead,
+ * zero, and the measured beats passed in by the caller (see `beatTargets`).
+ */
+export function snapTargets(
+  track: Track | undefined,
+  movingClipId: string,
+  playhead: number,
+  beats: readonly number[] = [],
+): number[] {
   const edges = (track?.clips ?? [])
     .filter((clip) => clip.id !== movingClipId)
     .flatMap((clip) => [clip.start, clipEnd(clip)]);
-  return [0, playhead, ...edges];
+  return [0, playhead, ...edges, ...beats];
+}
+
+/** Ceiling on beat targets: a whole song of onsets is a magnet field, not a guide. */
+export const MAX_BEAT_TARGETS = 200;
+/** Beats this close together in timeline seconds are one target, not two. */
+const BEAT_MERGE_SEC = 0.02;
+
+/**
+ * Timeline seconds of the measured audio onsets under a lane's clips: source
+ * peaks mapped through each clip's `in`, `start`, and `speed`, then sorted,
+ * deduped, and capped. `peaksOf` returns source-second peaks for an asset, or
+ * `undefined` when nothing has been measured — this stays a pure function of
+ * what it is handed.
+ * ponytail: the cap keeps the first `MAX_BEAT_TARGETS` beats rather than
+ * thinning across the project, so a very long timeline loses its late beats.
+ */
+export function beatTargets(
+  clips: readonly Clip[],
+  peaksOf: (assetId: string) => readonly number[] | undefined,
+): number[] {
+  const times: number[] = [];
+  for (const clip of clips) {
+    const peaks = clip.assetId ? peaksOf(clip.assetId) : undefined;
+    if (!peaks) continue;
+    const speed = clip.speed ?? 1;
+    for (const peak of peaks) {
+      if (peak < clip.in || peak > clip.out) continue;
+      times.push(clip.start + (peak - clip.in) / speed);
+    }
+  }
+  const deduped: number[] = [];
+  for (const time of times.sort((left, right) => left - right)) {
+    const previous = deduped.at(-1);
+    if (previous !== undefined && time - previous < BEAT_MERGE_SEC) continue;
+    deduped.push(time);
+    if (deduped.length >= MAX_BEAT_TARGETS) break;
+  }
+  return deduped;
 }
 
 /** Snaps `time` to the closest target within `tolerance` seconds, else returns it unchanged. */
@@ -116,6 +194,10 @@ export function trimInPreview(track: Track | undefined, clip: Clip, deltaSeconds
 /**
  * Right-edge trim: only `out` moves. Bounded by the source tail (asset
  * duration), the next clip on the track, and `MIN_CLIP_DURATION`.
+ * `assetDuration === undefined` means "unknown" and locks extension — trims
+ * committed past the real source end used to slip through while the asset
+ * query was still loading. Pass `Infinity` for clips with no source at all
+ * (stickers, captions).
  */
 export function trimOutPreview(
   track: Track | undefined,
@@ -126,7 +208,7 @@ export function trimOutPreview(
   const speed = clip.speed ?? 1;
   const others = sortClips((track?.clips ?? []).filter((candidate) => candidate.id !== clip.id));
   const after = others.find((candidate) => candidate.start >= clipEnd(clip) - 1e-6);
-  const sourceTail = assetDuration === undefined ? Number.POSITIVE_INFINITY : Math.max(0, assetDuration - clip.out);
+  const sourceTail = assetDuration === undefined ? 0 : Math.max(0, assetDuration - clip.out);
   const gapAhead = after ? after.start - clipEnd(clip) : Number.POSITIVE_INFINITY;
   const maxRight = Math.min(sourceTail / speed, gapAhead);
   const maxLeft = Math.max(0, (clip.out - clip.in) / speed - MIN_CLIP_DURATION);

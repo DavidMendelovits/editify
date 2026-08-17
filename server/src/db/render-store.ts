@@ -41,6 +41,17 @@ export class RenderStore {
   get(id: string): RenderRecord | undefined {
     const row = this.database.prepare('SELECT * FROM renders WHERE id = ?').get(id) as RenderRow | undefined;
     if (!row) return undefined;
+    return this.toRecord(row);
+  }
+
+  unfinished(): RenderRecord[] {
+    const rows = this.database.prepare(`
+      SELECT * FROM renders WHERE status IN ('queued', 'processing') ORDER BY created_at ASC
+    `).all() as RenderRow[];
+    return rows.map((row) => this.toRecord(row));
+  }
+
+  private toRecord(row: RenderRow): RenderRecord {
     return {
       id: row.id,
       projectId: row.project_id,

@@ -59,6 +59,8 @@ export function runWhisperTranscription(mediaPath: string): Promise<TranscriptRe
 }
 
 export class TranscriptService {
+  private readonly inFlight = new Map<string, Promise<StoredTranscript>>();
+
   constructor(
     readonly store: TranscriptStore,
     private readonly runner: TranscriptionRunner = runWhisperTranscription,
@@ -75,6 +77,16 @@ export class TranscriptService {
       if (existing.energy) return existing;
       try { return this.store.putEnergy(asset.id, await this.energyAnalyzer(asset.originalPath)); } catch { return existing; }
     }
+    // ponytail: a force=true call that lands mid-run joins the in-flight run
+    // instead of starting a second Whisper pass — it gets a transcript that is
+    // at most one run stale, which beats paying for minutes of duplicate GPU.
+    const pending = this.inFlight.get(asset.id) ?? this.run(asset)
+      .finally(() => this.inFlight.delete(asset.id));
+    this.inFlight.set(asset.id, pending);
+    return await pending;
+  }
+
+  private async run(asset: StoredAsset): Promise<StoredTranscript> {
     const result = await this.runner(asset.originalPath);
     try {
       return this.store.put(asset.id, result, await this.energyAnalyzer(asset.originalPath));

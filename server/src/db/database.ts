@@ -110,6 +110,21 @@ function migrate(database: EditifyDatabase): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS dissections (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+      dissection_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    -- 50ms RMS envelope per asset, for the waveform drawn inside timeline
+    -- clips. Only ever populated for assets with no transcript energy to
+    -- borrow, so it is a cache and never the primary copy.
+    CREATE TABLE IF NOT EXISTS waveforms (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+      waveform_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   const transcriptColumns = database.prepare('PRAGMA table_info(transcripts)').all() as Array<{ name: string }>;

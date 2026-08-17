@@ -1,8 +1,31 @@
-import type { AssetMetadata, NewProject, Operation, Project } from '@editify/shared';
+import type { AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project } from '@editify/shared';
 import type { AgentTraceStep } from './agent';
 import type { EditPreset } from './presets';
 
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+
+/**
+ * The server's shared password (`EDITIFY_TOKEN`), when it has one. Left unset
+ * for the web build: that client is served from the API's own origin, so the
+ * browser's Basic prompt supplies credentials and nothing has to be baked into
+ * a static bundle.
+ */
+const TOKEN = process.env.EXPO_PUBLIC_API_TOKEN ?? '';
+const authHeaders: Record<string, string> = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+
+/**
+ * Media loads go through video/image/audio players that cannot set headers, so
+ * the token rides along in the query string instead.
+ */
+export function mediaUrl(path: string): string {
+  if (!TOKEN) return `${API_URL}${path}`;
+  return `${API_URL}${path}${path.includes('?') ? '&' : '?'}k=${encodeURIComponent(TOKEN)}`;
+}
+
+/** Plain `fetch` against the API for callers outside `api` — same credentials. */
+export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${API_URL}${path}`, { ...init, headers: { ...authHeaders, ...init?.headers } });
+}
 
 export interface ChatMessage {
   id: string;
@@ -68,6 +91,15 @@ export interface StyleProfile {
   createdAt: string;
 }
 
+export type StyleRunStatus = 'idle' | 'processing' | 'error';
+
+/**
+ * `GET /style-profile` flattened: the server answers 200 with the profile (plus
+ * the run state) or 404 with just the run state, and analysis runs in the
+ * background, so the screen polls this while `status` is 'processing'.
+ */
+export interface StyleState { status: StyleRunStatus; error?: string; profile: StyleProfile | null }
+
 /**
  * Local mirror of `assetInsightsSchema` (SPEC-TRANSCRIPT.md §B1) — kept here so
  * the panel does not depend on `@editify/shared` re-exporting it. All times are
@@ -84,28 +116,72 @@ export interface AssetInsights {
 }
 
 /**
+ * `GET /assets/:id/waveform` — RMS cells across the whole source, one every
+ * `cellSeconds`. `rmsDb` is empty when the asset carries no audio, so the
+ * caller draws nothing rather than handling an error.
+ */
+export interface WaveformEnvelope { cellSeconds: number; rmsDb: number[] }
+
+/**
  * `GET /assets/:id/filmstrip.jpg` — 20 frames tiled 20x1, left→right across
  * `[0, duration]` (SPEC-WAVE3 §B). Built here rather than read off the asset
  * metadata so the timeline can render before the server exposes `filmstripUrl`;
  * the UI falls back to `thumb.jpg` when the request 404s.
  */
 export function assetFilmstripUrl(assetId: string): string {
-  return `${API_URL}/assets/${assetId}/filmstrip.jpg`;
+  return mediaUrl(`/assets/${assetId}/filmstrip.jpg`);
 }
 
 /** `GET /assets/:id/thumb.jpg` — poster frame, used on project cards. */
 export function assetThumbUrl(assetId: string): string {
-  return `${API_URL}/assets/${assetId}/thumb.jpg`;
+  return mediaUrl(`/assets/${assetId}/thumb.jpg`);
+}
+
+/**
+ * `GET /assets/:id/proxy.mp4`, built client-side. The server's `proxyUrl`
+ * field is minted from its own PUBLIC_BASE_URL (localhost by default), which a
+ * phone cannot reach — every media URL must come from `API_URL` instead.
+ */
+export function assetProxyUrl(assetId: string): string {
+  return mediaUrl(`/assets/${assetId}/proxy.mp4`);
+}
+
+/** `GET /assets/:id/original` — sticker images and sound files play from the source. */
+export function assetOriginalUrl(assetId: string): string {
+  return mediaUrl(`/assets/${assetId}/original`);
+}
+
+/** Rebase any server-minted absolute URL (render outputs) onto `API_URL`. */
+export function rebaseServerUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return mediaUrl(`${parsed.pathname}${parsed.search}`);
+  } catch {
+    return url.startsWith('/') ? mediaUrl(url) : url;
+  }
+}
+
+/** Raw JSON error bodies are illegible in the UI; surface the message inside. */
+function describeFailure(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: string };
+    if (parsed.error) {
+      return status === 409 && parsed.error.startsWith('Version conflict')
+        ? 'The project changed underneath this edit — try again.'
+        : parsed.error;
+    }
+  } catch { /* not JSON — fall through to the raw body */ }
+  return body ? `${status}: ${body}` : `Request failed with ${status}`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: { 'Content-Type': 'application/json', ...authHeaders, ...init?.headers },
   });
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body ? `${response.status}: ${body}` : `Request failed with ${response.status}`);
+    throw new Error(describeFailure(response.status, await response.text()));
   }
   return await response.json() as T;
 }
@@ -116,7 +192,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * routes before the server ships them.
  */
 async function requestOptional<T>(path: string): Promise<T | null> {
-  const response = await fetch(`${API_URL}${path}`, { headers: { 'Content-Type': 'application/json' } });
+  const response = await fetch(`${API_URL}${path}`, { headers: { 'Content-Type': 'application/json', ...authHeaders } });
   if (response.status === 404) return null;
   if (!response.ok) {
     const body = await response.text();
@@ -163,8 +239,25 @@ export const api = {
   listPresets: () => requestOptional<EditPreset[]>('/presets'),
   /** `null` when the asset has no transcript to analyse yet. */
   getInsights: (assetId: string) => requestOptional<AssetInsights>(`/assets/${assetId}/insights`),
-  getStyle: () => request<StyleProfile>('/style-profile'),
-  analyzeStyle: (assetIds: string[]) => request<StyleProfile>('/style-profile/analyze', {
+  /** Built-in SFX/music library; entries carry assetIds ready for add_clip. */
+  listSounds: () => request<LibrarySound[]>('/sounds'),
+  /** ffmpeg dissection of a source video — computed on first request, then cached. */
+  dissect: (assetId: string) => request<AssetDissection>(`/assets/${assetId}/dissect`),
+  /** Source-wide RMS envelope for the bars drawn inside timeline clips. */
+  getWaveform: (assetId: string) => request<WaveformEnvelope>(`/assets/${assetId}/waveform`),
+  /** 404 is an ordinary answer — no profile yet — and both codes carry the run state. */
+  getStyle: async (): Promise<StyleState> => {
+    const response = await fetch(`${API_URL}/style-profile`, { headers: { 'Content-Type': 'application/json', ...authHeaders } });
+    if (!response.ok && response.status !== 404) throw new Error(describeFailure(response.status, await response.text()));
+    const body = await response.json() as StyleProfile & { status: StyleRunStatus; error?: string };
+    return {
+      status: body.status,
+      ...(body.status === 'error' && body.error ? { error: body.error } : {}),
+      profile: response.status === 404 ? null : body,
+    };
+  },
+  /** 202 — the scan runs in the background; poll `getStyle` for the result. */
+  analyzeStyle: (assetIds: string[]) => request<{ status: StyleRunStatus }>('/style-profile/analyze', {
     method: 'POST', body: JSON.stringify({ assetIds }),
   }),
 };
@@ -182,7 +275,7 @@ export async function uploadAsset(asset: { uri: string; name: string; mimeType?:
     } as unknown as Blob);
   }
   const query = asset.projectId ? `?projectId=${encodeURIComponent(asset.projectId)}` : '';
-  const response = await fetch(`${API_URL}/assets${query}`, { method: 'POST', body: form });
+  const response = await fetch(`${API_URL}/assets${query}`, { method: 'POST', body: form, headers: authHeaders });
   if (!response.ok) throw new Error(await response.text());
   return await response.json() as AssetMetadata;
 }

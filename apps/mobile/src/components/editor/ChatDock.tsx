@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { AgentActivity } from '../AgentActivity';
 import { AgentTrace } from '../AgentTrace';
 import { PresetPicker } from '../PresetPicker';
+import { Markdown } from './Markdown';
 import { ProviderPicker } from './ProviderPicker';
-import { api, type ChatMessage, type RenderRecord } from '../../lib/api';
+import { api, rebaseServerUrl, type ChatMessage, type RenderRecord } from '../../lib/api';
 import type { AgentTraceStep } from '../../lib/agent';
 import { presetPrompt } from '../../lib/presets';
 import { colors } from '../../lib/theme';
@@ -67,6 +68,9 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
         ref={scroller}
         style={styles.messages}
         contentContainerStyle={styles.messagesContent}
+        // Without this, Android refuses to scroll a vertical list nested in the
+        // stacked layout's outer ScrollView.
+        nestedScrollEnabled
         onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
       >
         {(messages?.length ?? 0) === 0 && !optimisticMessage && (
@@ -102,20 +106,31 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
           </Pressable>
         ))}
       </View>
-      <View style={styles.composer}>
-        <TextInput
-          value={text}
-          onChangeText={draft}
-          onSubmitEditing={send}
-          placeholder="Describe an edit…"
-          placeholderTextColor={colors.muted}
-          multiline
-          style={styles.input}
-        />
-        <Pressable onPress={send} disabled={!text.trim() || pending} style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending) && styles.sendDisabled]}>
-          <Text style={styles.sendText}>↑</Text>
-        </Pressable>
-      </View>
+      {/* Keeps the composer above the software keyboard on phones. */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80}>
+        <View style={styles.composer}>
+          <TextInput
+            value={text}
+            onChangeText={draft}
+            onSubmitEditing={send}
+            blurOnSubmit
+            placeholder="Describe an edit…"
+            placeholderTextColor={colors.muted}
+            multiline
+            style={styles.input}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="send"
+            hitSlop={6}
+            onPress={send}
+            disabled={!text.trim() || pending}
+            style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending) && styles.sendDisabled]}
+          >
+            <Text style={styles.sendText}>↑</Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
@@ -151,7 +166,7 @@ function RenderStrip({ projectId }: { projectId: string }) {
           <Text style={styles.renderButtonText}>{status === 'done' ? 'render again' : 'render 1080p'}</Text>
         </Pressable>
       </View>
-      {status === 'done' && outputUrl && <RenderPreview url={outputUrl} />}
+      {status === 'done' && outputUrl && <RenderPreview url={rebaseServerUrl(outputUrl) as string} />}
       {record.data?.error && <Text style={styles.error}>{record.data.error}</Text>}
       {start.error && <Text style={styles.error}>{start.error.message}</Text>}
     </View>
@@ -176,7 +191,7 @@ function Message({ message, trace }: { message: ChatMessage; trace: AgentTraceSt
     <View style={user ? styles.userMessage : styles.agentMessage}>
       <Text style={user ? styles.userLabel : styles.agentLabel}>{user ? 'YOU' : 'EDITIFY'}</Text>
       {!user && trace && trace.length > 0 && <AgentTrace steps={trace} />}
-      <Text style={styles.messageText}>{message.content}</Text>
+      {user ? <Text style={styles.messageText}>{message.content}</Text> : <Markdown text={message.content} />}
       {message.ops && message.ops.length > 0 && (
         <View style={styles.opChips}>
           {message.ops.map((op, index) => (

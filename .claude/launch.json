@@ -4,14 +4,13 @@
     {
       "name": "server",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--workspace", "@editify/server"],
+      "runtimeArgs": ["run", "dev", "-w", "@editify/server"],
       "port": 3001
     },
     {
-      "name": "web",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["expo", "start", "--web", "--port", "8081"],
-      "cwd": "apps/mobile",
+      "name": "mobile-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "web", "-w", "@editify/mobile"],
       "port": 8081
     }
   ]

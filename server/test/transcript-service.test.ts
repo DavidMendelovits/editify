@@ -36,4 +36,23 @@ describe('transcript service', () => {
     expect(energyRunner).toHaveBeenCalledTimes(2);
     expect(service.get(asset.id)).toMatchObject({ assetId: asset.id, language: 'en' });
   });
+
+  it('shares one whisper run between concurrent transcribe calls', async () => {
+    const runner = vi.fn(async () => {
+      await new Promise((done) => setTimeout(done, 20));
+      return {
+        language: 'en', durationProcessedSeconds: 0.5,
+        words: [{ w: 'hello', s: 0, e: 0.5 }],
+        segments: [{ text: 'hello', s: 0, e: 0.5 }],
+      };
+    });
+    const energyRunner = vi.fn(async () => ({ cellSeconds: 0.05 as const, rmsDb: [-30, -20] }));
+    const service = new TranscriptService(new TranscriptStore(database), runner, energyRunner);
+    const [first, second] = await Promise.all([service.transcribe(asset), service.transcribe(asset, true)]);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(first).toBe(second);
+    // The map must not leak the settled run, or a later force would be a no-op.
+    await service.transcribe(asset, true);
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
 });

@@ -4,7 +4,11 @@ import type { Clip, Project } from '@editify/shared';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { rendersRoot } from '../config.js';
 import { writeAssFile } from './ass.js';
+import { rasterizeCallout } from './callout.js';
+import { duckExpression, duckWindows } from './duck.js';
+import { rasterizeEmoji } from './emoji.js';
 import { runProcess } from './process.js';
+import { planTransitions, type TransitionPlan } from './transitions.js';
 
 type Resolution = '720p' | '1080p' | '4k';
 
@@ -35,6 +39,42 @@ function atempoChain(speed: number): string {
 }
 
 interface InputClip { clip: Clip; asset: StoredAsset; inputIndex: number; kind: 'video' | 'audio' }
+interface StickerInput { clip: Clip; inputIndex: number }
+
+/** Filtergraph time argument — millisecond precision keeps float noise out of the graph. */
+function timeArg(value: number): string {
+  return String(Number(value.toFixed(3)));
+}
+
+/** Transition fades ride in the clip's own time, before its absolute offset. */
+function videoFades(plan: TransitionPlan | undefined): string {
+  const fades: string[] = [];
+  if (plan?.videoFadeIn) {
+    fades.push(`fade=t=in:st=0:d=${timeArg(plan.videoFadeIn.d)}${plan.videoFadeIn.alpha ? ':alpha=1' : ''}`);
+  }
+  if (plan?.videoFadeOut) {
+    fades.push(`fade=t=out:st=${timeArg(plan.videoFadeOut.st)}:d=${timeArg(plan.videoFadeOut.d)}`);
+  }
+  return fades.map((fade) => `,${fade}`).join('');
+}
+
+/**
+ * Linear zoom pose over the clip: zoompan expressions for scale and pan.
+ * `seconds` is the clip's own duration even when its trim is extended for a
+ * following crossfade, so the pose lands on time and then holds.
+ */
+function zoomFilter(clip: Clip, seconds: number, width: number, height: number, fps: number): string {
+  const from = clip.transform ?? { scale: 1, x: 0, y: 0 };
+  const to = clip.transformEnd ?? from;
+  const frames = Math.max(1, Math.round(seconds * fps));
+  // p ramps 0→1 across the clip's own frames.
+  const p = `min(on/${frames},1)`;
+  const lerp = (a: number, b: number): string => (a === b ? a.toFixed(5) : `(${a.toFixed(5)}+${(b - a).toFixed(5)}*${p})`);
+  const zoom = lerp(Math.max(1, from.scale), Math.max(1, to.scale));
+  const panX = lerp((1 + from.x) / 2, (1 + to.x) / 2);
+  const panY = lerp((1 + from.y) / 2, (1 + to.y) / 2);
+  return `zoompan=z='${zoom}':x='(iw-iw/zoom)*${panX}':y='(ih-ih/zoom)*${panY}':d=1:s=${width}x${height}:fps=${fps}`;
+}
 
 export async function renderProject(
   project: Project,
@@ -53,10 +93,52 @@ export async function renderProject(
     '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=48000:d=${duration}`,
   ];
   const inputs: InputClip[] = [];
+  const stickers: StickerInput[] = [];
+  const transitionPlans = new Map<string, TransitionPlan>();
+  /** Emoji and callouts that could not be rasterized fall back to the ASS pass. */
+  const assStickerIds: string[] = [];
   let nextInputIndex = 2;
   for (const track of project.tracks) {
     if (track.kind === 'caption') continue;
-    for (const clip of track.clips) {
+    // Timeline order, so overlapping clips stack the same way the preview draws them.
+    const orderedClips = [...track.clips].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+    // A crossfade borrows frames from the clip before it, so the whole track is
+    // planned before any of its clips becomes a stream.
+    if (track.kind === 'video' && orderedClips.some((clip) => clip.transition)) {
+      const durations = new Map<string, number>();
+      for (const clip of orderedClips) {
+        const asset = clip.assetId ? assets.get(clip.assetId) : undefined;
+        if (asset) durations.set(asset.id, asset.duration);
+      }
+      for (const [id, plan] of planTransitions(orderedClips, durations, project.fps)) transitionPlans.set(id, plan);
+    }
+    for (const clip of orderedClips) {
+      if (track.kind === 'overlay') {
+        let source: string | undefined;
+        if (clip.assetId) {
+          const asset = assets.get(clip.assetId);
+          if (!asset) throw new Error(`Asset ${clip.assetId} referenced by sticker ${clip.id} was not found`);
+          // B-roll is an overlay clip on a VIDEO asset at full-frame placement:
+          // it rides this same path, picture only — nothing below maps [N:a].
+          source = asset.originalPath;
+        } else if (clip.callout && clip.text) {
+          // Callout cards: CoreText draws the rounded card, verdict glyph and
+          // label to a transparent PNG, then the sticker chain places it.
+          source = await rasterizeCallout({ ...clip.callout, text: clip.text }) ?? undefined;
+          if (!source) assStickerIds.push(clip.id);
+        } else if (clip.text) {
+          // Emoji/text stickers: CoreText rasterizes to a transparent PNG so
+          // color emoji survive export (libass draws them as tofu boxes).
+          source = await rasterizeEmoji(clip.text) ?? undefined;
+          if (!source) assStickerIds.push(clip.id);
+        }
+        if (!source) continue;
+        // Loop the source so GIF animations run for the sticker's whole window.
+        args.push('-stream_loop', '-1', '-i', source);
+        stickers.push({ clip, inputIndex: nextInputIndex });
+        nextInputIndex += 1;
+        continue;
+      }
       if (!clip.assetId) continue;
       const asset = assets.get(clip.assetId);
       if (!asset) throw new Error(`Asset ${clip.assetId} referenced by clip ${clip.id} was not found`);
@@ -70,20 +152,42 @@ export async function renderProject(
   let currentVideo = 'base0';
   let videoNumber = 0;
   const audioLabels = ['[asilence]'];
+  /** Audio-track clips that duck everything else: their labels, and their clips for the windows. */
+  const duckerLabels: string[] = [];
+  const duckerClips: Clip[] = [];
 
   for (const input of inputs) {
     const { clip, asset, inputIndex } = input;
     const speed = clip.speed ?? 1;
+    const plan = transitionPlans.get(clip.id);
+    // A clip crossfading into the next one keeps rolling past its out point.
+    const trimEnd = plan?.extendSourceBy ? timeArg(clip.out + plan.extendSourceBy) : `${clip.out}`;
     if (input.kind === 'video' && asset.width > 0 && asset.height > 0) {
       const transform = clip.transform ?? { scale: 1, x: 0, y: 0 };
-      const scaledWidth = Math.max(width, Math.round(width * transform.scale / 2) * 2);
-      const scaledHeight = Math.max(height, Math.round(height * transform.scale / 2) * 2);
-      filters.push(
-        `[${inputIndex}:v]trim=start=${clip.in}:end=${clip.out},setpts=(PTS-STARTPTS)/${speed},` +
-        `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase,` +
-        `crop=${width}:${height}:(iw-${width})/2*(1+${transform.x}):(ih-${height})/2*(1+${transform.y}),` +
-        `fps=${project.fps},format=yuv420p,setpts=PTS+${clip.start}/TB[vclip${videoNumber}]`,
-      );
+      const formatted = `format=${plan?.videoFadeIn?.alpha ? 'yuva420p' : 'yuv420p'}${videoFades(plan)}`;
+      if (clip.transformEnd) {
+        // Animated zoom: cover-scale to an oversized frame, then zoompan tweens
+        // scale and pan per frame across the clip.
+        // ponytail: pre-scale capped at 2x for memory; zooms past 2x go soft. Raise if 4k punch-ins matter.
+        const oversample = Math.min(2, Math.max(1, transform.scale, clip.transformEnd.scale));
+        const overWidth = Math.round(width * oversample / 2) * 2;
+        const overHeight = Math.round(height * oversample / 2) * 2;
+        filters.push(
+          `[${inputIndex}:v]trim=start=${clip.in}:end=${trimEnd},setpts=(PTS-STARTPTS)/${speed},fps=${project.fps},` +
+          `scale=${overWidth}:${overHeight}:force_original_aspect_ratio=increase,crop=${overWidth}:${overHeight},` +
+          `${zoomFilter(clip, (clip.out - clip.in) / speed, width, height, project.fps)},` +
+          `${formatted},setpts=PTS+${clip.start}/TB[vclip${videoNumber}]`,
+        );
+      } else {
+        const scaledWidth = Math.max(width, Math.round(width * transform.scale / 2) * 2);
+        const scaledHeight = Math.max(height, Math.round(height * transform.scale / 2) * 2);
+        filters.push(
+          `[${inputIndex}:v]trim=start=${clip.in}:end=${trimEnd},setpts=(PTS-STARTPTS)/${speed},` +
+          `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase,` +
+          `crop=${width}:${height}:(iw-${width})/2*(1+${transform.x}):(ih-${height})/2*(1+${transform.y}),` +
+          `fps=${project.fps},${formatted},setpts=PTS+${clip.start}/TB[vclip${videoNumber}]`,
+        );
+      }
       filters.push(`[${currentVideo}][vclip${videoNumber}]overlay=eof_action=pass:shortest=0[vbase${videoNumber + 1}]`);
       currentVideo = `vbase${videoNumber + 1}`;
       videoNumber += 1;
@@ -93,28 +197,75 @@ export async function renderProject(
       const delayMs = Math.round(clip.start * 1000);
       // 8ms edge fades make butt-joined cuts inaudible (UIST 2013 uses 5ms; jumpcutter ~9ms).
       const fade = 0.008;
-      const segmentSeconds = (clip.out - clip.in) / speed;
+      const segmentSeconds = (clip.out + (plan?.extendSourceBy ?? 0) - clip.in) / speed;
       const fadeOutStart = Math.max(0, segmentSeconds - fade);
+      // Transition edges swap the edge fade for a tri fade: amix sums the two
+      // overlapping halves back to roughly unity gain.
+      const fadeIn = plan?.audioFadeIn === undefined
+        ? `afade=t=in:curve=hsin:d=${fade}`
+        : `afade=t=in:curve=tri:d=${timeArg(plan.audioFadeIn)}`;
+      const fadeOut = plan?.audioFadeOut
+        ? `afade=t=out:curve=tri:st=${timeArg(plan.audioFadeOut.st)}:d=${timeArg(plan.audioFadeOut.d)}`
+        : `afade=t=out:curve=hsin:st=${fadeOutStart}:d=${fade}`;
       filters.push(
-        `[${inputIndex}:a]atrim=start=${clip.in}:end=${clip.out},asetpts=PTS-STARTPTS,${atempoChain(speed)},` +
-        `volume=${clip.volume ?? 1},afade=t=in:curve=hsin:d=${fade},afade=t=out:curve=hsin:st=${fadeOutStart}:d=${fade},` +
+        `[${inputIndex}:a]atrim=start=${clip.in}:end=${trimEnd},asetpts=PTS-STARTPTS,${atempoChain(speed)},` +
+        `volume=${clip.volume ?? 1},${fadeIn},${fadeOut},` +
         `adelay=${delayMs}|${delayMs}[aclip${audioIndex}]`,
       );
       audioLabels.push(`[aclip${audioIndex}]`);
+      if (input.kind === 'audio' && clip.duck) {
+        duckerLabels.push(`[aclip${audioIndex}]`);
+        duckerClips.push(clip);
+      }
     }
   }
 
-  const hasCaptions = project.tracks.some((track) => track.kind === 'caption'
-    && track.clips.some((clip) => Boolean(clip.text)));
+  // Image/GIF stickers, callout cards and b-roll all sit above the video and
+  // below captions, so text stays readable. `format=rgba` is a no-op for the
+  // PNGs and a cheap conversion for yuv b-roll — the alpha it adds is opaque.
+  stickers.forEach((sticker, index) => {
+    const placement = sticker.clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
+    const stickerWidth = Math.max(2, Math.round(width * placement.width / 2) * 2);
+    const radians = (placement.rotation * Math.PI) / 180;
+    const rotate = placement.rotation === 0 ? '' : `,rotate=${radians.toFixed(5)}:c=none:ow='rotw(${radians.toFixed(5)})':oh='roth(${radians.toFixed(5)})'`;
+    const begin = sticker.clip.start;
+    const end = sticker.clip.start + (sticker.clip.out - sticker.clip.in) / (sticker.clip.speed ?? 1);
+    filters.push(`[${sticker.inputIndex}:v]format=rgba,scale=${stickerWidth}:-2${rotate}[stk${index}]`);
+    filters.push(
+      `[${currentVideo}][stk${index}]overlay=x=${Math.round(placement.x * width)}-w/2:y=${Math.round(placement.y * height)}-h/2` +
+      `:enable='between(t,${begin},${end})'[vstk${index}]`,
+    );
+    currentVideo = `vstk${index}`;
+  });
+
+  const hasCaptions = project.tracks.some((track) => (
+    track.kind === 'caption' && track.clips.some((clip) => Boolean(clip.text))
+  )) || assStickerIds.length > 0;
   if (hasCaptions) {
     const assPath = join(destinationDirectory, 'captions.ass');
-    const font = await writeAssFile(project, width, height, assPath);
+    const font = await writeAssFile(project, width, height, assPath, assStickerIds);
     const fontsDir = font.directory ? `:fontsdir='${filterPath(font.directory)}'` : '';
     filters.push(`[${currentVideo}]subtitles='${filterPath(assPath)}'${fontsDir}[vsubtitles]`);
     currentVideo = 'vsubtitles';
   }
 
-  filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,atrim=0:${duration}[aout]`);
+  if (duckerLabels.length > 0) {
+    // The bed — base silence, video audio, ordinary music/SFX — is summed once,
+    // dipped under the voice windows, then summed with the voice. Both amixes
+    // use normalize=0, so this is the same sum as the plain mix below, with one
+    // volume envelope in the middle.
+    const bed = audioLabels.filter((label) => !duckerLabels.includes(label));
+    filters.push(
+      `${bed.join('')}amix=inputs=${bed.length}:duration=longest:normalize=0,` +
+      `volume=volume='${duckExpression(duckWindows(duckerClips))}':eval=frame[abed]`,
+    );
+    filters.push(
+      `[abed]${duckerLabels.join('')}amix=inputs=${duckerLabels.length + 1}:duration=longest:normalize=0,` +
+      `atrim=0:${duration}[aout]`,
+    );
+  } else {
+    filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,atrim=0:${duration}[aout]`);
+  }
   args.push(
     '-filter_complex', filters.join(';'),
     '-map', `[${currentVideo}]`, '-map', '[aout]',

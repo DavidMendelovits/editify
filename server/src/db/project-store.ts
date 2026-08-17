@@ -52,6 +52,7 @@ export class ProjectStore {
       tracks: [
         { id: 'video-main', kind: 'video', clips: [] },
         { id: 'audio-main', kind: 'audio', clips: [] },
+        { id: 'overlays', kind: 'overlay', clips: [] },
         { id: 'captions', kind: 'caption', clips: [] },
       ],
     };

@@ -8,12 +8,18 @@
     "userInterfaceStyle": "dark",
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "single"
     },
     "plugins": [
       "expo-router",
       "expo-document-picker",
-      ["expo-image-picker", { "photosPermission": "Editify adds clips from your photo library to the timeline." }]
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Editify adds clips from your photo library to the timeline."
+        }
+      ],
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { calloutSchema } from './packets.js';
 
 export const projectFormatSchema = z.enum(['9:16', '1:1', '16:9']);
 export type ProjectFormat = z.infer<typeof projectFormatSchema>;
@@ -29,6 +30,32 @@ export const transformSchema = z.object({
 });
 export type ClipTransform = z.infer<typeof transformSchema>;
 
+/**
+ * Sticker placement on the frame, normalized so one document renders the same
+ * at every resolution: `x`/`y` are the sticker centre as fractions of frame
+ * width/height, `width` is the sticker width as a fraction of frame width
+ * (height follows the source aspect), `rotation` is clockwise degrees.
+ */
+export const overlayPlacementSchema = z.object({
+  x: z.number().min(0).max(1).default(0.5),
+  y: z.number().min(0).max(1).default(0.35),
+  width: z.number().min(0.04).max(1).default(0.28),
+  rotation: z.number().min(-180).max(180).default(0),
+});
+export type OverlayPlacement = z.infer<typeof overlayPlacementSchema>;
+
+/**
+ * Transition INTO a clip at its timeline start. `crossfade` overlaps the
+ * previous clip by borrowing up to `duration` seconds of source material past
+ * its out point (timeline positions never move); `dip` fades through black
+ * symmetrically around the cut and needs no extra material.
+ */
+export const transitionSchema = z.object({
+  type: z.enum(['crossfade', 'dip']),
+  duration: z.number().min(0.1).max(2).default(0.5),
+});
+export type ClipTransition = z.infer<typeof transitionSchema>;
+
 const clipObjectSchema = z.object({
   id: z.string().min(1),
   assetId: z.string().min(1).optional(),
@@ -40,6 +67,20 @@ const clipObjectSchema = z.object({
   text: z.string().min(1).optional(),
   style: captionStyleSchema.optional(),
   transform: transformSchema.optional(),
+  /**
+   * When set, the crop/zoom animates linearly from `transform` (or identity)
+   * to `transformEnd` across the clip's timeline duration — punch-ins and
+   * Ken Burns moves are just a start and an end pose.
+   */
+  transformEnd: transformSchema.optional(),
+  /** Sticker placement — only meaningful on overlay-track clips. */
+  overlay: overlayPlacementSchema.optional(),
+  /** Transition into this clip — only meaningful on video-track clips. */
+  transition: transitionSchema.optional(),
+  /** Duck all other audio beneath this clip while it plays (voiceover). */
+  duck: z.boolean().optional(),
+  /** Callout card treatment — overlay-track clips whose `text` is a callout line. */
+  callout: calloutSchema.optional(),
 });
 
 function validateClipRange(clip: { in: number; out: number }, ctx: z.RefinementCtx): void {
@@ -53,7 +94,7 @@ export type Clip = z.infer<typeof clipSchema>;
 
 export const trackSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(['video', 'audio', 'caption']),
+  kind: z.enum(['video', 'audio', 'caption', 'overlay']),
   clips: z.array(clipSchema),
 });
 export type Track = z.infer<typeof trackSchema>;
@@ -88,9 +129,11 @@ const clipPropertyUpdateSchema = clipIdParams.extend({
   speed: z.number().min(0.1).max(8).optional(),
   transform: transformSchema.optional(),
   start: z.number().min(0).optional(),
+  duck: z.boolean().optional(),
 }).refine(
   (update) => update.volume !== undefined || update.speed !== undefined
-    || update.transform !== undefined || update.start !== undefined,
+    || update.transform !== undefined || update.start !== undefined
+    || update.duck !== undefined,
   { message: 'Each update must set at least one property' },
 );
 
@@ -103,7 +146,13 @@ export const operationParamsSchemas = {
   reorder_clips: z.object({ trackId: z.string().min(1), clipIds: z.array(z.string().min(1)).min(1) }),
   set_volume: clipIdParams.extend({ volume: z.number().min(0).max(1) }),
   set_speed: clipIdParams.extend({ speed: z.number().min(0.1).max(8) }),
-  set_transform: clipIdParams.extend({ transform: transformSchema }),
+  set_transform: clipIdParams.extend({
+    transform: transformSchema,
+    /** Present → animate from `transform` to this pose; absent → static (clears any zoom). */
+    transformEnd: transformSchema.optional(),
+  }),
+  set_overlay: clipIdParams.extend({ overlay: overlayPlacementSchema }),
+  set_transition: clipIdParams.extend({ transition: transitionSchema.nullable() }),
   add_caption: z.object({
     trackId: z.string().min(1).default('captions'),
     clip: clipObjectSchema.extend({ text: z.string().min(1) }).superRefine(validateClipRange),
@@ -145,6 +194,8 @@ export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('set_volume'), params: operationParamsSchemas.set_volume }),
   z.object({ type: z.literal('set_speed'), params: operationParamsSchemas.set_speed }),
   z.object({ type: z.literal('set_transform'), params: operationParamsSchemas.set_transform }),
+  z.object({ type: z.literal('set_overlay'), params: operationParamsSchemas.set_overlay }),
+  z.object({ type: z.literal('set_transition'), params: operationParamsSchemas.set_transition }),
   z.object({ type: z.literal('add_caption'), params: operationParamsSchemas.add_caption }),
   z.object({ type: z.literal('update_caption'), params: operationParamsSchemas.update_caption }),
   z.object({ type: z.literal('remove_caption'), params: operationParamsSchemas.remove_caption }),
@@ -231,6 +282,49 @@ export const assetInsightsSchema = z.object({
 });
 export type AssetInsights = z.infer<typeof assetInsightsSchema>;
 
+export const soundCategorySchema = z.enum(['whoosh', 'impact', 'pop', 'ui', 'riser', 'music']);
+export type SoundCategory = z.infer<typeof soundCategorySchema>;
+
+/** One entry of the built-in sound library. `assetId` is ready for `add_clip`. */
+export const librarySoundSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  category: soundCategorySchema,
+  duration: z.number().min(0),
+  assetId: z.string(),
+  url: z.string(),
+});
+export type LibrarySound = z.infer<typeof librarySoundSchema>;
+
+/**
+ * ffmpeg-only dissection of a source video: cut cadence, audio energy, tempo,
+ * and where burned-in graphics/captions live. All times are source seconds.
+ */
+export const assetDissectionSchema = z.object({
+  assetId: z.string(),
+  duration: z.number().min(0),
+  /** Scene-change timestamps — the cut points. */
+  cuts: z.array(z.number()),
+  averageShotLength: z.number(),
+  cutDensity: z.number(),
+  /** Estimated musical tempo from audio energy periodicity, or null without audio. */
+  tempoBpm: z.number().nullable(),
+  loudnessLufs: z.number().nullable(),
+  /** Coarse RMS energy curve for sparklines and beat-matching. */
+  energy: z.object({ cellSeconds: z.number().positive(), rmsDb: z.array(z.number()) }),
+  /** Times of prominent audio onsets (hits, beats, emphasis). */
+  energyPeaks: z.array(z.number()),
+  /** Spans where a frame zone carries text/graphic-like edge density. */
+  overlayActivity: z.array(z.object({
+    start: z.number(),
+    end: z.number(),
+    zone: z.enum(['top', 'bottom']),
+  })),
+  summary: z.string(),
+  generatedAt: z.string(),
+});
+export type AssetDissection = z.infer<typeof assetDissectionSchema>;
+
 export const renderRequestSchema = z.object({
   resolution: z.enum(['720p', '1080p', '4k']).default('1080p'),
 });
@@ -255,9 +349,10 @@ export function deriveProjectDuration(project: Pick<Project, 'tracks'>): number 
 
 export const OPERATION_CATALOG = [
   'add_clip', 'remove_clip', 'split_clip', 'trim_clip', 'move_clip',
-  'reorder_clips', 'set_volume', 'set_speed', 'set_transform', 'add_caption',
-  'update_caption', 'remove_caption', 'set_format', 'undo',
+  'reorder_clips', 'set_volume', 'set_speed', 'set_transform', 'set_overlay',
+  'set_transition', 'add_caption', 'update_caption', 'remove_caption', 'set_format', 'undo',
   'ripple_delete_ranges', 'set_clip_properties',
 ] as const;
 
 export * from './presets.js';
+export * from './packets.js';

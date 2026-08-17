@@ -7,12 +7,15 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { AssetMetadata } from '@editify/shared';
 import { z } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
+import type { EditifyDatabase } from '../db/database.js';
 import type { ProjectStore } from '../db/project-store.js';
 import { assetsRoot, mediaImportDir } from '../config.js';
 import { createFilmstrip, createProxyAndThumbnail, probeMedia, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
+import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
+import { WaveformService } from '../services/waveform-service.js';
 
 function publicAsset(asset: StoredAsset): AssetMetadata {
   const { originalPath: _originalPath, proxyPath: _proxyPath, thumbnailPath: _thumbnailPath, ...metadata } = asset;
@@ -45,6 +48,23 @@ const videoMimeTypes: Record<string, string> = {
 function isInside(root: string, candidate: string): boolean {
   const pathFromRoot = relative(root, candidate);
   return pathFromRoot !== '' && !pathFromRoot.startsWith('..') && !isAbsolute(pathFromRoot);
+}
+
+/** Envelope cells shipped to the client, tops. ~16KB of JSON at the cap. */
+const MAX_WAVEFORM_CELLS = 2000;
+
+/** Peak-reduce an envelope down to the cap; peak, not mean, as the client draws peaks. */
+function downsampleEnvelope(envelope: { cellSeconds: number; rmsDb: number[] }): { cellSeconds: number; rmsDb: number[] } {
+  const cells = envelope.rmsDb.length;
+  if (cells <= MAX_WAVEFORM_CELLS) return envelope;
+  const factor = Math.ceil(cells / MAX_WAVEFORM_CELLS);
+  const rmsDb: number[] = [];
+  for (let index = 0; index < cells; index += factor) {
+    let peak = -100;
+    for (let cell = index; cell < Math.min(cells, index + factor); cell += 1) peak = Math.max(peak, envelope.rmsDb[cell] ?? -100);
+    rmsDb.push(peak);
+  }
+  return { cellSeconds: envelope.cellSeconds * factor, rmsDb };
 }
 
 /**
@@ -92,6 +112,30 @@ async function processAsset(
   try {
     const probe = await probeMedia(input.originalPath);
     if (!probe.hasVideo && !probe.hasAudio) throw new Error('The media file has no video or audio streams');
+    if (input.mimeType.startsWith('image/')) {
+      // Stickers: no proxy or transcode — the original IS the display asset.
+      // GIF durations come from ffprobe; stills get 0 and live on overlay
+      // clips whose in/out are timeline-local anyway.
+      return assets.insert({
+        id,
+        originalName: input.originalName,
+        mimeType: input.mimeType,
+        duration: Number.isFinite(probe.duration) ? probe.duration : 0,
+        width: probe.width,
+        height: probe.height,
+        fps: probe.fps,
+        hasAudio: false,
+        status: 'ready',
+        originalPath: input.originalPath,
+        proxyPath: input.originalPath,
+        thumbnailPath: input.originalPath,
+        originalUrl: `/assets/${id}/original`,
+        proxyUrl: `/assets/${id}/original`,
+        thumbnailUrl: `/assets/${id}/thumb.jpg`,
+        filmstripUrl: `/assets/${id}/filmstrip.jpg`,
+        createdAt: new Date().toISOString(),
+      });
+    }
     const asset = assets.insert({
       id,
       originalName: input.originalName,
@@ -138,7 +182,13 @@ export function registerAssetRoutes(
   projects: ProjectStore,
   transcripts: TranscriptService,
   insights: InsightService,
+  dissections: DissectService,
+  database: EditifyDatabase,
 ): void {
+  // ponytail: built here rather than in `buildApp` so wiring stays one line —
+  // hoist it up if anything outside these routes ever needs an envelope.
+  const waveforms = new WaveformService(database, transcripts);
+
   /** Reads `?projectId=` and refuses ids that do not exist, so links cannot dangle. */
   function requireProject(id: unknown, reply: FastifyReply): string | undefined | null {
     if (id === undefined || id === '') return undefined;
@@ -155,9 +205,10 @@ export function registerAssetRoutes(
     if (projectId === null) return reply;
     const part = await request.file({ limits: { fileSize: 2 * 1024 * 1024 * 1024, files: 1 } });
     if (!part) return await reply.code(400).send({ error: 'A multipart media file is required' });
-    if (!part.mimetype.startsWith('video/') && !part.mimetype.startsWith('audio/') && part.mimetype !== 'application/octet-stream') {
+    if (!part.mimetype.startsWith('video/') && !part.mimetype.startsWith('audio/')
+      && !part.mimetype.startsWith('image/') && part.mimetype !== 'application/octet-stream') {
       part.file.resume();
-      return await reply.code(415).send({ error: 'Only video and audio files are supported' });
+      return await reply.code(415).send({ error: 'Only video, audio, and image files are supported' });
     }
     const id = randomUUID();
     const directory = join(assetsRoot, id);
@@ -297,6 +348,33 @@ export function registerAssetRoutes(
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 
+  // Measured dissection of the source video: cut cadence, energy, tempo,
+  // burned-in graphic spans. Computed on first request, cached in SQLite.
+  app.get<{ Params: { id: string } }>('/assets/:id/dissect', async (request, reply) => {
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    return await dissections.getOrCreate(asset);
+  });
+
+  app.post<{ Params: { id: string } }>('/assets/:id/dissect', async (request, reply) => {
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    const { force } = forceRequestSchema.parse(request.body ?? {});
+    return await dissections.getOrCreate(asset, force);
+  });
+
+  // RMS cells over the whole source, for the bars drawn inside timeline
+  // clips. Silent assets answer with an empty envelope, not an error — the
+  // client draws nothing and never has to special-case a failure. Stored at
+  // full 50ms resolution, peak-reduced on the way out: the client draws at
+  // most ~120 bars per clip, so a long source shipping 100KB of cells was
+  // pure wire cost.
+  app.get<{ Params: { id: string } }>('/assets/:id/waveform', async (request, reply) => {
+    const asset = assets.get(request.params.id);
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    return downsampleEnvelope(await waveforms.getOrCreate(asset));
+  });
+
   app.get<{ Params: { id: string } }>('/assets/:id', async (request, reply) => {
     const asset = assets.get(request.params.id);
     return asset ? publicAsset(asset) : await reply.code(404).send({ error: 'Asset not found' });
@@ -323,7 +401,9 @@ export function registerAssetRoutes(
     const asset = assets.get(request.params.id);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!existsSync(asset.thumbnailPath)) return notReady(reply, asset);
-    return await sendFile(reply, asset.thumbnailPath, 'image/jpeg', request.headers.range);
+    // Image assets serve their original as the thumb — honour its real type.
+    const type = asset.thumbnailPath === asset.originalPath ? asset.mimeType : 'image/jpeg';
+    return await sendFile(reply, asset.thumbnailPath, type, request.headers.range);
   });
 
   // Lazily generated and cached beside the proxy: 20 tiles, left to right over [0, duration].

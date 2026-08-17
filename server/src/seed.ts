@@ -72,6 +72,13 @@ for (const [index, name] of SEED_CLIPS.entries()) {
 }
 
 const project = projects.create({ title: 'Comedy reel', format: '9:16', fps: 30 });
+// Link every seeded asset, or the project's media library (and the agent's
+// list_assets) comes back empty.
+for (const operation of operations) {
+  if (operation.type === 'add_clip' && operation.params.clip.assetId) {
+    assets.link(project.id, operation.params.clip.assetId);
+  }
+}
 const seeded = projects.applyOperations(project.id, operations, project.version);
 console.log(`Seeded “${seeded.title}” (${seeded.id}) from ${SEED_CLIPS.length} real clips, ${Math.round(seeded.duration)}s total.`);
 database.close();

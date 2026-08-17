@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Clip, Project } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
+import { CALLOUT_ACCENT, CALLOUT_BG, CALLOUT_GLYPH } from './callout.js';
 
 export interface AssFont {
   family: string;
@@ -53,10 +54,17 @@ export function formatAssTime(seconds: number): string {
   return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}`;
 }
 
+/** `#RRGGBB` (opaque) or `#RRGGBBAA` → ASS `&HAABBGGRR`; ASS alpha is inverted. */
 function assColor(hex: string): string {
-  const match = hex.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
+  const match = hex.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})([\da-f]{2})?$/i);
   if (!match) return '&H00FFFFFF';
-  return `&H00${match[3]}${match[2]}${match[1]}`.toUpperCase();
+  const alpha = match[4] ? (255 - Number.parseInt(match[4], 16)).toString(16).padStart(2, '0') : '00';
+  return `&H${alpha}${match[3]}${match[2]}${match[1]}`.toUpperCase();
+}
+
+/** An inline `\c` override takes `&HBBGGRR&` — no alpha byte, trailing ampersand. */
+function assInlineColor(hex: string): string {
+  return `&H${assColor(hex).slice(4)}&`;
 }
 
 function assText(text: string): string {
@@ -78,6 +86,50 @@ function captionClips(project: Project): Clip[] {
     .flatMap((track) => track.clips)
     .filter((clip) => Boolean(clip.text))
     .sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+}
+
+/**
+ * Emoji stickers and callout cards riding the ASS pass. Normally both are
+ * rasterized to PNG overlays; only clips in `stickerClipIds` (rasterization
+ * unavailable — e.g. a non-macOS host) render here, monochrome fallback and
+ * all. `undefined` keeps the standalone-generateAss behaviour of including
+ * every text overlay clip.
+ */
+function overlayTextClips(project: Project, stickerClipIds: readonly string[] | undefined): Clip[] {
+  return project.tracks.filter((track) => track.kind === 'overlay')
+    .flatMap((track) => track.clips)
+    .filter((clip) => !clip.assetId && Boolean(clip.text))
+    .filter((clip) => stickerClipIds === undefined || stickerClipIds.includes(clip.id))
+    .sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+}
+
+/**
+ * Emoji ride the subtitle pass: one centred ASS event per sticker, positioned
+ * with \pos and sized so the glyph width tracks `overlay.width` of the frame.
+ * libass falls back to the platform emoji font for emoji codepoints.
+ *
+ * Callouts use the boxed Callout style instead — BorderStyle=3 paints the card
+ * behind the line, so the fallback still reads as a card — and prefix the
+ * verdict glyph in its accent colour. Their size comes off the frame height,
+ * not `overlay.width`: the box grows with the text the way the PNG card does.
+ */
+function overlayTextDialogue(project: Project, width: number, height: number, stickerClipIds: readonly string[] | undefined): string[] {
+  return overlayTextClips(project, stickerClipIds).map((clip) => {
+    const placement = clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
+    const callout = clip.callout;
+    const size = Math.max(12, Math.round(callout ? height * 0.038 : placement.width * width));
+    const x = Math.round(placement.x * width);
+    const y = Math.round(placement.y * height);
+    // ASS \frz is counter-clockwise; document rotation is clockwise.
+    const rotate = placement.rotation ? `\\frz${(-placement.rotation).toFixed(1)}` : '';
+    const end = clip.start + clipTimelineDuration(clip);
+    const glyph = callout ? CALLOUT_GLYPH[callout.variant] : '';
+    const prefix = callout && glyph
+      ? `{\\c${assInlineColor(callout.color ?? CALLOUT_ACCENT[callout.variant])}}${glyph} {\\c&HFFFFFF&}`
+      : '';
+    return `Dialogue: 1,${formatAssTime(clip.start)},${formatAssTime(end)},${callout ? 'Callout' : 'Sticker'},,0,0,0,,`
+      + `{\\pos(${x},${y})\\fs${size}${rotate}}${prefix}${assText(clip.text ?? '')}`;
+  });
 }
 
 interface CaptionEvent {
@@ -120,11 +172,11 @@ export function generateAss(
   project: Project,
   width: number,
   height: number,
-  options: { fontFamily?: string; safeAreaBottomPct?: number } = {},
+  options: { fontFamily?: string; safeAreaBottomPct?: number; stickerClipIds?: readonly string[] } = {},
 ): string {
   const fontFamily = options.fontFamily ?? 'Montserrat';
   const configuredSafeArea = options.safeAreaBottomPct
-    ?? Number(process.env.safeAreaBottomPct ?? process.env.SAFE_AREA_BOTTOM_PCT ?? 12);
+    ?? Number(process.env.SAFE_AREA_BOTTOM_PCT ?? 12);
   const safeAreaBottomPct = Number.isFinite(configuredSafeArea) ? configuredSafeArea : 12;
   const safeMargin = Math.max(0, Math.round(height * safeAreaBottomPct / 100));
   const events = captionEvents(captionClips(project), fontFamily, width, height, safeMargin);
@@ -139,8 +191,21 @@ export function generateAss(
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
   ];
-  const styles = events.map((event, index) =>
-    `Style: Caption${index + 1},${fontFamily},${event.size},${assColor(event.style.color)},${assColor(event.style.emphasisColor ?? '#FACC15')},${assColor(event.style.strokeColor ?? '#000000')},&H64000000,${event.style.emphasis === 'none' ? 0 : -1},0,0,0,100,100,0,0,1,${event.style.strokePx ?? 3},1,${event.alignment},40,40,${event.marginV},1`);
+  const styles = events.map((event, index) => {
+    // ASS karaoke paints SecondaryColour before a word is sung and
+    // PrimaryColour after. We want unsung text in the base color and sung
+    // words in the emphasis color, so karaoke events swap the two.
+    const karaoke = Boolean(event.style.words?.length);
+    const primary = assColor(karaoke ? event.style.emphasisColor ?? '#FACC15' : event.style.color);
+    const secondary = assColor(karaoke ? event.style.color : event.style.emphasisColor ?? '#FACC15');
+    return `Style: Caption${index + 1},${fontFamily},${event.size},${primary},${secondary},${assColor(event.style.strokeColor ?? '#000000')},&H64000000,${event.style.emphasis === 'none' ? 0 : -1},0,0,0,100,100,0,0,1,${event.style.strokePx ?? 3},1,${event.alignment},40,40,${event.marginV},1`;
+  });
+  // Emoji sticker style: centred anchor, no border/shadow so the glyph stays clean.
+  styles.push(`Style: Sticker,${fontFamily},64,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1`);
+  // Callout fallback style: BorderStyle=3 paints an opaque box in OutlineColour
+  // (the card background), Outline is its padding — the closest ASS gets to the
+  // rasterized rounded card. Bold to match the card's bold system face.
+  styles.push(`Style: Callout,${fontFamily},64,&H00FFFFFF,&H00FFFFFF,${assColor(CALLOUT_BG)},&H00000000,-1,0,0,0,100,100,0,0,3,8,0,5,40,40,0,1`);
   const dialogue = [
     '',
     '[Events]',
@@ -150,13 +215,20 @@ export function generateAss(
         ? `{\\pos(${Math.round(width / 2)},${Math.round(height * event.style.anchorPct / 100)})}` : '';
       return `Dialogue: 0,${formatAssTime(event.clip.start)},${formatAssTime(event.end)},Caption${index + 1},,0,0,0,,${position}${karaokeText(event.clip) ?? assText(event.clip.text ?? '')}`;
     }),
+    ...overlayTextDialogue(project, width, height, options.stickerClipIds),
     '',
   ];
   return [...header, ...styles, ...dialogue].join('\n');
 }
 
-export async function writeAssFile(project: Project, width: number, height: number, path: string): Promise<AssFont> {
+export async function writeAssFile(
+  project: Project,
+  width: number,
+  height: number,
+  path: string,
+  stickerClipIds: readonly string[] = [],
+): Promise<AssFont> {
   const font = await ensureAssFont();
-  await writeFile(path, generateAss(project, width, height, { fontFamily: font.family }), 'utf8');
+  await writeFile(path, generateAss(project, width, height, { fontFamily: font.family, stickerClipIds }), 'utf8');
   return font;
 }
