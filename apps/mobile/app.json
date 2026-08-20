@@ -9,7 +9,11 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "com.editify.app",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.editify.app",
@@ -25,6 +29,13 @@
     "plugins": [
       "expo-router",
       "expo-document-picker",
+      "expo-apple-authentication",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.481295230846-p9b26huakkve0r2qft6uggtebgaut81t"
+        }
+      ],
       [
         "expo-image-picker",
         {

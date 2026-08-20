@@ -12,26 +12,38 @@ export interface PickResult {
 
 export type PickProgress = (done: number, total: number) => void;
 
-interface PendingFile { uri: string; name: string; mimeType?: string }
+interface PendingFile { uri: string; name: string; mimeType?: string; file?: File }
+
+/** Enough to keep the pipe full without the server queueing multipart writes. */
+const UPLOAD_CONCURRENCY = 4;
 
 /**
- * Uploads strictly one at a time: each file costs an ffprobe, a proxy transcode
- * and a thumbnail server-side, so a parallel burst only makes every clip slower.
- * One bad file does not sink the batch. Everything lands in `projectId`'s library.
+ * A few uploads at a time: the import request only writes the file to disk and
+ * probes it — `queueAssetWork` moved the proxy transcode and the transcription
+ * to the background — so the network transfer is the part worth overlapping.
+ * Results go in by index because completions arrive out of order and the picked
+ * order is the order the clips land on the timeline. One bad file does not sink
+ * the batch. Everything lands in `projectId`'s library.
  */
 async function uploadAll(projectId: string, files: PendingFile[], onProgress?: PickProgress): Promise<PickResult> {
-  const assets: AssetMetadata[] = [];
+  const uploaded = new Array<AssetMetadata | undefined>(files.length);
   const failed: string[] = [];
+  let next = 0;
+  let settled = 0;
   onProgress?.(0, files.length);
-  for (const file of files) {
-    try {
-      assets.push(await uploadAsset({ ...file, projectId }));
-    } catch {
-      failed.push(file.name);
+  await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, async () => {
+    for (let index = next++; index < files.length; index = next++) {
+      const file = files[index] as PendingFile;
+      try {
+        uploaded[index] = await uploadAsset({ ...file, projectId });
+      } catch {
+        failed.push(file.name);
+      }
+      settled += 1;
+      onProgress?.(settled, files.length);
     }
-    onProgress?.(assets.length + failed.length, files.length);
-  }
-  return { assets, failed };
+  }));
+  return { assets: uploaded.filter((asset) => asset !== undefined), failed };
 }
 
 const libraryOptions: ImagePicker.ImagePickerOptions = {
@@ -83,6 +95,7 @@ export async function pickFromPhotos(projectId: string, onProgress?: PickProgres
     // iOS only sometimes carries a PHAsset file name; fall back to something unique.
     name: file.fileName ?? `${file.assetId ?? `clip-${index + 1}`}.mov`,
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+    ...(file.file ? { file: file.file } : {}),
   })), onProgress);
 }
 
@@ -98,5 +111,6 @@ export async function pickFromFiles(projectId: string, onProgress?: PickProgress
     uri: file.uri,
     name: file.name,
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+    ...(file.file ? { file: file.file } : {}),
   })), onProgress);
 }

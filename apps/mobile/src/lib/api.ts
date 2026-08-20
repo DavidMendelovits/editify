@@ -10,21 +10,30 @@ export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:300
  * browser's Basic prompt supplies credentials and nothing has to be baked into
  * a static bundle.
  */
-const TOKEN = process.env.EXPO_PUBLIC_API_TOKEN ?? '';
-const authHeaders: Record<string, string> = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+const FALLBACK_TOKEN = process.env.EXPO_PUBLIC_API_TOKEN ?? '';
+let accessToken: string = FALLBACK_TOKEN;
+
+/** Keeps every API and media request on the current Supabase session. */
+export function setAccessToken(token?: string | null): void {
+  accessToken = token || FALLBACK_TOKEN;
+}
+
+function authHeaders(): Record<string, string> {
+  return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+}
 
 /**
  * Media loads go through video/image/audio players that cannot set headers, so
  * the token rides along in the query string instead.
  */
 export function mediaUrl(path: string): string {
-  if (!TOKEN) return `${API_URL}${path}`;
-  return `${API_URL}${path}${path.includes('?') ? '&' : '?'}k=${encodeURIComponent(TOKEN)}`;
+  if (!accessToken) return `${API_URL}${path}`;
+  return `${API_URL}${path}${path.includes('?') ? '&' : '?'}k=${encodeURIComponent(accessToken)}`;
 }
 
 /** Plain `fetch` against the API for callers outside `api` — same credentials. */
 export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${API_URL}${path}`, { ...init, headers: { ...authHeaders, ...init?.headers } });
+  return fetch(`${API_URL}${path}`, { ...init, headers: { ...authHeaders(), ...init?.headers } });
 }
 
 export interface ChatMessage {
@@ -178,7 +187,7 @@ function describeFailure(status: number, body: string): string {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...authHeaders, ...init?.headers },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...init?.headers },
   });
   if (!response.ok) {
     throw new Error(describeFailure(response.status, await response.text()));
@@ -192,7 +201,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * routes before the server ships them.
  */
 async function requestOptional<T>(path: string): Promise<T | null> {
-  const response = await fetch(`${API_URL}${path}`, { headers: { 'Content-Type': 'application/json', ...authHeaders } });
+  const response = await fetch(`${API_URL}${path}`, { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
   if (response.status === 404) return null;
   if (!response.ok) {
     const body = await response.text();
@@ -247,7 +256,7 @@ export const api = {
   getWaveform: (assetId: string) => request<WaveformEnvelope>(`/assets/${assetId}/waveform`),
   /** 404 is an ordinary answer — no profile yet — and both codes carry the run state. */
   getStyle: async (): Promise<StyleState> => {
-    const response = await fetch(`${API_URL}/style-profile`, { headers: { 'Content-Type': 'application/json', ...authHeaders } });
+    const response = await fetch(`${API_URL}/style-profile`, { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
     if (!response.ok && response.status !== 404) throw new Error(describeFailure(response.status, await response.text()));
     const body = await response.json() as StyleProfile & { status: StyleRunStatus; error?: string };
     return {
@@ -262,9 +271,14 @@ export const api = {
   }),
 };
 
-export async function uploadAsset(asset: { uri: string; name: string; mimeType?: string; projectId?: string }): Promise<AssetMetadata> {
+/** `file` is the web pickers' real `File`; native callers only ever have a `uri`. */
+export async function uploadAsset(asset: { uri: string; name: string; mimeType?: string; projectId?: string; file?: File }): Promise<AssetMetadata> {
   const form = new FormData();
-  if (typeof File !== 'undefined' && asset.uri.startsWith('blob:')) {
+  if (asset.file) {
+    // Hand the picked File straight over so the browser streams it off disk —
+    // reading the blob: URI instead buffers the whole clip into memory first.
+    form.append('file', asset.file, asset.name);
+  } else if (typeof File !== 'undefined' && asset.uri.startsWith('blob:')) {
     const blob = await fetch(asset.uri).then(async (response) => await response.blob());
     form.append('file', new File([blob], asset.name, { type: asset.mimeType ?? blob.type }));
   } else {
@@ -275,7 +289,7 @@ export async function uploadAsset(asset: { uri: string; name: string; mimeType?:
     } as unknown as Blob);
   }
   const query = asset.projectId ? `?projectId=${encodeURIComponent(asset.projectId)}` : '';
-  const response = await fetch(`${API_URL}/assets${query}`, { method: 'POST', body: form, headers: authHeaders });
+  const response = await fetch(`${API_URL}/assets${query}`, { method: 'POST', body: form, headers: authHeaders() });
   if (!response.ok) throw new Error(await response.text());
   return await response.json() as AssetMetadata;
 }

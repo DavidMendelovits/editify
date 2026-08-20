@@ -25,7 +25,7 @@ export default function StyleScreen() {
       if (picked.canceled) return undefined;
       const uploaded = [];
       for (const asset of picked.assets.slice(0, 10)) {
-        uploaded.push(await uploadAsset({ uri: asset.uri, name: asset.name, ...(asset.mimeType ? { mimeType: asset.mimeType } : {}) }));
+        uploaded.push(await uploadAsset({ uri: asset.uri, name: asset.name, ...(asset.mimeType ? { mimeType: asset.mimeType } : {}), ...(asset.file ? { file: asset.file } : {}) }));
       }
       return await api.analyzeStyle(uploaded.map((asset) => asset.id));
     },
