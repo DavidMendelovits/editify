@@ -74,6 +74,32 @@ function downsampleEnvelope(envelope: { cellSeconds: number; rmsDb: number[] }):
  */
 export const pendingAssetWork = new Map<string, Promise<void>>();
 
+/**
+ * ffmpeg and whisper each saturate the box on their own, so a 40-clip import
+ * that spawns 40 of them leaves everything crawling. Two jobs at a time; the
+ * rest wait their turn inside their own `pendingAssetWork` promise, so awaiting
+ * an import still waits for the queue. One slot covers the encode *and* the
+ * transcription — whisper is a local python process (`transcript-service.ts`),
+ * so releasing between the two would just move the pile-up downstream.
+ * ponytail: one counter for all CPU-heavy media work, split it if encode and
+ * transcribe ever need different limits.
+ */
+const MAX_CONCURRENT_MEDIA_JOBS = 2;
+let runningMediaJobs = 0;
+const waitingMediaJobs: Array<() => void> = [];
+
+async function acquireMediaSlot(): Promise<void> {
+  if (runningMediaJobs < MAX_CONCURRENT_MEDIA_JOBS) runningMediaJobs += 1;
+  else await new Promise<void>((resolve) => waitingMediaJobs.push(resolve));
+}
+
+function releaseMediaSlot(): void {
+  // Hand the slot straight to the next waiter rather than freeing and re-taking it.
+  const next = waitingMediaJobs.shift();
+  if (next) next();
+  else runningMediaJobs -= 1;
+}
+
 /** Runs after the import responded, and moves the row to `ready` or `error`. */
 function queueAssetWork(
   app: FastifyInstance,
@@ -83,15 +109,20 @@ function queueAssetWork(
   probe: ProbeResult,
 ): void {
   const pending = (async () => {
+    await acquireMediaSlot();
     try {
-      const generated = await createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe);
-      assets.setStatus(asset.id, 'ready', generated);
-    } catch (error) {
-      assets.setStatus(asset.id, 'error');
-      app.log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
-      return;
+      try {
+        const generated = await createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe);
+        assets.setStatus(asset.id, 'ready', generated);
+      } catch (error) {
+        assets.setStatus(asset.id, 'error');
+        app.log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
+        return;
+      }
+      await transcribeQuietly(app, transcripts, asset);
+    } finally {
+      releaseMediaSlot();
     }
-    await transcribeQuietly(app, transcripts, asset);
   })().finally(() => pendingAssetWork.delete(asset.id));
   pendingAssetWork.set(asset.id, pending);
 }
