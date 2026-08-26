@@ -4,5 +4,11 @@ dist/
 *.log
 .DS_Store
 server/data/
-server/.env
+.env
+.env.local
 test-clips/
+*.swp
+
+# Native projects are generated from app.json by `expo prebuild` — never edited by hand.
+apps/mobile/ios/
+apps/mobile/android/

@@ -5,7 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Brand } from '../../../src/components/Brand';
 import { GradientButton } from '../../../src/components/GradientButton';
 import { Screen } from '../../../src/components/Screen';
-import { api, type RenderRecord } from '../../../src/lib/api';
+import { api, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
 import { colors } from '../../../src/lib/theme';
 
 const resolutions: Array<{ value: RenderRecord['resolution']; label: string; detail: string }> = [
@@ -49,7 +49,7 @@ export default function ExportScreen() {
         <View style={[styles.statusCard, status === 'done' && styles.doneCard, status === 'error' && styles.errorCard]}>
           <View style={styles.statusTop}><Text style={styles.statusLabel}>{status === 'done' ? 'EXPORT COMPLETE' : status === 'error' ? 'RENDER STOPPED' : 'FFMPEG IS ASSEMBLING YOUR TIMELINE'}</Text><Text style={styles.statusValue}>{status.toUpperCase()}</Text></View>
           {status !== 'done' && status !== 'error' && <><View style={styles.progress}><View style={[styles.progressFill, status === 'processing' && styles.progressProcessing]} /></View><Text style={styles.statusDetail}>Cuts, transforms, speed, volume, captions, and final scaling are being rendered at full resolution.</Text></>}
-          {status === 'done' && render.data?.outputUrl && <GradientButton style={styles.downloadButton} onPress={() => void Linking.openURL(render.data.outputUrl as string)}>download / share master ↗</GradientButton>}
+          {status === 'done' && render.data?.outputUrl && <GradientButton style={styles.downloadButton} onPress={() => void Linking.openURL(rebaseServerUrl(render.data.outputUrl) as string)}>download / share master ↗</GradientButton>}
           {status === 'error' && <Text style={styles.error}>{render.data?.error}</Text>}
         </View>
       )}

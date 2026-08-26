@@ -10,6 +10,8 @@
 import { presetTitle } from './presets';
 
 export interface AgentTraceStep {
+  /** 'thought' steps carry the agent's own reasoning text in `summary`. */
+  kind?: 'thought';
   tool: string;
   input: unknown;
   ok: boolean;
@@ -18,6 +20,7 @@ export interface AgentTraceStep {
 
 /** Visual family for a step — drives the glyph and tint in the step feed. */
 export type TraceKind =
+  | 'thought'
   | 'read' | 'transcript' | 'insight' | 'preset'
   | 'add' | 'remove' | 'cut' | 'move' | 'batch'
   | 'audio' | 'speed' | 'frame' | 'caption' | 'format' | 'undo' | 'other';
@@ -57,6 +60,7 @@ const TOOL_KIND: Record<string, TraceKind> = {
 };
 
 const KIND_GLYPH: Record<TraceKind, string> = {
+  thought: '✻',
   read: '◎',
   transcript: '¶',
   insight: '★',
@@ -76,12 +80,13 @@ const KIND_GLYPH: Record<TraceKind, string> = {
 };
 
 /** Kinds that only observe the project — rendered muted in the step feed. */
-const READ_KINDS: ReadonlySet<TraceKind> = new Set<TraceKind>(['read', 'transcript', 'insight', 'preset']);
+const READ_KINDS: ReadonlySet<TraceKind> = new Set<TraceKind>(['thought', 'read', 'transcript', 'insight', 'preset']);
 
 /** Warning glyph used for any step that came back `ok: false`. */
 export const ERROR_GLYPH = '!';
 
 export function traceKind(step: AgentTraceStep): TraceKind {
+  if (step.kind === 'thought') return 'thought';
   return TOOL_KIND[step.tool] ?? 'other';
 }
 
@@ -187,6 +192,7 @@ export function humanizeToolName(tool: string): string {
 
 /** Human-readable one-liner for a step, e.g. "Split clip at 4.2s". */
 export function describeTraceStep(step: AgentTraceStep): string {
+  if (step.kind === 'thought') return step.summary;
   const input = toolInput(step);
   switch (step.tool) {
     case 'get_project':
@@ -311,6 +317,70 @@ export function describeTraceStep(step: AgentTraceStep): string {
     default:
       return humanizeToolName(step.tool);
   }
+}
+
+/** One line of an agent reply's receipt — aggregated from the ops it applied. */
+export interface ReceiptItem {
+  glyph: string;
+  label: string;
+  /** Timeline second the first such edit landed at, when the op carries one. */
+  at?: number;
+}
+
+const RECEIPT_NOUNS: Record<string, [string, string]> = {
+  add_clip: ['clip added', 'clips added'],
+  remove_clip: ['clip removed', 'clips removed'],
+  split_clip: ['cut', 'cuts'],
+  trim_clip: ['trim', 'trims'],
+  move_clip: ['move', 'moves'],
+  reorder_clips: ['reorder', 'reorders'],
+  set_volume: ['volume change', 'volume changes'],
+  set_speed: ['speed change', 'speed changes'],
+  set_transform: ['punch-in', 'punch-ins'],
+  set_overlay: ['sticker tweak', 'sticker tweaks'],
+  set_transition: ['transition', 'transitions'],
+  add_caption: ['caption', 'captions'],
+  update_caption: ['caption edit', 'caption edits'],
+  remove_caption: ['caption removed', 'captions removed'],
+  ripple_delete_ranges: ['section removed', 'sections removed'],
+  set_clip_properties: ['clip update', 'clip updates'],
+  set_format: ['format change', 'format changes'],
+  undo: ['undo', 'undos'],
+  revert_run: ['revert', 'reverts'],
+};
+
+function opTimelineSecond(params: Record<string, unknown>): number | undefined {
+  return asNumber(params['at']) ?? asNumber(params['start'])
+    ?? asNumber(asRecord(params['clip'])['start'])
+    ?? asNumber(asRecord(asArray(params['ranges'])?.[0])['start']);
+}
+
+/**
+ * Aggregate the raw applied operations of one agent turn into receipt lines:
+ * "✂ 6 trims", "T 8 captions". Batch ops count their inner items so the
+ * receipt reflects edits, not tool calls.
+ */
+export function receiptItems(ops: Array<{ type: string; params?: unknown }>): ReceiptItem[] {
+  const groups = new Map<string, { count: number; glyph: string; at?: number }>();
+  for (const op of ops) {
+    const params = asRecord(op.params);
+    let count = 1;
+    if (op.type === 'ripple_delete_ranges') count = asArray(params['ranges'])?.length ?? 1;
+    if (op.type === 'set_clip_properties') count = asArray(params['updates'])?.length ?? 1;
+    const entry = groups.get(op.type) ?? { count: 0, glyph: KIND_GLYPH[TOOL_KIND[op.type] ?? 'other'] };
+    entry.count += count;
+    const at = opTimelineSecond(params);
+    if (entry.at === undefined && at !== undefined) entry.at = at;
+    groups.set(op.type, entry);
+  }
+  return [...groups.entries()].map(([type, entry]) => {
+    const nouns = RECEIPT_NOUNS[type] ?? [humanizeToolName(type).toLowerCase(), humanizeToolName(type).toLowerCase()];
+    return {
+      glyph: entry.glyph,
+      label: `${entry.count} ${entry.count === 1 ? nouns[0] : nouns[1]}`,
+      ...(entry.at !== undefined ? { at: entry.at } : {}),
+    };
+  });
 }
 
 /** Bytes → "12.4 MB", the size unit the import list shows. */

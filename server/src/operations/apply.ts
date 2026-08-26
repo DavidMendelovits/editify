@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   clipTimelineDuration,
   deriveProjectDuration,
+  overlayPlacementSchema,
   projectSchema,
   type Clip,
   type Operation,
@@ -107,7 +108,7 @@ function rippleTrack(track: Track, ranges: TimeRange[], allClipIds: Set<string>)
 }
 
 export function applyOperation(input: Project, operation: Operation): Project {
-  if (operation.type === 'undo') {
+  if (operation.type === 'undo' || operation.type === 'revert_run') {
     throw new OperationError('Undo requires operation history and must be applied by ProjectStore');
   }
 
@@ -116,9 +117,19 @@ export function applyOperation(input: Project, operation: Operation): Project {
   switch (operation.type) {
     case 'add_clip': {
       assertUniqueClipId(project, operation.params.clip.id);
+      // Projects created before overlay tracks existed get one on demand,
+      // exactly like add_caption creates its `captions` track.
+      if (operation.params.trackId === 'overlays' && !project.tracks.some((track) => track.id === 'overlays')) {
+        project.tracks.push({ id: 'overlays', kind: 'overlay', clips: [] });
+      }
       const track = findTrack(project, operation.params.trackId);
       if (track.kind === 'caption') throw new OperationError('Use add_caption for caption tracks');
-      track.clips.push(operation.params.clip);
+      const clip = { ...operation.params.clip };
+      if (track.kind === 'overlay') {
+        if (!clip.assetId && !clip.text) throw new OperationError('Overlay clips need an image assetId or emoji text');
+        clip.overlay ??= overlayPlacementSchema.parse({});
+      }
+      track.clips.push(clip);
       break;
     }
     case 'remove_clip': {
@@ -186,7 +197,24 @@ export function applyOperation(input: Project, operation: Operation): Project {
       break;
     }
     case 'set_transform': {
-      findClip(project, operation.params.clipId).clip.transform = operation.params.transform;
+      const { clip } = findClip(project, operation.params.clipId);
+      clip.transform = operation.params.transform;
+      // The op carries the full pose: no transformEnd means the zoom is gone.
+      if (operation.params.transformEnd) clip.transformEnd = operation.params.transformEnd;
+      else delete clip.transformEnd;
+      break;
+    }
+    case 'set_overlay': {
+      const { track, clip } = findClip(project, operation.params.clipId);
+      if (track.kind !== 'overlay') throw new OperationError('set_overlay only accepts overlay-track clips');
+      clip.overlay = operation.params.overlay;
+      break;
+    }
+    case 'set_transition': {
+      const { track, clip } = findClip(project, operation.params.clipId);
+      if (track.kind !== 'video') throw new OperationError('set_transition only accepts video-track clips');
+      if (operation.params.transition) clip.transition = operation.params.transition;
+      else delete clip.transition;
       break;
     }
     case 'add_caption': {
@@ -219,8 +247,9 @@ export function applyOperation(input: Project, operation: Operation): Project {
       if (target.kind === 'caption') throw new OperationError('ripple_delete_ranges requires a video or audio track');
       const ranges = mergeTimeRanges(operation.params.ranges);
       const allClipIds = new Set(project.tracks.flatMap((track) => track.clips.map((clip) => clip.id)));
-      rippleTrack(target, ranges, allClipIds);
-      for (const track of project.tracks.filter((candidate) => candidate.kind === 'caption')) {
+      // Timeline time is being removed, so EVERY track ripples — leaving the
+      // audio or sticker tracks behind desyncs them from the cut video.
+      for (const track of project.tracks) {
         rippleTrack(track, ranges, allClipIds);
       }
       break;
@@ -232,6 +261,12 @@ export function applyOperation(input: Project, operation: Operation): Project {
         if (update.speed !== undefined) clip.speed = update.speed;
         if (update.transform !== undefined) clip.transform = update.transform;
         if (update.start !== undefined) clip.start = update.start;
+        if (update.in !== undefined) clip.in = update.in;
+        if (update.out !== undefined) clip.out = update.out;
+        if (update.duck !== undefined) {
+          if (update.duck) clip.duck = true;
+          else delete clip.duck;
+        }
         validateTrim(clip);
       }
       break;

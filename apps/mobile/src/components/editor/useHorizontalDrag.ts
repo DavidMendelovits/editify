@@ -9,17 +9,28 @@ export interface DragCallbacks {
   onEnd?: (dx: number) => void;
 }
 
+export interface DragOptions {
+  /**
+   * When true (ruler, trim handles, a *selected* clip) the gesture is held
+   * against the enclosing ScrollView. When false (unselected clips) the
+   * ScrollView may take the touch over for scrolling once it moves — the
+   * release path then reports zero travel so a stolen drag can never commit
+   * an accidental clip move; a plain tap still lands as a selection. This is
+   * what keeps the timeline scrollable on a phone.
+   */
+  hold?: boolean;
+}
+
 /**
  * Horizontal drag plumbing shared by clip moves, trim handles and the playhead.
  *
  * PanResponder is created once and reads the latest callbacks through a ref, so
  * a gesture in progress never runs against a stale closure even though the
- * timeline re-renders on every frame of the drag. Termination requests are
- * refused so the enclosing horizontal ScrollView cannot steal a live drag.
+ * timeline re-renders on every frame of the drag.
  */
-export function useHorizontalDrag(callbacks: DragCallbacks): GestureResponderHandlers {
-  const latest = useRef(callbacks);
-  latest.current = callbacks;
+export function useHorizontalDrag(callbacks: DragCallbacks, options: DragOptions = {}): GestureResponderHandlers {
+  const latest = useRef({ callbacks, hold: options.hold ?? true });
+  latest.current = { callbacks, hold: options.hold ?? true };
 
   return useMemo(() => PanResponder.create({
     // Bubble phase only: responder negotiation starts at the deepest view, so a
@@ -27,11 +38,13 @@ export function useHorizontalDrag(callbacks: DragCallbacks): GestureResponderHan
     // over the enclosing horizontal ScrollView.
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
-    onPanResponderTerminationRequest: () => false,
-    onShouldBlockNativeResponder: () => true,
-    onPanResponderGrant: (event) => latest.current.onStart?.(event.nativeEvent.locationX),
-    onPanResponderMove: (_event, gesture) => latest.current.onMove?.(gesture.dx),
-    onPanResponderRelease: (_event, gesture) => latest.current.onEnd?.(gesture.dx),
-    onPanResponderTerminate: (_event, gesture) => latest.current.onEnd?.(gesture.dx),
+    onPanResponderTerminationRequest: () => !latest.current.hold,
+    onShouldBlockNativeResponder: () => latest.current.hold,
+    onPanResponderGrant: (event) => latest.current.callbacks.onStart?.(event.nativeEvent.locationX),
+    onPanResponderMove: (_event, gesture) => latest.current.callbacks.onMove?.(gesture.dx),
+    onPanResponderRelease: (_event, gesture) => latest.current.callbacks.onEnd?.(gesture.dx),
+    // The ScrollView took the touch for scrolling: report zero travel so the
+    // aborted drag reads as a click, never as a move/trim commit.
+    onPanResponderTerminate: () => latest.current.callbacks.onEnd?.(0),
   }), []).panHandlers;
 }

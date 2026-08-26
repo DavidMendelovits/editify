@@ -11,6 +11,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:server": "npm run dev -w @editify/server",
     "dev:mobile": "npm run start -w @editify/mobile",
+    "dev:mobile:ios": "npm run ios -w @editify/mobile",
+    "dev:mobile:android": "npm run android -w @editify/mobile",
     "seed": "npm run seed -w @editify/server"
   },
   "engines": {

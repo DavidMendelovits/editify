@@ -23,26 +23,53 @@ export interface ToolProvider {
   completeText(system: string, user: string): Promise<string>;
 }
 
+/**
+ * Env files, nearest first and `.env.local` before `.env`. Already-set variables
+ * always win, so an earlier file (and the real environment) beats a later one —
+ * the repo-root `.env.local` is where a shared ANTHROPIC_API_KEY lives.
+ */
 function loadServerEnv(): void {
-  const path = resolve(dirname(fileURLToPath(import.meta.url)), '../../.env');
-  if (!existsSync(path)) return;
-  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!match?.[1] || process.env[match[1]] !== undefined) continue;
-    let value = match[2] ?? '';
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    } else {
-      value = value.replace(/\s+#.*$/, '');
+  const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  for (const candidate of ['.env.local', '.env', '../.env.local', '../.env']) {
+    const path = resolve(serverRoot, candidate);
+    if (!existsSync(path)) continue;
+    for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+      if (!match?.[1] || process.env[match[1]] !== undefined) continue;
+      let value = match[2] ?? '';
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      } else {
+        value = value.replace(/\s+#.*$/, '');
+      }
+      process.env[match[1]] = value;
     }
-    process.env[match[1]] = value;
   }
 }
 
 loadServerEnv();
 
+/**
+ * zod-to-json-schema tops out at draft-7, but the Anthropic API validates
+ * against draft 2020-12: tuples must be `prefixItems`, and the old openApi3
+ * target's boolean `exclusiveMinimum` is likewise rejected. Draft-7 output
+ * needs only the tuple rewrite.
+ */
+function toDraft2020(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(toDraft2020);
+  if (typeof node !== 'object' || node === null) return node;
+  const source = { ...node } as Record<string, unknown>;
+  if (Array.isArray(source.items)) {
+    source.prefixItems = source.items;
+    source.items = source.additionalItems ?? false;
+    delete source.additionalItems;
+  }
+  return Object.fromEntries(Object.entries(source).map(([key, value]) => [key, toDraft2020(value)]));
+}
+
 function jsonSchema(tool: ToolDef): Record<string, unknown> {
-  return zodToJsonSchema(tool.schema, { $refStrategy: 'none', target: 'openApi3' }) as Record<string, unknown>;
+  const { $schema: _$schema, ...schema } = zodToJsonSchema(tool.schema, { $refStrategy: 'none' }) as Record<string, unknown>;
+  return toDraft2020(schema) as Record<string, unknown>;
 }
 
 type AnthropicBlock =
@@ -90,7 +117,7 @@ export class AnthropicToolProvider implements ToolProvider {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 4096,
+        max_tokens: 8192,
         system,
         messages: anthropicMessages(messages),
         ...(toolDefs.length ? {
@@ -101,7 +128,10 @@ export class AnthropicToolProvider implements ToolProvider {
       }),
     });
     if (!response.ok) throw new Error(`Anthropic request failed (${response.status}): ${await response.text()}`);
-    const json = await response.json() as { content?: AnthropicBlock[] };
+    const json = await response.json() as { content?: AnthropicBlock[]; stop_reason?: string };
+    // A truncated response can carry a half-written tool call or silently drop all of
+    // them, turning into a false "I'm done" — fail loudly instead.
+    if (json.stop_reason === 'max_tokens') throw new Error('Anthropic response was truncated at max_tokens; the turn cannot be trusted');
     const content = json.content ?? [];
     const text = content.filter((block): block is Extract<AnthropicBlock, { type: 'text' }> => block.type === 'text')
       .map((block) => block.text).join('\n').trim();
@@ -439,7 +469,8 @@ export function parseCliTurn(raw: string): LoopTurn {
   const parsed = extractJsonObject(raw);
   if (!isRecord(parsed)) return raw.trim() ? { text: raw.trim(), toolCalls: [] } : { toolCalls: [] };
   const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
-  const toolCalls = (Array.isArray(parsed.toolCalls) ? parsed.toolCalls : [])
+  const rawCalls = parsed.toolCalls ?? parsed.tool_calls; // models drift to snake_case
+  const toolCalls = (Array.isArray(rawCalls) ? rawCalls : [])
     .filter(isRecord)
     .filter((call): call is { name: string; input?: unknown } => typeof call.name === 'string')
     .map((call, index) => ({ id: `cli-${index}`, name: call.name, input: call.input ?? {} }));
@@ -496,7 +527,18 @@ export class CliToolProvider implements ToolProvider {
   }
 
   async runTurn(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Promise<LoopTurn> {
-    return parseCliTurn(await this.invoke(system, cliPrompt(messages, toolDefs)));
+    const prompt = cliPrompt(messages, toolDefs);
+    const raw = await this.invoke(system, prompt);
+    if (!raw.trim() || extractJsonObject(raw) !== undefined) return parseCliTurn(raw);
+    // Prose instead of the envelope would silently end the loop with edits claimed
+    // but never made — give the model one corrective retry before accepting it.
+    const retried = await this.invoke(system, [
+      prompt,
+      'Your previous reply was not the required JSON envelope. It began:',
+      raw.slice(0, 400),
+      'Reply again with ONLY the JSON object described above — no prose, no code fence.',
+    ].join('\n\n'));
+    return parseCliTurn(retried.trim() ? retried : raw);
   }
 
   async completeText(system: string, user: string): Promise<string> {
@@ -569,11 +611,16 @@ export function createProvider(id: AgentProviderId = defaultProviderId()): ToolP
   switch (id) {
     case 'claude-cli': return new CliToolProvider('claude');
     case 'codex-cli': return new CliToolProvider('codex');
-    // Key-based providers fall back rather than construct something that cannot authenticate.
-    case 'anthropic': return process.env.ANTHROPIC_API_KEY
-      ? new AnthropicToolProvider(process.env.ANTHROPIC_API_KEY) : new MockToolProvider();
-    case 'openai': return (process.env.OPENAI_API_KEY ?? process.env.OPENAI_BASE_URL)
-      ? new OpenAIToolProvider(process.env.OPENAI_API_KEY ?? 'local') : new MockToolProvider();
+    // A missing key must error, not silently downgrade to the mock — the mock
+    // confidently claims edits, which is the worst possible failure mode.
+    case 'anthropic': {
+      if (!process.env.ANTHROPIC_API_KEY) throw new Error('The anthropic provider needs ANTHROPIC_API_KEY; set it or pick another provider');
+      return new AnthropicToolProvider(process.env.ANTHROPIC_API_KEY);
+    }
+    case 'openai': {
+      if (!process.env.OPENAI_API_KEY && !process.env.OPENAI_BASE_URL) throw new Error('The openai provider needs OPENAI_API_KEY (or OPENAI_BASE_URL); set it or pick another provider');
+      return new OpenAIToolProvider(process.env.OPENAI_API_KEY ?? 'local');
+    }
     default: return new MockToolProvider();
   }
 }

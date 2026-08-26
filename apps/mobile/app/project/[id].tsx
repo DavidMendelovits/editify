@@ -2,19 +2,26 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as DocumentPicker from 'expo-document-picker';
-import type { AssetMetadata, Operation, Project } from '@editify/shared';
+import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
 import { GradientButton } from '../../src/components/GradientButton';
 import { ImportSheet } from '../../src/components/ImportSheet';
 import { InsightsPanel } from '../../src/components/InsightsPanel';
+import { LIBRARY_ROOT, MediaLibrary } from '../../src/components/MediaLibrary';
 import { Screen } from '../../src/components/Screen';
 import { ChatDock } from '../../src/components/editor/ChatDock';
 import { PreviewPlayer } from '../../src/components/editor/PreviewPlayer';
+import { SoundSheet } from '../../src/components/editor/SoundSheet';
+import { StickerSheet } from '../../src/components/editor/StickerSheet';
+import { CleanupSheet } from '../../src/components/editor/CleanupSheet';
+import { VoiceSheet } from '../../src/components/editor/VoiceSheet';
+import { StylePacketSheet } from '../../src/components/editor/StylePacketSheet';
 import { Timeline } from '../../src/components/editor/Timeline';
 import { usePlayback } from '../../src/components/editor/usePlayback';
-import { api, uploadAsset } from '../../src/lib/api';
-import type { AgentTraceStep } from '../../src/lib/agent';
+import { api } from '../../src/lib/api';
+import { packetPrompt } from '../../src/lib/packets';
+import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
+import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { colors } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
@@ -31,12 +38,24 @@ export default function EditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const wide = width >= WIDE_BREAKPOINT;
+  // Stacked mode gives the preview a real share of the screen instead of the
+  // leftovers under the library and timeline.
+  const previewHeight = Math.min(620, Math.max(320, Math.round(height * 0.5)));
 
   const [selectedId, setSelectedId] = useState<string>();
   const [importOpen, setImportOpen] = useState(false);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [soundOpen, setSoundOpen] = useState(false);
+  const [stickerOpen, setStickerOpen] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [styleOpen, setStyleOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string>();
+  /** Only set while a multi-file import is running. */
+  const [progress, setProgress] = useState<{ done: number; total: number }>();
   const [optimisticMessage, setOptimisticMessage] = useState<string>();
   // Covers the gap between the chat mutation resolving and the history refetch.
   const [latestTrace, setLatestTrace] = useState<AgentTraceStep[]>();
@@ -58,27 +77,58 @@ export default function EditorScreen() {
     ),
     enabled: assetIds.length > 0,
     staleTime: 5 * 60 * 1000,
+    // A clip can land on the timeline while its proxy is still encoding; keep
+    // polling until every asset is ready so the player picks the video up.
+    refetchInterval: (query) => (Object.values(query.state.data ?? {}).some((asset) => asset.status === 'processing') ? 2000 : false),
   });
   const assets: Record<string, AssetMetadata | undefined> = assetsQuery.data ?? {};
 
-  const { playhead, playing, seek, toggle, stop } = usePlayback(project?.duration ?? 0);
+  // `clock` is an external store, not state: the playhead ticks at ~60Hz and
+  // only the components that draw it subscribe, so this screen does not
+  // re-render during playback.
+  const { clock, playing, seek, toggle, stop } = usePlayback(project?.duration ?? 0);
   const lastAssistantId = useMemo(
     () => chatQuery.data?.filter((message) => message.role === 'assistant').at(-1)?.id,
     [chatQuery.data],
   );
 
+  // Ops are serialized through this chain: each batch waits for the previous
+  // one and reads the freshest doc from the cache, so a burst of quick edits
+  // (stepper taps, rapid imports) no longer races itself into 409s.
+  const opChain = useRef<Promise<unknown>>(Promise.resolve());
   const apply = useMutation({
-    mutationFn: async ({ ops }: ApplyVariables) => {
-      if (!project) throw new Error('Project is still loading');
-      return await api.applyOps(project.id, ops, project.version);
+    mutationFn: ({ ops }: ApplyVariables) => {
+      const run = opChain.current.catch(() => undefined).then(async () => {
+        const current = queryClient.getQueryData<Project>(['project', id]);
+        if (!current) throw new Error('Project is still loading');
+        const updated = await api.applyOps(current.id, ops, current.version);
+        // Written here, not just in onSuccess, so the next queued batch sees it.
+        queryClient.setQueryData(['project', id], updated);
+        return updated;
+      });
+      opChain.current = run;
+      return run;
     },
     onMutate: ({ optimistic }: ApplyVariables) => {
       if (!optimistic) return;
       const current = queryClient.getQueryData<Project>(['project', id]);
-      if (current) queryClient.setQueryData(['project', id], optimistic(current));
+      if (current) queryClient.setQueryData(['project', id], { ...optimistic(current), version: current.version });
     },
     onSuccess: (updated) => queryClient.setQueryData(['project', id], updated),
     onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
+  });
+  // Queued behind the same chain as `apply`: a revert must not race a batch of
+  // ops that is still in flight.
+  const revertRun = useMutation({
+    mutationFn: (runId: string) => {
+      const run = opChain.current.catch(() => undefined).then(() => api.revertRun(id, runId));
+      opChain.current = run;
+      return run;
+    },
+    onSuccess: async (doc: Project) => {
+      queryClient.setQueryData(['project', id], doc);
+      await queryClient.invalidateQueries({ queryKey: ['chat', id] });
+    },
   });
   const sendChat = useMutation({
     mutationFn: (message: string) => api.chat(id, message),
@@ -90,6 +140,27 @@ export default function EditorScreen() {
     },
     onSettled: () => setOptimisticMessage(undefined),
   });
+  // Follow the running turn's steps so the trace fills in while the agent works.
+  const liveQuery = useQuery({
+    queryKey: ['chat-live', id],
+    queryFn: () => api.getChatLive(id),
+    enabled: sendChat.isPending,
+    refetchInterval: 900,
+  });
+
+  // The timeline is the trace: refetch the project as live mutation steps land
+  // so agent edits appear while the turn is still running, not only at the end.
+  const liveSteps = sendChat.isPending ? liveQuery.data?.steps : undefined;
+  const seenLiveSteps = useRef(0);
+  useEffect(() => {
+    if (!liveSteps) { seenLiveSteps.current = 0; return; }
+    if (liveSteps.length <= seenLiveSteps.current) return;
+    const fresh = liveSteps.slice(seenLiveSteps.current);
+    seenLiveSteps.current = liveSteps.length;
+    if (fresh.some((step) => step.ok && !isReadStep(step))) {
+      void queryClient.invalidateQueries({ queryKey: ['project', id] });
+    }
+  }, [liveSteps, queryClient, id]);
 
   // Flash the timeline whenever a new project version lands, so an agent edit
   // is visible even when it changed something off-screen.
@@ -120,30 +191,106 @@ export default function EditorScreen() {
     apply.mutate(optimistic ? { ops, optimistic } : { ops });
   }
 
-  /** Drops a freshly imported/uploaded asset at the end of the video track. */
-  function appendAsset(asset: AssetMetadata): void {
+  /** Lays imported assets back-to-back at the end of the video track, in one batch. */
+  function appendAssets(assetList: AssetMetadata[]): void {
+    // A probe that could not read a duration would make an invalid clip; skip those.
+    const added = assetList.filter((asset) => asset.duration > 0);
+    if (!project || added.length === 0) return;
+    const videoTrack = project.tracks.find((track) => track.kind === 'video');
+    const trackId = videoTrack?.id ?? 'video-main';
+    const stamp = Date.now();
+    // The end of the VIDEO track — project.duration can be stretched by a
+    // caption or sticker, which would leave a silent gap before the new clip.
+    let start = (videoTrack?.clips ?? []).reduce(
+      (end, clip) => Math.max(end, clip.start + (clip.out - clip.in) / (clip.speed ?? 1)),
+      0,
+    );
+    const ops = added.map((asset, index): Operation => {
+      const clip = { id: `clip-${stamp}-${index}`, assetId: asset.id, start, in: 0, out: asset.duration, volume: 1, speed: 1 };
+      start += asset.duration;
+      return { type: 'add_clip', params: { trackId, clip } };
+    });
+    applyOps(ops);
+    setSelectedId(`clip-${stamp}-${added.length - 1}`);
+  }
+
+  const round3 = (value: number): number => Math.round(value * 1000) / 1000;
+
+  /** CapCut model: `+` on a sound row drops it on the audio track at the playhead. */
+  async function addSound(sound: LibrarySound): Promise<void> {
     if (!project) return;
-    const clipId = `clip-${Date.now()}`;
+    const trackId = project.tracks.find((track) => track.kind === 'audio')?.id ?? 'audio-main';
+    try {
+      await api.linkAsset(id, sound.assetId); // so the agent's list_assets sees it
+    } catch { /* the clip still works unlinked */ }
     applyOps([{
       type: 'add_clip',
       params: {
-        trackId: project.tracks.find((track) => track.kind === 'video')?.id ?? 'video-main',
-        clip: { id: clipId, assetId: asset.id, start: project.duration, in: 0, out: asset.duration, volume: 1, speed: 1 },
+        trackId,
+        clip: { id: `sfx-${sound.id}-${Date.now()}`, assetId: sound.assetId, start: round3(clock.get()), in: 0, out: sound.duration, volume: 1, speed: 1 },
+      },
+    }]);
+  }
+
+  /** Voiceover recordings land on the audio track at the playhead and duck everything else. */
+  function addVoiceover(asset: AssetMetadata): void {
+    if (!project) return;
+    const trackId = project.tracks.find((track) => track.kind === 'audio')?.id ?? 'audio-main';
+    const clipId = `voice-${Date.now()}`;
+    applyOps([{
+      type: 'add_clip',
+      params: {
+        trackId,
+        clip: { id: clipId, assetId: asset.id, start: round3(clock.get()), in: 0, out: asset.duration, volume: 1, speed: 1, duck: true },
       },
     }]);
     setSelectedId(clipId);
   }
 
-  async function uploadMedia(): Promise<void> {
-    const picked = await DocumentPicker.getDocumentAsync({ type: ['video/*', 'audio/*'], copyToCacheDirectory: true });
-    if (picked.canceled || !project) return;
-    const file = picked.assets[0];
-    if (!file) return;
+  /** Stickers land at the playhead for 3 seconds and are draggable on the preview. */
+  function addSticker(content: {
+    emoji?: string;
+    asset?: AssetMetadata;
+    callout?: { variant: 'check' | 'x' | 'card'; text: string };
+  }): void {
+    const clipId = `sticker-${Date.now()}`;
+    applyOps([{
+      type: 'add_clip',
+      params: {
+        trackId: 'overlays',
+        clip: {
+          id: clipId,
+          ...(content.callout
+            ? { text: content.callout.text, callout: { variant: content.callout.variant } }
+            : content.asset ? { assetId: content.asset.id } : { text: content.emoji ?? '✨' }),
+          start: round3(clock.get()),
+          in: 0,
+          out: 3,
+          // Callout cards read as text, so they land wider than a sticker.
+          overlay: { x: 0.5, y: content.callout ? 0.3 : 0.35, width: content.callout ? 0.56 : 0.28, rotation: 0 },
+        },
+      },
+    }]);
+    setSelectedId(clipId);
+  }
+
+  /** Run a source picker, then land whatever it uploaded in the library and on the timeline. */
+  async function addFrom(pick: (projectId: string, onProgress: PickProgress) => Promise<PickResult>): Promise<void> {
+    if (!project) return;
     setUploading(true);
+    setUploadError(undefined);
+    setProgress(undefined);
     try {
-      appendAsset(await uploadAsset({ uri: file.uri, name: file.name, ...(file.mimeType ? { mimeType: file.mimeType } : {}) }));
+      // One clip needs no counter; a batch does.
+      const { assets: added, failed } = await pick(id, (done, total) => setProgress(total > 1 ? { done, total } : undefined));
+      appendAssets(added);
+      if (added.length > 0) await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
+      if (failed.length > 0) setUploadError(`Could not import ${failed.length} of ${added.length + failed.length}: ${failed.join(', ')}`);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Could not add that media');
     } finally {
       setUploading(false);
+      setProgress(undefined);
     }
   }
 
@@ -156,19 +303,28 @@ export default function EditorScreen() {
     <View style={styles.header}>
       <Pressable onPress={() => router.back()} accessibilityRole="button"><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
       <View style={styles.heading}>
-        <Brand compact />
-        <View style={styles.divider} />
-        <View>
-          <Text style={styles.projectTitle}>{project.title}</Text>
-          <Text style={styles.projectMeta}>
+        {/* The wordmark is decoration; on a phone the title needs the room. */}
+        {width >= 560 && (
+          <>
+            <Brand compact />
+            <View style={styles.divider} />
+          </>
+        )}
+        <View style={styles.headingText}>
+          <Text style={styles.projectTitle} numberOfLines={1}>{project.title}</Text>
+          <Text style={styles.projectMeta} numberOfLines={1}>
             {project.format} · {project.fps} FPS · V{project.version} · {project.tracks.reduce((total, track) => total + track.clips.length, 0)} CLIPS
           </Text>
         </View>
       </View>
       <View style={styles.headerActions}>
-        <GradientButton secondary style={styles.headerButton} onPress={() => void uploadMedia()} disabled={uploading}>
-          {uploading ? 'processing…' : '+ media'}
-        </GradientButton>
+        {/* The media library carries its own +photos; the header duplicate
+            only fits once the title has room to breathe. */}
+        {width >= 560 && (
+          <GradientButton secondary style={styles.headerButton} onPress={() => void addFrom(pickFromPhotos)} disabled={uploading}>
+            {progress ? `${progress.done}/${progress.total}…` : uploading ? 'processing…' : '+ photos'}
+          </GradientButton>
+        )}
         <GradientButton style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
           export ↗
         </GradientButton>
@@ -181,17 +337,36 @@ export default function EditorScreen() {
       <Timeline
         project={project}
         assets={assets}
-        playhead={playhead}
+        clock={clock}
         playing={playing}
         selectedId={selectedId}
         pending={apply.isPending}
         errorMessage={apply.error?.message}
         onSeek={(time) => { stop(); seek(time); }}
+        onScrub={setScrubbing}
         onSelect={setSelectedId}
         onApply={applyOps}
         onImport={() => setImportOpen(true)}
+        onAddSound={() => setSoundOpen(true)}
+        onAddSticker={() => setStickerOpen(true)}
+        onCleanup={() => setCleanupOpen(true)}
+        onRecordVoice={() => setVoiceOpen(true)}
+        onStyle={() => setStyleOpen(true)}
       />
     </Animated.View>
+  );
+
+  const library = (
+    <MediaLibrary
+      projectId={id}
+      busy={uploading}
+      {...(progress ? { progress } : {})}
+      {...(uploadError ? { error: uploadError } : {})}
+      onPickPhotos={() => void addFrom(pickFromPhotos)}
+      onPickFiles={() => void addFrom(pickFromFiles)}
+      onOpenFolder={() => setImportOpen(true)}
+      onAdd={(asset) => appendAssets([asset])}
+    />
   );
 
   const dock = (
@@ -200,10 +375,14 @@ export default function EditorScreen() {
       messages={chatQuery.data}
       latestTrace={latestTrace}
       latestAssistantId={lastAssistantId}
+      liveTrace={sendChat.isPending ? liveQuery.data?.steps : undefined}
       optimisticMessage={optimisticMessage}
       pending={sendChat.isPending}
       error={sendChat.error?.message}
       onSend={(message) => sendChat.mutate(message)}
+      onRevert={(runId) => revertRun.mutate(runId)}
+      reverting={revertRun.isPending}
+      onSeek={(time) => { stop(); seek(time); }}
     />
   );
 
@@ -211,23 +390,77 @@ export default function EditorScreen() {
     <Screen scroll={!wide} bleed header={header}>
       <View style={[styles.workspace, !wide && styles.workspaceStacked]}>
         <View style={[styles.editColumn, !wide && styles.editColumnStacked]}>
-          <PreviewPlayer
-            project={project}
-            assets={assets}
-            playhead={playhead}
-            playing={playing}
-            onTogglePlay={toggle}
-            onSeek={seek}
-          />
+          {/* The preview is the editor's centrepiece: stacked mode hands it half
+              the screen outright, wide mode the whole column above the timeline
+              (the library and insights move to the dock column there). */}
+          <View style={wide ? styles.previewWide : { height: previewHeight }}>
+            <PreviewPlayer
+              project={project}
+              assets={assets}
+              clock={clock}
+              playing={playing}
+              scrubbing={scrubbing}
+              selectedId={selectedId}
+              onTogglePlay={toggle}
+              onSeek={(time) => { stop(); seek(time); }}
+              onSelect={setSelectedId}
+              onApply={applyOps}
+            />
+          </View>
+          {!wide && library}
           {timeline}
-          <InsightsPanel assetIds={assetIds} />
+          {!wide && <InsightsPanel assetIds={assetIds} />}
         </View>
-        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>{dock}</View>
+        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>
+          {wide && library}
+          {dock}
+          {wide && <InsightsPanel assetIds={assetIds} />}
+        </View>
       </View>
       <ImportSheet
+        projectId={id}
         visible={importOpen}
         onClose={() => setImportOpen(false)}
-        onImported={(asset) => appendAsset(asset)}
+        onImported={(asset) => {
+          appendAssets([asset]);
+          void queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
+        }}
+      />
+      <SoundSheet
+        visible={soundOpen}
+        onClose={() => setSoundOpen(false)}
+        onAdd={(sound) => void addSound(sound)}
+      />
+      <StickerSheet
+        projectId={id}
+        visible={stickerOpen}
+        onClose={() => setStickerOpen(false)}
+        onAddEmoji={(emoji) => addSticker({ emoji })}
+        onAddImage={(asset) => addSticker({ asset })}
+        onAddCallout={(callout) => addSticker({ callout })}
+      />
+      <CleanupSheet
+        projectId={id}
+        project={project}
+        visible={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        onApply={applyOps}
+      />
+      <VoiceSheet
+        projectId={id}
+        visible={voiceOpen}
+        onClose={() => setVoiceOpen(false)}
+        onRecorded={addVoiceover}
+      />
+      <StylePacketSheet
+        visible={styleOpen}
+        busy={sendChat.isPending}
+        onClose={() => setStyleOpen(false)}
+        onApply={(packet) => {
+          setStyleOpen(false);
+          // The agent runs apply_style_packet, then judges the creative parts.
+          sendChat.mutate(packetPrompt(packet));
+        }}
       />
     </Screen>
   );
@@ -236,7 +469,8 @@ export default function EditorScreen() {
 const styles = StyleSheet.create({
   header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   back: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.2 },
-  heading: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  headingText: { flexShrink: 1, minWidth: 0 },
   divider: { width: 1, height: 26, backgroundColor: colors.border },
   projectTitle: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
   projectMeta: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 8, marginTop: 3, letterSpacing: 0.5 },
@@ -246,8 +480,9 @@ const styles = StyleSheet.create({
   workspace: { flex: 1, flexDirection: 'row', gap: 12, minHeight: 0 },
   workspaceStacked: { flexDirection: 'column' },
   editColumn: { flex: 1, minWidth: 0, gap: 10 },
-  editColumnStacked: { minHeight: 620 },
-  dockColumn: { width: 372, minHeight: 0 },
+  editColumnStacked: {},
+  previewWide: { flex: 1, minHeight: 260 },
+  dockColumn: { width: 372, minHeight: 0, gap: 10 },
   dockColumnStacked: { width: '100%', height: 560 },
   center: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', textAlign: 'center', marginTop: 120 },
   error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 12 },

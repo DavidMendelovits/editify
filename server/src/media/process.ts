@@ -70,6 +70,10 @@ export async function createProxyAndThumbnail(
       '-y', '-i', sourcePath,
       '-vf', 'scale=540:540:force_original_aspect_ratio=decrease:force_divisible_by=2',
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27', '-pix_fmt', 'yuv420p',
+      // A keyframe every second: x264's default ~250-frame GOP makes every
+      // preview seek decode seconds of video. Costs little at CRF 27.
+      // Proxies made before this keep their long GOP until re-imported.
+      '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
       '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', proxyPath,
     ]);
     await runProcess('ffmpeg', [

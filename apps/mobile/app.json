@@ -2,17 +2,59 @@
   "expo": {
     "name": "Editify",
     "slug": "editify",
+    "owner": "dfordavey",
     "version": "1.0.0",
     "orientation": "default",
     "scheme": "editify",
     "userInterfaceStyle": "dark",
+    "ios": {
+      "bundleIdentifier": "com.editify.app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.editify.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
+    },
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "single"
     },
-    "plugins": ["expo-router", "expo-document-picker"],
+    "plugins": [
+      "expo-router",
+      "expo-document-picker",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.481295230846-p9b26huakkve0r2qft6uggtebgaut81t"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Editify adds clips from your photo library to the timeline."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Editify records voiceover takes straight onto the timeline."
+        }
+      ]
+    ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "05e74ce6-1ff5-426f-9988-98665619839d"
+      }
     }
   }
 }

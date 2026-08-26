@@ -1,13 +1,14 @@
 import { useRef, useState } from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { AgentActivity } from '../AgentActivity';
 import { AgentTrace } from '../AgentTrace';
 import { PresetPicker } from '../PresetPicker';
+import { Markdown } from './Markdown';
 import { ProviderPicker } from './ProviderPicker';
-import { api, type ChatMessage, type RenderRecord } from '../../lib/api';
-import type { AgentTraceStep } from '../../lib/agent';
+import { api, rebaseServerUrl, type ChatMessage, type RenderRecord } from '../../lib/api';
+import { receiptItems, type AgentTraceStep } from '../../lib/agent';
 import { presetPrompt } from '../../lib/presets';
 import { colors } from '../../lib/theme';
 
@@ -19,10 +20,17 @@ interface Props {
   /** Trace for the newest assistant turn before the chat history refetches. */
   latestTrace: AgentTraceStep[] | undefined;
   latestAssistantId: string | undefined;
+  /** Steps of the turn still running, polled from `/chat/live`; replaced by `latestTrace` when it lands. */
+  liveTrace: AgentTraceStep[] | undefined;
   optimisticMessage: string | undefined;
   pending: boolean;
   error: string | undefined;
   onSend: (message: string) => void;
+  /** Undo a whole agent turn from the reply it produced. */
+  onRevert: (runId: string) => void;
+  reverting: boolean;
+  /** Jump the playhead — receipt chips seek to where their edit landed. */
+  onSeek: (time: number) => void;
 }
 
 /**
@@ -30,7 +38,7 @@ interface Props {
  * chips, the composer, and the render strip. The project query is refreshed by
  * the parent when a turn lands, so the timeline animates itself.
  */
-export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, optimisticMessage, pending, error, onSend }: Props) {
+export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend, onRevert, reverting, onSeek }: Props) {
   const [text, setText] = useState('');
   const [preset, setPreset] = useState<string>();
   const scroller = useRef<ScrollView>(null);
@@ -65,6 +73,9 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
         ref={scroller}
         style={styles.messages}
         contentContainerStyle={styles.messagesContent}
+        // Without this, Android refuses to scroll a vertical list nested in the
+        // stacked layout's outer ScrollView.
+        nestedScrollEnabled
         onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
       >
         {(messages?.length ?? 0) === 0 && !optimisticMessage && (
@@ -80,12 +91,24 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             key={message.id}
             message={message}
             trace={message.trace ?? (message.id === latestAssistantId ? latestTrace : undefined)}
+            onRevert={onRevert}
+            reverting={reverting}
+            onSeek={onSeek}
           />
         ))}
         {optimisticMessage && (
-          <Message message={{ id: 'optimistic', role: 'user', content: optimisticMessage, createdAt: '' }} trace={undefined} />
+          <Message
+            message={{ id: 'optimistic', role: 'user', content: optimisticMessage, createdAt: '' }}
+            trace={undefined}
+            onRevert={onRevert}
+            reverting={reverting}
+            onSeek={onSeek}
+          />
         )}
-        {pending && <AgentActivity />}
+        {pending && <AgentActivity {...(liveTrace?.length ? { latestStep: liveTrace[liveTrace.length - 1] } : {})} />}
+        {pending && liveTrace && liveTrace.length > 0 && (
+          <View style={styles.agentMessage}><AgentTrace steps={liveTrace} /></View>
+        )}
       </ScrollView>
 
       <RenderStrip projectId={projectId} />
@@ -97,20 +120,31 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
           </Pressable>
         ))}
       </View>
-      <View style={styles.composer}>
-        <TextInput
-          value={text}
-          onChangeText={draft}
-          onSubmitEditing={send}
-          placeholder="Describe an edit…"
-          placeholderTextColor={colors.muted}
-          multiline
-          style={styles.input}
-        />
-        <Pressable onPress={send} disabled={!text.trim() || pending} style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending) && styles.sendDisabled]}>
-          <Text style={styles.sendText}>↑</Text>
-        </Pressable>
-      </View>
+      {/* Keeps the composer above the software keyboard on phones. */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80}>
+        <View style={styles.composer}>
+          <TextInput
+            value={text}
+            onChangeText={draft}
+            onSubmitEditing={send}
+            blurOnSubmit
+            placeholder="Describe an edit…"
+            placeholderTextColor={colors.muted}
+            multiline
+            style={styles.input}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="send"
+            hitSlop={6}
+            onPress={send}
+            disabled={!text.trim() || pending}
+            style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending) && styles.sendDisabled]}
+          >
+            <Text style={styles.sendText}>↑</Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
@@ -146,7 +180,7 @@ function RenderStrip({ projectId }: { projectId: string }) {
           <Text style={styles.renderButtonText}>{status === 'done' ? 'render again' : 'render 1080p'}</Text>
         </Pressable>
       </View>
-      {status === 'done' && outputUrl && <RenderPreview url={outputUrl} />}
+      {status === 'done' && outputUrl && <RenderPreview url={rebaseServerUrl(outputUrl) as string} />}
       {record.data?.error && <Text style={styles.error}>{record.data.error}</Text>}
       {start.error && <Text style={styles.error}>{start.error.message}</Text>}
     </View>
@@ -165,21 +199,44 @@ function RenderPreview({ url }: { url: string }) {
   );
 }
 
-function Message({ message, trace }: { message: ChatMessage; trace: AgentTraceStep[] | undefined }) {
+function Message({ message, trace, onRevert, reverting, onSeek }: {
+  message: ChatMessage;
+  trace: AgentTraceStep[] | undefined;
+  onRevert: (runId: string) => void;
+  reverting: boolean;
+  onSeek: (time: number) => void;
+}) {
   const user = message.role === 'user';
+  const runId = !user && message.ops?.length ? message.runId : undefined;
+  const receipt = !user && message.ops?.length ? receiptItems(message.ops) : [];
   return (
     <View style={user ? styles.userMessage : styles.agentMessage}>
       <Text style={user ? styles.userLabel : styles.agentLabel}>{user ? 'YOU' : 'EDITIFY'}</Text>
       {!user && trace && trace.length > 0 && <AgentTrace steps={trace} />}
-      <Text style={styles.messageText}>{message.content}</Text>
-      {message.ops && message.ops.length > 0 && (
+      {user ? <Text style={styles.messageText}>{message.content}</Text> : <Markdown text={message.content} />}
+      {receipt.length > 0 && (
         <View style={styles.opChips}>
-          {message.ops.map((op, index) => (
-            <View key={`${op.type}-${index}`} style={styles.opChip}>
-              <Text style={styles.opText}>✓ {op.type.replaceAll('_', ' ')}</Text>
-            </View>
+          {receipt.map((item) => (
+            <Pressable
+              key={item.label}
+              disabled={item.at === undefined}
+              onPress={() => item.at !== undefined && onSeek(item.at)}
+              style={({ pressed }) => [styles.opChip, pressed && styles.pressed]}
+            >
+              <Text style={styles.opText}>{item.glyph} {item.label}</Text>
+            </Pressable>
           ))}
         </View>
+      )}
+      {runId && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => onRevert(runId)}
+          disabled={reverting || message.reverted}
+          style={({ pressed }) => [styles.revert, pressed && styles.pressed, (reverting || message.reverted) && styles.revertDisabled]}
+        >
+          <Text style={styles.revertText}>{message.reverted ? 'Reverted' : '↩ Revert'}</Text>
+        </Pressable>
       )}
     </View>
   );
@@ -205,6 +262,9 @@ const styles = StyleSheet.create({
   opChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   opChip: { backgroundColor: '#372A55', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
   opText: { color: '#C9B4FF', fontFamily: 'Montserrat_600SemiBold', fontSize: 8 },
+  revert: { alignSelf: 'flex-start', borderRadius: 7, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 9, paddingVertical: 4 },
+  revertDisabled: { opacity: 0.45 },
+  revertText: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9 },
   render: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, padding: 8, gap: 8 },
   renderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   renderLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 1.2 },

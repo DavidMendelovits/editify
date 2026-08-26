@@ -1,7 +1,11 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import type { AssetMetadata } from '@editify/shared';
+import { AssetActionSheet } from '../src/components/AssetActionSheet';
+import { Markdown } from '../src/components/editor/Markdown';
 import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
 import { Screen } from '../src/components/Screen';
@@ -11,22 +15,32 @@ import { colors } from '../src/lib/theme';
 export default function StyleScreen() {
   const router = useRouter();
   const client = useQueryClient();
-  const profile = useQuery({ queryKey: ['style-profile'], queryFn: api.getStyle, retry: false });
+  const profile = useQuery({
+    queryKey: ['style-profile'], queryFn: api.getStyle, retry: false,
+    refetchInterval: (query) => (query.state.data?.status === 'processing' ? 1500 : false),
+  });
   const analyze = useMutation({
     mutationFn: async () => {
       const picked = await DocumentPicker.getDocumentAsync({ type: ['video/*'], multiple: true, copyToCacheDirectory: true });
       if (picked.canceled) return undefined;
       const uploaded = [];
       for (const asset of picked.assets.slice(0, 10)) {
-        uploaded.push(await uploadAsset({ uri: asset.uri, name: asset.name, ...(asset.mimeType ? { mimeType: asset.mimeType } : {}) }));
+        uploaded.push(await uploadAsset({ uri: asset.uri, name: asset.name, ...(asset.mimeType ? { mimeType: asset.mimeType } : {}), ...(asset.file ? { file: asset.file } : {}) }));
       }
       return await api.analyzeStyle(uploaded.map((asset) => asset.id));
     },
-    onSuccess: async (result) => {
-      if (result) client.setQueryData(['style-profile'], result);
-    },
+    // The POST only starts the scan — refetch so the poll above picks it up.
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['style-profile'] }); },
   });
-  const current = analyze.data ?? profile.data;
+  // Every clip on the server, so a reference can be measured before any project
+  // adopts it — dissection is a pre-edit decision, not a timeline action.
+  const clips = useQuery({ queryKey: ['library', 'all'], queryFn: () => api.listAssets() });
+  const [actionAsset, setActionAsset] = useState<AssetMetadata>();
+  const references = (clips.data ?? []).filter((asset) => asset.width > 0 && !asset.mimeType.startsWith('image/'));
+  const current = profile.data?.profile;
+  // Uploading, or the server still scanning after the 202.
+  const busy = analyze.isPending || profile.data?.status === 'processing';
+  const failure = analyze.error?.message ?? (profile.data?.status === 'error' ? profile.data.error ?? 'Analysis failed' : undefined);
 
   return (
     <Screen header={<View style={styles.header}><Pressable onPress={() => router.back()}><Text style={styles.back}>‹  HOME</Text></Pressable><Brand compact /></View>}>
@@ -37,14 +51,14 @@ export default function StyleScreen() {
       </View>
       <View style={styles.uploadCard}>
         <View style={styles.uploadIcon}><Text style={styles.uploadIconText}>↑</Text></View>
-        <Text style={styles.uploadTitle}>{analyze.isPending ? 'Reading the edit language…' : 'Drop in your best past cuts'}</Text>
-        <Text style={styles.uploadSubtitle}>{analyze.isPending ? 'Probing footage, detecting scene changes, and measuring loudness.' : 'MP4, MOV, or WebM · up to 10 videos'}</Text>
-        <GradientButton disabled={analyze.isPending} onPress={() => analyze.mutate()} style={styles.uploadButton}>
-          {analyze.isPending ? 'analyzing…' : current ? 'analyze new videos' : 'choose videos'}
+        <Text style={styles.uploadTitle}>{busy ? 'Reading the edit language…' : 'Drop in your best past cuts'}</Text>
+        <Text style={styles.uploadSubtitle}>{busy ? 'Probing footage, detecting scene changes, and measuring loudness.' : 'MP4, MOV, or WebM · up to 10 videos'}</Text>
+        <GradientButton disabled={busy} onPress={() => analyze.mutate()} style={styles.uploadButton}>
+          {busy ? 'analyzing…' : current ? 'analyze new videos' : 'choose videos'}
         </GradientButton>
-        {analyze.isPending && <View style={styles.progress}><View style={styles.progressFill} /></View>}
+        {busy && <View style={styles.progress}><View style={styles.progressFill} /></View>}
       </View>
-      {analyze.error && <Text style={styles.error}>{analyze.error.message}</Text>}
+      {failure && <Text style={styles.error}>{failure}</Text>}
       {current && (
         <>
           <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>Your measurable signature</Text><Text style={styles.count}>{current.metrics.length} VIDEOS</Text></View>
@@ -56,11 +70,46 @@ export default function StyleScreen() {
           </View>
           <View style={styles.styleDoc}>
             <Text style={styles.styleDocEyebrow}>EDITIFY'S STYLE BRIEF</Text>
-            <Text style={styles.quote}>“{current.styleDoc}”</Text>
+            <Markdown text={current.styleDoc} />
             <Text style={styles.styleFoot}>This brief is injected into every edit conversation.</Text>
           </View>
         </>
       )}
+      {references.length > 0 && (
+        <>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>Your clips</Text>
+              <Text style={styles.sectionNote}>Dissect one to measure its rhythm — and to get a preset you can apply in the editor.</Text>
+            </View>
+            <Text style={styles.count}>{references.length} CLIPS</Text>
+          </View>
+          <View style={styles.clipList}>
+            {references.map((asset) => (
+              <Pressable
+                key={asset.id}
+                onLongPress={() => setActionAsset(asset)}
+                accessibilityRole="button"
+                accessibilityLabel={`actions for ${asset.label ?? asset.originalName}`}
+                style={styles.clipRow}
+              >
+                <Text style={styles.clipName} numberOfLines={1}>{asset.label ?? asset.originalName}</Text>
+                <Text style={styles.clipMeta}>{asset.duration.toFixed(1)}s</Text>
+                <Pressable
+                  onPress={() => setActionAsset(asset)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`actions for ${asset.label ?? asset.originalName}`}
+                  hitSlop={10}
+                  style={({ pressed }) => [styles.clipMore, pressed && styles.clipMorePressed]}
+                >
+                  <Text style={styles.clipMoreText}>⋯</Text>
+                </Pressable>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
+      {actionAsset && <AssetActionSheet asset={actionAsset} onClose={() => setActionAsset(undefined)} />}
     </Screen>
   );
 }
@@ -89,6 +138,17 @@ const styles = StyleSheet.create({
   progressFill: { width: '68%', height: '100%', backgroundColor: colors.purple },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
   sectionTitle: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 21 },
+  sectionNote: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 11, marginTop: 4, maxWidth: 520 },
+  clipList: { gap: 8 },
+  clipRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 52, borderRadius: 14,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: 14, paddingVertical: 10,
+  },
+  clipName: { flex: 1, color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
+  clipMeta: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 10, fontVariant: ['tabular-nums'] },
+  clipMore: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
+  clipMorePressed: { opacity: 0.6 },
+  clipMoreText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 15, lineHeight: 17 },
   count: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.4 },
   metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   metric: { flexGrow: 1, flexBasis: 210, borderRadius: 18, padding: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },

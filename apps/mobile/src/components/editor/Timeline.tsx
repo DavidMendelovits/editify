@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
-import type { AssetMetadata, Clip, Operation, Project, Track } from '@editify/shared';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { useQueryClient } from '@tanstack/react-query';
+import type { AssetDissection, AssetMetadata, Clip, Operation, Project, Track } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
-import { CaptionChip, DragGhost, DragTooltip, EmptyLane, TimelineClip, type DragMode } from './TimelineClip';
+import { CaptionChip, DragGhost, DragTooltip, EmptyLane, StickerChip, TimelineClip, type DragMode } from './TimelineClip';
 import { Inspector } from './Inspector';
 import { useHorizontalDrag } from './useHorizontalDrag';
+import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 import { colors } from '../../lib/theme';
 import {
   CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
-  captionRows, clampStart, clipEnd, closeGapUpdates, findClip, formatTimecode, patchClip, patchStarts,
+  beatTargets, captionRows, clampStart, clipEnd, closeGapUpdates, findClip, formatTimecode, patchClip, patchStarts,
   removeClip, snapTargets, snapTime, sortClips, tickStep, trackOfClip, trimInPreview, trimOutPreview,
 } from '../../lib/timeline';
 
@@ -20,16 +23,23 @@ const CLICK_SLOP = 4;
 interface Props {
   project: Project;
   assets: Record<string, AssetMetadata | undefined>;
-  playhead: number;
+  clock: PlayheadClock;
   playing: boolean;
   selectedId: string | undefined;
   pending: boolean;
   errorMessage: string | undefined;
   onSeek: (time: number) => void;
+  /** Ruler grab / release — the preview swaps to filmstrip posters in between. */
+  onScrub: (scrubbing: boolean) => void;
   onSelect: (clipId: string | undefined) => void;
   /** Applies ops on the server; `optimistic` paints the result before the round trip. */
   onApply: (ops: Operation[], optimistic?: (project: Project) => Project) => void;
   onImport: () => void;
+  onAddSound: () => void;
+  onAddSticker: () => void;
+  onCleanup: () => void;
+  onRecordVoice: () => void;
+  onStyle: () => void;
 }
 
 interface DragState { clipId: string; mode: DragMode; dx: number }
@@ -45,9 +55,13 @@ const round6 = (value: number): number => Number(value.toFixed(6));
  * Zoom is `pxPerSec`; every block is `left = start * pxPerSec` wide
  * `timelineDuration * pxPerSec`. Drags are previewed locally (ghost + tooltip)
  * and only committed as operations on release.
+ *
+ * The playhead is deliberately not a prop: only `PlayheadCursor` subscribes to
+ * it per frame, so the lanes and their filmstrips are untouched during
+ * playback. Everything here reads the current time imperatively.
  */
 export function Timeline({
-  project, assets, playhead, playing, selectedId, pending, errorMessage, onSeek, onSelect, onApply, onImport,
+  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle,
 }: Props) {
   const [pxPerSec, setPxPerSec] = useState(40);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -56,12 +70,35 @@ export function Timeline({
   const scrollX = useRef(0);
   const scrubStart = useRef(0);
   const fitted = useRef(false);
+  // Culling window anchor, in content px. Updated with a half-buffer
+  // hysteresis so ordinary scrolling re-renders the lanes only once per
+  // half-screen of travel, not once per scroll event.
+  const [cullStart, setCullStart] = useState(0);
+  const cullAnchor = useRef(0);
+
+  // Viewport culling: a long, zoomed-in project renders only what intersects
+  // the visible window plus one screen of buffer on each side. Selected and
+  // dragged clips always render — unmounting a chip mid-gesture kills it.
+  const cullBuffer = Math.max(viewportWidth, 600);
+  const cullFrom = cullStart - cullBuffer;
+  const cullTo = cullStart + viewportWidth + cullBuffer;
+  const inWindow = (left: number, width: number): boolean => left + width >= cullFrom && left <= cullTo;
+  const chipVisible = (clip: Clip): boolean =>
+    inWindow(clip.start * pxPerSec, Math.max(6, clipTimelineDuration(clip) * pxPerSec))
+    || clip.id === selectedId || clip.id === drag?.clipId;
 
   const lanes = useMemo<Lane[]>(() => project.tracks.flatMap((track) => {
-    if (track.kind === 'audio' && track.clips.length === 0) return [];
-    if (track.kind === 'caption') {
+    // Support lanes appear once they have content; the video lane always shows.
+    if ((track.kind === 'audio' || track.kind === 'overlay') && track.clips.length === 0) return [];
+    if (track.kind === 'caption' || track.kind === 'overlay') {
       const rowCount = captionRows(track.clips).rowCount;
-      return [{ track, height: rowCount * CAPTION_ROW_HEIGHT + (rowCount - 1) * 2, label: 'CC', sublabel: 'CAPTIONS', rowCount }];
+      return [{
+        track,
+        height: rowCount * CAPTION_ROW_HEIGHT + (rowCount - 1) * 2,
+        label: track.kind === 'caption' ? 'CC' : 'ST',
+        sublabel: track.kind === 'caption' ? 'CAPTIONS' : 'STICKERS',
+        rowCount,
+      }];
     }
     return [{
       track,
@@ -73,6 +110,28 @@ export function Timeline({
   }), [project.tracks]);
 
   const videoTrack = project.tracks.find((track) => track.kind === 'video');
+
+  // Measured audio onsets, in timeline seconds, for snapping and the lane ticks.
+  // Cache-only: dissection is expensive, so the timeline shows beats once
+  // something else (the dissect panel, the agent) has measured the asset.
+  // ponytail: read at render time, so beats appear on the next render after
+  // that query resolves rather than the instant it does.
+  const queryClient = useQueryClient();
+  const beats = useMemo(
+    () => beatTargets(videoTrack?.clips ?? [], (assetId) =>
+      queryClient.getQueryData<AssetDissection>(['dissect', assetId])?.energyPeaks),
+    [queryClient, videoTrack?.clips],
+  );
+  // Memoized so a drag, which re-renders the lanes on every move, reconciles
+  // the same elements instead of rebuilding up to MAX_BEAT_TARGETS views.
+  // Only the ticks inside the culling window become views at all; the full
+  // beat list still feeds snapping regardless of what is on screen.
+  const beatTicks = useMemo(() => beats
+    .filter((time) => time * pxPerSec >= cullFrom && time * pxPerSec <= cullTo)
+    .map((time) => (
+      <View key={time.toFixed(4)} pointerEvents="none" style={[styles.beatTick, { left: time * pxPerSec }]} />
+    )), [cullFrom, cullTo, beats, pxPerSec]);
+
   const selected = findClip(project, selectedId);
   const selectedTrack = selectedId ? trackOfClip(project, selectedId) : undefined;
   const duration = Math.max(project.duration, 1);
@@ -86,23 +145,15 @@ export function Timeline({
     setPxPerSec(clampZoom((viewportWidth - 24) / project.duration));
   }, [project.duration, viewportWidth]);
 
-  // Keep the playhead on screen while the transport is running.
-  useEffect(() => {
-    if (!playing || viewportWidth <= 0) return;
-    const x = playhead * pxPerSec;
-    if (x < scrollX.current + 40 || x > scrollX.current + viewportWidth - 90) {
-      scrollRef.current?.scrollTo({ x: Math.max(0, x - viewportWidth * 0.35), animated: false });
-    }
-  }, [playhead, playing, pxPerSec, viewportWidth]);
-
   const ruler = useHorizontalDrag({
-    onStart: (localX) => { scrubStart.current = localX / pxPerSec; onSeek(Math.max(0, scrubStart.current)); },
+    onStart: (localX) => { onScrub(true); scrubStart.current = localX / pxPerSec; onSeek(Math.max(0, scrubStart.current)); },
     onMove: (dx) => onSeek(Math.max(0, scrubStart.current + dx / pxPerSec)),
+    onEnd: () => onScrub(false),
   });
 
   function moveTarget(track: Track | undefined, clip: Clip, deltaSeconds: number): number {
     const tolerance = SNAP_PX / pxPerSec;
-    const targets = snapTargets(track, clip.id, playhead);
+    const targets = snapTargets(track, clip.id, clock.get(), beats);
     const raw = Math.max(0, clip.start + deltaSeconds);
     const span = clipTimelineDuration(clip);
     const byStart = snapTime(raw, targets, tolerance);
@@ -114,9 +165,19 @@ export function Timeline({
   /** Snapped edge travel for a trim, in timeline seconds. */
   function trimDelta(track: Track | undefined, clip: Clip, mode: DragMode, deltaSeconds: number): number {
     const tolerance = SNAP_PX / pxPerSec;
-    const targets = snapTargets(track, clip.id, playhead);
+    const targets = snapTargets(track, clip.id, clock.get(), beats);
     const edge = mode === 'in' ? clip.start : clipEnd(clip);
     return snapTime(edge + deltaSeconds, targets, tolerance) - edge;
+  }
+
+  /**
+   * The trim ceiling for a clip's right edge. Stickers and captions have no
+   * source to run out of; a video clip whose asset has not loaded yet is
+   * locked (extending into unknown footage used to commit out-of-range trims).
+   */
+  function sourceCeiling(track: Track, clip: Clip): number | undefined {
+    if (track.kind === 'overlay' || track.kind === 'caption') return Number.POSITIVE_INFINITY;
+    return clip.assetId ? assets[clip.assetId]?.duration : Number.POSITIVE_INFINITY;
   }
 
   /** The clip as it should be drawn right now — drag preview applied. */
@@ -124,11 +185,25 @@ export function Timeline({
     if (!drag || drag.clipId !== clip.id) return clip;
     const delta = drag.dx / pxPerSec;
     if (drag.mode === 'move') return { ...clip, start: moveTarget(track, clip, delta) };
-    const asset = clip.assetId ? assets[clip.assetId] : undefined;
     const trim = drag.mode === 'in'
       ? trimInPreview(track, clip, trimDelta(track, clip, 'in', delta))
-      : trimOutPreview(track, clip, trimDelta(track, clip, 'out', delta), asset?.duration);
+      : trimOutPreview(track, clip, trimDelta(track, clip, 'out', delta), sourceCeiling(track, clip));
     return { ...clip, in: trim.in, out: trim.out, start: trim.start };
+  }
+
+  // A light haptic tick each time a dragged edge magnets onto a new snap
+  // target (FCP-for-iPad's signature detail) — beats included, since they are
+  // just more targets. Web has no haptics.
+  const lastSnap = useRef<number | undefined>(undefined);
+  function feelSnap(clip: Clip, track: Track, mode: DragMode, dx: number): void {
+    if (Platform.OS === 'web') return;
+    const delta = dx / pxPerSec;
+    const edge = mode === 'out' ? clipEnd(clip) : clip.start;
+    const raw = edge + delta;
+    const snapped = snapTime(raw, snapTargets(track, clip.id, clock.get(), beats), SNAP_PX / pxPerSec);
+    const hit = Math.abs(snapped - raw) > 1e-9 ? snapped : undefined;
+    if (hit !== undefined && hit !== lastSnap.current) void Haptics.selectionAsync();
+    lastSnap.current = hit;
   }
 
   function commit(clip: Clip, track: Track, mode: DragMode, dx: number): void {
@@ -147,10 +222,9 @@ export function Timeline({
       return;
     }
 
-    const asset = clip.assetId ? assets[clip.assetId] : undefined;
     const trim = mode === 'in'
       ? trimInPreview(track, clip, trimDelta(track, clip, 'in', delta))
-      : trimOutPreview(track, clip, trimDelta(track, clip, 'out', delta), asset?.duration);
+      : trimOutPreview(track, clip, trimDelta(track, clip, 'out', delta), sourceCeiling(track, clip));
     if (Math.abs(trim.in - clip.in) < 1e-4 && Math.abs(trim.out - clip.out) < 1e-4) return;
     const ops: Operation[] = [{
       type: 'trim_clip',
@@ -162,13 +236,47 @@ export function Timeline({
     onApply(ops, (current) => patchClip(current, clip.id, { in: trim.in, out: trim.out, start: trim.start }));
   }
 
-  const splitTarget = selected && selectedTrack?.kind !== 'caption'
-    && playhead > selected.start + 0.05 && playhead < clipEnd(selected) - 0.05 ? selected : undefined;
+  // Stable chip callbacks: the chips are memoized, so these must keep one
+  // identity for the life of the timeline. They read the live implementations
+  // through a ref and resolve the clip and track by id at event time.
+  const chipImpl = { project, onSelect, setDrag, feelSnap, commit };
+  const chipImplRef = useRef(chipImpl);
+  chipImplRef.current = chipImpl;
+  const chipSelect = useCallback((clipId: string) => chipImplRef.current.onSelect(clipId), []);
+  const chipDragStart = useCallback((clipId: string, mode: DragMode) => {
+    chipImplRef.current.onSelect(clipId);
+    chipImplRef.current.setDrag({ clipId, mode, dx: 0 });
+  }, []);
+  const chipDragMove = useCallback((clipId: string, mode: DragMode, dx: number) => {
+    const { project: current, feelSnap: feel, setDrag: set } = chipImplRef.current;
+    const clip = findClip(current, clipId);
+    const track = trackOfClip(current, clipId);
+    if (clip && track) feel(clip, track, mode, dx);
+    set({ clipId, mode, dx });
+  }, []);
+  const chipDragEnd = useCallback((clipId: string, mode: DragMode, dx: number) => {
+    const { project: current, commit: commitDrag } = chipImplRef.current;
+    const clip = findClip(current, clipId);
+    const track = trackOfClip(current, clipId);
+    if (clip && track) commitDrag(clip, track, mode, dx);
+  }, []);
+
+  // A boolean, not a time: the selector runs on every tick but only re-renders
+  // the toolbar when the playhead enters or leaves the selected clip.
+  const splittable = usePlayheadSelector(clock, useCallback(
+    (time: number) => Boolean(
+      selected && selectedTrack?.kind !== 'caption'
+      && time > selected.start + 0.05 && time < clipEnd(selected) - 0.05,
+    ),
+    [selected, selectedTrack],
+  ));
   const gapUpdates = closeGapUpdates(videoTrack);
 
   function split(): void {
-    if (!splitTarget) return;
-    onApply([{ type: 'split_clip', params: { clipId: splitTarget.id, at: round6(playhead), newClipId: `${splitTarget.id}-s${Date.now()}` } }]);
+    const at = clock.get();
+    if (!selected || selectedTrack?.kind === 'caption') return;
+    if (at <= selected.start + 0.05 || at >= clipEnd(selected) - 0.05) return;
+    onApply([{ type: 'split_clip', params: { clipId: selected.id, at: round6(at), newClipId: `${selected.id}-s${Date.now()}` } }]);
   }
   function remove(): void {
     if (!selected || !selectedTrack) return;
@@ -193,18 +301,26 @@ export function Timeline({
   }
 
   const step = tickStep(pxPerSec);
-  const tickCount = Math.ceil(contentWidth / pxPerSec / step) + 1;
+  const firstTick = Math.max(0, Math.floor(cullFrom / pxPerSec / step));
+  const lastTick = Math.min(Math.ceil(contentWidth / pxPerSec / step), Math.ceil(cullTo / pxPerSec / step)) + 1;
 
   return (
     <View style={styles.panel}>
       <View style={styles.toolbar}>
         <Text style={styles.zoneLabel}>TIMELINE</Text>
         <View style={styles.toolGroup}>
-          <Tool label="split" hint="at playhead" onPress={split} disabled={!splitTarget || pending} />
+          <Tool label="split" hint="at playhead" onPress={split} disabled={!splittable || pending} />
           <Tool label="delete" hint="selected" onPress={remove} disabled={!selected || pending} danger />
           <Tool label="close gaps" hint={gapUpdates.length ? `${gapUpdates.length} moves` : 'none'} onPress={closeGaps} disabled={gapUpdates.length === 0 || pending} />
           {/* `undo` is an operation, not a route — POST /projects/:id/ops carries it. */}
           <Tool label="undo" hint="last batch" onPress={() => onApply([{ type: 'undo', params: {} }])} disabled={pending} />
+        </View>
+        <View style={styles.toolGroup}>
+          <Tool label="♪ sound" hint="at playhead" onPress={onAddSound} disabled={pending} />
+          <Tool label="✦ sticker" hint="at playhead" onPress={onAddSticker} disabled={pending} />
+          <Tool label="✂ cleanup" hint="fillers & silence" onPress={onCleanup} disabled={pending} />
+          <Tool label="⏺ voice" hint="record at playhead" onPress={onRecordVoice} disabled={pending} />
+          <Tool label="✨ style" hint="apply a packet" onPress={onStyle} disabled={pending} />
         </View>
         <View style={styles.toolGroup}>
           <Tool label="−" hint="zoom" compact onPress={() => zoom(1 / 1.6)} disabled={pxPerSec <= MIN_PX_PER_SEC} />
@@ -231,14 +347,21 @@ export function Timeline({
           horizontal
           showsHorizontalScrollIndicator
           scrollEventThrottle={16}
-          onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => { scrollX.current = event.nativeEvent.contentOffset.x; }}
+          onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => {
+            const x = event.nativeEvent.contentOffset.x;
+            scrollX.current = x;
+            if (Math.abs(x - cullAnchor.current) > cullBuffer / 2) {
+              cullAnchor.current = x;
+              setCullStart(x);
+            }
+          }}
           onLayout={(event) => setViewportWidth(event.nativeEvent.layout.width)}
           style={styles.scroll}
           contentContainerStyle={{ width: contentWidth }}
         >
           <View style={{ width: contentWidth }}>
             <View {...ruler} style={[styles.ruler, { width: contentWidth }]}>
-              {Array.from({ length: tickCount }, (_unused, index) => index * step).map((time) => (
+              {Array.from({ length: Math.max(0, lastTick - firstTick) }, (_unused, index) => (firstTick + index) * step).map((time) => (
                 // Ticks must not become the touch target: the scrub position is
                 // read from `locationX`, which is relative to whatever was hit.
                 <View key={time} pointerEvents="none" style={[styles.tick, { left: time * pxPerSec }]}>
@@ -251,38 +374,57 @@ export function Timeline({
             {lanes.map((lane) => (
               <View key={lane.track.id} style={[styles.lane, { height: lane.height + LANE_PADDING * 2 }]}>
                 <View style={[styles.laneInner, { height: lane.height }]}>
-                  {lane.track.kind === 'caption'
-                    ? captionRows(lane.track.clips).rows.map(({ clip, row, overlapping }) => (
-                      <CaptionChip
-                        key={clip.id}
-                        clip={previewClip(clip, lane.track)}
-                        pxPerSec={pxPerSec}
-                        row={row}
-                        height={CAPTION_ROW_HEIGHT}
-                        overlapping={overlapping}
-                        selected={clip.id === selectedId}
-                        onSelect={() => onSelect(clip.id)}
-                        onDragStart={() => { onSelect(clip.id); setDrag({ clipId: clip.id, mode: 'move', dx: 0 }); }}
-                        onDragMove={(mode, dx) => setDrag({ clipId: clip.id, mode, dx })}
-                        onDragEnd={(mode, dx) => commit(clip, lane.track, mode, dx)}
-                      />
-                    ))
-                    : sortClips(lane.track.clips).map((clip, index) => (
-                      <TimelineClip
-                        key={clip.id}
-                        clip={previewClip(clip, lane.track)}
-                        asset={clip.assetId ? assets[clip.assetId] : undefined}
-                        index={index}
-                        pxPerSec={pxPerSec}
-                        height={lane.height}
-                        selected={clip.id === selectedId}
-                        dragging={drag?.clipId === clip.id}
-                        onSelect={() => onSelect(clip.id)}
-                        onDragStart={(mode) => { onSelect(clip.id); setDrag({ clipId: clip.id, mode, dx: 0 }); }}
-                        onDragMove={(mode, dx) => setDrag({ clipId: clip.id, mode, dx })}
-                        onDragEnd={(mode, dx) => commit(clip, lane.track, mode, dx)}
-                      />
-                    ))}
+                  {lane.track.kind === 'caption' && captionRows(lane.track.clips).rows.filter(({ clip }) => chipVisible(clip)).map(({ clip, row, overlapping }) => (
+                    <CaptionChip
+                      key={clip.id}
+                      clip={previewClip(clip, lane.track)}
+                      pxPerSec={pxPerSec}
+                      row={row}
+                      height={CAPTION_ROW_HEIGHT}
+                      overlapping={overlapping}
+                      selected={clip.id === selectedId}
+                      onSelect={chipSelect}
+                      onDragStart={chipDragStart}
+                      onDragMove={chipDragMove}
+                      onDragEnd={chipDragEnd}
+                    />
+                  ))}
+                  {lane.track.kind === 'overlay' && captionRows(lane.track.clips).rows.filter(({ clip }) => chipVisible(clip)).map(({ clip, row }) => (
+                    <StickerChip
+                      key={clip.id}
+                      clip={previewClip(clip, lane.track)}
+                      asset={clip.assetId ? assets[clip.assetId] : undefined}
+                      pxPerSec={pxPerSec}
+                      row={row}
+                      height={CAPTION_ROW_HEIGHT}
+                      selected={clip.id === selectedId}
+                      onSelect={chipSelect}
+                      onDragStart={chipDragStart}
+                      onDragMove={chipDragMove}
+                      onDragEnd={chipDragEnd}
+                    />
+                  ))}
+                  {(lane.track.kind === 'video' || lane.track.kind === 'audio') && sortClips(lane.track.clips)
+                    .map((clip, index) => ({ clip, index }))
+                    .filter(({ clip }) => chipVisible(clip))
+                    .map(({ clip, index }) => (
+                    <TimelineClip
+                      key={clip.id}
+                      clip={previewClip(clip, lane.track)}
+                      asset={clip.assetId ? assets[clip.assetId] : undefined}
+                      index={index}
+                      pxPerSec={pxPerSec}
+                      height={lane.height}
+                      selected={clip.id === selectedId}
+                      dragging={drag?.clipId === clip.id}
+                      onSelect={chipSelect}
+                      onDragStart={chipDragStart}
+                      onDragMove={chipDragMove}
+                      onDragEnd={chipDragEnd}
+                    />
+                  ))}
+                  {/* Beat ruler along the lane's top edge: what a drag will magnet to. */}
+                  {lane.track.kind === 'video' && beatTicks}
                   {lane.track.kind === 'video' && lane.track.clips.length === 0 && <EmptyLane onPress={onImport} />}
                   {lane.track.kind === 'caption' && lane.track.clips.length === 0 && (
                     <Text style={styles.laneHint}>ask the agent to “add captions”</Text>
@@ -301,10 +443,15 @@ export function Timeline({
               </View>
             ))}
 
-            <View pointerEvents="none" style={[styles.playhead, { left: playhead * pxPerSec, height: RULER_HEIGHT + lanesHeight }]}>
-              <View style={styles.playheadHead} />
-              <View style={styles.playheadLine} />
-            </View>
+            <PlayheadCursor
+              clock={clock}
+              pxPerSec={pxPerSec}
+              height={RULER_HEIGHT + lanesHeight}
+              playing={playing}
+              viewportWidth={viewportWidth}
+              scrollRef={scrollRef}
+              scrollX={scrollX}
+            />
 
             {drag && (() => {
               const clip = findClip(project, drag.clipId);
@@ -323,10 +470,43 @@ export function Timeline({
       <Inspector
         clip={selected}
         asset={selected?.assetId ? assets[selected.assetId] : undefined}
-        isCaption={selectedTrack?.kind === 'caption'}
+        kind={selectedTrack?.kind}
+        pending={pending}
         onApply={(ops, patch) => onApply(ops, (current) => (selected ? patchClip(current, selected.id, patch) : current))}
       />
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
+    </View>
+  );
+}
+
+/**
+ * The only part of the timeline that follows the playhead. It re-renders on
+ * every transport tick — a line, a head, and the auto-scroll that keeps them on
+ * screen — while the lanes above it stay put.
+ */
+function PlayheadCursor({ clock, pxPerSec, height, playing, viewportWidth, scrollRef, scrollX }: {
+  clock: PlayheadClock;
+  pxPerSec: number;
+  height: number;
+  playing: boolean;
+  viewportWidth: number;
+  scrollRef: { current: ScrollView | null };
+  scrollX: { current: number };
+}) {
+  const x = usePlayhead(clock) * pxPerSec;
+
+  // Keep the playhead on screen while the transport is running.
+  useEffect(() => {
+    if (!playing || viewportWidth <= 0) return;
+    if (x < scrollX.current + 40 || x > scrollX.current + viewportWidth - 90) {
+      scrollRef.current?.scrollTo({ x: Math.max(0, x - viewportWidth * 0.35), animated: false });
+    }
+  }, [playing, scrollRef, scrollX, viewportWidth, x]);
+
+  return (
+    <View pointerEvents="none" style={[styles.playhead, { left: x, height }]}>
+      <View style={styles.playheadHead} />
+      <View style={styles.playheadLine} />
     </View>
   );
 }
@@ -359,7 +539,8 @@ const styles = StyleSheet.create({
   panel: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 10, gap: 8, minHeight: 0 },
   toolbar: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
   zoneLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5, marginRight: 'auto' },
-  toolGroup: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  // Wraps so a narrow phone stacks tools instead of clipping the row's tail.
+  toolGroup: { flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap', flexShrink: 1 },
   tool: {
     minWidth: 62, borderRadius: 7, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 5,
@@ -384,6 +565,7 @@ const styles = StyleSheet.create({
   lane: { justifyContent: 'center', paddingVertical: LANE_PADDING, borderTopWidth: 1, borderTopColor: '#1E1D2A' },
   laneInner: { position: 'relative' },
   laneHint: { position: 'absolute', left: 6, top: 4, color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  beatTick: { position: 'absolute', top: 0, width: 1, height: 6, backgroundColor: '#4A4767', zIndex: 20 },
   playhead: { position: 'absolute', top: 0, width: 1, alignItems: 'center', zIndex: 30 },
   playheadLine: { flex: 1, width: 1, backgroundColor: colors.pink },
   playheadHead: { width: 9, height: 9, borderRadius: 2, backgroundColor: colors.pink, transform: [{ rotate: '45deg' }], marginBottom: -3 },

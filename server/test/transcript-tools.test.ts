@@ -56,7 +56,7 @@ describe('transcript agent tools', () => {
     }, async () => {
       throw new Error('ffmpeg must not run in unit tests');
     });
-    const insights = new InsightService(new InsightStore(database), transcripts, () => new MockToolProvider());
+    const insights = new InsightService(new InsightStore(database), transcripts, async () => new MockToolProvider());
     assets.insert({
       id: 'asset-1', originalName: 'speech.mp4', mimeType: 'video/mp4', duration: 3,
       width: 1080, height: 1920, fps: 30, hasAudio: true,

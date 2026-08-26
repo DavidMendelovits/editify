@@ -38,9 +38,27 @@ export class RenderStore {
     `).run(status, values.outputPath ?? null, values.error ?? null, new Date().toISOString(), id);
   }
 
-  get(id: string): RenderRecord | undefined {
-    const row = this.database.prepare('SELECT * FROM renders WHERE id = ?').get(id) as RenderRow | undefined;
+  /** `userId` scopes through the owning project, matching ProjectStore's rules. */
+  get(id: string, userId?: string): RenderRecord | undefined {
+    const row = (userId === undefined
+      ? this.database.prepare('SELECT * FROM renders WHERE id = ?').get(id)
+      : this.database.prepare(`
+          SELECT renders.* FROM renders JOIN projects ON projects.id = renders.project_id
+          WHERE renders.id = ? AND (projects.user_id = ? OR projects.user_id IS NULL)
+        `).get(id, userId)
+    ) as RenderRow | undefined;
     if (!row) return undefined;
+    return this.toRecord(row);
+  }
+
+  unfinished(): RenderRecord[] {
+    const rows = this.database.prepare(`
+      SELECT * FROM renders WHERE status IN ('queued', 'processing') ORDER BY created_at ASC
+    `).all() as RenderRow[];
+    return rows.map((row) => this.toRecord(row));
+  }
+
+  private toRecord(row: RenderRow): RenderRecord {
     return {
       id: row.id,
       projectId: row.project_id,

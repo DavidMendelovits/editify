@@ -53,6 +53,16 @@ function migrate(database: EditifyDatabase): void {
       created_at TEXT NOT NULL
     );
 
+    -- Which assets belong to which project. An asset can be linked to several
+    -- projects (pull a clip from another shoot), but a project only ever sees
+    -- its own links, so imports never leak between projects.
+    CREATE TABLE IF NOT EXISTS project_assets (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, asset_id)
+    );
+
     CREATE TABLE IF NOT EXISTS transcripts (
       asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
       language TEXT NOT NULL,
@@ -100,10 +110,72 @@ function migrate(database: EditifyDatabase): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS dissections (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+      dissection_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    -- 50ms RMS envelope per asset, for the waveform drawn inside timeline
+    -- clips. Only ever populated for assets with no transcript energy to
+    -- borrow, so it is a cache and never the primary copy.
+    CREATE TABLE IF NOT EXISTS waveforms (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+      waveform_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   const transcriptColumns = database.prepare('PRAGMA table_info(transcripts)').all() as Array<{ name: string }>;
   if (!transcriptColumns.some((column) => column.name === 'energy_json')) {
     database.exec('ALTER TABLE transcripts ADD COLUMN energy_json TEXT');
+  }
+
+  // User scoping: NULL user_id means shared/global (pre-auth rows, the built-in
+  // sound library) and stays visible to everyone; owned rows only to their owner.
+  const projectColumns = database.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
+  if (!projectColumns.some((column) => column.name === 'user_id')) {
+    database.exec('ALTER TABLE projects ADD COLUMN user_id TEXT');
+  }
+
+  const assetColumns = database.prepare('PRAGMA table_info(assets)').all() as Array<{ name: string }>;
+  if (!assetColumns.some((column) => column.name === 'label')) {
+    database.exec('ALTER TABLE assets ADD COLUMN label TEXT');
+  }
+  // Imports respond before their proxy exists; anything already on disk is ready.
+  if (!assetColumns.some((column) => column.name === 'status')) {
+    database.exec("ALTER TABLE assets ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'");
+  }
+  if (!assetColumns.some((column) => column.name === 'user_id')) {
+    database.exec('ALTER TABLE assets ADD COLUMN user_id TEXT');
+  }
+
+  // One agent turn is one run: every row it logs shares a run_id, so the whole
+  // turn can be reverted as a unit. Client edits leave it NULL.
+  const operationLogColumns = database.prepare('PRAGMA table_info(operation_log)').all() as Array<{ name: string }>;
+  if (!operationLogColumns.some((column) => column.name === 'run_id')) {
+    database.exec('ALTER TABLE operation_log ADD COLUMN run_id TEXT');
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS operation_log_run_idx ON operation_log(run_id)');
+
+  backfillProjectAssets(database);
+}
+
+/**
+ * Projects that predate `project_assets` have no links, which would show them an
+ * empty media library. Seed each one from the assets its timeline already uses.
+ */
+function backfillProjectAssets(database: EditifyDatabase): void {
+  if ((database.prepare('SELECT COUNT(*) AS count FROM project_assets').get() as { count: number }).count > 0) return;
+  const projects = database.prepare('SELECT id, doc_json FROM projects').all() as Array<{ id: string; doc_json: string }>;
+  const known = new Set((database.prepare('SELECT id FROM assets').all() as Array<{ id: string }>).map((row) => row.id));
+  const link = database.prepare('INSERT OR IGNORE INTO project_assets (project_id, asset_id, created_at) VALUES (?, ?, ?)');
+  const now = new Date().toISOString();
+  for (const project of projects) {
+    // Read the ids straight out of the stored document — no schema import needed.
+    for (const assetId of new Set([...project.doc_json.matchAll(/"assetId":"([^"]+)"/g)].map((match) => match[1]))) {
+      if (assetId && known.has(assetId)) link.run(project.id, assetId, now);
+    }
   }
 }

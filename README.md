@@ -58,6 +58,50 @@ cents per chat message; `EDITIFY_AGENT_CLI_MODEL` and
 `EDITIFY_AGENT_CLI_TIMEOUT_MS` (default 240000) tune it. Anything in
 `server/.env` is loaded at boot, so these can live there.
 
+## Deploying
+
+The `Dockerfile` builds the Expo web client and serves it from Fastify's own
+origin, so one container is the whole product: API, media, and browser client on
+a single URL. It needs ffmpeg (in the image) and a persistent disk — SQLite,
+uploaded originals, proxies, and rendered masters all live under
+`EDITIFY_DATA_DIR`, and losing it loses every project.
+
+`fly.toml` is set up for that: a 4GB `shared-cpu-4x` machine with a volume on
+`/data` — `fly scale vm performance-2x` when ffmpeg renders start dragging. Change `app`, `primary_region`, and
+`PUBLIC_BASE_URL` to match your deployment, then:
+
+```bash
+fly launch --no-deploy --copy-config
+fly volumes create editify_data --size 20
+fly secrets set EDITIFY_TOKEN="$(openssl rand -hex 24)"
+fly deploy
+```
+
+Machines do not auto-stop: renders keep running after the HTTP request that
+started them returns, and a suspended machine would abandon them mid-encode.
+
+### Auth
+
+`EDITIFY_TOKEN` is one shared password guarding every route except `/health`.
+Unset — the default, and what local development wants — the server is open;
+**set it anywhere the server is reachable from the internet**, or strangers can
+upload video and run renders on your machine. It is accepted three ways, because
+three kinds of client ask differently: `Authorization: Bearer` from the app's
+own fetches, HTTP Basic so a browser prompts once and then carries the header
+itself on `<video>`/`<img>` loads, and `?k=` for the native media players that
+cannot set headers at all.
+
+The browser client needs no configuration — same-origin, so the Basic prompt
+covers it. A phone running Expo Go against the deployed server needs both:
+
+```bash
+EXPO_PUBLIC_API_URL=https://editify-dm.fly.dev EXPO_PUBLIC_API_TOKEN=<token> npm run dev:mobile
+```
+
+Providers: `claude-cli` and `codex-cli` are not in the image, so a deployed
+server needs `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` (`fly secrets set`) or it
+quietly falls back to the offline mock agent.
+
 ## Useful commands
 
 ```bash

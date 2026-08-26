@@ -9,6 +9,7 @@ import { GradientButton } from '../src/components/GradientButton';
 import { ImportSheet } from '../src/components/ImportSheet';
 import { Screen } from '../src/components/Screen';
 import { api, assetThumbUrl } from '../src/lib/api';
+import { supabase } from '../src/lib/supabase';
 import { colors } from '../src/lib/theme';
 
 const formats: Array<{ label: string; format: ProjectFormat; eyebrow: string; ratio: string; tint: readonly [string, string] }> = [
@@ -39,6 +40,7 @@ export default function HomeScreen() {
         <View style={styles.headerActions}>
           <GradientButton secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>↓  import media</GradientButton>
           <GradientButton secondary style={styles.styleButton} onPress={() => router.push('/style')}>✦  learn my style</GradientButton>
+          <GradientButton accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</GradientButton>
         </View>
       </View>
     }>
@@ -125,6 +127,7 @@ function formatDuration(seconds: number): string {
 const styles = StyleSheet.create({
   header: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   styleButton: { minHeight: 40, paddingHorizontal: 14, backgroundColor: colors.panel, borderColor: colors.border },
+  signOutButton: { minHeight: 40, paddingHorizontal: 12, borderColor: colors.border },
   hero: { alignItems: 'center', paddingVertical: 42, gap: 12 },
   kicker: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 11, letterSpacing: 2.4 },
   title: { color: colors.text, fontFamily: 'Montserrat_800ExtraBold', fontSize: 46, lineHeight: 51, letterSpacing: -2.2, textAlign: 'center' },

@@ -14,3 +14,4 @@ export const mediaImportDir = process.env.MEDIA_IMPORT_DIR
 export const databasePath = process.env.DATABASE_PATH ?? join(dataRoot, 'editify.db');
 export const port = Number(process.env.PORT ?? 3001);
 export const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`;
+export const supabaseUrl = process.env.SUPABASE_URL;

@@ -9,6 +9,9 @@ import { formatMegabytes } from '../lib/agent';
 type ImportState = 'queued' | 'importing' | 'done' | 'error';
 
 interface Props {
+  /** Imports land in this project's library. Omitted on the home screen, where
+   *  there is no project yet — those clips stay unattached until one adopts them. */
+  projectId?: string;
   visible: boolean;
   onClose: () => void;
   onImported: (asset: AssetMetadata) => void;
@@ -19,7 +22,7 @@ interface Props {
  * Imports run strictly one at a time (ffprobe + proxy + thumbnail is slow on
  * big files); extra taps queue up behind the running one.
  */
-export function ImportSheet({ visible, onClose, onImported }: Props) {
+export function ImportSheet({ projectId, visible, onClose, onImported }: Props) {
   const files = useQuery({ queryKey: ['importable'], queryFn: () => api.listImportable(), enabled: visible });
   const [states, setStates] = useState<Record<string, ImportState>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -32,7 +35,7 @@ export function ImportSheet({ visible, onClose, onImported }: Props) {
     queue.current = queue.current.then(async () => {
       setStates((current) => ({ ...current, [name]: 'importing' }));
       try {
-        const asset = await api.importAsset(name);
+        const asset = await api.importAsset(name, projectId);
         setStates((current) => ({ ...current, [name]: 'done' }));
         onImported(asset);
         await files.refetch();
