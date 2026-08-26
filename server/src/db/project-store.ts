@@ -35,10 +35,15 @@ export interface OperationLogEntry {
   createdAt: string;
 }
 
+/**
+ * `userId` scoping: undefined means "no scope" — shared-token requests and
+ * internal service calls see everything. A real user sees their own rows plus
+ * NULL-owner rows (pre-auth data, the built-in sound library).
+ */
 export class ProjectStore {
   constructor(private readonly database: EditifyDatabase) {}
 
-  create(input: NewProject): Project {
+  create(input: NewProject, userId?: string): Project {
     const values = newProjectSchema.parse(input);
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -57,8 +62,8 @@ export class ProjectStore {
       ],
     };
     this.database.prepare(
-      'INSERT INTO projects (id, title, doc_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(id, project.title, JSON.stringify(project), now, now);
+      'INSERT INTO projects (id, title, doc_json, created_at, updated_at, user_id) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(id, project.title, JSON.stringify(project), now, now, userId ?? null);
     return project;
   }
 
@@ -71,13 +76,19 @@ export class ProjectStore {
     return parsed;
   }
 
-  list(): Project[] {
-    return (this.database.prepare('SELECT doc_json FROM projects ORDER BY updated_at DESC').all() as ProjectRow[])
-      .map((row) => projectSchema.parse(JSON.parse(row.doc_json)));
+  list(userId?: string): Project[] {
+    const rows = (userId === undefined
+      ? this.database.prepare('SELECT doc_json FROM projects ORDER BY updated_at DESC').all()
+      : this.database.prepare('SELECT doc_json FROM projects WHERE user_id = ? OR user_id IS NULL ORDER BY updated_at DESC').all(userId)
+    ) as ProjectRow[];
+    return rows.map((row) => projectSchema.parse(JSON.parse(row.doc_json)));
   }
 
-  get(id: string): Project | undefined {
-    const row = this.database.prepare('SELECT doc_json FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+  get(id: string, userId?: string): Project | undefined {
+    const row = (userId === undefined
+      ? this.database.prepare('SELECT doc_json FROM projects WHERE id = ?').get(id)
+      : this.database.prepare('SELECT doc_json FROM projects WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(id, userId)
+    ) as ProjectRow | undefined;
     return row ? projectSchema.parse(JSON.parse(row.doc_json)) : undefined;
   }
 

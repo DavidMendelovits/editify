@@ -137,6 +137,7 @@ async function processAsset(
   transcripts: TranscriptService,
   input: { originalName: string; mimeType: string; originalPath: string },
   id = randomUUID(),
+  userId?: string,
 ): Promise<StoredAsset> {
   const directory = join(assetsRoot, id);
   await mkdir(directory, { recursive: true });
@@ -165,7 +166,7 @@ async function processAsset(
         thumbnailUrl: `/assets/${id}/thumb.jpg`,
         filmstripUrl: `/assets/${id}/filmstrip.jpg`,
         createdAt: new Date().toISOString(),
-      });
+      }, userId);
     }
     const asset = assets.insert({
       id,
@@ -185,7 +186,7 @@ async function processAsset(
       thumbnailUrl: `/assets/${id}/thumb.jpg`,
       filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
-    });
+    }, userId);
     queueAssetWork(app, assets, transcripts, asset, probe);
     return asset;
   } catch (error) {
@@ -221,10 +222,10 @@ export function registerAssetRoutes(
   const waveforms = new WaveformService(database, transcripts);
 
   /** Reads `?projectId=` and refuses ids that do not exist, so links cannot dangle. */
-  function requireProject(id: unknown, reply: FastifyReply): string | undefined | null {
+  function requireProject(id: unknown, reply: FastifyReply, userId?: string): string | undefined | null {
     if (id === undefined || id === '') return undefined;
     const projectId = String(id);
-    if (!projects.get(projectId)) {
+    if (!projects.get(projectId, userId)) {
       void reply.code(404).send({ error: 'Project not found' });
       return null;
     }
@@ -232,7 +233,7 @@ export function registerAssetRoutes(
   }
 
   app.post<{ Querystring: { projectId?: string } }>('/assets', async (request, reply) => {
-    const projectId = requireProject(request.query.projectId, reply);
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
     if (projectId === null) return reply;
     const part = await request.file({ limits: { fileSize: 2 * 1024 * 1024 * 1024, files: 1 } });
     if (!part) return await reply.code(400).send({ error: 'A multipart media file is required' });
@@ -252,7 +253,7 @@ export function registerAssetRoutes(
         originalName: part.filename,
         mimeType: part.mimetype,
         originalPath,
-      }, id);
+      }, id, request.userId);
       if (projectId) assets.link(projectId, asset.id);
       return await reply.code(201).send(publicAsset(asset));
     } catch (error) {
@@ -265,19 +266,19 @@ export function registerAssetRoutes(
   // imports; without it, every asset on the server, for the "all clips" browser.
   // Newest first either way.
   app.get<{ Querystring: { projectId?: string } }>('/assets', async (request, reply) => {
-    const projectId = requireProject(request.query.projectId, reply);
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
     if (projectId === null) return reply;
-    const list = projectId ? assets.listForProject(projectId) : assets.list();
+    const list = projectId ? assets.listForProject(projectId) : assets.list(request.userId);
     return list.reverse().map(publicAsset);
   });
 
   // Pull an asset from another project into this one — the only way media
   // crosses a project boundary, and always because the user asked for it.
   app.post<{ Params: { id: string } }>('/assets/:id/link', async (request, reply) => {
-    const projectId = requireProject(linkRequestSchema.parse(request.body).projectId, reply);
+    const projectId = requireProject(linkRequestSchema.parse(request.body).projectId, reply, request.userId);
     if (projectId === null) return reply;
     if (!projectId) return await reply.code(400).send({ error: 'projectId is required' });
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     assets.link(projectId, asset.id);
     return publicAsset(asset);
@@ -285,11 +286,12 @@ export function registerAssetRoutes(
 
   app.patch<{ Params: { id: string } }>('/assets/:id', async (request, reply) => {
     const { label } = labelRequestSchema.parse(request.body);
+    if (!assets.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Asset not found' });
     const updated = assets.setLabel(request.params.id, label);
     return updated ? publicAsset(updated) : await reply.code(404).send({ error: 'Asset not found' });
   });
 
-  app.get('/assets/importable', async () => {
+  app.get('/assets/importable', async (request) => {
     let entries;
     try {
       entries = await readdir(mediaImportDir, { withFileTypes: true });
@@ -303,14 +305,14 @@ export function registerAssetRoutes(
       .map(async (entry) => ({
         name: entry.name,
         size: (await stat(join(mediaImportDir, entry.name))).size,
-        alreadyImported: Boolean(assets.getByOriginalName(entry.name)),
+        alreadyImported: Boolean(assets.getByOriginalName(entry.name, request.userId)),
       })));
     return importable;
   });
 
   app.post('/assets/import', async (request, reply) => {
     const { name, projectId: requestedProject } = importRequestSchema.parse(request.body);
-    const projectId = requireProject(requestedProject, reply);
+    const projectId = requireProject(requestedProject, reply, request.userId);
     if (projectId === null) return reply;
     const importRoot = resolve(mediaImportDir);
     const requestedPath = resolve(importRoot, name);
@@ -321,7 +323,7 @@ export function registerAssetRoutes(
     if (!videoExtensions.has(extension)) {
       return await reply.code(400).send({ error: 'Only video files can be imported' });
     }
-    const existing = assets.getByOriginalName(name);
+    const existing = assets.getByOriginalName(name, request.userId);
     if (existing) {
       if (projectId) assets.link(projectId, existing.id);
       // Already on disk — a missing transcript can catch up in the background.
@@ -346,18 +348,18 @@ export function registerAssetRoutes(
       originalName: name,
       mimeType: videoMimeTypes[extension] ?? 'video/mp4',
       originalPath: sourcePath,
-    });
+    }, undefined, request.userId);
     if (projectId) assets.link(projectId, asset.id);
     return await reply.code(201).send(publicAsset(asset));
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/transcript', async (request, reply) => {
-    if (!assets.get(request.params.id)) return await reply.code(404).send({ error: 'Asset not found' });
+    if (!assets.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Asset not found' });
     return transcripts.get(request.params.id) ?? await reply.code(404).send({ error: 'No transcript' });
   });
 
   app.post<{ Params: { id: string } }>('/assets/:id/transcribe', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!asset.hasAudio) return await reply.code(422).send({ error: 'Asset has no audio' });
     const { force } = forceRequestSchema.parse(request.body ?? {});
@@ -365,14 +367,14 @@ export function registerAssetRoutes(
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/insights', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     const result = await insights.getOrCreate(asset);
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 
   app.post<{ Params: { id: string } }>('/assets/:id/insights', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     const { force } = forceRequestSchema.parse(request.body ?? {});
     const result = await insights.getOrCreate(asset, force);
@@ -382,13 +384,13 @@ export function registerAssetRoutes(
   // Measured dissection of the source video: cut cadence, energy, tempo,
   // burned-in graphic spans. Computed on first request, cached in SQLite.
   app.get<{ Params: { id: string } }>('/assets/:id/dissect', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     return await dissections.getOrCreate(asset);
   });
 
   app.post<{ Params: { id: string } }>('/assets/:id/dissect', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     const { force } = forceRequestSchema.parse(request.body ?? {});
     return await dissections.getOrCreate(asset, force);
@@ -401,13 +403,13 @@ export function registerAssetRoutes(
   // most ~120 bars per clip, so a long source shipping 100KB of cells was
   // pure wire cost.
   app.get<{ Params: { id: string } }>('/assets/:id/waveform', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     return downsampleEnvelope(await waveforms.getOrCreate(asset));
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     return asset ? publicAsset(asset) : await reply.code(404).send({ error: 'Asset not found' });
   });
 
@@ -422,14 +424,14 @@ export function registerAssetRoutes(
   }
 
   app.get<{ Params: { id: string } }>('/assets/:id/proxy.mp4', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!existsSync(asset.proxyPath)) return notReady(reply, asset);
     return await sendFile(reply, asset.proxyPath, 'video/mp4', request.headers.range);
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/thumb.jpg', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!existsSync(asset.thumbnailPath)) return notReady(reply, asset);
     // Image assets serve their original as the thumb — honour its real type.
@@ -442,7 +444,7 @@ export function registerAssetRoutes(
   // of timeline requests spawns one ffmpeg per asset.
   const filmstrips = new Map<string, Promise<string>>();
   app.get<{ Params: { id: string } }>('/assets/:id/filmstrip.jpg', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!existsSync(asset.proxyPath)) return notReady(reply, asset);
     const path = join(dirname(asset.proxyPath), 'filmstrip.jpg');
@@ -456,7 +458,7 @@ export function registerAssetRoutes(
   });
 
   app.get<{ Params: { id: string } }>('/assets/:id/original', async (request, reply) => {
-    const asset = assets.get(request.params.id);
+    const asset = assets.get(request.params.id, request.userId);
     return asset ? await sendFile(reply, asset.originalPath, asset.mimeType, request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
   });
 }

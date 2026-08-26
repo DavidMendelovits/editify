@@ -20,16 +20,17 @@ interface AssetRow {
 export class AssetStore {
   constructor(private readonly database: EditifyDatabase) {}
 
-  insert(asset: NewAsset): StoredAsset {
+  /** `userId` scoping matches ProjectStore: undefined = unscoped, NULL rows are shared. */
+  insert(asset: NewAsset, userId?: string): StoredAsset {
     this.database.prepare(`
       INSERT INTO assets
         (id, original_name, mime_type, duration, width, height, fps, has_audio,
-         original_path, proxy_path, thumbnail_path, created_at, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         original_path, proxy_path, thumbnail_path, created_at, status, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       asset.id, asset.originalName, asset.mimeType, asset.duration, asset.width, asset.height,
       asset.fps, asset.hasAudio ? 1 : 0, asset.originalPath, asset.proxyPath,
-      asset.thumbnailPath, asset.createdAt, asset.status ?? 'ready',
+      asset.thumbnailPath, asset.createdAt, asset.status ?? 'ready', userId ?? null,
     );
     return this.get(asset.id) ?? { ...asset, status: asset.status ?? 'ready' };
   }
@@ -51,20 +52,28 @@ export class AssetStore {
     return this.get(id);
   }
 
-  get(id: string): StoredAsset | undefined {
-    const row = this.database.prepare('SELECT * FROM assets WHERE id = ?').get(id) as AssetRow | undefined;
+  get(id: string, userId?: string): StoredAsset | undefined {
+    const row = (userId === undefined
+      ? this.database.prepare('SELECT * FROM assets WHERE id = ?').get(id)
+      : this.database.prepare('SELECT * FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(id, userId)
+    ) as AssetRow | undefined;
     return row ? this.fromRow(row) : undefined;
   }
 
-  getByOriginalName(originalName: string): StoredAsset | undefined {
-    const row = this.database.prepare('SELECT * FROM assets WHERE original_name = ? ORDER BY rowid ASC LIMIT 1')
-      .get(originalName) as AssetRow | undefined;
+  getByOriginalName(originalName: string, userId?: string): StoredAsset | undefined {
+    const row = (userId === undefined
+      ? this.database.prepare('SELECT * FROM assets WHERE original_name = ? ORDER BY rowid ASC LIMIT 1').get(originalName)
+      : this.database.prepare('SELECT * FROM assets WHERE original_name = ? AND (user_id = ? OR user_id IS NULL) ORDER BY rowid ASC LIMIT 1').get(originalName, userId)
+    ) as AssetRow | undefined;
     return row ? this.fromRow(row) : undefined;
   }
 
-  list(): StoredAsset[] {
-    return (this.database.prepare('SELECT * FROM assets ORDER BY rowid ASC').all() as AssetRow[])
-      .map((row) => this.fromRow(row));
+  list(userId?: string): StoredAsset[] {
+    const rows = (userId === undefined
+      ? this.database.prepare('SELECT * FROM assets ORDER BY rowid ASC').all()
+      : this.database.prepare('SELECT * FROM assets WHERE user_id = ? OR user_id IS NULL ORDER BY rowid ASC').all(userId)
+    ) as AssetRow[];
+    return rows.map((row) => this.fromRow(row));
   }
 
   /** The media belonging to one project — everything else stays out of its way. */

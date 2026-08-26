@@ -22,32 +22,32 @@ export function registerProjectRoutes(
 ): void {
   app.post('/projects', async (request, reply) => {
     const input = newProjectSchema.parse(request.body ?? {});
-    return await reply.code(201).send(projects.create(input));
+    return await reply.code(201).send(projects.create(input, request.userId));
   });
 
-  app.get('/projects', async () => projects.list());
+  app.get('/projects', async (request) => projects.list(request.userId));
 
   app.get<{ Params: { id: string } }>('/projects/:id', async (request, reply) => {
-    const project = projects.get(request.params.id);
+    const project = projects.get(request.params.id, request.userId);
     return project ?? await reply.code(404).send({ error: 'Project not found' });
   });
 
   app.post<{ Params: { id: string } }>('/projects/:id/ops', async (request, reply) => {
     const batch = operationBatchSchema.parse(request.body);
-    const project = projects.get(request.params.id);
+    const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
     return projects.applyOperations(project.id, batch.ops, batch.baseVersion);
   });
 
   app.get<{ Params: { id: string } }>('/projects/:id/oplog', async (request, reply) => {
-    if (!projects.get(request.params.id)) return await reply.code(404).send({ error: 'Project not found' });
+    if (!projects.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Project not found' });
     return projects.operationLog(request.params.id);
   });
 
   // Read-only measurement for one-tap cleanup: it never mutates the project.
   // The client applies whichever ranges it wants as a ripple_delete_ranges op.
   app.get<{ Params: { id: string } }>('/projects/:id/cleanup', async (request, reply) => {
-    const project = projects.get(request.params.id);
+    const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
     const track = project.tracks.find((candidate) => candidate.kind === 'video');
     if (!track) return await reply.code(404).send({ error: 'Project has no video track' });
@@ -69,7 +69,7 @@ export function registerProjectRoutes(
   });
 
   app.post<{ Params: { id: string } }>('/projects/:id/render', async (request, reply) => {
-    const project = projects.get(request.params.id);
+    const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
     const { resolution } = renderRequestSchema.parse(request.body ?? {});
     return await reply.code(202).send(renderQueue.enqueue(project.id, resolution));

@@ -132,6 +132,13 @@ function migrate(database: EditifyDatabase): void {
     database.exec('ALTER TABLE transcripts ADD COLUMN energy_json TEXT');
   }
 
+  // User scoping: NULL user_id means shared/global (pre-auth rows, the built-in
+  // sound library) and stays visible to everyone; owned rows only to their owner.
+  const projectColumns = database.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
+  if (!projectColumns.some((column) => column.name === 'user_id')) {
+    database.exec('ALTER TABLE projects ADD COLUMN user_id TEXT');
+  }
+
   const assetColumns = database.prepare('PRAGMA table_info(assets)').all() as Array<{ name: string }>;
   if (!assetColumns.some((column) => column.name === 'label')) {
     database.exec('ALTER TABLE assets ADD COLUMN label TEXT');
@@ -139,6 +146,9 @@ function migrate(database: EditifyDatabase): void {
   // Imports respond before their proxy exists; anything already on disk is ready.
   if (!assetColumns.some((column) => column.name === 'status')) {
     database.exec("ALTER TABLE assets ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'");
+  }
+  if (!assetColumns.some((column) => column.name === 'user_id')) {
+    database.exec('ALTER TABLE assets ADD COLUMN user_id TEXT');
   }
 
   backfillProjectAssets(database);

@@ -27,7 +27,7 @@ export function registerChatRoutes(
   dissections: DissectService,
 ): void {
   app.post<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
-    const project = projects.get(request.params.id);
+    const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
     const { message } = chatRequestSchema.parse(request.body);
     chats.add(project.id, 'user', message);
@@ -59,13 +59,14 @@ export function registerChatRoutes(
   });
 
   /** Poll target while a turn is in flight; `{ running: false, steps: [] }` when idle. */
-  app.get<{ Params: { id: string } }>('/projects/:id/chat/live', async (request) => {
+  app.get<{ Params: { id: string } }>('/projects/:id/chat/live', async (request, reply) => {
+    if (!projects.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Project not found' });
     const run = activeRuns.get(request.params.id);
     return { running: Boolean(run), steps: run?.steps ?? [] };
   });
 
   app.get<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
-    if (!projects.get(request.params.id)) return await reply.code(404).send({ error: 'Project not found' });
+    if (!projects.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Project not found' });
     return chats.list(request.params.id);
   });
 }
