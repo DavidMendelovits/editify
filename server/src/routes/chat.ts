@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { chatRequestSchema, type AgentTraceStep } from '@editify/shared';
 import type { AgentService } from '../agent/service.js';
+import type { ToolContext } from '../agent/tools.js';
 import type { AssetStore } from '../db/asset-store.js';
 import type { ChatStore } from '../db/chat-store.js';
 import type { ProjectStore } from '../db/project-store.js';
@@ -36,24 +37,28 @@ export function registerChatRoutes(
     chats.add(project.id, 'user', message);
     const run = { startedAt: new Date().toISOString(), steps: [] as AgentTraceStep[] };
     activeRuns.set(project.id, run);
+    // The loop mutates this ctx as it works, so the catch below can still see
+    // which operations landed before a crash.
+    const ctx: ToolContext = {
+      projectId: project.id,
+      projects,
+      assets,
+      styleDoc: styles.latest()?.styleDoc ?? null,
+      currentVersion: project.version,
+      transcripts,
+      insights,
+      dissections,
+      runId,
+    };
     let response;
     try {
-      response = await agent.edit({
-        projectId: project.id,
-        projects,
-        assets,
-        styleDoc: styles.latest()?.styleDoc ?? null,
-        currentVersion: project.version,
-        transcripts,
-        insights,
-        dissections,
-        runId,
-      }, message, (step) => run.steps.push(step));
+      response = await agent.edit(ctx, message, (step) => run.steps.push(step));
     } catch (error) {
-      // The loop may have applied ops before dying; a chat record has to say
-      // so, or the timeline changes with no explanation in the history.
+      // The loop may have applied ops before dying; a chat record has to carry
+      // them — with the runId — or the timeline changes with no explanation in
+      // the history and no Revert button for the partial edits.
       const reason = error instanceof Error ? error.message : String(error);
-      chats.add(project.id, 'assistant', `The agent hit an error mid-turn: ${reason}`, [], run.steps, runId);
+      chats.add(project.id, 'assistant', `The agent hit an error mid-turn: ${reason}`, ctx.appliedOperations ?? [], run.steps, runId);
       throw error;
     } finally {
       activeRuns.delete(project.id);
