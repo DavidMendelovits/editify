@@ -4,6 +4,16 @@
     "appVersionSource": "remote"
   },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": { "buildType": "apk" },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://editify-dm.fly.dev",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "481295230846-p9b26huakkve0r2qft6uggtebgaut81t.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "481295230846-c8nubbdvmnccl5gqgge21471n5hqgbd7.apps.googleusercontent.com"
+      }
+    },
     "preview": {
       "distribution": "internal",
       "environment": "preview",

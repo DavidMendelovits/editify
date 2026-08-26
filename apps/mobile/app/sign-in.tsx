@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -9,18 +9,23 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
 import { Screen } from '../src/components/Screen';
 import { supabase } from '../src/lib/supabase';
 import { colors } from '../src/lib/theme';
 
-type AppleAuthModule = typeof import('expo-apple-authentication');
-type AuthAction = 'sign-in' | 'sign-up' | 'apple' | 'google';
+type AuthAction = 'sign-in' | 'sign-up' | 'google';
 
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
-const googleEnabled = Platform.OS !== 'web' && Boolean(GOOGLE_WEB_CLIENT_ID);
+const isWeb = Platform.OS === 'web';
+// Expo Go has no RNGoogleSignin native module — on native the button only appears in a
+// dev-client or release build. See apps/mobile/README.md for the build commands.
+const inExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+// Web redirects through Supabase, which holds the client ID itself, so it needs no env var.
+const googleEnabled = isWeb || (!inExpoGo && Boolean(GOOGLE_WEB_CLIENT_ID));
 
 async function loadGoogleSignIn() {
   if (!GOOGLE_WEB_CLIENT_ID || Platform.OS === 'web') throw new Error('Google sign-in is not configured.');
@@ -38,16 +43,6 @@ export default function SignInScreen() {
   const [busy, setBusy] = useState<AuthAction>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const [appleAuth, setAppleAuth] = useState<AppleAuthModule>();
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    let active = true;
-    void import('expo-apple-authentication').then((module) => {
-      if (active) setAppleAuth(module);
-    });
-    return () => { active = false; };
-  }, []);
 
   async function run(action: AuthAction, work: () => Promise<void>): Promise<void> {
     setBusy(action);
@@ -83,31 +78,18 @@ export default function SignInScreen() {
     });
   }
 
-  function signInWithApple(): void {
-    if (!appleAuth || busy) return;
-    void run('apple', async () => {
-      try {
-        const credential = await appleAuth.signInAsync({
-          requestedScopes: [
-            appleAuth.AppleAuthenticationScope.FULL_NAME,
-            appleAuth.AppleAuthenticationScope.EMAIL,
-          ],
-        });
-        if (!credential.identityToken) throw new Error('Apple did not return an identity token.');
-        const { error: authError } = await supabase.auth.signInWithIdToken({
-          provider: 'apple',
-          token: credential.identityToken,
-        });
-        if (authError) throw authError;
-      } catch (caught) {
-        if (caught instanceof Error && 'code' in caught && caught.code === 'ERR_REQUEST_CANCELED') return;
-        throw caught;
-      }
-    });
-  }
-
   function signInWithGoogle(): void {
     void run('google', async () => {
+      if (isWeb) {
+        // Navigates away to Google and comes back to the app; `detectSessionInUrl`
+        // in supabase.ts turns the callback into a session.
+        const { error: redirectError } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: { redirectTo: window.location.origin },
+        });
+        if (redirectError) throw redirectError;
+        return;
+      }
       const google = await loadGoogleSignIn();
       if (Platform.OS === 'android') {
         await google.GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
@@ -123,7 +105,7 @@ export default function SignInScreen() {
     });
   }
 
-  const socialEnabled = Boolean(appleAuth) || googleEnabled;
+  const socialEnabled = googleEnabled;
 
   return (
     <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -188,15 +170,6 @@ export default function SignInScreen() {
               <>
                 <View style={styles.divider}><View style={styles.line} /><Text style={styles.or}>OR</Text><View style={styles.line} /></View>
                 <View style={styles.socialStack}>
-                  {appleAuth && (
-                    <appleAuth.AppleAuthenticationButton
-                      buttonStyle={appleAuth.AppleAuthenticationButtonStyle.WHITE}
-                      buttonType={appleAuth.AppleAuthenticationButtonType.SIGN_IN}
-                      cornerRadius={13}
-                      onPress={signInWithApple}
-                      style={styles.appleButton}
-                    />
-                  )}
                   {googleEnabled && (
                     <Pressable
                       accessibilityRole="button"
@@ -239,7 +212,6 @@ const styles = StyleSheet.create({
   line: { flex: 1, height: 1, backgroundColor: colors.border },
   or: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.4 },
   socialStack: { gap: 10 },
-  appleButton: { width: '100%', height: 48 },
   googleButton: { minHeight: 48, borderRadius: 13, backgroundColor: '#FFFFFF', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: 16 },
   googleMark: { color: '#4285F4', fontFamily: 'Montserrat_800ExtraBold', fontSize: 17 },
   googleText: { color: '#16151D', fontFamily: 'Montserrat_600SemiBold', fontSize: 14 },

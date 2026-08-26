@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { createClient, type Session } from '@supabase/supabase-js';
 import { setAccessToken } from './api';
 
@@ -10,7 +11,9 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     storage: AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
+    // Web signs in by redirecting to Google and back, so the callback's `?code=`
+    // has to be picked up off the URL. Native uses an id token and never redirects.
+    detectSessionInUrl: Platform.OS === 'web',
   },
 });
 

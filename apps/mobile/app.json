@@ -10,7 +10,6 @@
     "ios": {
       "bundleIdentifier": "com.editify.app",
       "supportsTablet": true,
-      "usesAppleSignIn": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -29,7 +28,6 @@
     "plugins": [
       "expo-router",
       "expo-document-picker",
-      "expo-apple-authentication",
       [
         "@react-native-google-signin/google-signin",
         {
