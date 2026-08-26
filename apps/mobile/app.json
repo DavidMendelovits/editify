@@ -7,6 +7,12 @@
     "orientation": "default",
     "scheme": "editify",
     "userInterfaceStyle": "dark",
+    "updates": {
+      "url": "https://u.expo.dev/05e74ce6-1ff5-426f-9988-98665619839d"
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
     "ios": {
       "bundleIdentifier": "com.editify.app",
       "supportsTablet": true,
