@@ -151,6 +151,14 @@ function migrate(database: EditifyDatabase): void {
     database.exec('ALTER TABLE assets ADD COLUMN user_id TEXT');
   }
 
+  // One agent turn is one run: every row it logs shares a run_id, so the whole
+  // turn can be reverted as a unit. Client edits leave it NULL.
+  const operationLogColumns = database.prepare('PRAGMA table_info(operation_log)').all() as Array<{ name: string }>;
+  if (!operationLogColumns.some((column) => column.name === 'run_id')) {
+    database.exec('ALTER TABLE operation_log ADD COLUMN run_id TEXT');
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS operation_log_run_idx ON operation_log(run_id)');
+
   backfillProjectAssets(database);
 }
 

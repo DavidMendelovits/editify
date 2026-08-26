@@ -43,10 +43,14 @@ export interface ChatMessage {
   ops?: Operation[];
   /** Agent tool-loop steps, persisted with assistant messages. */
   trace?: AgentTraceStep[];
+  /** Checkpoint for this turn's edits — the handle Revert uses. */
+  runId?: string;
+  /** Server-derived: the turn's operations are no longer standing. */
+  reverted?: boolean;
   createdAt: string;
 }
 
-export interface ChatResponse { reply: string; trace: AgentTraceStep[]; opsApplied: Operation[]; doc: Project }
+export interface ChatResponse { reply: string; trace: AgentTraceStep[]; opsApplied: Operation[]; doc: Project; runId?: string }
 
 /** `GET /projects/:id/chat/live` — steps of the turn currently running, if any. */
 export interface ChatLive { running: boolean; steps: AgentTraceStep[] }
@@ -239,6 +243,8 @@ export const api = {
     method: 'POST', body: JSON.stringify({ message }),
   }),
   getChat: (id: string) => request<ChatMessage[]>(`/projects/${id}/chat`),
+  /** Undo a whole agent turn in one step. */
+  revertRun: (id: string, runId: string) => request<Project>(`/projects/${id}/runs/${runId}/revert`, { method: 'POST', body: '{}' }),
   getChatLive: (id: string) => request<ChatLive>(`/projects/${id}/chat/live`),
   render: (id: string, resolution: RenderRecord['resolution']) => request<RenderRecord>(`/projects/${id}/render`, {
     method: 'POST', body: JSON.stringify({ resolution }),

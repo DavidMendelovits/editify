@@ -108,7 +108,7 @@ function rippleTrack(track: Track, ranges: TimeRange[], allClipIds: Set<string>)
 }
 
 export function applyOperation(input: Project, operation: Operation): Project {
-  if (operation.type === 'undo') {
+  if (operation.type === 'undo' || operation.type === 'revert_run') {
     throw new OperationError('Undo requires operation history and must be applied by ProjectStore');
   }
 
@@ -261,6 +261,8 @@ export function applyOperation(input: Project, operation: Operation): Project {
         if (update.speed !== undefined) clip.speed = update.speed;
         if (update.transform !== undefined) clip.transform = update.transform;
         if (update.start !== undefined) clip.start = update.start;
+        if (update.in !== undefined) clip.in = update.in;
+        if (update.out !== undefined) clip.out = update.out;
         if (update.duck !== undefined) {
           if (update.duck) clip.duck = true;
           else delete clip.duck;

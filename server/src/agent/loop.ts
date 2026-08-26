@@ -10,6 +10,9 @@ import { createMutationDelta, createToolRegistry, type ToolContext, type ToolDef
 
 const MAX_ITERATIONS = 24;
 
+/** Past-tense edit verbs — a final reply matching this while zero ops were applied is a false success claim. */
+const EDIT_CLAIM = /\b(trimmed|cut|removed|deleted|added|applied|edited|split|moved|reordered|styled|captioned|adjusted|tightened|shortened|zoomed|sped|slowed)\b/i;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -67,7 +70,7 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'When a tool reports an error, inspect fresh state as needed, correct the input, and try again.',
     'Use readable unique clip IDs. Keep edits faithful to the user request and finish with a concise, honest description.',
     'Asset transcripts and transcript insights may be available. Strong edits trim to highlight spans, lead with the hook, and use caption_clip_from_transcript for speech captions.',
-    'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes.',
+    'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes. Trimming several clips is one set_clip_properties call with in/out per update, never repeated trim_clip calls; captioning several clips is one caption_clip_from_transcript call with clipIds.',
     'You are told exactly what changed after every edit — do not re-read the project between your own edits; re-read only after an error.',
     'Whenever a reply contains tool calls, open it with one or two plain sentences saying what you are about to do and why — that text is shown to the user as your thinking.',
     'set_speed and trim_clip change a clip duration but never move its neighbors — after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
@@ -154,12 +157,17 @@ export async function runAgentLoop(
     if (turn.toolCalls.length === 0) {
       const doc = ctx.projects.get(ctx.projectId);
       if (!doc) throw new Error(`Project ${ctx.projectId} disappeared during the agent loop`);
-      return chatResponseSchema.parse({
-        reply: turn.text?.trim() || 'I finished the requested edit.',
-        trace,
-        opsApplied,
-        doc,
-      });
+      // The reply must never overstate what happened: an empty reply is filled from
+      // the applied-ops record, and a reply that claims edits with zero applied ops
+      // gets corrected rather than trusted.
+      let reply = turn.text?.trim()
+        || (opsApplied.length
+          ? `Done — ${opsApplied.length} edit${opsApplied.length === 1 ? '' : 's'} applied. The trace lists each one.`
+          : 'I didn’t make any changes to the project.');
+      if (opsApplied.length === 0 && EDIT_CLAIM.test(reply)) {
+        reply += '\n\n(Note: no edits were actually applied to the project in this run.)';
+      }
+      return chatResponseSchema.parse({ reply, trace, opsApplied, doc });
     }
 
     // Text alongside tool calls is the model's plan for them — show it first.

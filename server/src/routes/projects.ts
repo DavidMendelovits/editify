@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { newProjectSchema, operationBatchSchema, renderRequestSchema } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import type { ProjectStore } from '../db/project-store.js';
+import { OperationError } from '../operations/apply.js';
 import {
   SILENCE_DEFAULTS,
   buildTimelineTranscript,
@@ -37,6 +38,22 @@ export function registerProjectRoutes(
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
     return projects.applyOperations(project.id, batch.ops, batch.baseVersion);
+  });
+
+  /** Undo one whole agent turn — the Revert under a chat reply. */
+  app.post<{ Params: { id: string; runId: string } }>('/projects/:id/runs/:runId/revert', async (request, reply) => {
+    const project = projects.get(request.params.id, request.userId);
+    if (!project) return await reply.code(404).send({ error: 'Project not found' });
+    try {
+      return projects.applyOperations(
+        project.id,
+        [{ type: 'revert_run', params: { runId: request.params.runId } }],
+        project.version,
+      );
+    } catch (error) {
+      if (!(error instanceof OperationError)) throw error;
+      return await reply.code(409).send({ error: error.message });
+    }
   });
 
   app.get<{ Params: { id: string } }>('/projects/:id/oplog', async (request, reply) => {

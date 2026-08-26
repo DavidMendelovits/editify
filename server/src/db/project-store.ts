@@ -92,7 +92,11 @@ export class ProjectStore {
     return row ? projectSchema.parse(JSON.parse(row.doc_json)) : undefined;
   }
 
-  applyOperations(projectId: string, rawOperations: Operation[], baseVersion: number): Project {
+  /**
+   * `runId` tags every row this call logs so a whole agent turn can be reverted
+   * as one checkpoint; client edits leave it undefined (NULL).
+   */
+  applyOperations(projectId: string, rawOperations: Operation[], baseVersion: number, runId?: string): Project {
     return this.database.transaction(() => {
       let project = this.get(projectId);
       if (!project) throw new OperationError(`Project ${projectId} was not found`);
@@ -100,7 +104,8 @@ export class ProjectStore {
 
       const operations = rawOperations.map((operation) => operationSchema.parse(operation));
       if (!operations.length) throw new OperationError('At least one operation is required');
-      if (operations.some((operation) => operation.type === 'undo') && operations.length !== 1) {
+      if (operations.some((operation) => operation.type === 'undo' || operation.type === 'revert_run')
+        && operations.length !== 1) {
         throw new OperationError('Undo must be applied by itself');
       }
       const batchId = randomUUID();
@@ -124,6 +129,37 @@ export class ProjectStore {
           after = { ...snapshot, version: before.version + 1 };
           this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND batch_id = ?')
             .run(projectId, previous.batch_id);
+          // Undoing a revert is a redo: bring the reverted run's rows back into
+          // history so a further undo walks into the run itself.
+          const undoneOperation = operationSchema.parse(JSON.parse(firstInBatch.op_json));
+          if (undoneOperation.type === 'revert_run') {
+            this.database.prepare('UPDATE operation_log SET undone = 0 WHERE project_id = ? AND run_id = ?')
+              .run(projectId, undoneOperation.params.runId);
+          }
+        } else if (operation.type === 'revert_run') {
+          const target = operation.params.runId;
+          const earliest = this.database.prepare(`
+            SELECT id, batch_id, op_json, before_doc_json FROM operation_log
+            WHERE project_id = ? AND run_id = ? AND undone = 0 ORDER BY rowid ASC LIMIT 1
+          `).get(projectId, target) as LogRow | undefined;
+          if (!earliest) throw new OperationError(`Run ${target} was already reverted or does not exist`);
+          // Anything newer that is not part of this run (and is not an undo,
+          // which already retracted itself) would be silently discarded.
+          // Edits interleaved *during* the run sit inside its rowid span and are
+          // clobbered by the revert — accepted v1 behaviour.
+          const lastRowid = (this.database.prepare('SELECT MAX(rowid) AS rowid FROM operation_log WHERE project_id = ? AND run_id = ?')
+            .get(projectId, target) as { rowid: number }).rowid;
+          const foreign = (this.database.prepare(`
+            SELECT COUNT(*) AS count FROM operation_log
+            WHERE project_id = ? AND rowid > ? AND undone = 0
+              AND (run_id IS NULL OR run_id != ?)
+              AND json_extract(op_json, '$.type') != 'undo'
+          `).get(projectId, lastRowid, target) as { count: number }).count;
+          if (foreign > 0) throw new OperationError('The timeline changed after this edit — revert unavailable');
+          const snapshot = projectSchema.parse(JSON.parse(earliest.before_doc_json));
+          after = { ...snapshot, version: before.version + 1 };
+          this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND run_id = ?')
+            .run(projectId, target);
         } else {
           after = applyOperation(before, operation);
           after.version = baseVersion;
@@ -132,7 +168,7 @@ export class ProjectStore {
         project = after;
       });
 
-      if (operations[0]?.type !== 'undo') project.version = baseVersion + 1;
+      if (operations[0]?.type !== 'undo' && operations[0]?.type !== 'revert_run') project.version = baseVersion + 1;
       const now = new Date().toISOString();
       for (const entry of pendingLogs) {
         const loggedAfter = entry.sequence === pendingLogs.length - 1
@@ -140,15 +176,28 @@ export class ProjectStore {
           : { ...entry.after, version: project.version };
         this.database.prepare(`
           INSERT INTO operation_log
-            (id, batch_id, project_id, sequence, op_json, before_doc_json, after_doc_json, undone, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-        `).run(randomUUID(), batchId, projectId, entry.sequence, JSON.stringify(entry.operation), JSON.stringify(entry.before), JSON.stringify(loggedAfter), now);
+            (id, batch_id, project_id, sequence, op_json, before_doc_json, after_doc_json, undone, created_at, run_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        `).run(randomUUID(), batchId, projectId, entry.sequence, JSON.stringify(entry.operation), JSON.stringify(entry.before), JSON.stringify(loggedAfter), now, runId ?? null);
       }
 
       this.database.prepare('UPDATE projects SET title = ?, doc_json = ?, updated_at = ? WHERE id = ?')
         .run(project.title, JSON.stringify(project), new Date().toISOString(), projectId);
       return project;
     })();
+  }
+
+  /**
+   * Of `runIds`, those that still have operations standing. A run missing from
+   * the result has been reverted (or never applied anything).
+   */
+  liveRuns(projectId: string, runIds: string[]): Set<string> {
+    if (!runIds.length) return new Set();
+    const rows = this.database.prepare(`
+      SELECT DISTINCT run_id FROM operation_log
+      WHERE project_id = ? AND undone = 0 AND run_id IN (${runIds.map(() => '?').join(', ')})
+    `).all(projectId, ...runIds) as Array<{ run_id: string }>;
+    return new Set(rows.map((row) => row.run_id));
   }
 
   operationLog(projectId: string): OperationLogEntry[] {

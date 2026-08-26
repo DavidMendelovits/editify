@@ -11,7 +11,8 @@ import { DissectService } from '../src/services/dissect-service.js';
 import { InsightService } from '../src/services/insight-service.js';
 import { TranscriptService } from '../src/services/transcript-service.js';
 
-const inputs: Record<Operation['type'], unknown> = {
+// Keyed by the catalog: revert_run is client-only and has no tool.
+const inputs: Record<(typeof OPERATION_CATALOG)[number], unknown> = {
   add_clip: { trackId: 'video-main', clip: { id: 'clip-new', assetId: 'asset-2', start: 4, in: 0, out: 2 } },
   remove_clip: { clipId: 'clip-a' },
   split_clip: { clipId: 'clip-a', at: 2, newClipId: 'clip-split' },

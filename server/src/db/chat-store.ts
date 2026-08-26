@@ -8,6 +8,8 @@ export interface ChatMessage {
   content: string;
   ops?: Operation[];
   trace?: AgentTraceStep[];
+  /** Checkpoint this turn's operations were logged under, for Revert. */
+  runId?: string;
   createdAt: string;
 }
 
@@ -20,14 +22,18 @@ export class ChatStore {
     content: string,
     ops?: Operation[],
     trace?: AgentTraceStep[],
+    runId?: string,
   ): ChatMessage {
     const message: ChatMessage = {
       id: randomUUID(), role, content,
       ...(ops ? { ops } : {}),
       ...(trace ? { trace } : {}),
+      ...(runId ? { runId } : {}),
       createdAt: new Date().toISOString(),
     };
-    const agentData = ops || trace ? JSON.stringify({ ops: ops ?? [], trace: trace ?? [] }) : null;
+    const agentData = ops || trace
+      ? JSON.stringify({ ops: ops ?? [], trace: trace ?? [], ...(runId ? { runId } : {}) })
+      : null;
     this.database.prepare(`
       INSERT INTO chat_messages (id, project_id, role, content, ops_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -42,14 +48,16 @@ export class ChatStore {
     `).all(projectId) as Array<{ id: string; role: ChatMessage['role']; content: string; ops_json: string | null; created_at: string }>;
     return rows.map((row) => {
       const stored = row.ops_json ? JSON.parse(row.ops_json) as Operation[] | {
-        ops?: Operation[]; trace?: AgentTraceStep[];
+        ops?: Operation[]; trace?: AgentTraceStep[]; runId?: string;
       } : undefined;
       const ops = Array.isArray(stored) ? stored : stored?.ops;
       const trace = Array.isArray(stored) ? undefined : stored?.trace;
+      const runId = Array.isArray(stored) ? undefined : stored?.runId;
       return {
         id: row.id, role: row.role, content: row.content,
         ...(ops ? { ops } : {}),
         ...(trace ? { trace } : {}),
+        ...(runId ? { runId } : {}),
         createdAt: row.created_at,
       };
     });

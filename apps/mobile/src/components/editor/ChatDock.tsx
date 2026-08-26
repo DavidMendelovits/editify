@@ -26,6 +26,9 @@ interface Props {
   pending: boolean;
   error: string | undefined;
   onSend: (message: string) => void;
+  /** Undo a whole agent turn from the reply it produced. */
+  onRevert: (runId: string) => void;
+  reverting: boolean;
 }
 
 /**
@@ -33,7 +36,7 @@ interface Props {
  * chips, the composer, and the render strip. The project query is refreshed by
  * the parent when a turn lands, so the timeline animates itself.
  */
-export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend }: Props) {
+export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend, onRevert, reverting }: Props) {
   const [text, setText] = useState('');
   const [preset, setPreset] = useState<string>();
   const scroller = useRef<ScrollView>(null);
@@ -86,10 +89,17 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             key={message.id}
             message={message}
             trace={message.trace ?? (message.id === latestAssistantId ? latestTrace : undefined)}
+            onRevert={onRevert}
+            reverting={reverting}
           />
         ))}
         {optimisticMessage && (
-          <Message message={{ id: 'optimistic', role: 'user', content: optimisticMessage, createdAt: '' }} trace={undefined} />
+          <Message
+            message={{ id: 'optimistic', role: 'user', content: optimisticMessage, createdAt: '' }}
+            trace={undefined}
+            onRevert={onRevert}
+            reverting={reverting}
+          />
         )}
         {pending && <AgentActivity />}
         {pending && liveTrace && liveTrace.length > 0 && (
@@ -185,8 +195,14 @@ function RenderPreview({ url }: { url: string }) {
   );
 }
 
-function Message({ message, trace }: { message: ChatMessage; trace: AgentTraceStep[] | undefined }) {
+function Message({ message, trace, onRevert, reverting }: {
+  message: ChatMessage;
+  trace: AgentTraceStep[] | undefined;
+  onRevert: (runId: string) => void;
+  reverting: boolean;
+}) {
   const user = message.role === 'user';
+  const runId = !user && message.ops?.length ? message.runId : undefined;
   return (
     <View style={user ? styles.userMessage : styles.agentMessage}>
       <Text style={user ? styles.userLabel : styles.agentLabel}>{user ? 'YOU' : 'EDITIFY'}</Text>
@@ -200,6 +216,16 @@ function Message({ message, trace }: { message: ChatMessage; trace: AgentTraceSt
             </View>
           ))}
         </View>
+      )}
+      {runId && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => onRevert(runId)}
+          disabled={reverting || message.reverted}
+          style={({ pressed }) => [styles.revert, pressed && styles.pressed, (reverting || message.reverted) && styles.revertDisabled]}
+        >
+          <Text style={styles.revertText}>{message.reverted ? 'Reverted' : '↩ Revert'}</Text>
+        </Pressable>
       )}
     </View>
   );
@@ -225,6 +251,9 @@ const styles = StyleSheet.create({
   opChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   opChip: { backgroundColor: '#372A55', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
   opText: { color: '#C9B4FF', fontFamily: 'Montserrat_600SemiBold', fontSize: 8 },
+  revert: { alignSelf: 'flex-start', borderRadius: 7, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 9, paddingVertical: 4 },
+  revertDisabled: { opacity: 0.45 },
+  revertText: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9 },
   render: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, padding: 8, gap: 8 },
   renderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   renderLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 1.2 },

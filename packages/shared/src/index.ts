@@ -129,10 +129,13 @@ const clipPropertyUpdateSchema = clipIdParams.extend({
   speed: z.number().min(0.1).max(8).optional(),
   transform: transformSchema.optional(),
   start: z.number().min(0).optional(),
+  in: z.number().min(0).optional(),
+  out: z.number().positive().optional(),
   duck: z.boolean().optional(),
 }).refine(
   (update) => update.volume !== undefined || update.speed !== undefined
     || update.transform !== undefined || update.start !== undefined
+    || update.in !== undefined || update.out !== undefined
     || update.duck !== undefined,
   { message: 'Each update must set at least one property' },
 );
@@ -182,6 +185,8 @@ export const operationParamsSchemas = {
   }),
   set_format: z.object({ format: projectFormatSchema }),
   undo: z.object({}).strict(),
+  /** Not an agent tool: only the client's per-turn Revert issues this. */
+  revert_run: z.object({ runId: z.string().min(1) }),
 } as const;
 
 export const operationSchema = z.discriminatedUnion('type', [
@@ -203,6 +208,7 @@ export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('set_clip_properties'), params: operationParamsSchemas.set_clip_properties }),
   z.object({ type: z.literal('set_format'), params: operationParamsSchemas.set_format }),
   z.object({ type: z.literal('undo'), params: operationParamsSchemas.undo }),
+  z.object({ type: z.literal('revert_run'), params: operationParamsSchemas.revert_run }),
 ]);
 export type Operation = z.infer<typeof operationSchema>;
 
@@ -233,6 +239,8 @@ export const chatResponseSchema = z.object({
   trace: z.array(agentTraceStepSchema),
   opsApplied: z.array(operationSchema),
   doc: projectSchema,
+  /** Checkpoint id for this turn — the handle the client's Revert reverts. */
+  runId: z.string().optional(),
 });
 export type ChatResponse = z.infer<typeof chatResponseSchema>;
 

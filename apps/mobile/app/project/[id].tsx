@@ -117,6 +117,19 @@ export default function EditorScreen() {
     onSuccess: (updated) => queryClient.setQueryData(['project', id], updated),
     onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
   });
+  // Queued behind the same chain as `apply`: a revert must not race a batch of
+  // ops that is still in flight.
+  const revertRun = useMutation({
+    mutationFn: (runId: string) => {
+      const run = opChain.current.catch(() => undefined).then(() => api.revertRun(id, runId));
+      opChain.current = run;
+      return run;
+    },
+    onSuccess: async (doc: Project) => {
+      queryClient.setQueryData(['project', id], doc);
+      await queryClient.invalidateQueries({ queryKey: ['chat', id] });
+    },
+  });
   const sendChat = useMutation({
     mutationFn: (message: string) => api.chat(id, message),
     onMutate: (message: string) => { setOptimisticMessage(message); setLatestTrace(undefined); },
@@ -353,6 +366,8 @@ export default function EditorScreen() {
       pending={sendChat.isPending}
       error={sendChat.error?.message}
       onSend={(message) => sendChat.mutate(message)}
+      onRevert={(runId) => revertRun.mutate(runId)}
+      reverting={revertRun.isPending}
     />
   );
 

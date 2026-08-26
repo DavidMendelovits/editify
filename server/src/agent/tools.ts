@@ -47,6 +47,8 @@ export interface ToolContext {
   insights: InsightService;
   dissections?: DissectService;
   appliedOperations?: Operation[];
+  /** Checkpoint id for the whole turn — stamped on every operation it logs. */
+  runId?: string;
 }
 
 export interface ToolDef {
@@ -59,11 +61,14 @@ export interface ToolDef {
 const emptyInputSchema = operationParamsSchemas.undo;
 const assetInputSchema = z.object({ assetId: z.string().min(1) }).strict();
 const captionFromTranscriptSchema = z.object({
-  clipId: z.string().min(1),
+  clipId: z.string().min(1).optional(),
+  clipIds: z.array(z.string().min(1)).min(1).max(100).optional(),
   wordsPerChunk: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).default(3),
   style: captionStyleSchema.optional(),
   preset: presetSchema.shape.name.optional(),
-}).strict();
+}).strict().refine((value) => Boolean(value.clipId) !== Boolean(value.clipIds), {
+  message: 'Provide exactly one of clipId or clipIds',
+});
 
 const addClipsSchema = z.object({ trackId: z.string().min(1), clips: z.array(clipSchema).min(1).max(100) }).strict();
 const splitClipsSchema = z.object({
@@ -256,7 +261,9 @@ export function createMutationDelta(before: Project, after: Project, extraNotes:
   };
 }
 
-const operationDescriptions: Record<Operation['type'], string> = {
+// Keyed by the catalog, not by Operation['type']: revert_run is an operation
+// the client issues, never a tool the agent may call.
+const operationDescriptions: Record<(typeof OPERATION_CATALOG)[number], string> = {
   add_clip: 'Add a media clip to a video, audio, or overlay track. assetId must come from list_assets and clip.id must be unique; use readable IDs such as clip-hook-1. clip.in and clip.out are source-time seconds, clip.start is an absolute timeline second, and timeline duration is (out-in)/speed. Overlay-track stickers use trackId `overlays` with in=0 and out=<display seconds>, plus either an image assetId or emoji `text`, and an optional `overlay` placement {x,y,width,rotation}.',
   remove_clip: 'Remove a non-caption clip by its unique clipId.',
   split_clip: 'Split a clip at an absolute timeline second `at` strictly inside the clip. Optionally provide a unique readable newClipId for the right-hand clip. This is timeline time, not source time.',
@@ -272,7 +279,7 @@ const operationDescriptions: Record<Operation['type'], string> = {
   update_caption: 'Update an existing caption by clipId. start is an absolute timeline second; in/out are caption-local seconds and out must remain greater than in.',
   remove_caption: 'Remove an existing caption by its clipId.',
   ripple_delete_ranges: 'Atomically delete and close multiple absolute timeline ranges on one video/audio track. Overlaps are merged; intersecting clips are split or trimmed, later clips shift left, and captions are cut and shifted with the deleted time.',
-  set_clip_properties: 'Atomically batch-update 1-100 clips. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, or duck (true ducks all other audio beneath this clip while it plays — the voiceover treatment). Any invalid update rejects the entire operation.',
+  set_clip_properties: 'Atomically batch-update 1-100 clips — the preferred way to trim or retime many clips at once. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, source-time in/out (out must stay greater than in), or duck (true ducks all other audio beneath this clip while it plays — the voiceover treatment). Any invalid update rejects the entire operation.',
   set_format: 'Set the project canvas format to 9:16, 1:1, or 16:9.',
   undo: 'Undo the latest non-undone project operation using project history. Input must be an empty object.',
 };
@@ -302,11 +309,11 @@ function requireProject(ctx: ToolContext): Project {
 function applyMany(ctx: ToolContext, operations: Operation[]): Project {
   let project: Project;
   try {
-    project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion);
+    project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion, ctx.runId);
   } catch (error) {
     if (!(error instanceof VersionConflictError)) throw error;
     ctx.currentVersion = error.actual;
-    project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion);
+    project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion, ctx.runId);
   }
   ctx.currentVersion = project.version;
   ctx.appliedOperations?.push(...operations);
@@ -329,12 +336,44 @@ async function executeBatch(ctx: ToolContext, operations: Operation[], notes: st
 async function captionClipFromTranscript(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
   try {
     const input = captionFromTranscriptSchema.parse(rawInput);
+    const clipIds = input.clipIds ?? [input.clipId as string];
+    if (clipIds.length === 1) return await captionOneClip(ctx, clipIds[0] as string, input);
+    const results = [];
+    let captionsAdded = 0;
+    for (const clipId of clipIds) {
+      const result = await captionOneClip(ctx, clipId, input);
+      const record = result as { ok?: boolean; error?: string; captionsAdded?: number };
+      captionsAdded += record.captionsAdded ?? 0;
+      results.push(record.ok === false ? { clipId, ok: false, error: record.error } : { clipId, ok: true, captionsAdded: record.captionsAdded ?? 0 });
+    }
+    const failed = results.filter((result) => result.ok === false);
+    return {
+      ok: failed.length === 0,
+      ...(failed.length ? { error: `${failed.length} of ${clipIds.length} clips failed; see results` } : {}),
+      captionsAdded,
+      version: ctx.currentVersion,
+      results,
+    };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) {
+      return { ok: false, error: error.message };
+    }
+    throw error;
+  }
+}
+
+async function captionOneClip(
+  ctx: ToolContext,
+  clipId: string,
+  input: Omit<z.infer<typeof captionFromTranscriptSchema>, 'clipId' | 'clipIds'>,
+): Promise<unknown> {
+  try {
     const project = requireProject(ctx);
     const videoClip = project.tracks.filter((track) => track.kind === 'video')
       .flatMap((track) => track.clips)
-      .find((clip) => clip.id === input.clipId);
-    if (!videoClip) return { ok: false, error: `Video clip ${input.clipId} was not found` };
-    if (!videoClip.assetId) return { ok: false, error: `Video clip ${input.clipId} has no asset` };
+      .find((clip) => clip.id === clipId);
+    if (!videoClip) return { ok: false, error: `Video clip ${clipId} was not found` };
+    if (!videoClip.assetId) return { ok: false, error: `Video clip ${clipId} has no asset` };
     const transcript = ctx.transcripts.get(videoClip.assetId);
     if (!transcript) return { ok: false, error: `No transcript for asset ${videoClip.assetId}` };
 
@@ -768,7 +807,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'caption_clip_from_transcript',
-      description: 'Replace generated captions for one video clip using its asset transcript. wordsPerChunk is 1-4 (default 3). Source word times are mapped through clip.in, clip.start, and speed to absolute timeline seconds. Default captions are uppercase Montserrat Bold, size 64, white, and bottom-positioned.',
+      description: 'Replace generated captions for video clips using their asset transcripts. Pass clipId for one clip or clipIds for up to 100 in one call — always prefer clipIds when captioning several clips. wordsPerChunk is 1-4 (default 3). Source word times are mapped through clip.in, clip.start, and speed to absolute timeline seconds. Default captions are uppercase Montserrat Bold, size 64, white, and bottom-positioned.',
       schema: captionFromTranscriptSchema,
       execute: captionClipFromTranscript,
     },
