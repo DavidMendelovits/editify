@@ -8,7 +8,7 @@ import { PresetPicker } from '../PresetPicker';
 import { Markdown } from './Markdown';
 import { ProviderPicker } from './ProviderPicker';
 import { api, rebaseServerUrl, type ChatMessage, type RenderRecord } from '../../lib/api';
-import type { AgentTraceStep } from '../../lib/agent';
+import { receiptItems, type AgentTraceStep } from '../../lib/agent';
 import { presetPrompt } from '../../lib/presets';
 import { colors } from '../../lib/theme';
 
@@ -29,6 +29,8 @@ interface Props {
   /** Undo a whole agent turn from the reply it produced. */
   onRevert: (runId: string) => void;
   reverting: boolean;
+  /** Jump the playhead — receipt chips seek to where their edit landed. */
+  onSeek: (time: number) => void;
 }
 
 /**
@@ -36,7 +38,7 @@ interface Props {
  * chips, the composer, and the render strip. The project query is refreshed by
  * the parent when a turn lands, so the timeline animates itself.
  */
-export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend, onRevert, reverting }: Props) {
+export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend, onRevert, reverting, onSeek }: Props) {
   const [text, setText] = useState('');
   const [preset, setPreset] = useState<string>();
   const scroller = useRef<ScrollView>(null);
@@ -91,6 +93,7 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             trace={message.trace ?? (message.id === latestAssistantId ? latestTrace : undefined)}
             onRevert={onRevert}
             reverting={reverting}
+            onSeek={onSeek}
           />
         ))}
         {optimisticMessage && (
@@ -99,9 +102,10 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             trace={undefined}
             onRevert={onRevert}
             reverting={reverting}
+            onSeek={onSeek}
           />
         )}
-        {pending && <AgentActivity />}
+        {pending && <AgentActivity {...(liveTrace?.length ? { latestStep: liveTrace[liveTrace.length - 1] } : {})} />}
         {pending && liveTrace && liveTrace.length > 0 && (
           <View style={styles.agentMessage}><AgentTrace steps={liveTrace} /></View>
         )}
@@ -195,25 +199,32 @@ function RenderPreview({ url }: { url: string }) {
   );
 }
 
-function Message({ message, trace, onRevert, reverting }: {
+function Message({ message, trace, onRevert, reverting, onSeek }: {
   message: ChatMessage;
   trace: AgentTraceStep[] | undefined;
   onRevert: (runId: string) => void;
   reverting: boolean;
+  onSeek: (time: number) => void;
 }) {
   const user = message.role === 'user';
   const runId = !user && message.ops?.length ? message.runId : undefined;
+  const receipt = !user && message.ops?.length ? receiptItems(message.ops) : [];
   return (
     <View style={user ? styles.userMessage : styles.agentMessage}>
       <Text style={user ? styles.userLabel : styles.agentLabel}>{user ? 'YOU' : 'EDITIFY'}</Text>
       {!user && trace && trace.length > 0 && <AgentTrace steps={trace} />}
       {user ? <Text style={styles.messageText}>{message.content}</Text> : <Markdown text={message.content} />}
-      {message.ops && message.ops.length > 0 && (
+      {receipt.length > 0 && (
         <View style={styles.opChips}>
-          {message.ops.map((op, index) => (
-            <View key={`${op.type}-${index}`} style={styles.opChip}>
-              <Text style={styles.opText}>✓ {op.type.replaceAll('_', ' ')}</Text>
-            </View>
+          {receipt.map((item) => (
+            <Pressable
+              key={item.label}
+              disabled={item.at === undefined}
+              onPress={() => item.at !== undefined && onSeek(item.at)}
+              style={({ pressed }) => [styles.opChip, pressed && styles.pressed]}
+            >
+              <Text style={styles.opText}>{item.glyph} {item.label}</Text>
+            </Pressable>
           ))}
         </View>
       )}

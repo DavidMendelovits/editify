@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Platform, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { describeTraceStep, type AgentTraceStep } from '../lib/agent';
 import { colors, gradient } from '../lib/theme';
 
 /**
@@ -9,19 +10,16 @@ import { colors, gradient } from '../lib/theme';
  */
 const NATIVE_DRIVER = Platform.OS !== 'web';
 
-const PHRASES = [
-  'reading the timeline…',
-  'choosing operations…',
-  'applying the cut…',
-  'checking the result…',
-];
+/** Shown only before the first live trace step lands. */
+const WARMUP_PHRASE = 'reading the timeline…';
 
 /**
  * In-flight indicator for the agent loop: a sliding gradient sweep, three
  * pulsing dots, and an elapsed-time readout so a long tool loop still feels
- * alive. Rendered while `POST /projects/:id/chat` is outstanding.
+ * alive. The phrase is the latest REAL step from the live trace — never a
+ * timer-driven guess about what the agent might be doing.
  */
-export function AgentActivity() {
+export function AgentActivity({ latestStep }: { latestStep?: AgentTraceStep }) {
   const sweep = useRef(new Animated.Value(0)).current;
   const dotA = useRef(new Animated.Value(0.25)).current;
   const dotB = useRef(new Animated.Value(0.25)).current;
@@ -58,7 +56,7 @@ export function AgentActivity() {
     return () => clearInterval(timer);
   }, []);
 
-  const phrase = PHRASES[Math.min(PHRASES.length - 1, Math.floor(elapsed / 4))] ?? PHRASES[0];
+  const phrase = latestStep ? describeTraceStep(latestStep) : WARMUP_PHRASE;
   const translateX = sweep.interpolate({
     inputRange: [0, 1],
     outputRange: [-barWidth * 0.45, barWidth],
@@ -82,7 +80,7 @@ export function AgentActivity() {
           </Animated.View>
         )}
       </View>
-      <Text style={styles.phrase}>{phrase}</Text>
+      <Text style={styles.phrase} numberOfLines={2}>{phrase}</Text>
     </View>
   );
 }

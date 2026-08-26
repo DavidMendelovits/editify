@@ -21,7 +21,7 @@ import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
-import type { AgentTraceStep } from '../../src/lib/agent';
+import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { colors } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
@@ -147,6 +147,20 @@ export default function EditorScreen() {
     enabled: sendChat.isPending,
     refetchInterval: 900,
   });
+
+  // The timeline is the trace: refetch the project as live mutation steps land
+  // so agent edits appear while the turn is still running, not only at the end.
+  const liveSteps = sendChat.isPending ? liveQuery.data?.steps : undefined;
+  const seenLiveSteps = useRef(0);
+  useEffect(() => {
+    if (!liveSteps) { seenLiveSteps.current = 0; return; }
+    if (liveSteps.length <= seenLiveSteps.current) return;
+    const fresh = liveSteps.slice(seenLiveSteps.current);
+    seenLiveSteps.current = liveSteps.length;
+    if (fresh.some((step) => step.ok && !isReadStep(step))) {
+      void queryClient.invalidateQueries({ queryKey: ['project', id] });
+    }
+  }, [liveSteps, queryClient, id]);
 
   // Flash the timeline whenever a new project version lands, so an agent edit
   // is visible even when it changed something off-screen.
@@ -368,6 +382,7 @@ export default function EditorScreen() {
       onSend={(message) => sendChat.mutate(message)}
       onRevert={(runId) => revertRun.mutate(runId)}
       reverting={revertRun.isPending}
+      onSeek={(time) => { stop(); seek(time); }}
     />
   );
 
