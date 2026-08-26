@@ -7,6 +7,9 @@ COPY packages/shared/package.json packages/shared/
 COPY server/package.json server/
 RUN npm ci
 COPY . .
+# Compile before exporting: the web bundle resolves @editify/shared through its
+# `default` export condition, which points at the built output.
+RUN npm run build -w @editify/shared && npm run build -w @editify/server
 # Empty API URL => same-origin requests, since Fastify serves this bundle itself.
 RUN cd apps/mobile && EXPO_PUBLIC_API_URL="" npx expo export --platform web --output-dir dist
 
@@ -37,4 +40,6 @@ ENV NODE_ENV=production \
     EDITIFY_DATA_DIR=/data \
     EDITIFY_WEB_DIR=/app/apps/mobile/dist
 EXPOSE 3001
-CMD ["npm", "run", "start", "-w", "@editify/server"]
+# Straight to node: the npm wrapper and tsx transpiling cost ~600ms of boot,
+# which delayed the port bind past fly-proxy's listening check.
+CMD ["node", "server/dist/index.js"]
