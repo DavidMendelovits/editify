@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { registerAuth } from './auth.js';
+import { supabaseUrl } from './config.js';
 import { EDITING_PRESETS } from '@editify/shared';
 import { ZodError } from 'zod';
 import type { ToolProvider } from './agent/providers.js';
@@ -50,7 +51,17 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   renderQueue.recover();
   const dissections = new DissectService(database);
 
-  registerAuth(app);
+  registerAuth(app, {
+    sharedToken: process.env.EDITIFY_TOKEN,
+    supabaseUrl,
+    // The exported web client is public — the sign-in screen IS the gate. Only
+    // the static wildcard route (and the index.html 404 fallback for deep
+    // links) skip auth; every matched API route still demands credentials.
+    isPublic: (request) =>
+      (request.method === 'GET' || request.method === 'HEAD') &&
+      (request.routeOptions.url === '/*' ||
+        (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html'))),
+  });
   await app.register(cors, { origin: true });
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });
   await registerWebClient(app);

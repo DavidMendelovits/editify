@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { supabaseUrl } from './config.js';
 
@@ -10,9 +10,11 @@ declare module 'fastify' {
 }
 
 export interface AuthOptions {
-  sharedToken?: string;
-  supabaseUrl?: string;
+  sharedToken?: string | undefined;
+  supabaseUrl?: string | undefined;
   jwks?: JWTVerifyGetKey;
+  /** Requests this returns true for skip auth entirely (e.g. the static web client). */
+  isPublic?: (request: FastifyRequest) => boolean;
 }
 
 /**
@@ -20,7 +22,7 @@ export interface AuthOptions {
  * Basic for browser media loads, and `?k=` for native media players.
  */
 export function registerAuth(app: FastifyInstance, options?: AuthOptions): void {
-  const { sharedToken, supabaseUrl: authUrl, jwks } = options ?? {
+  const { sharedToken, supabaseUrl: authUrl, jwks, isPublic } = options ?? {
     sharedToken: process.env.EDITIFY_TOKEN,
     supabaseUrl,
   };
@@ -31,6 +33,7 @@ export function registerAuth(app: FastifyInstance, options?: AuthOptions): void 
 
   app.addHook('onRequest', async (request, reply) => {
     if (request.url === '/health') return;
+    if (isPublic?.(request)) return;
     const query = request.query as { k?: string } | undefined;
     const candidate = offered(request.headers.authorization, query?.k);
 

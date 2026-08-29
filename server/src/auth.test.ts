@@ -104,6 +104,20 @@ describe('Supabase auth', () => {
     expect((await app.inject({ url: '/projects' })).statusCode).toBe(200);
   });
 
+  it('exempts isPublic requests but still guards API routes', async () => {
+    const app = Fastify();
+    registerAuth(app, {
+      sharedToken: 's3cret',
+      isPublic: (request) => request.method === 'GET' && request.routeOptions.url === '/*',
+    });
+    app.get('/*', async () => 'index.html');
+    app.get('/projects', async () => ({ secret: true }));
+
+    expect((await app.inject({ url: '/' })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/some/deep/link' })).statusCode).toBe(200);
+    expect((await app.inject({ url: '/projects' })).statusCode).toBe(401);
+  });
+
   it('always leaves /health open', async () => {
     const app = serve({ sharedToken: 's3cret', supabaseUrl: testSupabaseUrl, jwks });
     expect((await app.inject({ url: '/health' })).statusCode).toBe(200);
