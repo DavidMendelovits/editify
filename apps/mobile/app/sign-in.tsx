@@ -72,7 +72,12 @@ export default function SignInScreen() {
   function signUp(): void {
     void run('sign-up', async () => {
       validateCredentials();
-      const { data, error: authError } = await supabase.auth.signUp({ email: email.trim(), password });
+      const { data, error: authError } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        // Confirmation emails otherwise link to the Supabase Site URL default (localhost:3000).
+        ...(isWeb ? { options: { emailRedirectTo: window.location.origin } } : {}),
+      });
       if (authError) throw authError;
       if (!data.session) setNotice('Account created. Check your email to confirm it, then sign in.');
     });
