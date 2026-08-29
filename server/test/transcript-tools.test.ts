@@ -98,4 +98,20 @@ describe('transcript agent tools', () => {
     expect(result).toMatchObject({ ok: false });
     expect(projects.get(ctx.projectId)?.version).toBe(0);
   });
+
+  it('transcribes on demand when captioning, and a failed run is retried on the next call', async () => {
+    let runs = 0;
+    ctx.transcripts = new TranscriptService(transcriptStore, async () => {
+      runs += 1;
+      if (runs === 1) throw new Error('whisper crashed');
+      return transcript;
+    }, async () => { throw new Error('ffmpeg must not run in unit tests'); });
+    const tool = createToolRegistry().find((candidate) => candidate.name === 'caption_clip_from_transcript');
+    const failed = await tool?.execute(ctx, { clipId: 'clip-a', wordsPerChunk: 2 });
+    expect(failed).toMatchObject({ ok: false, error: expect.stringContaining('whisper crashed') });
+    const retried = await tool?.execute(ctx, { clipId: 'clip-a', wordsPerChunk: 2 });
+    expect(retried).toMatchObject({ ok: true, captionsAdded: 3 });
+    expect(runs).toBe(2);
+    expect(transcriptStore.get('asset-1')?.words).toHaveLength(6);
+  });
 });

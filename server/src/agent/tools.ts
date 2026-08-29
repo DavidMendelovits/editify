@@ -21,7 +21,7 @@ import {
 import { z, ZodError, type ZodTypeAny } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { ProjectStore, VersionConflictError } from '../db/project-store.js';
-import type { TranscriptWord } from '../db/transcript-store.js';
+import type { StoredTranscript, TranscriptWord } from '../db/transcript-store.js';
 import { ensureSoundLibrary } from '../media/sound-library.js';
 import { OperationError } from '../operations/apply.js';
 import {
@@ -333,6 +333,24 @@ async function executeBatch(ctx: ToolContext, operations: Operation[], notes: st
   }
 }
 
+/**
+ * Cache read that falls back to running transcription on demand. A failed
+ * import-time transcription never writes to the store, so this call doubles as
+ * the retry; TranscriptService dedupes concurrent runs per asset.
+ */
+async function ensureTranscript(ctx: ToolContext, assetId: string): Promise<StoredTranscript | { error: string }> {
+  const cached = ctx.transcripts.get(assetId);
+  if (cached) return cached;
+  const asset = ctx.assets.get(assetId);
+  if (!asset) return { error: `Asset ${assetId} was not found` };
+  if (!asset.hasAudio) return { error: `Asset ${assetId} has no audio to transcribe` };
+  try {
+    return await ctx.transcripts.transcribe(asset);
+  } catch (error) {
+    return { error: `Transcription failed for asset ${assetId}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 async function captionClipFromTranscript(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
   try {
     const input = captionFromTranscriptSchema.parse(rawInput);
@@ -374,8 +392,8 @@ async function captionOneClip(
       .find((clip) => clip.id === clipId);
     if (!videoClip) return { ok: false, error: `Video clip ${clipId} was not found` };
     if (!videoClip.assetId) return { ok: false, error: `Video clip ${clipId} has no asset` };
-    const transcript = ctx.transcripts.get(videoClip.assetId);
-    if (!transcript) return { ok: false, error: `No transcript for asset ${videoClip.assetId}` };
+    const transcript = await ensureTranscript(ctx, videoClip.assetId);
+    if ('error' in transcript) return { ok: false, error: transcript.error };
 
     const prefix = `cap-${videoClip.id}-`;
     const clipStart = videoClip.start;
@@ -779,12 +797,12 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_transcript',
-      description: 'Get an asset transcript by assetId. Returns language, segments, wordCount, and compact word tuples [word, sourceStartSeconds, sourceEndSeconds]. Use source timestamps for trims.',
+      description: 'Get an asset transcript by assetId, transcribing on demand when none is stored yet (this can take a while for long media). Returns language, segments, wordCount, and compact word tuples [word, sourceStartSeconds, sourceEndSeconds]. Use source timestamps for trims.',
       schema: assetInputSchema,
       execute: async (ctx, input) => {
         const { assetId } = assetInputSchema.parse(input);
-        const transcript = ctx.transcripts.get(assetId);
-        if (!transcript) return { ok: false, error: `No transcript for asset ${assetId}` };
+        const transcript = await ensureTranscript(ctx, assetId);
+        if ('error' in transcript) return { ok: false, error: transcript.error };
         return {
           language: transcript.language,
           segments: transcript.segments,
@@ -801,13 +819,15 @@ export function createToolRegistry(): ToolDef[] {
         const { assetId } = assetInputSchema.parse(input);
         const asset = ctx.assets.get(assetId);
         if (!asset) return { ok: false, error: `Asset ${assetId} was not found` };
+        const transcript = await ensureTranscript(ctx, assetId);
+        if ('error' in transcript) return { ok: false, error: transcript.error };
         const result = await ctx.insights.getOrCreate(asset);
         return result ?? { ok: false, error: `No transcript for asset ${assetId}` };
       },
     },
     {
       name: 'caption_clip_from_transcript',
-      description: 'Replace generated captions for video clips using their asset transcripts. Pass clipId for one clip or clipIds for up to 100 in one call — always prefer clipIds when captioning several clips. wordsPerChunk is 1-4 (default 3). Source word times are mapped through clip.in, clip.start, and speed to absolute timeline seconds. Default captions are uppercase Montserrat Bold, size 64, white, and bottom-positioned.',
+      description: 'Replace generated captions for video clips using their asset transcripts, transcribing missing ones on demand. Pass clipId for one clip or clipIds for up to 100 in one call — always prefer clipIds when captioning several clips. wordsPerChunk is 1-4 (default 3). Source word times are mapped through clip.in, clip.start, and speed to absolute timeline seconds. Default captions are uppercase Montserrat Bold, size 64, white, and bottom-positioned.',
       schema: captionFromTranscriptSchema,
       execute: captionClipFromTranscript,
     },
