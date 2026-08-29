@@ -20,11 +20,11 @@ describe('shared-token auth', () => {
     expect((await app.inject({ url: '/projects' })).statusCode).toBe(200);
   });
 
-  it('rejects unauthenticated requests, and asks the browser to prompt', async () => {
+  it('rejects unauthenticated requests without inviting a browser password prompt', async () => {
     const app = await serve('s3cret');
     const response = await app.inject({ url: '/projects' });
     expect(response.statusCode).toBe(401);
-    expect(response.headers['www-authenticate']).toContain('Basic');
+    expect(response.headers['www-authenticate']).toBeUndefined();
   });
 
   it('accepts the token as bearer, basic, or query key', async () => {

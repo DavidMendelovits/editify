@@ -53,9 +53,9 @@ export function registerAuth(app: FastifyInstance, options?: AuthOptions): void 
     }
 
     if (sharedToken && matches(candidate, sharedToken)) return;
-    return await reply.code(401)
-      .header('WWW-Authenticate', 'Basic realm="Editify"')
-      .send({ error: 'Unauthorized' });
+    // No WWW-Authenticate header: it makes browsers pop a native password
+    // dialog on any 401'd fetch or media load. Clients attach tokens themselves.
+    return await reply.code(401).send({ error: 'Unauthorized' });
   });
 }
 
