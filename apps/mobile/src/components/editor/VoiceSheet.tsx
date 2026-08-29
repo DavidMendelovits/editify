@@ -5,7 +5,7 @@ import {
 } from 'expo-audio';
 import type { AssetMetadata } from '@editify/shared';
 import { uploadAsset } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 
 interface Props {
   projectId: string;
@@ -156,12 +156,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.panel, padding: 16, gap: 8,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
   stage: { alignItems: 'center', gap: 12, paddingVertical: 20 },
   timer: {
-    color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 26, letterSpacing: 2,
+    color: colors.muted, fontFamily: fonts.bold, fontSize: 26, letterSpacing: 2,
     fontVariant: ['tabular-nums'],
   },
   timerLive: { color: colors.text },
@@ -172,8 +172,8 @@ const styles = StyleSheet.create({
   buttonLive: { borderColor: colors.danger },
   recordIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.danger },
   stopIcon: { width: 26, height: 26, borderRadius: 4, backgroundColor: colors.danger },
-  caption: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 10 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 10, paddingBottom: 4 },
+  caption: { color: colors.muted, fontFamily: fonts.medium, fontSize: 10 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingBottom: 4 },
   disabled: { opacity: 0.4 },
   pressed: { opacity: 0.65 },
 });

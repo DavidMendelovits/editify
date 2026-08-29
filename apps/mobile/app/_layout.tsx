@@ -4,13 +4,14 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { Session } from '@supabase/supabase-js';
 import {
-  Montserrat_400Regular,
-  Montserrat_500Medium,
-  Montserrat_600SemiBold,
-  Montserrat_700Bold,
-  Montserrat_800ExtraBold,
+  SpaceGrotesk_400Regular,
+  SpaceGrotesk_500Medium,
+  SpaceGrotesk_600SemiBold,
+  SpaceGrotesk_700Bold,
   useFonts,
-} from '@expo-google-fonts/montserrat';
+} from '@expo-google-fonts/space-grotesk';
+import { Unbounded_700Bold } from '@expo-google-fonts/unbounded';
+import { SpaceMono_700Bold } from '@expo-google-fonts/space-mono';
 import { AppProviders } from '../src/providers/AppProviders';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { colors } from '../src/lib/theme';
@@ -20,11 +21,12 @@ export default function RootLayout() {
   const segments = useSegments();
   const [session, setSession] = useState<Session | null>();
   const [loaded] = useFonts({
-    Montserrat_400Regular,
-    Montserrat_500Medium,
-    Montserrat_600SemiBold,
-    Montserrat_700Bold,
-    Montserrat_800ExtraBold,
+    SpaceGrotesk_400Regular,
+    SpaceGrotesk_500Medium,
+    SpaceGrotesk_600SemiBold,
+    SpaceGrotesk_700Bold,
+    Unbounded_700Bold,
+    SpaceMono_700Bold,
   });
 
   useEffect(() => {

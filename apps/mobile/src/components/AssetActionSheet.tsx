@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, StylePacket } from '@editify/shared';
 import { api } from '../lib/api';
 import { PACKET_DRAFTS_KEY, packetFromDissection } from '../lib/packets';
-import { colors } from '../lib/theme';
+import { colors, fonts } from '../lib/theme';
 import { DissectPanel } from './DissectPanel';
 
 interface Props {
@@ -91,18 +91,18 @@ const styles = StyleSheet.create({
   },
   header: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
   headerText: { flex: 1, gap: 3 },
-  eyebrow: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  title: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 16 },
-  close: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 14, padding: 4 },
+  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
   body: { gap: 10, paddingBottom: 8 },
   action: {
     flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 56, borderRadius: 12,
     borderWidth: 1, borderColor: colors.purple, backgroundColor: '#2A1F47', paddingHorizontal: 14, paddingVertical: 10,
   },
   actionText: { flex: 1, gap: 3 },
-  actionLabel: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 12 },
-  actionHint: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10, lineHeight: 15 },
-  actionCue: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 15 },
+  actionLabel: { color: colors.text, fontFamily: fonts.bold, fontSize: 12 },
+  actionHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, lineHeight: 15 },
+  actionCue: { color: colors.text, fontFamily: fonts.bold, fontSize: 15 },
   pressed: { opacity: 0.65 },
   disabled: { opacity: 0.5 },
 });

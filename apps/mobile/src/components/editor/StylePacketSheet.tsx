@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { STYLE_PACKETS, type StylePacket } from '@editify/shared';
 import { api } from '../../lib/api';
 import { PACKET_DRAFTS_KEY, packetFromProfile } from '../../lib/packets';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 
 interface Props {
   visible: boolean;
@@ -90,24 +90,24 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 8,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
   list: { minHeight: 160 },
-  sectionLabel: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 1.4, paddingTop: 12 },
+  sectionLabel: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.4, paddingTop: 12 },
   row: { flexDirection: 'row', gap: 10, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border },
   swatches: { gap: 3, paddingTop: 3 },
   swatch: { width: 10, height: 10, borderRadius: 3 },
   rowText: { flex: 1, gap: 2 },
-  rowName: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 13 },
-  rowSource: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
-  rowMeta: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10, lineHeight: 15 },
+  rowName: { color: colors.text, fontFamily: fonts.bold, fontSize: 13 },
+  rowSource: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9 },
+  rowMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, lineHeight: 15 },
   apply: {
     alignSelf: 'center', minHeight: 44, minWidth: 64, borderRadius: 10, borderWidth: 1,
     borderColor: colors.purple, backgroundColor: '#2A1F47', alignItems: 'center', justifyContent: 'center',
     paddingHorizontal: 12,
   },
-  applyText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 11 },
+  applyText: { color: colors.text, fontFamily: fonts.bold, fontSize: 11 },
   pressed: { opacity: 0.65 },
   disabled: { opacity: 0.5 },
 });

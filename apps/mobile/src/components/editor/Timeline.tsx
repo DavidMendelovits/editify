@@ -8,7 +8,7 @@ import { CaptionChip, DragGhost, DragTooltip, EmptyLane, StickerChip, TimelineCl
 import { Inspector } from './Inspector';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 import {
   CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
   beatTargets, captionRows, clampStart, clipEnd, closeGapUpdates, findClip, formatTimecode, patchClip, patchStarts,
@@ -538,7 +538,7 @@ function clampZoom(value: number): number {
 const styles = StyleSheet.create({
   panel: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 10, gap: 8, minHeight: 0 },
   toolbar: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
-  zoneLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5, marginRight: 'auto' },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5, marginRight: 'auto' },
   // Wraps so a narrow phone stacks tools instead of clipping the row's tail.
   toolGroup: { flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap', flexShrink: 1 },
   tool: {
@@ -548,27 +548,27 @@ const styles = StyleSheet.create({
   toolCompact: { minWidth: 30, alignItems: 'center', justifyContent: 'center' },
   toolDanger: { borderColor: '#5A2836' },
   toolDisabled: { opacity: 0.38 },
-  toolLabel: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10 },
+  toolLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
   toolLabelDanger: { color: colors.danger },
-  toolHint: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 7, marginTop: 1 },
-  zoomValue: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 8, minWidth: 46, textAlign: 'center' },
+  toolHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 7, marginTop: 1 },
+  zoomValue: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 8, minWidth: 46, textAlign: 'center' },
   body: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: '#0D0D13', overflow: 'hidden' },
   gutter: { width: LANE_GUTTER, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: '#101017' },
   gutterLane: { justifyContent: 'center', paddingLeft: 8, borderTopWidth: 1, borderTopColor: '#1E1D2A' },
-  laneName: { color: colors.purple, fontFamily: 'Montserrat_800ExtraBold', fontSize: 9 },
-  laneKind: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 6, letterSpacing: 0.8, marginTop: 2 },
+  laneName: { color: colors.purple, fontFamily: fonts.bold, fontSize: 9 },
+  laneKind: { color: colors.muted, fontFamily: fonts.mono, fontSize: 6, letterSpacing: 0.8, marginTop: 2 },
   scroll: { flex: 1 },
   ruler: { height: RULER_HEIGHT, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: '#101017' },
   tick: { position: 'absolute', top: 0, bottom: 0, flexDirection: 'row', alignItems: 'flex-end', paddingBottom: 3 },
   tickMark: { width: 1, height: 7, backgroundColor: '#3A3850' },
-  tickLabel: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 8, marginLeft: 4, fontVariant: ['tabular-nums'] },
+  tickLabel: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 8, marginLeft: 4, fontVariant: ['tabular-nums'] },
   lane: { justifyContent: 'center', paddingVertical: LANE_PADDING, borderTopWidth: 1, borderTopColor: '#1E1D2A' },
   laneInner: { position: 'relative' },
-  laneHint: { position: 'absolute', left: 6, top: 4, color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  laneHint: { position: 'absolute', left: 6, top: 4, color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
   beatTick: { position: 'absolute', top: 0, width: 1, height: 6, backgroundColor: '#4A4767', zIndex: 20 },
   playhead: { position: 'absolute', top: 0, width: 1, alignItems: 'center', zIndex: 30 },
   playheadLine: { flex: 1, width: 1, backgroundColor: colors.pink },
   playheadHead: { width: 9, height: 9, borderRadius: 2, backgroundColor: colors.pink, transform: [{ rotate: '45deg' }], marginBottom: -3 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 10 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10 },
   pressed: { opacity: 0.65 },
 });
