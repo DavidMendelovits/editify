@@ -8,6 +8,8 @@ primary_region = "sjc"
   EDITIFY_DATA_DIR = "/data"
   # Must match the deployed hostname: render outputs are minted from it.
   PUBLIC_BASE_URL = "https://editify-dm.fly.dev"
+  # Without this the server can't verify Supabase JWTs and signed-in users get 401s.
+  SUPABASE_URL = "https://xvstucurpuwpliowadnh.supabase.co"
 
 [http_service]
   internal_port = 3001
