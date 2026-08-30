@@ -409,12 +409,12 @@ export default function EditorScreen() {
           </View>
           {!wide && library}
           {timeline}
-          {!wide && <InsightsPanel assetIds={assetIds} />}
+          {!wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
         <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>
           {wide && library}
           {dock}
-          {wide && <InsightsPanel assetIds={assetIds} />}
+          {wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
       </View>
       <ImportSheet

@@ -1,19 +1,31 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
+import { CHECKLIST_PRESETS, CHECKLIST_PRESET_NAMES, evaluateChecklist, type Project } from '@editify/shared';
 import { api, type AssetInsights, type InsightHighlight } from '../lib/api';
 import { colors, gradient } from '../lib/theme';
 
 /** Highlights shown per asset — the ranked list is long and this panel is a glance, not a report. */
 const TOP_HIGHLIGHTS = 3;
 
+/** Shared by the checklist and the per-asset cards so neither refetches the other's data. */
+function insightsQueryOptions(assetId: string) {
+  return {
+    queryKey: ['insights', assetId] as const,
+    queryFn: () => api.getInsights(assetId),
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  };
+}
+
 /**
- * Read-only "what's strong in this footage" panel: the transcript hook and the
- * top scored highlights for every asset on the video track. Assets without a
- * transcript 404 and are skipped without comment.
+ * Read-only "what's strong in this footage" panel: a preset checklist that
+ * scores the cut, then the transcript hook and the top scored highlights for
+ * every asset on the video track. Assets without a transcript 404 and are
+ * skipped without comment.
  */
-export function InsightsPanel({ assetIds }: { assetIds: string[] }) {
+export function InsightsPanel({ assetIds, project }: { assetIds: string[]; project: Project }) {
   const [open, setOpen] = useState(false);
   if (assetIds.length === 0) return null;
 
@@ -29,21 +41,81 @@ export function InsightsPanel({ assetIds }: { assetIds: string[] }) {
         <Text style={styles.chevron}>{open ? '▾' : '▸'}</Text>
       </Pressable>
       {open && (
-        <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
-          {assetIds.map((assetId, index) => <AssetInsightCard key={assetId} assetId={assetId} index={index} />)}
-        </ScrollView>
+        <>
+          <ChecklistSection assetIds={assetIds} project={project} />
+          <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
+            {assetIds.map((assetId, index) => <AssetInsightCard key={assetId} assetId={assetId} index={index} />)}
+          </ScrollView>
+        </>
       )}
     </View>
   );
 }
 
-function AssetInsightCard({ assetId, index }: { assetId: string; index: number }) {
-  const insightsQuery = useQuery({
-    queryKey: ['insights', assetId],
-    queryFn: () => api.getInsights(assetId),
-    retry: false,
-    staleTime: 5 * 60 * 1000,
+/** Scores the current cut against one preset's checklist and says what to fix. */
+function ChecklistSection({ assetIds, project }: { assetIds: string[]; project: Project }) {
+  const [presetName, setPresetName] = useState<string>('talking_head_punchy');
+  // Same query keys as the cards below, so the checklist rides their cache.
+  const insights = useQueries({
+    queries: assetIds.map(insightsQueryOptions),
+    combine: (results) => results.flatMap((result) => (result.data ? [result.data] : [])),
   });
+  const result = evaluateChecklist(presetName, project, insights);
+
+  return (
+    <View style={styles.checklist}>
+      <Text style={styles.label}>CHECKLIST</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+        {CHECKLIST_PRESET_NAMES.map((name) => {
+          const selected = name === presetName;
+          const title = CHECKLIST_PRESETS[name]?.title ?? name;
+          return (
+            <Pressable
+              key={name}
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              onPress={() => setPresetName(name)}
+              style={({ pressed }) => [pressed && styles.pressed]}
+            >
+              {selected ? (
+                <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.chip}>
+                  <Text style={styles.chipText}>{title.toUpperCase()}</Text>
+                </LinearGradient>
+              ) : (
+                <View style={[styles.chip, styles.chipIdle]}>
+                  <Text style={[styles.chipText, styles.chipTextIdle]}>{title.toUpperCase()}</Text>
+                </View>
+              )}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      <View style={styles.scoreRow}>
+        <Text style={styles.checklistScore}>{result.score}/{result.total}</Text>
+        <View style={styles.scoreBar}>
+          <LinearGradient
+            colors={gradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[styles.barFill, { width: `${Math.round((result.score / result.total) * 100)}%` }]}
+          />
+        </View>
+      </View>
+      {result.items.map((item) => (
+        <View key={item.id} style={styles.criterion}>
+          <Text style={[styles.tick, item.met ? styles.tickMet : styles.tickUnmet]}>{item.met ? '✓' : '○'}</Text>
+          <View style={styles.criterionBody}>
+            <Text style={[styles.criterionLabel, !item.met && styles.criterionLabelUnmet]}>{item.label}</Text>
+            {!item.met && <Text style={styles.suggestion}>{item.suggestion}</Text>}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function AssetInsightCard({ assetId, index }: { assetId: string; index: number }) {
+  const insightsQuery = useQuery(insightsQueryOptions(assetId));
   const insights: AssetInsights | null | undefined = insightsQuery.data;
   // 404 (no transcript) and outright failures both mean "nothing to show here".
   if (insightsQuery.isError || insights === null) return null;
@@ -130,6 +202,23 @@ const styles = StyleSheet.create({
   highlightLabel: { flex: 1, color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 0.8, textTransform: 'uppercase' },
   score: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 8 },
   highlightText: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9, lineHeight: 13 },
+  checklist: { borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
+  chipRow: { gap: 5, paddingRight: 4 },
+  chip: { borderRadius: 20, paddingHorizontal: 9, paddingVertical: 4 },
+  chipIdle: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },
+  chipText: { color: colors.text, fontFamily: 'Montserrat_800ExtraBold', fontSize: 8, letterSpacing: 1 },
+  chipTextIdle: { color: colors.muted },
+  scoreRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  checklistScore: { color: colors.text, fontFamily: 'Montserrat_800ExtraBold', fontSize: 11 },
+  scoreBar: { flex: 1, height: 3, borderRadius: 2, backgroundColor: '#2A2937', overflow: 'hidden' },
+  criterion: { flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
+  criterionBody: { flex: 1, gap: 2 },
+  tick: { fontFamily: 'Montserrat_700Bold', fontSize: 10, lineHeight: 14, width: 10 },
+  tickMet: { color: colors.success },
+  tickUnmet: { color: colors.muted },
+  criterionLabel: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10, lineHeight: 14 },
+  criterionLabelUnmet: { color: colors.muted },
+  suggestion: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9, lineHeight: 13 },
   bar: { height: 3, borderRadius: 2, backgroundColor: '#2A2937', overflow: 'hidden' },
   barFill: { height: 3, borderRadius: 2 },
   pressed: { opacity: 0.7 },
