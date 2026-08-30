@@ -7,6 +7,7 @@ import type { NewProject, Project, ProjectFormat } from '@editify/shared';
 import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
 import { ImportSheet } from '../src/components/ImportSheet';
+import { ReportModal } from '../src/components/ReportModal';
 import { Screen } from '../src/components/Screen';
 import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
@@ -23,6 +24,7 @@ export default function HomeScreen() {
   const client = useQueryClient();
   const { width } = useWindowDimensions();
   const [importOpen, setImportOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   const create = useMutation({
     mutationFn: (input: NewProject) => api.createProject(input),
@@ -40,6 +42,7 @@ export default function HomeScreen() {
         <View style={styles.headerActions}>
           <GradientButton secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>↓  import media</GradientButton>
           <GradientButton secondary style={styles.styleButton} onPress={() => router.push('/style')}>✦  learn my style</GradientButton>
+          <GradientButton accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => setFeedbackOpen(true)}>✉  send feedback</GradientButton>
           <GradientButton accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</GradientButton>
         </View>
       </View>
@@ -86,6 +89,7 @@ export default function HomeScreen() {
           />
         ))}
       </View>
+      {feedbackOpen && <ReportModal mode="feedback" onClose={() => setFeedbackOpen(false)} />}
       <ImportSheet
         visible={importOpen}
         onClose={() => setImportOpen(false)}

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -6,6 +6,7 @@ import { Brand } from '../../../src/components/Brand';
 import { GradientButton } from '../../../src/components/GradientButton';
 import { Screen } from '../../../src/components/Screen';
 import { api, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
+import { track } from '../../../src/lib/telemetry';
 import { colors } from '../../../src/lib/theme';
 
 const resolutions: Array<{ value: RenderRecord['resolution']; label: string; detail: string }> = [
@@ -26,8 +27,15 @@ export default function ExportScreen() {
     enabled: Boolean(renderId),
     refetchInterval: (query) => query.state.data?.status === 'done' || query.state.data?.status === 'error' ? false : 1200,
   });
-  const start = useMutation({ mutationFn: () => api.render(id, resolution), onSuccess: (record) => setRenderId(record.id) });
+  const start = useMutation({
+    mutationFn: () => api.render(id, resolution),
+    onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
+  });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
+
+  useEffect(() => {
+    if (status === 'done' || status === 'error') track(`render_${status}`);
+  }, [status]);
 
   return (
     <Screen header={<View style={styles.header}><Pressable onPress={() => router.back()}><Text style={styles.back}>‹  EDITOR</Text></Pressable><Brand compact /></View>}>
