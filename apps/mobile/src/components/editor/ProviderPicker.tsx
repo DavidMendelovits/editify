@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type AgentProviderId, type ProviderStatus } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 
 /** Short enough for the collapsed chip; the full label lives in the open list. */
 const SHORT: Record<AgentProviderId, string> = {
@@ -90,16 +90,16 @@ const styles = StyleSheet.create({
   },
   dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.purple },
   dotMock: { backgroundColor: colors.muted },
-  chipText: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
+  chipText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 9 },
   caret: { color: colors.muted, fontSize: 8 },
   list: { gap: 4, borderRadius: 9, borderWidth: 1, borderColor: colors.border, backgroundColor: '#0D0D13', padding: 6 },
   option: { borderRadius: 7, borderWidth: 1, borderColor: 'transparent', paddingHorizontal: 8, paddingVertical: 6, gap: 2 },
   optionActive: { borderColor: colors.purple, backgroundColor: colors.panelRaised },
   optionDisabled: { opacity: 0.4 },
   optionHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  optionLabel: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10 },
-  activeTag: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 7, letterSpacing: 0.8 },
-  optionDetail: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 8 },
-  warning: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 8 },
+  optionLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
+  activeTag: { color: colors.purple, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 0.8 },
+  optionDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: 8 },
+  warning: { color: colors.danger, fontFamily: fonts.medium, fontSize: 8 },
   pressed: { opacity: 0.65 },
 });

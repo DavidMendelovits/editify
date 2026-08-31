@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { AssetMetadata, Clip, ClipTransform, ClipTransition, Operation } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 import { formatTimecode } from '../../lib/timeline';
 
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
@@ -238,27 +238,27 @@ const styles = StyleSheet.create({
   },
   barPending: { opacity: 0.55 },
   identity: { minWidth: 140, maxWidth: 240, gap: 2 },
-  kind: { color: colors.purple, fontFamily: 'Montserrat_800ExtraBold', fontSize: 7, letterSpacing: 1.2 },
-  name: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 11 },
+  kind: { color: colors.purple, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1.2 },
+  name: { color: colors.text, fontFamily: fonts.semibold, fontSize: 11 },
   field: { gap: 3 },
-  fieldLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 7, letterSpacing: 1 },
-  fieldValue: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 11, fontVariant: ['tabular-nums'] },
+  fieldLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1 },
+  fieldValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   step: {
     width: 26, height: 26, borderRadius: 6, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
   },
-  stepText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 12, lineHeight: 15 },
-  stepValue: { minWidth: 42, textAlign: 'center', color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 11, fontVariant: ['tabular-nums'] },
+  stepText: { color: colors.text, fontFamily: fonts.bold, fontSize: 12, lineHeight: 15 },
+  stepValue: { minWidth: 42, textAlign: 'center', color: colors.text, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
   chipRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   chip: {
     borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
     paddingHorizontal: 8, minHeight: 26, justifyContent: 'center',
   },
   chipActive: { borderColor: colors.purple, backgroundColor: '#2A1F47' },
-  chipText: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
+  chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9 },
   chipTextActive: { color: colors.text },
-  zoomCustom: { color: colors.pink, fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
-  hint: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10 },
+  zoomCustom: { color: colors.pink, fontFamily: fonts.semibold, fontSize: 9 },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10 },
   pressed: { opacity: 0.6 },
 });

@@ -3,7 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { contentTagLabel, FALLBACK_PRESETS, presetTitle, type EditPreset } from '../lib/presets';
-import { colors, gradient } from '../lib/theme';
+import { colors, gradient, fonts } from '../lib/theme';
 
 interface Props {
   /** Name of the preset whose prompt is currently loaded in the composer. */
@@ -74,16 +74,16 @@ function PresetCard({ preset, active, onPress }: { preset: EditPreset; active: b
 
 const styles = StyleSheet.create({
   section: { gap: 5 },
-  label: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 1.5 },
+  label: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.5 },
   row: { gap: 6, paddingBottom: 2 },
   card: { width: 168, borderRadius: 13 },
   frame: { borderRadius: 13, padding: 1.5 },
   frameIdle: { backgroundColor: colors.border },
   inner: { flex: 1, borderRadius: 11.5, backgroundColor: colors.panelRaised, paddingHorizontal: 9, paddingVertical: 8, gap: 3 },
   innerActive: { backgroundColor: colors.background },
-  name: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 11 },
+  name: { color: colors.muted, fontFamily: fonts.bold, fontSize: 11 },
   nameActive: { color: colors.text },
-  tags: { color: colors.purple, fontFamily: 'Montserrat_600SemiBold', fontSize: 8, letterSpacing: 0.4 },
-  description: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 8, lineHeight: 12 },
+  tags: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.4 },
+  description: { color: colors.muted, fontFamily: fonts.regular, fontSize: 8, lineHeight: 12 },
   pressed: { opacity: 0.75 },
 });

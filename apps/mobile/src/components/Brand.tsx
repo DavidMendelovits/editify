@@ -1,5 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native';
-import { colors } from '../lib/theme';
+import { colors, fonts } from '../lib/theme';
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
@@ -16,8 +16,8 @@ export function Brand({ compact = false }: { compact?: boolean }) {
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  word: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 30, letterSpacing: -1.5 },
-  compact: { fontSize: 24 },
+  word: { fontFamily: fonts.display, fontSize: 24, letterSpacing: 0 },
+  compact: { fontSize: 18 },
   beta: { borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingHorizontal: 8, paddingVertical: 4 },
-  betaText: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.2 },
+  betaText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.2 },
 });

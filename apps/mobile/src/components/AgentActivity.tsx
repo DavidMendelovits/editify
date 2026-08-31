@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Platform, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { describeTraceStep, type AgentTraceStep } from '../lib/agent';
-import { colors, gradient } from '../lib/theme';
+import { colors, gradient, fonts } from '../lib/theme';
 
 /**
  * `useNativeDriver` is a no-op on react-native-web and logs a warning, so drive
@@ -90,9 +90,9 @@ const styles = StyleSheet.create({
   headline: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   dots: { flexDirection: 'row', gap: 3 },
   dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.purple },
-  title: { flex: 1, color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 11 },
-  elapsed: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
+  title: { flex: 1, color: colors.text, fontFamily: fonts.bold, fontSize: 11 },
+  elapsed: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9 },
   track: { height: 3, borderRadius: 2, backgroundColor: '#2A2440', overflow: 'hidden' },
   sweep: { height: 3, borderRadius: 2, overflow: 'hidden' },
-  phrase: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10 },
+  phrase: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10 },
 });

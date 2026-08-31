@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
 import { api, assetThumbUrl } from '../lib/api';
 import { formatTimecode } from '../lib/timeline';
-import { colors } from '../lib/theme';
+import { colors, fonts } from '../lib/theme';
 
 interface Props {
   projectId: string;
@@ -188,26 +188,26 @@ const styles = StyleSheet.create({
   headerText: { gap: 3, flexShrink: 1 },
   scopeRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   scope: { borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 3 },
-  scopeText: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 0.6 },
-  eyebrow: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 1.5 },
-  count: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 9 },
+  scopeText: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.6 },
+  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.5 },
+  count: { color: colors.muted, fontFamily: fonts.medium, fontSize: 9 },
   sources: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   source: { borderRadius: 9, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 10, paddingVertical: 6 },
   sourceDisabled: { opacity: 0.45 },
-  sourceText: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
+  sourceText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 9 },
   strip: { gap: 8, paddingVertical: 2, alignItems: 'flex-start' },
-  empty: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10, lineHeight: 16, maxWidth: 460, paddingVertical: 14 },
+  empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, lineHeight: 16, maxWidth: 460, paddingVertical: 14 },
   card: { width: 128, gap: 5 },
   thumbWrap: { borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised },
   thumb: { width: '100%', height: 72 },
   processing: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#0404089C' },
-  processingText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 0.6 },
-  duration: { position: 'absolute', left: 5, bottom: 5, color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 8, backgroundColor: '#04040899', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5 },
+  processingText: { color: colors.text, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.6 },
+  duration: { position: 'absolute', left: 5, bottom: 5, color: colors.text, fontFamily: fonts.bold, fontSize: 8, backgroundColor: '#04040899', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5 },
   addCue: { position: 'absolute', right: 5, bottom: 5, width: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.purple },
-  addCueText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 11, lineHeight: 13 },
-  name: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10 },
-  nameUnlabelled: { color: colors.muted, fontFamily: 'Montserrat_500Medium' },
-  nameInput: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.purple, paddingHorizontal: 6, paddingVertical: 3 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 10 },
+  addCueText: { color: colors.text, fontFamily: fonts.bold, fontSize: 11, lineHeight: 13 },
+  name: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
+  nameUnlabelled: { color: colors.muted, fontFamily: fonts.medium },
+  nameInput: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.purple, paddingHorizontal: 6, paddingVertical: 3 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10 },
   pressed: { opacity: 0.7 },
 });

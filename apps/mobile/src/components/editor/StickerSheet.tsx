@@ -3,7 +3,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import * as ImagePicker from 'expo-image-picker';
 import type { AssetMetadata, Callout } from '@editify/shared';
 import { uploadAsset } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 
 /** The three card treatments, in the order they read: right, wrong, plain. */
 const CALLOUT_VARIANTS: readonly { variant: Callout['variant']; glyph: string; label: string }[] = [
@@ -173,9 +173,9 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 8,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
   body: { minHeight: 200 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, paddingVertical: 8 },
   cell: { width: 44, height: 44, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.panelRaised },
@@ -184,26 +184,26 @@ const styles = StyleSheet.create({
   input: {
     flex: 1, minHeight: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, color: colors.text, paddingHorizontal: 12,
-    fontFamily: 'Montserrat_500Medium', fontSize: 12,
+    fontFamily: fonts.medium, fontSize: 12,
   },
   add: {
     minWidth: 64, minHeight: 44, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
     backgroundColor: colors.purple,
   },
-  addText: { color: '#FFFFFF', fontFamily: 'Montserrat_700Bold', fontSize: 12 },
-  section: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5, paddingTop: 4 },
+  addText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 12 },
+  section: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5, paddingTop: 4 },
   calloutRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
   calloutButton: {
     width: 44, height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
     alignItems: 'center', justifyContent: 'center', backgroundColor: colors.panelRaised,
   },
-  calloutGlyph: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 16 },
+  calloutGlyph: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
   imageButton: {
     minHeight: 48, borderRadius: 10, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border,
     alignItems: 'center', justifyContent: 'center', marginTop: 4,
   },
-  imageButtonText: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 10, paddingTop: 8 },
+  imageButtonText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingTop: 8 },
   disabled: { opacity: 0.4 },
   pressed: { opacity: 0.65 },
 });
