@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors } from '../lib/theme';
+import { colors, fonts } from '../lib/theme';
 import { describeTraceStep, isReadStep, traceGlyph, type AgentTraceStep } from '../lib/agent';
 
 /** Steps shown before the feed collapses behind a "show all N steps" toggle. */
@@ -76,25 +76,25 @@ function TraceRow({ step, last }: { step: AgentTraceStep; last: boolean }) {
 const styles = StyleSheet.create({
   feed: { gap: 2, marginTop: 2 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  headerLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 1.2 },
-  headerFailures: { color: colors.danger, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 0.8 },
+  headerLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.2 },
+  headerFailures: { color: colors.danger, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.8 },
   row: { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
   rail: { width: 18, alignItems: 'center' },
   bubble: { width: 18, height: 18, borderRadius: 9, backgroundColor: '#372A55', alignItems: 'center', justifyContent: 'center' },
   bubbleRead: { backgroundColor: '#252135' },
   bubbleError: { backgroundColor: '#43202B' },
   railLine: { flex: 1, width: 1, minHeight: 6, backgroundColor: '#3B3752', marginVertical: 2 },
-  glyph: { color: '#C9B4FF', fontFamily: 'Montserrat_700Bold', fontSize: 9, lineHeight: 12 },
+  glyph: { color: '#C9B4FF', fontFamily: fonts.bold, fontSize: 9, lineHeight: 12 },
   glyphRead: { color: colors.muted },
   glyphError: { color: colors.danger },
   body: { flex: 1, paddingBottom: 7, gap: 3 },
   bodyError: { borderRadius: 8, backgroundColor: '#3A1B24', borderWidth: 1, borderColor: '#5A2836', paddingHorizontal: 8, paddingVertical: 6, marginBottom: 5 },
-  label: { color: colors.text, fontFamily: 'Montserrat_500Medium', fontSize: 11, lineHeight: 16 },
+  label: { color: colors.text, fontFamily: fonts.medium, fontSize: 11, lineHeight: 16 },
   labelRead: { color: colors.muted },
-  labelThought: { color: '#B6ADD0', fontFamily: 'Montserrat_400Regular', fontStyle: 'italic' },
-  labelError: { color: colors.danger, fontFamily: 'Montserrat_600SemiBold' },
-  errorText: { color: '#FFA8B4', fontFamily: 'Montserrat_400Regular', fontSize: 10, lineHeight: 14 },
+  labelThought: { color: '#B6ADD0', fontFamily: fonts.regular, fontStyle: 'italic' },
+  labelError: { color: colors.danger, fontFamily: fonts.semibold },
+  errorText: { color: '#FFA8B4', fontFamily: fonts.regular, fontSize: 10, lineHeight: 14 },
   toggle: { alignSelf: 'flex-start', borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingHorizontal: 9, paddingVertical: 4, marginTop: 2 },
-  toggleText: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 8, letterSpacing: 0.6 },
+  toggleText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.6 },
   pressed: { opacity: 0.7 },
 });

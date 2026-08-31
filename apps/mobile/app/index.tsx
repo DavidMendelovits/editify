@@ -11,12 +11,12 @@ import { ReportModal } from '../src/components/ReportModal';
 import { Screen } from '../src/components/Screen';
 import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
-import { colors } from '../src/lib/theme';
+import { colors, fonts } from '../src/lib/theme';
 
-const formats: Array<{ label: string; format: ProjectFormat; eyebrow: string; ratio: string; tint: readonly [string, string] }> = [
-  { label: 'Instagram Reel', format: '9:16', eyebrow: 'VERTICAL STORY', ratio: '9 : 16', tint: ['#213973', '#6D3C8E'] },
-  { label: 'TikTok', format: '9:16', eyebrow: 'FAST & SOCIAL', ratio: '9 : 16', tint: ['#4B276F', '#982F6D'] },
-  { label: 'YouTube', format: '16:9', eyebrow: 'WIDE SCREEN', ratio: '16 : 9', tint: ['#3A255C', '#71314A'] },
+const formats: Array<{ label: string; format: ProjectFormat; meta: string; blurb: string; glyph: string; tint: readonly [string, string] }> = [
+  { label: 'Instagram Reel', format: '9:16', meta: '9:16 · UP TO 90S', blurb: 'Vertical reel with trending audio and kinetic captions.', glyph: '◉', tint: ['#213973', '#6D3C8E'] },
+  { label: 'TikTok', format: '9:16', meta: '9:16 · 15-60S', blurb: 'Fast-cut vertical edit built around a 2-second hook.', glyph: '♪', tint: ['#4B276F', '#982F6D'] },
+  { label: 'YouTube', format: '16:9', meta: '16:9 · LONG FORM', blurb: 'Widescreen edit with chapters, b-roll and clean pacing.', glyph: '▶', tint: ['#3A255C', '#71314A'] },
 ];
 
 export default function HomeScreen() {
@@ -49,23 +49,27 @@ export default function HomeScreen() {
     }>
       <View style={styles.hero}>
         <Text style={styles.kicker}>START A NEW CUT</Text>
-        <Text style={styles.title}>What are you{compact ? '\n' : ' '}creating today?</Text>
-        <Text style={styles.subtitle}>Pick a canvas. Edit with a conversation. Export something worth watching.</Text>
+        <Text style={styles.subtitle}>What are you creating today? Each format has its own folder, style memory and export presets.</Text>
       </View>
 
-      <View style={[styles.formatGrid, compact && styles.formatGridCompact]}>
+      <View style={styles.formatList}>
         {formats.map((item, index) => (
           <Pressable
             key={`${item.label}-${index}`}
             accessibilityRole="button"
             onPress={() => create.mutate({ title: `${item.label} edit`, format: item.format, fps: 30 })}
-            style={({ pressed }) => [styles.formatCard, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.formatRow, pressed && styles.pressed]}
           >
-            <LinearGradient colors={item.tint} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.formatGradient}>
-              <View style={styles.cardTop}><Text style={styles.eyebrow}>{item.eyebrow}</Text><Text style={styles.arrow}>↗</Text></View>
-              <View style={[styles.ratioFrame, item.format === '16:9' && styles.ratioWide]}><Text style={styles.ratioText}>{item.ratio}</Text></View>
-              <View><Text style={styles.cardTitle}>{item.label}</Text><Text style={styles.cardMeta}>{item.format} · 30 FPS</Text></View>
+            <LinearGradient colors={[colors.blue, colors.pink]} start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }} style={styles.rowAccent} />
+            <LinearGradient colors={item.tint} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.rowIcon}>
+              <Text style={styles.rowGlyph}>{item.glyph}</Text>
             </LinearGradient>
+            <View style={styles.rowCopy}>
+              <Text style={styles.rowTitle}>{item.label}</Text>
+              <Text style={styles.rowMeta}>{item.meta}</Text>
+              <Text style={styles.rowBlurb} numberOfLines={2}>{item.blurb}</Text>
+            </View>
+            {!compact && <Text style={styles.rowLink}>OPEN FOLDER →</Text>}
           </Pressable>
         ))}
       </View>
@@ -132,43 +136,40 @@ const styles = StyleSheet.create({
   header: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   styleButton: { minHeight: 40, paddingHorizontal: 14, backgroundColor: colors.panel, borderColor: colors.border },
   signOutButton: { minHeight: 40, paddingHorizontal: 12, borderColor: colors.border },
-  hero: { alignItems: 'center', paddingVertical: 42, gap: 12 },
-  kicker: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 11, letterSpacing: 2.4 },
-  title: { color: colors.text, fontFamily: 'Montserrat_800ExtraBold', fontSize: 46, lineHeight: 51, letterSpacing: -2.2, textAlign: 'center' },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 15, lineHeight: 23, textAlign: 'center', maxWidth: 620 },
-  formatGrid: { flexDirection: 'row', gap: 16 },
-  formatGridCompact: { flexDirection: 'column' },
-  formatCard: { flex: 1, minHeight: 280, borderRadius: 24, overflow: 'hidden', borderWidth: 1, borderColor: '#FFFFFF1A' },
-  formatGradient: { flex: 1, padding: 20, justifyContent: 'space-between' },
-  cardTop: { flexDirection: 'row', justifyContent: 'space-between' },
-  eyebrow: { color: '#FFFFFFA8', fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.6 },
-  arrow: { color: colors.text, fontSize: 20 },
-  ratioFrame: { width: 64, height: 106, borderRadius: 12, borderWidth: 2, borderColor: '#FFFFFF55', alignSelf: 'center', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF0C' },
-  ratioWide: { width: 118, height: 68 },
-  ratioText: { color: '#FFFFFFCC', fontFamily: 'Montserrat_700Bold', fontSize: 10 },
-  cardTitle: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 19 },
-  cardMeta: { color: '#FFFFFF88', fontFamily: 'Montserrat_500Medium', fontSize: 11, marginTop: 5 },
+  hero: { paddingTop: 28, paddingBottom: 8, gap: 10, maxWidth: 900, width: '100%', alignSelf: 'center' },
+  kicker: { color: colors.purple, fontFamily: fonts.mono, fontSize: 11, letterSpacing: 2.4 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 15, lineHeight: 23, maxWidth: 620 },
+  formatList: { gap: 16, maxWidth: 900, width: '100%', alignSelf: 'center' },
+  formatRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 16, paddingLeft: 20, paddingRight: 18, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  rowAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3 },
+  rowIcon: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  rowGlyph: { color: colors.text, fontSize: 18 },
+  rowCopy: { flex: 1, gap: 3 },
+  rowTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
+  rowMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.4 },
+  rowBlurb: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19 },
+  rowLink: { color: colors.blue, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 1.2 },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
   sectionHeader: { marginTop: 28, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  sectionKicker: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.6, marginBottom: 6 },
-  sectionTitle: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 24, letterSpacing: -0.8 },
-  count: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 10, letterSpacing: 1.3 },
+  sectionKicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.6, marginBottom: 6 },
+  sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 24, letterSpacing: -0.8 },
+  count: { color: colors.muted, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 1.3 },
   projectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   projectCard: { flexGrow: 1, flexBasis: 250, maxWidth: 340, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   poster: { height: 132, backgroundColor: '#1B1826', alignItems: 'center', justifyContent: 'center' },
   posterImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
-  posterText: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.4 },
+  posterText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.4 },
   formatBadge: { position: 'absolute', top: 8, left: 8, borderRadius: 5, backgroundColor: '#00000099', paddingHorizontal: 7, paddingVertical: 3 },
-  formatBadgeText: { color: '#FFFFFF', fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 0.8 },
+  formatBadgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.8 },
   durationBadge: { position: 'absolute', bottom: 8, right: 8, borderRadius: 5, backgroundColor: '#00000099', paddingHorizontal: 7, paddingVertical: 3 },
-  durationBadgeText: { color: '#FFFFFF', fontFamily: 'Montserrat_600SemiBold', fontSize: 8, fontVariant: ['tabular-nums'] },
+  durationBadgeText: { color: '#FFFFFF', fontFamily: fonts.semibold, fontSize: 8, fontVariant: ['tabular-nums'] },
   projectCopy: { padding: 12, gap: 4 },
-  projectTitle: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 14 },
-  projectMeta: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10 },
+  projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 14 },
+  projectMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   emptyCard: { alignItems: 'center', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed', borderRadius: 20, padding: 36, gap: 8 },
   emptyIcon: { color: colors.purple, fontSize: 28 },
-  emptyTitle: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 15 },
-  empty: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 13, textAlign: 'center' },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 12 },
+  emptyTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 15 },
+  empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, textAlign: 'center' },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12 },
 });

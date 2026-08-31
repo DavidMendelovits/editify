@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { AssetDissection, AssetMetadata } from '@editify/shared';
 import { api } from '../lib/api';
-import { colors } from '../lib/theme';
+import { colors, fonts } from '../lib/theme';
 
 interface Props {
   assetIds: string[];
@@ -145,24 +145,24 @@ const styles = StyleSheet.create({
     borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel,
     padding: 12, gap: 8,
   },
-  zoneLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
   row: { gap: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border },
   rowHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  rowName: { flex: 1, color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 11 },
+  rowName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: 11 },
   button: {
     minHeight: 30, borderRadius: 8, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, paddingHorizontal: 12, justifyContent: 'center',
   },
-  buttonText: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 10 },
+  buttonText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
   body: { gap: 6 },
-  summary: { color: colors.text, fontFamily: 'Montserrat_500Medium', fontSize: 10, lineHeight: 15 },
+  summary: { color: colors.text, fontFamily: fonts.medium, fontSize: 10, lineHeight: 15 },
   statRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
   stat: { gap: 2 },
-  statLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 7, letterSpacing: 1 },
-  statValue: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 11, fontVariant: ['tabular-nums'] },
+  statLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1 },
+  statValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
   lane: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  laneLabel: { width: 52, color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 7, letterSpacing: 1 },
+  laneLabel: { width: 52, color: colors.muted, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1 },
   laneTrack: { flex: 1, height: 18, borderRadius: 4, backgroundColor: '#0D0D13', overflow: 'hidden' },
   cutTick: { position: 'absolute', top: 2, bottom: 2, width: 1, backgroundColor: colors.pink },
   energyTrack: { flexDirection: 'row', alignItems: 'flex-end' },
@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
   overlaySpan: { position: 'absolute', height: 6, borderRadius: 2 },
   overlayTop: { top: 2, backgroundColor: '#C98A2B' },
   overlayBottom: { bottom: 2, backgroundColor: '#2E9E6B' },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 9 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 9 },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.65 },
 });

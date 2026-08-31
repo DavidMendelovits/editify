@@ -14,7 +14,7 @@ import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
 import { Screen } from '../src/components/Screen';
 import { supabase } from '../src/lib/supabase';
-import { colors } from '../src/lib/theme';
+import { colors, fonts } from '../src/lib/theme';
 
 type AuthAction = 'sign-in' | 'sign-up' | 'google';
 
@@ -201,25 +201,25 @@ const styles = StyleSheet.create({
   brand: { minHeight: 58, justifyContent: 'center' },
   shell: { flex: 1, width: '100%', maxWidth: 460, alignSelf: 'center', justifyContent: 'center', gap: 28, paddingVertical: 34 },
   intro: { alignItems: 'center', gap: 10 },
-  kicker: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 10, letterSpacing: 2.2 },
-  title: { color: colors.text, fontFamily: 'Montserrat_800ExtraBold', fontSize: 38, lineHeight: 44, letterSpacing: -1.7, textAlign: 'center' },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 14, lineHeight: 22, textAlign: 'center', maxWidth: 390 },
+  kicker: { color: colors.purple, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 2.2 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 38, lineHeight: 44, letterSpacing: -1.7, textAlign: 'center' },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14, lineHeight: 22, textAlign: 'center', maxWidth: 390 },
   card: { gap: 14, borderRadius: 24, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 22 },
   fieldGroup: { gap: 7 },
-  label: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  input: { height: 50, borderRadius: 13, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, color: colors.text, fontFamily: 'Montserrat_500Medium', fontSize: 14, paddingHorizontal: 15 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 12, lineHeight: 18 },
-  notice: { color: colors.success, fontFamily: 'Montserrat_500Medium', fontSize: 12, lineHeight: 18 },
+  label: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  input: { height: 50, borderRadius: 13, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, color: colors.text, fontFamily: fonts.medium, fontSize: 14, paddingHorizontal: 15 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12, lineHeight: 18 },
+  notice: { color: colors.success, fontFamily: fonts.medium, fontSize: 12, lineHeight: 18 },
   primaryButton: { marginTop: 4 },
   createButton: { minHeight: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised },
-  createText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 14 },
+  createText: { color: colors.text, fontFamily: fonts.bold, fontSize: 14 },
   divider: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 3 },
   line: { flex: 1, height: 1, backgroundColor: colors.border },
-  or: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.4 },
+  or: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.4 },
   socialStack: { gap: 10 },
   googleButton: { minHeight: 48, borderRadius: 13, backgroundColor: '#FFFFFF', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: 16 },
-  googleMark: { color: '#4285F4', fontFamily: 'Montserrat_800ExtraBold', fontSize: 17 },
-  googleText: { color: '#16151D', fontFamily: 'Montserrat_600SemiBold', fontSize: 14 },
+  googleMark: { color: '#4285F4', fontFamily: fonts.bold, fontSize: 17 },
+  googleText: { color: '#16151D', fontFamily: fonts.semibold, fontSize: 14 },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
   disabled: { opacity: 0.5 },
 });

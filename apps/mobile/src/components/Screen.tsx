@@ -1,7 +1,6 @@
 import type { PropsWithChildren, ReactNode } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ScrollView, StyleSheet, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '../lib/theme';
 
 interface Props {
@@ -15,7 +14,6 @@ export function Screen({ children, scroll = true, header, bleed = false }: Props
   const content = <View style={[styles.content, bleed && styles.bleed]}>{header}{children}</View>;
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-      <LinearGradient colors={['#111226', colors.background, colors.background]} locations={[0, 0.35, 1]} style={StyleSheet.absoluteFill} />
       {scroll ? <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">{content}</ScrollView> : content}
     </SafeAreaView>
   );

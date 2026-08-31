@@ -1,7 +1,7 @@
 import type { PropsWithChildren } from 'react';
 import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { colors, gradient } from '../lib/theme';
+import { colors, gradient, fonts } from '../lib/theme';
 
 interface Props extends PropsWithChildren {
   onPress?: () => void;
@@ -23,7 +23,7 @@ export function GradientButton({ children, onPress, disabled, secondary, style, 
 const styles = StyleSheet.create({
   pressable: { minHeight: 46, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: 'transparent', justifyContent: 'center' },
   gradient: { flex: 1, minHeight: 44, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
-  text: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 14 },
+  text: { color: colors.text, fontFamily: fonts.bold, fontSize: 14 },
   secondaryText: { color: colors.text, textAlign: 'center' },
   pressed: { opacity: 0.78, transform: [{ scale: 0.985 }] },
   disabled: { opacity: 0.45 },
