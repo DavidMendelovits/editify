@@ -3,7 +3,7 @@ import { Linking, Modal, Pressable, StyleSheet, Text, TextInput, View } from 're
 import { useMutation } from '@tanstack/react-query';
 import { GradientButton } from './GradientButton';
 import { sendReport } from '../lib/telemetry';
-import { colors } from '../lib/theme';
+import { colors, fonts } from '../lib/theme';
 
 interface Props {
   mode: 'error' | 'feedback';
@@ -43,7 +43,7 @@ export function ReportModal({ mode, error, onClose }: Props) {
             <>
               <Text style={styles.subtitle}>{receipt.note}</Text>
               {receipt.issueNumber !== null && receipt.issueUrl && (
-                <Pressable accessibilityRole="link" onPress={() => { void Linking.openURL(receipt.issueUrl as string); }}>
+                <Pressable accessibilityRole="link" onPress={() => { Linking.openURL(receipt.issueUrl as string).catch(() => undefined); }}>
                   <Text style={styles.issue}>issue #{receipt.issueNumber} ↗</Text>
                 </Pressable>
               )}
@@ -87,18 +87,18 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: '#04040899', alignItems: 'center', justifyContent: 'center', padding: 20 },
   sheet: { width: '100%', maxWidth: 460, borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 20, gap: 10 },
   sheetError: { borderColor: colors.danger, backgroundColor: '#221420' },
-  eyebrow: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
+  eyebrow: { color: colors.purple, fontFamily: fonts.bold, fontSize: 9, letterSpacing: 1.5 },
   eyebrowError: { color: colors.danger },
-  title: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 19 },
-  message: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 11, lineHeight: 17 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 12, lineHeight: 19 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 19 },
+  message: { color: colors.danger, fontFamily: fonts.medium, fontSize: 11, lineHeight: 17 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12, lineHeight: 19 },
   input: {
     minHeight: 84, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
-    color: colors.text, fontFamily: 'Montserrat_400Regular', fontSize: 13, padding: 12, textAlignVertical: 'top',
+    color: colors.text, fontFamily: fonts.regular, fontSize: 13, padding: 12, textAlignVertical: 'top',
   },
   actions: { flexDirection: 'row', gap: 10, marginTop: 2 },
   dismiss: { flex: 1, borderColor: colors.border },
   send: { flex: 1 },
-  issue: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 13 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 11 },
+  issue: { color: colors.purple, fontFamily: fonts.bold, fontSize: 13 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 11 },
 });

@@ -41,8 +41,12 @@ function flush(): void {
 }
 
 export function captureError(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? error.stack : undefined;
+  // Clamped to what telemetryReportSchema accepts — a bundled web stack runs
+  // well past 8000 characters, and an empty message fails its min(1), either of
+  // which would 400 the report the user just chose to send.
+  const raw = error instanceof Error ? error.message : String(error);
+  const message = (raw.trim() || 'Unknown error').slice(0, 2000);
+  const stack = error instanceof Error ? error.stack?.slice(0, 8000) : undefined;
   track('error', message);
   onError?.({ message, ...(stack ? { stack } : {}) });
 }

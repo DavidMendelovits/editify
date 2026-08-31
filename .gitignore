@@ -13,3 +13,4 @@ test-clips/
 apps/mobile/ios/
 apps/mobile/android/
 .gstack/
+.qa/

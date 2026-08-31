@@ -58,13 +58,17 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerAuth(app, {
     sharedToken: process.env.EDITIFY_TOKEN,
     supabaseUrl,
-    // The exported web client is public — the sign-in screen IS the gate. Only
-    // the static wildcard route (and the index.html 404 fallback for deep
-    // links) skip auth; every matched API route still demands credentials.
+    // The exported web client is public — the sign-in screen IS the gate, so the
+    // static wildcard route (and the index.html 404 fallback for deep links)
+    // skip auth. POST /telemetry joins them because a crash on the sign-in
+    // screen has no credentials to send, and a report that only works once you
+    // are logged in cannot report a broken login. Every other API route still
+    // demands credentials.
     isPublic: (request) =>
-      (request.method === 'GET' || request.method === 'HEAD') &&
-      (request.routeOptions.url === '/*' ||
-        (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html'))),
+      (request.method === 'POST' && request.routeOptions.url === '/telemetry') ||
+      ((request.method === 'GET' || request.method === 'HEAD') &&
+        (request.routeOptions.url === '/*' ||
+          (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html')))),
   });
   await app.register(cors, { origin: true });
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });
