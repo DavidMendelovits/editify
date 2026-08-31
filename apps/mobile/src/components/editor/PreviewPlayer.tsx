@@ -7,7 +7,7 @@ import type { VideoPlayer } from 'expo-video';
 import type { AssetMetadata, Callout, Clip, ClipTransform, Operation, OverlayPlacement, Project } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { assetFilmstripUrl, assetOriginalUrl, assetProxyUrl, assetThumbUrl } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 import { FILMSTRIP_TILES, anchorIndexAtSorted, clipIndexAtSorted, formatTimecode, sortClips, visibleIdsAt } from '../../lib/timeline';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 
@@ -984,8 +984,8 @@ function CaptionOverlay({ clip, clock, stage }: { clip: Clip; clock: PlayheadClo
           color: style?.color ?? '#FFFFFF',
           // ASS bold is off only for 'none' ('highlight' is bold too), so that
           // is the one case that drops the heavy face.
-          // ponytail: weight only — style.font stays Montserrat, the one family bundled.
-          ...(style?.emphasis === 'none' && { fontFamily: 'Montserrat_500Medium' }),
+          // ponytail: weight only — style.font stays Space Grotesk, the one family bundled.
+          ...(style?.emphasis === 'none' && { fontFamily: fonts.medium }),
           textShadowColor: style?.strokeColor ?? '#000000',
           textShadowRadius: Math.max(2, (style?.strokePx ?? 4) * (fontSize / 40)),
         }]}
@@ -1018,8 +1018,8 @@ function Control({ label, hint, onPress, primary }: { label: string; hint: strin
 const styles = StyleSheet.create({
   panel: { flex: 1, minHeight: 220, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: '#101016', padding: 10, gap: 8 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  zoneLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  meta: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 9, flexShrink: 1 },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  meta: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9, flexShrink: 1 },
   stageWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 140 },
   stage: { borderRadius: 8, overflow: 'hidden', backgroundColor: '#000000' },
   video: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' },
@@ -1028,27 +1028,27 @@ const styles = StyleSheet.create({
   poster: { overflow: 'hidden', backgroundColor: '#000000' },
   dip: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000000' },
   gap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
-  gapText: { color: '#4A4860', fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.2 },
+  gapText: { color: '#4A4860', fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.2 },
   sticker: { position: 'absolute', alignItems: 'center', justifyContent: 'center' },
   stickerSelected: { borderWidth: 1, borderColor: colors.pink, borderRadius: 6 },
   stickerImage: { width: '100%', height: '100%' },
   stickerEmoji: { textAlign: 'center' },
   callout: { maxWidth: '100%', flexDirection: 'row', alignItems: 'center' },
-  calloutGlyph: { fontFamily: 'Montserrat_800ExtraBold' },
-  calloutText: { flexShrink: 1, color: '#FFFFFF', fontFamily: 'Montserrat_700Bold' },
+  calloutGlyph: { fontFamily: fonts.bold },
+  calloutText: { flexShrink: 1, color: '#FFFFFF', fontFamily: fonts.bold },
   guide: { position: 'absolute', backgroundColor: colors.pink, opacity: 0.8, zIndex: 5 },
   guideVertical: { top: 0, bottom: 0, width: 1 },
   guideHorizontal: { left: 0, right: 0, height: 1 },
   captionLayer: { position: 'absolute', left: 8, right: 8, alignItems: 'center' },
-  captionText: { fontFamily: 'Montserrat_800ExtraBold', textAlign: 'center' },
+  captionText: { fontFamily: fonts.bold, textAlign: 'center' },
   transport: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   control: { minWidth: 30, height: 26, borderRadius: 7, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   controlPrimary: { backgroundColor: colors.purple, borderColor: colors.purple },
-  controlText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 11 },
+  controlText: { color: colors.text, fontFamily: fonts.bold, fontSize: 11 },
   controlTextPrimary: { color: '#FFFFFF' },
-  timecode: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 11, fontVariant: ['tabular-nums'] },
-  timecodeMuted: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 11, fontVariant: ['tabular-nums'] },
+  timecode: { color: colors.text, fontFamily: fonts.bold, fontSize: 11, fontVariant: ['tabular-nums'] },
+  timecodeMuted: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
   spacer: { flex: 1 },
-  hint: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 8 },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 8 },
   pressed: { opacity: 0.65 },
 });

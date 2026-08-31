@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useVideoPlayer } from 'expo-video';
 import type { LibrarySound, SoundCategory } from '@editify/shared';
 import { api, mediaUrl } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 
 const CATEGORY_LABELS: Record<SoundCategory, string> = {
   whoosh: 'Whoosh', impact: 'Impact', pop: 'Pop', ui: 'UI', riser: 'Riser', music: 'Music',
@@ -126,9 +126,9 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 8,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
   chips: { flexGrow: 0 },
   chipsContent: { gap: 6, paddingVertical: 4 },
   chip: {
@@ -136,22 +136,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, minHeight: 30, justifyContent: 'center',
   },
   chipActive: { borderColor: colors.purple, backgroundColor: '#2A1F47' },
-  chipText: { color: colors.muted, fontFamily: 'Montserrat_600SemiBold', fontSize: 10 },
+  chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 10 },
   chipTextActive: { color: colors.text },
   list: { minHeight: 180 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
   rowBody: { flex: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  playIcon: { width: 26, textAlign: 'center', color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 12 },
+  playIcon: { width: 26, textAlign: 'center', color: colors.text, fontFamily: fonts.bold, fontSize: 12 },
   rowText: { flex: 1, gap: 1 },
-  rowName: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
-  rowMeta: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 9 },
+  rowName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
+  rowMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 9 },
   add: {
     width: 44, height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
   },
   addDone: { borderColor: '#2E7D4F', backgroundColor: '#153524' },
-  addText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 16 },
-  hint: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10, paddingVertical: 12 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 10, paddingVertical: 12 },
+  addText: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, paddingVertical: 12 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingVertical: 12 },
   pressed: { opacity: 0.65 },
 });

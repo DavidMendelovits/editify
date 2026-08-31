@@ -10,7 +10,7 @@ import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
 import { Screen } from '../src/components/Screen';
 import { api, uploadAsset } from '../src/lib/api';
-import { colors } from '../src/lib/theme';
+import { colors, fonts } from '../src/lib/theme';
 
 export default function StyleScreen() {
   const router = useRouter();
@@ -123,41 +123,41 @@ function mode(values: string[]): string { return values.sort((a, b) => values.fi
 
 const styles = StyleSheet.create({
   header: { minHeight: 52, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  back: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 10, letterSpacing: 1.4 },
+  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 1.4 },
   hero: { paddingVertical: 34, gap: 12, maxWidth: 760 },
-  kicker: { color: colors.purple, fontFamily: 'Montserrat_700Bold', fontSize: 11, letterSpacing: 2.2 },
-  title: { color: colors.text, fontFamily: 'Montserrat_800ExtraBold', fontSize: 42, lineHeight: 48, letterSpacing: -1.8 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 14, lineHeight: 23, maxWidth: 650 },
+  kicker: { color: colors.purple, fontFamily: fonts.mono, fontSize: 11, letterSpacing: 2.2 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 42, lineHeight: 48, letterSpacing: -1.8 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14, lineHeight: 23, maxWidth: 650 },
   uploadCard: { borderWidth: 1, borderStyle: 'dashed', borderColor: '#6D5AC7', borderRadius: 24, backgroundColor: '#181625', minHeight: 270, alignItems: 'center', justifyContent: 'center', padding: 28, gap: 9 },
   uploadIcon: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#292342', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
   uploadIconText: { color: colors.purple, fontSize: 25 },
-  uploadTitle: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 17, textAlign: 'center' },
-  uploadSubtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 12, textAlign: 'center' },
+  uploadTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 17, textAlign: 'center' },
+  uploadSubtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12, textAlign: 'center' },
   uploadButton: { width: 210, marginTop: 12 },
   progress: { height: 4, width: 210, marginTop: 8, borderRadius: 4, backgroundColor: colors.border, overflow: 'hidden' },
   progressFill: { width: '68%', height: '100%', backgroundColor: colors.purple },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
-  sectionTitle: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 21 },
-  sectionNote: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 11, marginTop: 4, maxWidth: 520 },
+  sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 21 },
+  sectionNote: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11, marginTop: 4, maxWidth: 520 },
   clipList: { gap: 8 },
   clipRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 52, borderRadius: 14,
     borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: 14, paddingVertical: 10,
   },
-  clipName: { flex: 1, color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
-  clipMeta: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 10, fontVariant: ['tabular-nums'] },
+  clipName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
+  clipMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 10, fontVariant: ['tabular-nums'] },
   clipMore: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
   clipMorePressed: { opacity: 0.6 },
-  clipMoreText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 15, lineHeight: 17 },
-  count: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.4 },
+  clipMoreText: { color: colors.text, fontFamily: fonts.bold, fontSize: 15, lineHeight: 17 },
+  count: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.4 },
   metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   metric: { flexGrow: 1, flexBasis: 210, borderRadius: 18, padding: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },
-  metricLabel: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.3 },
-  metricValue: { color: colors.text, fontFamily: 'Montserrat_800ExtraBold', fontSize: 28, marginTop: 14 },
-  metricDetail: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 11, marginTop: 4 },
+  metricLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.3 },
+  metricValue: { color: colors.text, fontFamily: fonts.bold, fontSize: 28, marginTop: 14 },
+  metricDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11, marginTop: 4 },
   styleDoc: { borderRadius: 22, padding: 24, backgroundColor: '#211A36', borderWidth: 1, borderColor: '#473673', gap: 12 },
-  styleDocEyebrow: { color: colors.pink, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  quote: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 18, lineHeight: 28 },
-  styleFoot: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 11 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 12 },
+  styleDocEyebrow: { color: colors.pink, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  quote: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18, lineHeight: 28 },
+  styleFoot: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12 },
 });

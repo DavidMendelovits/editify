@@ -22,7 +22,7 @@ import { api } from '../../src/lib/api';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
-import { colors } from '../../src/lib/theme';
+import { colors, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
 const WIDE_BREAKPOINT = 1024;
@@ -468,12 +468,12 @@ export default function EditorScreen() {
 
 const styles = StyleSheet.create({
   header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  back: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.2 },
+  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.2 },
   heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
   headingText: { flexShrink: 1, minWidth: 0 },
   divider: { width: 1, height: 26, backgroundColor: colors.border },
-  projectTitle: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
-  projectMeta: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 8, marginTop: 3, letterSpacing: 0.5 },
+  projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
+  projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, marginTop: 3, letterSpacing: 0.5 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   headerButton: { minHeight: 36, paddingHorizontal: 12, borderColor: colors.border, backgroundColor: colors.panel },
   exportButton: { width: 104, minHeight: 36 },
@@ -484,6 +484,6 @@ const styles = StyleSheet.create({
   previewWide: { flex: 1, minHeight: 260 },
   dockColumn: { width: 372, minHeight: 0, gap: 10 },
   dockColumnStacked: { width: '100%', height: 560 },
-  center: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', textAlign: 'center', marginTop: 120 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 12 },
+  center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12 },
 });

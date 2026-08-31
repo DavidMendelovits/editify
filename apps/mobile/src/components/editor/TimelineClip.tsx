@@ -6,7 +6,7 @@ import { clipTimelineDuration } from '@editify/shared';
 import { Filmstrip } from './Filmstrip';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { api, type WaveformEnvelope } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 
 export type DragMode = 'move' | 'in' | 'out';
 
@@ -339,18 +339,18 @@ const styles = StyleSheet.create({
     position: 'absolute', top: 0, left: 0, right: 0, height: 15, paddingHorizontal: 6,
     flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#05040ACC',
   },
-  number: { color: '#FFFFFF', fontFamily: 'Montserrat_800ExtraBold', fontSize: 8, letterSpacing: 0.4 },
-  name: { flex: 1, color: '#FFFFFFCC', fontFamily: 'Montserrat_600SemiBold', fontSize: 8 },
+  number: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.4 },
+  name: { flex: 1, color: '#FFFFFFCC', fontFamily: fonts.semibold, fontSize: 8 },
   badges: { position: 'absolute', bottom: 4, left: 6, right: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },
   badge: { borderRadius: 3, backgroundColor: '#00000099', paddingHorizontal: 4, paddingVertical: 2 },
   badgeAccent: { backgroundColor: '#6D28D9CC' },
-  badgeText: { color: '#FFFFFF', fontFamily: 'Montserrat_700Bold', fontSize: 7, letterSpacing: 0.4 },
+  badgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 7, letterSpacing: 0.4 },
   transition: {
     position: 'absolute', left: 0, top: 15, width: 10, height: 16,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#05040A99', borderBottomRightRadius: 4,
   },
-  transitionGlyph: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9 },
+  transitionGlyph: { color: colors.muted, fontFamily: fonts.bold, fontSize: 9 },
   handle: {
     position: 'absolute', top: 0, bottom: 0, width: 10,
     alignItems: 'center', justifyContent: 'center', backgroundColor: '#0B0B0F55',
@@ -365,14 +365,14 @@ const styles = StyleSheet.create({
   },
   captionOverlap: { backgroundColor: '#5A3D18', borderColor: '#C98A2B' },
   captionSelected: { borderColor: colors.purple, backgroundColor: '#4B3785' },
-  captionText: { color: '#E7E1FF', fontFamily: 'Montserrat_600SemiBold', fontSize: 8 },
+  captionText: { color: '#E7E1FF', fontFamily: fonts.semibold, fontSize: 8 },
   captionTextOverlap: { color: '#FFD79A' },
   sticker: {
     position: 'absolute', borderRadius: 4, justifyContent: 'center', paddingHorizontal: 6,
     backgroundColor: '#43214B', borderWidth: 1, borderColor: '#6E3B77',
   },
   stickerSelected: { borderColor: colors.pink, backgroundColor: '#571F63' },
-  stickerText: { color: '#F5D9FF', fontFamily: 'Montserrat_600SemiBold', fontSize: 9 },
+  stickerText: { color: '#F5D9FF', fontFamily: fonts.semibold, fontSize: 9 },
   ghost: {
     position: 'absolute', top: 0, borderRadius: 5, borderWidth: 1,
     borderColor: '#FFFFFF33', borderStyle: 'dashed', backgroundColor: '#FFFFFF08',
@@ -381,11 +381,11 @@ const styles = StyleSheet.create({
     position: 'absolute', top: -2, borderRadius: 4, backgroundColor: colors.pink,
     paddingHorizontal: 5, paddingVertical: 2, zIndex: 40,
   },
-  tooltipText: { color: '#FFFFFF', fontFamily: 'Montserrat_700Bold', fontSize: 8 },
+  tooltipText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 8 },
   empty: {
     position: 'absolute', left: 0, top: 8, height: 44, width: 320, borderRadius: 6,
     borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border,
     alignItems: 'center', justifyContent: 'center',
   },
-  emptyText: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 8, letterSpacing: 1 },
+  emptyText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1 },
 });

@@ -3,7 +3,7 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { Operation, Project } from '@editify/shared';
 import { apiFetch } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { colors, fonts } from '../../lib/theme';
 
 interface Props {
   projectId: string;
@@ -139,22 +139,22 @@ const styles = StyleSheet.create({
     backgroundColor: colors.panel, padding: 16, gap: 8,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
   rows: { gap: 2 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
   rowText: { flex: 1, gap: 1, minHeight: 44, justifyContent: 'center' },
-  rowName: { color: colors.text, fontFamily: 'Montserrat_600SemiBold', fontSize: 12 },
-  rowMeta: { color: colors.muted, fontFamily: 'Montserrat_500Medium', fontSize: 9 },
+  rowName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
+  rowMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 9 },
   apply: {
     width: 44, height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
   },
   applyDone: { borderColor: '#2E7D4F', backgroundColor: '#153524' },
-  applyText: { color: colors.text, fontFamily: 'Montserrat_700Bold', fontSize: 16 },
+  applyText: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
   pressed: { opacity: 0.65 },
-  note: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 9, paddingTop: 4 },
-  hint: { color: colors.muted, fontFamily: 'Montserrat_400Regular', fontSize: 10, paddingVertical: 12 },
-  error: { color: colors.danger, fontFamily: 'Montserrat_500Medium', fontSize: 10, paddingVertical: 12 },
+  note: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9, paddingTop: 4 },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, paddingVertical: 12 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingVertical: 12 },
 });
