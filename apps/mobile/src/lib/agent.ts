@@ -355,6 +355,14 @@ function opTimelineSecond(params: Record<string, unknown>): number | undefined {
     ?? asNumber(asRecord(asArray(params['ranges'])?.[0])['start']);
 }
 
+/** Edits an op stands for — batch ops carry several, everything else exactly one. */
+function opEditCount(op: { type: string; params?: unknown }): number {
+  const params = asRecord(op.params);
+  if (op.type === 'ripple_delete_ranges') return asArray(params['ranges'])?.length ?? 1;
+  if (op.type === 'set_clip_properties') return asArray(params['updates'])?.length ?? 1;
+  return 1;
+}
+
 /**
  * Aggregate the raw applied operations of one agent turn into receipt lines:
  * "✂ 6 trims", "T 8 captions". Batch ops count their inner items so the
@@ -364,11 +372,8 @@ export function receiptItems(ops: Array<{ type: string; params?: unknown }>): Re
   const groups = new Map<string, { count: number; glyph: string; at?: number }>();
   for (const op of ops) {
     const params = asRecord(op.params);
-    let count = 1;
-    if (op.type === 'ripple_delete_ranges') count = asArray(params['ranges'])?.length ?? 1;
-    if (op.type === 'set_clip_properties') count = asArray(params['updates'])?.length ?? 1;
     const entry = groups.get(op.type) ?? { count: 0, glyph: KIND_GLYPH[TOOL_KIND[op.type] ?? 'other'] };
-    entry.count += count;
+    entry.count += opEditCount(op);
     const at = opTimelineSecond(params);
     if (entry.at === undefined && at !== undefined) entry.at = at;
     groups.set(op.type, entry);
@@ -380,6 +385,53 @@ export function receiptItems(ops: Array<{ type: string; params?: unknown }>): Re
       label: `${entry.count} ${entry.count === 1 ? nouns[0] : nouns[1]}`,
       ...(entry.at !== undefined ? { at: entry.at } : {}),
     };
+  });
+}
+
+/**
+ * Plain-language digest categories, in the order the summary reads them out.
+ * `undo` and `revert_run` are absent on purpose: they cancel edits rather than
+ * making any, and what they cancelled is already gone from the standing ops.
+ * ponytail: one sentence per category, no per-clip detail — the message trace
+ * is still there for anyone who wants the blow-by-blow.
+ */
+const SUMMARY_GROUPS: ReadonlyArray<{ types: string[]; sentence: (count: number) => string }> = [
+  { types: ['split_clip', 'trim_clip'], sentence: (n) => `Made ${plural(n, 'cut')} to tighten pacing` },
+  { types: ['remove_clip', 'ripple_delete_ranges'], sentence: (n) => `Removed ${plural(n, 'section')}` },
+  { types: ['add_clip'], sentence: (n) => `Added ${plural(n, 'clip')}` },
+  { types: ['move_clip', 'reorder_clips'], sentence: (n) => `Rearranged ${plural(n, 'clip')}` },
+  { types: ['add_caption', 'update_caption'], sentence: (n) => `Added captions (${n})` },
+  { types: ['remove_caption'], sentence: (n) => `Removed ${plural(n, 'caption')}` },
+  { types: ['set_transform'], sentence: (n) => `Added ${plural(n, 'zoom-in')} on the action` },
+  { types: ['set_transition'], sentence: (n) => `Added ${plural(n, 'transition')}` },
+  { types: ['set_overlay'], sentence: (n) => `Added ${plural(n, 'sticker')}` },
+  { types: ['set_speed'], sentence: (n) => `Changed the speed of ${plural(n, 'clip')}` },
+  { types: ['set_volume'], sentence: (n) => `Balanced the audio on ${plural(n, 'clip')}` },
+  { types: ['set_clip_properties'], sentence: (n) => `Tweaked ${plural(n, 'clip')}` },
+  { types: ['set_format'], sentence: () => 'Changed the video format' },
+];
+
+/** The shape `editSummary` reads off a chat message — a subset of `ChatMessage`. */
+export interface SummarizableMessage {
+  role: 'user' | 'assistant';
+  ops?: Array<{ type: string; params?: unknown }>;
+  reverted?: boolean;
+}
+
+/**
+ * Project-level digest of everything the agent did that is still standing:
+ * ["Made 6 cuts to tighten pacing", "Added captions (12)"]. Reverted turns and
+ * categories with no edits drop out, so an untouched project summarises to [].
+ */
+export function editSummary(messages: ReadonlyArray<SummarizableMessage>): string[] {
+  const counts = new Map<string, number>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || message.reverted) continue;
+    for (const op of message.ops ?? []) counts.set(op.type, (counts.get(op.type) ?? 0) + opEditCount(op));
+  }
+  return SUMMARY_GROUPS.flatMap((group) => {
+    const total = group.types.reduce((sum, type) => sum + (counts.get(type) ?? 0), 0);
+    return total > 0 ? [group.sentence(total)] : [];
   });
 }
 

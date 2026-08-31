@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
 import { GradientButton } from '../../src/components/GradientButton';
+import { EditSummaryPanel } from '../../src/components/EditSummaryPanel';
 import { ImportSheet } from '../../src/components/ImportSheet';
 import { InsightsPanel } from '../../src/components/InsightsPanel';
 import { LIBRARY_ROOT, MediaLibrary } from '../../src/components/MediaLibrary';
@@ -409,11 +410,13 @@ export default function EditorScreen() {
           </View>
           {!wide && library}
           {timeline}
+          {!wide && <EditSummaryPanel messages={chatQuery.data} />}
           {!wide && <InsightsPanel assetIds={assetIds} />}
         </View>
         <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>
           {wide && library}
           {dock}
+          {wide && <EditSummaryPanel messages={chatQuery.data} />}
           {wide && <InsightsPanel assetIds={assetIds} />}
         </View>
       </View>
