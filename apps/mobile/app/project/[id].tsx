@@ -21,7 +21,7 @@ import { Timeline } from '../../src/components/editor/Timeline';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
 import { packetPrompt } from '../../src/lib/packets';
-import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
+import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { colors, fonts } from '../../src/lib/theme';
 
@@ -347,7 +347,11 @@ export default function EditorScreen() {
         onScrub={setScrubbing}
         onSelect={setSelectedId}
         onApply={applyOps}
-        onImport={() => setImportOpen(true)}
+        onImport={() => void addFrom(pickFromFiles)}
+        onImportFiles={(files) => void addFrom((projectId, onProgress) => uploadFiles(projectId, files, onProgress))}
+        importing={uploading}
+        importProgress={progress}
+        importError={uploadError}
         onAddSound={() => setSoundOpen(true)}
         onAddSticker={() => setStickerOpen(true)}
         onCleanup={() => setCleanupOpen(true)}

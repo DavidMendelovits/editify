@@ -35,6 +35,11 @@ interface Props {
   /** Applies ops on the server; `optimistic` paints the result before the round trip. */
   onApply: (ops: Operation[], optimistic?: (project: Project) => Project) => void;
   onImport: () => void;
+  /** Files dropped on the empty video lane (web only). */
+  onImportFiles: (files: File[]) => void;
+  importing: boolean;
+  importProgress: { done: number; total: number } | undefined;
+  importError: string | undefined;
   onAddSound: () => void;
   onAddSticker: () => void;
   onCleanup: () => void;
@@ -61,7 +66,7 @@ const round6 = (value: number): number => Number(value.toFixed(6));
  * playback. Everything here reads the current time imperatively.
  */
 export function Timeline({
-  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle,
+  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onImportFiles, importing, importProgress, importError, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle,
 }: Props) {
   const [pxPerSec, setPxPerSec] = useState(40);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -425,7 +430,15 @@ export function Timeline({
                   ))}
                   {/* Beat ruler along the lane's top edge: what a drag will magnet to. */}
                   {lane.track.kind === 'video' && beatTicks}
-                  {lane.track.kind === 'video' && lane.track.clips.length === 0 && <EmptyLane onPress={onImport} />}
+                  {lane.track.kind === 'video' && lane.track.clips.length === 0 && (
+                    <EmptyLane
+                      onPress={onImport}
+                      onDropFiles={onImportFiles}
+                      uploading={importing}
+                      progress={importProgress}
+                      error={importError}
+                    />
+                  )}
                   {lane.track.kind === 'caption' && lane.track.clips.length === 0 && (
                     <Text style={styles.laneHint}>ask the agent to “add captions”</Text>
                   )}

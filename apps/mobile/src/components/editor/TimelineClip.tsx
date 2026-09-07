@@ -1,5 +1,5 @@
-import { memo, useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { AssetMetadata, Callout, Clip } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
@@ -313,11 +313,68 @@ export function DragTooltip({ left, label }: { left: number; label: string }) {
   );
 }
 
-/** Empty-state block shown when a video track has no clips at all. */
-export function EmptyLane({ onPress }: { onPress: () => void }) {
+interface EmptyLaneProps {
+  /** Opens the file picker; also the retry affordance after a failed import. */
+  onPress: () => void;
+  /** Files dropped on the lane. Never called off web, where nothing can be dropped. */
+  onDropFiles: (files: File[]) => void;
+  uploading: boolean;
+  progress: { done: number; total: number } | undefined;
+  error: string | undefined;
+}
+
+/**
+ * Empty-state block shown when a video track has no clips at all: a press opens
+ * the file picker, and on web a dropped file uploads through the same path.
+ */
+export function EmptyLane({ onPress, onDropFiles, uploading, progress, error }: EmptyLaneProps) {
+  const ref = useRef<View>(null);
+  const [dropping, setDropping] = useState(false);
+
+  // react-native-web 0.21 picks View props from a whitelist that has no drag
+  // events, so the DOM node has to be wired by hand. Native has no drop target
+  // at all, hence the platform guard rather than a no-op listener.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const node = ref.current as unknown as HTMLElement | null;
+    if (!node) return;
+    // Without preventDefault the browser navigates to the dropped file.
+    const onOver = (event: DragEvent): void => { event.preventDefault(); setDropping(true); };
+    // Moving onto the label inside fires a bubbling dragleave; only a pointer
+    // that actually left the block should clear the highlight.
+    const onLeave = (event: DragEvent): void => {
+      if (!node.contains(event.relatedTarget as Node | null)) setDropping(false);
+    };
+    const onDrop = (event: DragEvent): void => {
+      event.preventDefault();
+      setDropping(false);
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length > 0) onDropFiles(files);
+    };
+    node.addEventListener('dragover', onOver);
+    node.addEventListener('dragleave', onLeave);
+    node.addEventListener('drop', onDrop);
+    return () => {
+      node.removeEventListener('dragover', onOver);
+      node.removeEventListener('dragleave', onLeave);
+      node.removeEventListener('drop', onDrop);
+    };
+  }, [onDropFiles]);
+
+  const label = dropping ? 'DROP TO IMPORT'
+    : progress ? `UPLOADING ${progress.done} OF ${progress.total}…`
+    : uploading ? 'UPLOADING…'
+    : '+  IMPORT MEDIA TO START THE TIMELINE';
   return (
-    <Pressable onPress={onPress} style={styles.empty} accessibilityRole="button">
-      <Text style={styles.emptyText}>+  IMPORT MEDIA TO START THE TIMELINE</Text>
+    <Pressable
+      ref={ref}
+      onPress={onPress}
+      disabled={uploading}
+      style={[styles.empty, dropping ? styles.emptyDropping : null, error ? styles.emptyError : null]}
+      accessibilityRole="button"
+    >
+      <Text style={styles.emptyText}>{label}</Text>
+      {error ? <Text style={styles.emptyErrorText} numberOfLines={2}>{error} · TAP TO RETRY</Text> : null}
     </Pressable>
   );
 }
@@ -383,9 +440,12 @@ const styles = StyleSheet.create({
   },
   tooltipText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 8 },
   empty: {
-    position: 'absolute', left: 0, top: 8, height: 44, width: 320, borderRadius: 6,
+    position: 'absolute', left: 0, top: 8, minHeight: 44, width: 320, borderRadius: 6,
     borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border,
-    alignItems: 'center', justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 6,
   },
+  emptyDropping: { borderColor: colors.purple, borderStyle: 'solid', backgroundColor: '#8B5CF61A' },
+  emptyError: { borderColor: colors.danger },
   emptyText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1 },
+  emptyErrorText: { color: colors.danger, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 0.6, marginTop: 4, textAlign: 'center' },
 });
