@@ -12,4 +12,6 @@ test-clips/
 # Native projects are generated from app.json by `expo prebuild` — never edited by hand.
 apps/mobile/ios/
 apps/mobile/android/
+.gstack/
+.qa/
 .bot/

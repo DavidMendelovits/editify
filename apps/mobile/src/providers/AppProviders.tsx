@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type PropsWithChildren } from 'react';
+import { ErrorReporter } from '../components/ErrorReporter';
 
 export function AppProviders({ children }: PropsWithChildren) {
   const [client] = useState(() => new QueryClient({
@@ -8,5 +9,6 @@ export function AppProviders({ children }: PropsWithChildren) {
       mutations: { retry: 0 },
     },
   }));
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  // Inside the query provider: the report modal posts through react-query.
+  return <QueryClientProvider client={client}><ErrorReporter>{children}</ErrorReporter></QueryClientProvider>;
 }

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { editSummary } from '../lib/agent';
 import type { ChatMessage } from '../lib/api';
-import { colors } from '../lib/theme';
+import { colors, fonts } from '../lib/theme';
 
 /**
  * Plain-language digest of what the agent has done to this video so far —
@@ -42,11 +42,11 @@ export function EditSummaryPanel({ messages }: { messages: ChatMessage[] | undef
 const styles = StyleSheet.create({
   zone: { borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: 12, paddingVertical: 9, gap: 7 },
   header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  label: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  chevron: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 10 },
+  label: { color: colors.muted, fontFamily: fonts.bold, fontSize: 9, letterSpacing: 1.5 },
+  chevron: { color: colors.muted, fontFamily: fonts.bold, fontSize: 10 },
   list: { gap: 5, paddingBottom: 2 },
   row: { flexDirection: 'row', alignItems: 'baseline', gap: 7 },
-  bullet: { color: colors.purple, fontFamily: 'Montserrat_800ExtraBold', fontSize: 9 },
-  line: { flex: 1, color: colors.text, fontFamily: 'Montserrat_500Medium', fontSize: 10, lineHeight: 15 },
+  bullet: { color: colors.purple, fontFamily: fonts.bold, fontSize: 9 },
+  line: { flex: 1, color: colors.text, fontFamily: fonts.medium, fontSize: 10, lineHeight: 15 },
   pressed: { opacity: 0.7 },
 });

@@ -23,6 +23,7 @@ import { api } from '../../src/lib/api';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
+import { track } from '../../src/lib/telemetry';
 import { colors, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
@@ -133,7 +134,7 @@ export default function EditorScreen() {
   });
   const sendChat = useMutation({
     mutationFn: (message: string) => api.chat(id, message),
-    onMutate: (message: string) => { setOptimisticMessage(message); setLatestTrace(undefined); },
+    onMutate: (message: string) => { track('chat_message'); setOptimisticMessage(message); setLatestTrace(undefined); },
     onSuccess: async (response) => {
       queryClient.setQueryData(['project', id], response.doc);
       setLatestTrace(response.trace ?? []);
@@ -151,6 +152,8 @@ export default function EditorScreen() {
 
   // The timeline is the trace: refetch the project as live mutation steps land
   // so agent edits appear while the turn is still running, not only at the end.
+  useEffect(() => { if (id) track('project_open', id); }, [id]);
+
   const liveSteps = sendChat.isPending ? liveQuery.data?.steps : undefined;
   const seenLiveSteps = useRef(0);
   useEffect(() => {
