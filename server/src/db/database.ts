@@ -117,6 +117,22 @@ function migrate(database: EditifyDatabase): void {
       created_at TEXT NOT NULL
     );
 
+    -- Client session logs, errors, and feedback. Durable even when the report
+    -- never reaches GitHub, so nothing a user sent is lost; the fingerprint is
+    -- the hashed error message repeat crashes are deduped on.
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_id TEXT,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      fingerprint TEXT,
+      issue_number INTEGER,
+      issue_url TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS reports_fingerprint_idx ON reports(fingerprint);
+
     -- 50ms RMS envelope per asset, for the waveform drawn inside timeline
     -- clips. Only ever populated for assets with no transcript energy to
     -- borrow, so it is a cache and never the primary copy.
