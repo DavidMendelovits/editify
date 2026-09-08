@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import {
   newProjectSchema,
   operationSchema,
@@ -90,6 +91,21 @@ export class ProjectStore {
       : this.database.prepare('SELECT doc_json FROM projects WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(id, userId)
     ) as ProjectRow | undefined;
     return row ? projectSchema.parse(JSON.parse(row.doc_json)) : undefined;
+  }
+
+  /**
+   * Removes the project and, through `ON DELETE CASCADE`, its operation log,
+   * asset links, renders and chat. Rows in `assets` deliberately stay: media is
+   * shared between projects, so deleting one must not strand another's clips.
+   * Rendered outputs on disk belong to this project alone, so they are unlinked.
+   */
+  async delete(id: string, userId?: string): Promise<boolean> {
+    if (!this.get(id, userId)) return false;
+    const outputs = (this.database.prepare(
+      'SELECT output_path FROM renders WHERE project_id = ? AND output_path IS NOT NULL',
+    ).all(id) as Array<{ output_path: string }>).map((row) => row.output_path);
+    await Promise.all(outputs.map(async (path) => { await rm(path, { force: true }); }));
+    return this.database.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
   }
 
   /**

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import type { NewProject, Project, ProjectFormat } from '@editify/shared';
 import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
@@ -32,6 +32,10 @@ export default function HomeScreen() {
       await client.invalidateQueries({ queryKey: ['projects'] });
       router.push({ pathname: '/project/[id]', params: { id: project.id } });
     },
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteProject(id),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['projects'] }); },
   });
   const compact = width < 760;
 
@@ -90,9 +94,12 @@ export default function HomeScreen() {
             key={project.id}
             project={project}
             onPress={() => router.push({ pathname: '/project/[id]', params: { id: project.id } })}
+            onExport={() => router.push({ pathname: '/project/[id]/export', params: { id: project.id } })}
+            onDelete={() => remove.mutate(project.id)}
           />
         ))}
       </View>
+      {remove.error && <Text style={styles.error}>Could not delete: {remove.error.message}</Text>}
       {feedbackOpen && <ReportModal mode="feedback" onClose={() => setFeedbackOpen(false)} />}
       <ImportSheet
         visible={importOpen}
@@ -104,10 +111,17 @@ export default function HomeScreen() {
 }
 
 /** Recent-project tile: poster frame, title, format badge, duration, clip count. */
-function ProjectCard({ project, onPress }: { project: Project; onPress: () => void }) {
+function ProjectCard({ project, onPress, onExport, onDelete }: {
+  project: Project; onPress: () => void; onExport: () => void; onDelete: () => void;
+}) {
   const assetId = project.tracks.flatMap((track) => track.clips).find((clip) => clip.assetId)?.assetId;
   const clipCount = project.tracks.reduce((total, track) => total + track.clips.length, 0);
   const captionCount = project.tracks.filter((track) => track.kind === 'caption').reduce((total, track) => total + track.clips.length, 0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  // The menu sits inside the card's Pressable, so every press it owns has to
+  // stop there or the card would navigate out from under the menu.
+  const swallow = (event: { stopPropagation?: () => void }, run: () => void) => { event.stopPropagation?.(); run(); };
   return (
     <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.projectCard, pressed && styles.pressed]}>
       <View style={styles.poster}>
@@ -116,7 +130,64 @@ function ProjectCard({ project, onPress }: { project: Project; onPress: () => vo
           : <Text style={styles.posterText}>EMPTY TIMELINE</Text>}
         <View style={styles.formatBadge}><Text style={styles.formatBadgeText}>{project.format}</Text></View>
         <View style={styles.durationBadge}><Text style={styles.durationBadgeText}>{formatDuration(project.duration)}</Text></View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="project menu"
+          hitSlop={8}
+          onPress={(event) => swallow(event, () => setMenuOpen((open) => !open))}
+          style={({ pressed }) => [styles.menuButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.menuGlyph}>⋯</Text>
+        </Pressable>
+        {menuOpen && (
+          <View style={styles.menu}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Export video"
+              onPress={(event) => swallow(event, () => { setMenuOpen(false); onExport(); })}
+              style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+            >
+              <Text style={styles.menuItemText}>Export video</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Delete project"
+              onPress={(event) => swallow(event, () => { setMenuOpen(false); setConfirming(true); })}
+              style={({ pressed }) => [styles.menuItem, styles.menuItemLast, pressed && styles.pressed]}
+            >
+              <Text style={[styles.menuItemText, styles.menuItemDanger]}>Delete project</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
+      <Modal visible={confirming} transparent animationType="fade" onRequestClose={() => setConfirming(false)}>
+        <Pressable style={styles.dialogBackdrop} onPress={() => setConfirming(false)}>
+          <Pressable style={styles.dialog} onPress={() => undefined}>
+            <Text style={styles.dialogTitle}>Delete “{project.title}”?</Text>
+            <Text style={styles.dialogBody}>
+              This removes the project and its rendered exports. Media stays in your library for other projects.
+            </Text>
+            <View style={styles.dialogActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+                onPress={() => setConfirming(false)}
+                style={({ pressed }) => [styles.dialogButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.dialogButtonText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Delete"
+                onPress={() => { setConfirming(false); onDelete(); }}
+                style={({ pressed }) => [styles.dialogButton, styles.dialogDanger, pressed && styles.pressed]}
+              >
+                <Text style={[styles.dialogButtonText, styles.menuItemDanger]}>Delete</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
       <View style={styles.projectCopy}>
         <Text style={styles.projectTitle} numberOfLines={1}>{project.title}</Text>
         <Text style={styles.projectMeta}>
@@ -163,6 +234,21 @@ const styles = StyleSheet.create({
   formatBadgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.8 },
   durationBadge: { position: 'absolute', bottom: 8, right: 8, borderRadius: 5, backgroundColor: '#00000099', paddingHorizontal: 7, paddingVertical: 3 },
   durationBadgeText: { color: '#FFFFFF', fontFamily: fonts.semibold, fontSize: 8, fontVariant: ['tabular-nums'] },
+  menuButton: { position: 'absolute', top: 6, right: 6, width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000000AA' },
+  menuGlyph: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 15, lineHeight: 16 },
+  menu: { position: 'absolute', top: 38, right: 6, minWidth: 152, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, overflow: 'hidden' },
+  menuItem: { paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
+  menuItemLast: { borderBottomWidth: 0 },
+  menuItemText: { color: colors.text, fontFamily: fonts.medium, fontSize: 12 },
+  menuItemDanger: { color: colors.danger },
+  dialogBackdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: '#000000AA' },
+  dialog: { width: '100%', maxWidth: 380, gap: 10, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 18 },
+  dialogTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
+  dialogBody: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19 },
+  dialogActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 4 },
+  dialogButton: { minHeight: 38, paddingHorizontal: 16, justifyContent: 'center', borderRadius: 10, borderWidth: 1, borderColor: colors.border },
+  dialogDanger: { borderColor: colors.danger },
+  dialogButtonText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 13 },
   projectCopy: { padding: 12, gap: 4 },
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 14 },
   projectMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10 },
