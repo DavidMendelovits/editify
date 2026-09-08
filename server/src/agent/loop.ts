@@ -36,6 +36,7 @@ function summarizeResult(tool: string, result: unknown, ok: boolean): string {
   if (tool === 'list_assets' && Array.isArray(result)) return `Found ${result.length} available assets.`;
   if (tool === 'get_style_profile') return result === null ? 'No style profile is available.' : 'Loaded the current style profile.';
   if (tool === 'get_transcript' && isRecord(result)) return `Loaded ${String(result.wordCount)} timed words.`;
+  if (tool === 'parse_transcript_text' && isRecord(result)) return `Parsed ${String(result.segmentCount)} ${String(result.format)} transcript segments.`;
   if (tool === 'get_insights' && isRecord(result)) return 'Loaded transcript hook and highlight insights.';
   if (tool === 'get_timeline_transcript' && isRecord(result)) return `Loaded ${Array.isArray(result.words) ? result.words.length : 0} timeline words.`;
   if (tool === 'list_presets' && Array.isArray(result)) return `Found ${result.length} editing presets.`;
@@ -69,6 +70,7 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'Inspect the project and assets before editing. Use operation tools for every mutation; never invent that an edit succeeded.',
     'When a tool reports an error, inspect fresh state as needed, correct the input, and try again.',
     'Use readable unique clip IDs. Keep edits faithful to the user request and finish with a concise, honest description.',
+    'When the user pastes a transcript into the chat message, call parse_transcript_text on that pasted text and trim with the segment timecodes it returns rather than guessing times.',
     'Asset transcripts and transcript insights may be available. Strong edits trim to highlight spans, lead with the hook, and use caption_clip_from_transcript for speech captions.',
     'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes. Trimming several clips is one set_clip_properties call with in/out per update, never repeated trim_clip calls; captioning several clips is one caption_clip_from_transcript call with clipIds.',
     'You are told exactly what changed after every edit — do not re-read the project between your own edits; re-read only after an error.',

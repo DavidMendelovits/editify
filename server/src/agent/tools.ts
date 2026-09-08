@@ -1,5 +1,6 @@
 import {
   EDITING_PRESETS,
+  MAX_CHAT_MESSAGE_CHARS,
   OPERATION_CATALOG,
   PACKETS_BY_ID,
   PRESETS_BY_NAME,
@@ -33,6 +34,7 @@ import {
 import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
+import { parseTranscriptInput } from './transcript-input.js';
 
 export { buildTimelineTranscript, planWordCutRanges } from '../services/cleanup.js';
 export type { TimelineTranscript, TimelineTranscriptWord } from '../services/cleanup.js';
@@ -59,6 +61,7 @@ export interface ToolDef {
 }
 
 const emptyInputSchema = operationParamsSchemas.undo;
+const parseTranscriptTextSchema = z.object({ text: z.string().min(1).max(MAX_CHAT_MESSAGE_CHARS) }).strict();
 const assetInputSchema = z.object({ assetId: z.string().min(1) }).strict();
 const captionFromTranscriptSchema = z.object({
   clipId: z.string().min(1).optional(),
@@ -809,6 +812,17 @@ export function createToolRegistry(): ToolDef[] {
           wordCount: transcript.words.length,
           words: transcript.words.map((word) => [word.w, word.s, word.e]),
         };
+      },
+    },
+    {
+      name: 'parse_transcript_text',
+      description: 'Parse a transcript the user pasted into chat (SRT, VTT, or lines prefixed with timestamps like [00:01:02]) into segments. Use this whenever the user pastes a transcript in chat instead of guessing times. Returned start/end are source-time seconds to feed straight into trim_clip / set_clip_properties in/out.',
+      schema: parseTranscriptTextSchema,
+      execute: async (_ctx, input) => {
+        const { text } = parseTranscriptTextSchema.parse(input);
+        const parsed = parseTranscriptInput(text);
+        if (!parsed.ok) return { ok: false, error: parsed.error, code: parsed.code };
+        return { format: parsed.format, segmentCount: parsed.segments.length, segments: parsed.segments };
       },
     },
     {
