@@ -13,3 +13,9 @@ test-clips/
 apps/mobile/ios/
 apps/mobile/android/
 .bot/
+
+# QA screenshots and demo recordings. These were bloating the repo (6.3 MB of
+# media in a 13 MB history) and git stores every take forever. Attach evidence
+# to the pull request description instead: GitHub hosts it on its own CDN.
+docs/demos/
+docs/qa/
