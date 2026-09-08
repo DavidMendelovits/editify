@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Start the API (3001) and Expo web (8090) in the background, wait until both answer, print URLs.
-# 8081 is usually taken by another project, hence 8090. Logs go to .bot/*.out (never *.log — a hook rejects those).
+# Start the API (3901) and Expo web (8090) in the background, wait until both answer, print URLs.
+# Deliberately NOT 3001/8081: those are the user's own dev servers in the main checkout, and a bot run
+# must never touch them. Logs go to .bot/*.out (never *.log — a hook rejects those).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-API_PORT=${API_PORT:-3001}; WEB_PORT=${WEB_PORT:-8090}
+API_PORT=${API_PORT:-3901}; WEB_PORT=${WEB_PORT:-8090}
 mkdir -p .bot
-pkill -f "tsx watch src/index.ts" 2>/dev/null || true
-pkill -f "expo start --web --port $WEB_PORT" 2>/dev/null || true
+# Only ever kill whatever is on OUR ports — never by process name, that would hit the user's servers.
+for port in "$API_PORT" "$WEB_PORT"; do lsof -ti ":$port" | xargs kill 2>/dev/null || true; done
 
 # Detach into a new session (macOS has no setsid) so the servers outlive the shell/tool call that started them.
 detach() { python3 -c 'import os,subprocess,sys; subprocess.Popen(sys.argv[2:], cwd=sys.argv[1], stdout=open(os.environ["OUT"],"ab"), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)' "$@"; }

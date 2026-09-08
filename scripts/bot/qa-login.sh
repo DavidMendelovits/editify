@@ -14,4 +14,13 @@ python3 -c "import json;print(json.load(open('$CREDS'))['password'],end='')" | "
   --submit-selector '[role=button]' >/dev/null
 "$AB" auth login editify-qa
 "$AB" auth delete editify-qa >/dev/null 2>&1 || true
-echo "signed in as $EMAIL"
+
+# Hard gate: the run must not continue on a video that merely looks signed in.
+for i in $(seq 1 20); do
+  state=$("$AB" eval '(()=>{const t=document.body.innerText;return t.includes("sign out")?"in":(t.includes("password")?"form":"other")})()' 2>/dev/null | tr -d '"')
+  [[ "$state" == "in" ]] && { echo "signed in as $EMAIL (verified: 'sign out' rendered, sign-in form gone)"; exit 0; }
+  sleep 2
+done
+echo "LOGIN FAILED — page state is '$state' after 40s. Do not record or open a PR claiming a signed-in demo." >&2
+"$AB" screenshot .bot/login-failed.png >/dev/null 2>&1 || true
+exit 1

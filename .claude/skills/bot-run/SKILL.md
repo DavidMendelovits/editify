@@ -54,7 +54,7 @@ Rules for the brief:
 ## 3. Verify + record (this is the proof — do it yourself, don't trust the subagent)
 
 ```bash
-scripts/bot/serve.sh                       # API :3001, web :8090, waits for both
+scripts/bot/serve.sh                       # API :3901, web :8090 (never the user's 3001/8081), waits for both
 AB=~/.nvm/versions/node/v24.8.0/bin/agent-browser   # always this path, not the homebrew one
 $AB close --all; $AB open http://localhost:8090
 $AB record start .bot/take-1.webm          # relaunches the context (clears localStorage) — log in AFTER this
@@ -69,6 +69,16 @@ daemon was stale: `close --all`, use a **new** file name (`take-2.webm`), record
 
 Then **look at the contact sheet** (Read the png) before you cite the video. If the take doesn't
 show the fix, re-record; never link a video you haven't checked.
+
+**The video illustrates; assertions prove.** For every acceptance criterion in the issue, get a
+programmatic read (`eval` on DOM state, `network requests` for the API call, a `curl` against
+:3901 with the same data) and put the actual value in the PR's verification table. A row that
+says "looked right in the video" is not a verification. `qa-login.sh` exits non-zero if the
+signed-in state is not reached; if it fails, stop, the run cannot claim a signed-in demo.
+
+This browser is agent-browser's own headless Chromium on :8090/:3901. Nothing the bot does is
+visible in the user's Chrome or touches their :8081/:3001 servers. The demo link is the only
+place a human sees the run.
 
 agent-browser on this app (React Native Web + expo-router):
 - `read` returns the *index* route's text, not the current page — use
