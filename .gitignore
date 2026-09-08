@@ -15,3 +15,9 @@ apps/mobile/android/
 .gstack/
 .qa/
 .bot/
+
+# Demo recordings live in Google Drive (editify-demos), never in the repo — CI fails on any tracked video.
+*.mp4
+*.webm
+*.mov
+*.m4v

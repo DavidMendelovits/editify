@@ -137,6 +137,12 @@ bullets: file → what and why
 The last line is mandatory on every PR body and every PR comment you post — the picker uses it
 to tell your comments from the user's (same GitHub login).
 
+## Videos never go to GitHub
+
+Not committed (gitignored, and CI fails on any tracked `.mp4/.webm/.mov`), not a release asset,
+not an issue/PR attachment. Google Drive via `finish-demo.sh` is the only destination. If the upload
+fails, the PR goes up as a draft that says "demo could not be uploaded" and the take stays in `.bot/`.
+
 ## 7. Close out
 
 Kill the servers (`pkill -f "tsx watch"; pkill -f "expo start"`), `rm -f ~/.cache/editify-bot/lock`.
