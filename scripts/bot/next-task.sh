@@ -19,7 +19,10 @@ prs=$(gh pr list --state open --limit 100 --json number,headRefName,mergeStateSt
   --jq '[.[] | select(.headRefName|startswith("bot/"))]')
 
 # Issue number a bot PR is for: branch bot/issue-<N>-... (fallback: "closes #N" in body)
-issue_of='(.headRefName | capture("bot/issue-(?<n>[0-9]+)").n // (.body | capture("[Cc]loses #(?<n>[0-9]+)").n // "0")) | tonumber'
+# NOTE: `|` binds looser than `//`, so each source needs its own parens — otherwise
+# `.body` is evaluated against the headRefName string and jq dies on branches like
+# bot/ignore-demo-media that carry no issue number.
+issue_of='((.headRefName | capture("bot/issue-(?<n>[0-9]+)").n) // (.body | capture("[Cc]loses #(?<n>[0-9]+)").n) // "0") | tonumber'
 
 # 1. conflicts first — cheapest, and they block the user
 conflict=$(jq -c "[.[] | select(.mergeStateStatus==\"DIRTY\")] | sort_by(.number) | first // empty

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
 import { colors, fonts } from '../lib/theme';
 import { api } from '../lib/api';
+import { track } from '../lib/telemetry';
 import { formatMegabytes } from '../lib/agent';
 
 type ImportState = 'queued' | 'importing' | 'done' | 'error';
@@ -36,6 +37,7 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
       setStates((current) => ({ ...current, [name]: 'importing' }));
       try {
         const asset = await api.importAsset(name, projectId);
+        track('import', name);
         setStates((current) => ({ ...current, [name]: 'done' }));
         onImported(asset);
         await files.refetch();

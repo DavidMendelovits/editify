@@ -12,10 +12,18 @@ test-clips/
 # Native projects are generated from app.json by `expo prebuild` — never edited by hand.
 apps/mobile/ios/
 apps/mobile/android/
+.gstack/
+.qa/
 .bot/
 
 # QA screenshots and demo recordings. These were bloating the repo (6.3 MB of
-# media in a 13 MB history) and git stores every take forever. Attach evidence
-# to the pull request description instead: GitHub hosts it on its own CDN.
+# media in a 13 MB history) and git stores every take forever. Demos go to
+# Google Drive via scripts/bot/finish-demo.sh and are linked from the PR.
 docs/demos/
 docs/qa/
+
+# Videos never live in the repo in any form — CI fails on any tracked video.
+*.mp4
+*.webm
+*.mov
+*.m4v

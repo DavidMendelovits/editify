@@ -6,9 +6,13 @@ async function serve(token?: string) {
   if (token === undefined) delete process.env.EDITIFY_TOKEN;
   else process.env.EDITIFY_TOKEN = token;
   const app = Fastify();
-  registerAuth(app);
+  registerAuth(app, {
+    sharedToken: token,
+    isPublic: (request) => request.method === 'POST' && request.routeOptions.url === '/telemetry',
+  });
   app.get('/health', async () => ({ ok: true }));
   app.get('/projects', async () => ([]));
+  app.post('/telemetry', async () => ({ ok: true }));
   return app;
 }
 
@@ -33,6 +37,14 @@ describe('shared-token auth', () => {
     expect((await app.inject({ url: '/projects', headers: { authorization: 'Bearer s3cret' } })).statusCode).toBe(200);
     expect((await app.inject({ url: '/projects', headers: { authorization: `Basic ${basic}` } })).statusCode).toBe(200);
     expect((await app.inject({ url: '/projects?k=s3cret' })).statusCode).toBe(200);
+  });
+
+  it('lets a crash report through unauthenticated — the sign-in screen has no token to send', async () => {
+    const app = await serve('s3cret');
+    const report = await app.inject({ method: 'POST', url: '/telemetry', payload: { kind: 'error' } });
+    expect(report.statusCode).toBe(200);
+    // Everything else stays shut.
+    expect((await app.inject({ url: '/projects' })).statusCode).toBe(401);
   });
 
   it('rejects a wrong token in every form', async () => {
