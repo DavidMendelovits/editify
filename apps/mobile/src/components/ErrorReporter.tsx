@@ -2,7 +2,7 @@ import { Component, useEffect, useState, type PropsWithChildren } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { captureError, startTelemetry } from '../lib/telemetry';
 import { ReportModal } from './ReportModal';
-import { colors, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 interface CapturedError { message: string; stack?: string }
 
@@ -54,9 +54,9 @@ export function ErrorReporter({ children }: PropsWithChildren) {
 }
 
 const styles = StyleSheet.create({
-  fallback: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, backgroundColor: colors.background, padding: 24 },
-  fallbackTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 17 },
-  retry: { minHeight: 44, paddingHorizontal: 18, borderRadius: 14, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
-  retryText: { color: colors.text, fontFamily: fonts.bold, fontSize: 13 },
+  fallback: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.xl, backgroundColor: colors.background, padding: space.xxl },
+  fallbackTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
+  retry: { minHeight: 36, paddingHorizontal: space.xxl, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  retryText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.lg },
   pressed: { opacity: 0.7 },
 });
