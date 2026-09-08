@@ -335,6 +335,8 @@ export type AssetDissection = z.infer<typeof assetDissectionSchema>;
 
 export const renderRequestSchema = z.object({
   resolution: z.enum(['720p', '1080p', '4k']).default('1080p'),
+  /** 'sdr' tone maps HDR sources to BT.709 so the export matches the preview. */
+  hdr: z.enum(['sdr', 'hdr']).default('sdr'),
 });
 
 export const styleAnalyzeSchema = z.object({
