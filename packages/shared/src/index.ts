@@ -218,6 +218,17 @@ export const operationBatchSchema = z.object({
 });
 
 export const chatRequestSchema = z.object({ message: z.string().trim().min(1).max(4000) });
+/** `POST /projects/:id/chat/improve` — rewrite a casual message before it is sent. */
+export const improveRequestSchema = z.object({
+  message: z.string().trim().min(1).max(4000),
+  /** The user's previous message, so a follow-up reads as a refinement of it. */
+  previous: z.string().trim().max(4000).optional(),
+});
+export const improveResponseSchema = z.object({
+  improved: z.string().nullable(),
+  changes: z.array(z.string()).optional(),
+});
+export type ImproveResponse = z.infer<typeof improveResponseSchema>;
 export const agentResponseSchema = z.object({
   reply: z.string().min(1),
   ops: z.array(operationSchema).max(100),
