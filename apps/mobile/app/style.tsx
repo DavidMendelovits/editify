@@ -10,6 +10,7 @@ import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
 import { Screen } from '../src/components/Screen';
 import { api, uploadAsset } from '../src/lib/api';
+import { backControlStyle, goBack } from '../src/lib/nav';
 import { colors, fonts } from '../src/lib/theme';
 
 export default function StyleScreen() {
@@ -43,7 +44,7 @@ export default function StyleScreen() {
   const failure = analyze.error?.message ?? (profile.data?.status === 'error' ? profile.data.error ?? 'Analysis failed' : undefined);
 
   return (
-    <Screen header={<View style={styles.header}><Pressable onPress={() => router.back()}><Text style={styles.back}>‹  HOME</Text></Pressable><Brand compact /></View>}>
+    <Screen header={<View style={styles.header}><Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  HOME</Text></Pressable><Brand compact /></View>}>
       <View style={styles.hero}>
         <Text style={styles.kicker}>STYLE MEMORY</Text>
         <Text style={styles.title}>Show us your rhythm.</Text>
