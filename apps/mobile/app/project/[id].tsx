@@ -322,13 +322,8 @@ export default function EditorScreen() {
         </View>
       </View>
       <View style={styles.headerActions}>
-        {/* The media library carries its own +photos; the header duplicate
-            only fits once the title has room to breathe. */}
-        {width >= 560 && (
-          <GradientButton secondary style={styles.headerButton} onPress={() => void addFrom(pickFromPhotos)} disabled={uploading}>
-            {progress ? `${progress.done}/${progress.total}…` : uploading ? 'processing…' : '+ photos'}
-          </GradientButton>
-        )}
+        {/* Adding media lives in the library (+ photos / + files / + folder), which also
+            reports import progress. The header keeps only the global action. */}
         <GradientButton style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
           export ↗
         </GradientButton>
@@ -481,7 +476,6 @@ const styles = StyleSheet.create({
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, marginTop: 3, letterSpacing: 0.5 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerButton: { minHeight: 36, paddingHorizontal: 12, borderColor: colors.border, backgroundColor: colors.panel },
   exportButton: { width: 104, minHeight: 36 },
   workspace: { flex: 1, flexDirection: 'row', gap: 12, minHeight: 0 },
   workspaceStacked: { flexDirection: 'column' },
