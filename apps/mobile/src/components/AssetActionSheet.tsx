@@ -71,7 +71,7 @@ export function AssetActionSheet({ asset, onClose }: Props) {
                 <Text style={styles.actionHint}>
                   {saved ? 'pick it up under STYLE PACKETS in the editor'
                     : dissection ? 'pacing, transition, and caption placement from the measurements'
-                    : 'dissect the clip first — the preset comes off its measurements'}
+                    : 'dissect the clip first: the preset comes off its measurements'}
                 </Text>
               </View>
               <Text style={styles.actionCue}>{saved ? '✓' : '＋'}</Text>

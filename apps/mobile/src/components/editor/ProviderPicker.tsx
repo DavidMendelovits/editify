@@ -47,7 +47,7 @@ export function ProviderPicker() {
       </Pressable>
 
       {status?.requested && (
-        <Text style={styles.warning}>{SHORT[status.requested]} is unavailable — running {SHORT[status.active]}</Text>
+        <Text style={styles.warning}>{SHORT[status.requested]} is unavailable, running {SHORT[status.active]}</Text>
       )}
 
       {open && (

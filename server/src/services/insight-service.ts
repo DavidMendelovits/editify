@@ -4,6 +4,7 @@ import type { StoredAsset } from '../db/asset-store.js';
 import type { InsightStore } from '../db/insight-store.js';
 import type { StoredTranscript, TranscriptSegment } from '../db/transcript-store.js';
 import type { TranscriptService } from './transcript-service.js';
+import { NO_DASHES_RULE } from '../agent/prose-style.js';
 
 const emotiveWords = new Set([
   'amazing', 'angry', 'awesome', 'crazy', 'damn', 'excited', 'fuck', 'fucking', 'hate',
@@ -120,6 +121,7 @@ export class InsightService {
       'Choose a 1-3 second hook and snap every timestamp to the supplied word boundaries.',
       'Rank impactful spans from 0 to 1. Labels must be one of: punchline, setup, emotional peak, key claim, question, callback.',
       'Do not claim visual knowledge; use only transcript evidence.',
+      NO_DASHES_RULE,
     ].join(' ');
     const payload = {
       assetId: asset.id,

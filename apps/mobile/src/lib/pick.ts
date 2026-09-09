@@ -72,7 +72,7 @@ async function launchLibrary(): Promise<ImagePicker.ImagePickerResult> {
 function describePickerError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('3164')) {
-    return 'iOS would not hand over that video (Photos error 3164). It is probably still in iCloud — open it in Photos to download it — or Editify only has access to a limited selection, which you can change to all photos in Settings.';
+    return 'iOS would not hand over that video (Photos error 3164). It is probably still in iCloud, so open it in Photos to download it. Editify may also have access to only a limited selection, which you can change to all photos in Settings.';
   }
   return message;
 }

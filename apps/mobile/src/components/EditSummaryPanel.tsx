@@ -29,7 +29,7 @@ export function EditSummaryPanel({ messages }: { messages: ChatMessage[] | undef
         <View style={styles.list}>
           {lines.map((line) => (
             <View key={line} style={styles.row}>
-              <Text style={styles.bullet}>—</Text>
+              <Text style={styles.bullet}>•</Text>
               <Text style={styles.line}>{line}</Text>
             </View>
           ))}

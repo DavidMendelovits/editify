@@ -48,13 +48,13 @@ export async function listProviders(): Promise<ProviderOption[]> {
       id: 'claude-cli',
       label: 'Claude Code CLI',
       available: cli.claude,
-      detail: cli.claude ? 'Runs on your local claude login — no API key' : 'claude is not on PATH',
+      detail: cli.claude ? 'Runs on your local claude login, no API key needed' : 'claude is not on PATH',
     },
     {
       id: 'codex-cli',
       label: 'Codex CLI',
       available: cli.codex,
-      detail: cli.codex ? 'Runs on your local codex login — no API key' : 'codex is not on PATH',
+      detail: cli.codex ? 'Runs on your local codex login, no API key needed' : 'codex is not on PATH',
     },
     {
       id: 'anthropic',
@@ -70,7 +70,7 @@ export async function listProviders(): Promise<ProviderOption[]> {
         ? `OpenAI-compatible endpoint at ${process.env.OPENAI_BASE_URL}`
         : process.env.OPENAI_API_KEY ? 'OpenAI Chat Completions' : 'OPENAI_API_KEY is not set',
     },
-    { id: 'mock', label: 'Offline mock', available: true, detail: 'Deterministic keyword agent — free and instant' },
+    { id: 'mock', label: 'Offline mock', available: true, detail: 'Deterministic keyword agent: free and instant' },
   ];
 }
 

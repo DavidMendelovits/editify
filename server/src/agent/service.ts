@@ -2,6 +2,7 @@ import type { AgentTraceStep, ChatResponse, Project } from '@editify/shared';
 import { runAgentLoop } from './loop.js';
 import type { ToolProvider } from './providers.js';
 import type { ToolContext } from './tools.js';
+import { NO_DASHES_RULE } from './prose-style.js';
 
 export class AgentService {
   /** Resolved per call so the UI's provider picker applies without a restart. */
@@ -12,7 +13,7 @@ export class AgentService {
   }
 
   async distillStyle(project: Project, metrics: unknown): Promise<string> {
-    const system = 'Distill these ffmpeg-only video metrics into one short editing style profile. Do not claim to have watched video.';
+    const system = `Distill these ffmpeg-only video metrics into one short editing style profile. Do not claim to have watched video. ${NO_DASHES_RULE}`;
     const provider = await this.resolveProvider();
     return (await provider.completeText(system, JSON.stringify({ project, metrics }))).trim();
   }

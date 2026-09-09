@@ -88,7 +88,7 @@ const JXA = `
 function run(argv) {
   ObjC.import('Cocoa');
   // The spec rides in as JSON so the argument can never start with '-' and trip
-  // osascript's option parsing — callout text like "-50% edit time" would.
+  // osascript's option parsing, which callout text like "-50% edit time" would do.
   const spec = JSON.parse(argv[0]);
   const out = argv[1];
   // ponytail: system font. Montserrat (the caption face) ships as a fontsdir

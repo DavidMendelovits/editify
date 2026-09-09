@@ -45,7 +45,7 @@ export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
               <Text style={styles.close}>✕</Text>
             </Pressable>
           </View>
-          <Text style={styles.subtitle}>one tap restyles the whole edit — captions, music, transitions, devices</Text>
+          <Text style={styles.subtitle}>one tap restyles the whole edit: captions, music, transitions, devices</Text>
           <ScrollView style={styles.list}>
             {sections.map((section) => (
               <View key={section.label}>

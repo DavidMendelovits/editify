@@ -82,7 +82,7 @@ export function CleanupSheet({ projectId, project, visible, onClose, onApply }: 
 
           {planQuery.isLoading && <Text style={styles.hint}>measuring…</Text>}
           {planQuery.isError && <Text style={styles.error}>Could not measure: {planQuery.error.message}</Text>}
-          {plan && !plan.transcribed && <Text style={styles.hint}>no transcript yet — ask the agent to transcribe first</Text>}
+          {plan && !plan.transcribed && <Text style={styles.hint}>no transcript yet: ask the agent to transcribe first</Text>}
           {nothingToCut && <Text style={styles.hint}>clean already</Text>}
 
           {plan?.transcribed && !nothingToCut && (
@@ -103,7 +103,7 @@ export function CleanupSheet({ projectId, project, visible, onClose, onApply }: 
                 done={appliedRow === 'silences'}
                 onPress={() => apply('silences', plan.silences.ranges)}
               />
-              {capped && <Text style={styles.note}>a pass cuts at most {MAX_RANGES} ranges — the longest go first, tap again for the rest</Text>}
+              {capped && <Text style={styles.note}>a pass cuts at most {MAX_RANGES} ranges, longest first. Tap again for the rest</Text>}
             </View>
           )}
         </View>

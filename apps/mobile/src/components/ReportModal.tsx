@@ -53,7 +53,7 @@ export function ReportModal({ mode, error, onClose }: Props) {
             <>
               <Text style={styles.subtitle}>
                 {mode === 'error'
-                  ? 'Send it over and we will open a tracked issue. Add anything you were doing — optional.'
+                  ? 'Send it over and we will open a tracked issue. Add anything you were doing (optional).'
                   : 'Tell us what is missing or wrong. We assess it and open a tracked issue.'}
               </Text>
               <TextInput
