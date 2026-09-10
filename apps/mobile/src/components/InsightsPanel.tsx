@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { CHECKLIST_PRESETS, CHECKLIST_PRESET_NAMES, evaluateChecklist, type Project } from '@editify/shared';
 import { api, type AssetInsights, type InsightHighlight } from '../lib/api';
-import { colors, gradient, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 /** Highlights shown per asset — the ranked list is long and this panel is a glance, not a report. */
 const TOP_HIGHLIGHTS = 3;
@@ -75,17 +74,9 @@ function ChecklistSection({ assetIds, project }: { assetIds: string[]; project: 
               accessibilityRole="button"
               accessibilityState={{ selected }}
               onPress={() => setPresetName(name)}
-              style={({ pressed }) => [pressed && styles.pressed]}
+              style={({ pressed }) => [styles.chip, selected && styles.chipActive, pressed && styles.pressed]}
             >
-              {selected ? (
-                <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.chip}>
-                  <Text style={styles.chipText}>{title.toUpperCase()}</Text>
-                </LinearGradient>
-              ) : (
-                <View style={[styles.chip, styles.chipIdle]}>
-                  <Text style={[styles.chipText, styles.chipTextIdle]}>{title.toUpperCase()}</Text>
-                </View>
-              )}
+              <Text style={[styles.chipText, selected && styles.chipTextActive]}>{title.toUpperCase()}</Text>
             </Pressable>
           );
         })}
@@ -93,12 +84,7 @@ function ChecklistSection({ assetIds, project }: { assetIds: string[]; project: 
       <View style={styles.scoreRow}>
         <Text style={styles.checklistScore}>{result.score}/{result.total}</Text>
         <View style={styles.scoreBar}>
-          <LinearGradient
-            colors={gradient}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={[styles.barFill, { width: `${Math.round((result.score / result.total) * 100)}%` }]}
-          />
+          <View style={[styles.scoreFill, { width: `${Math.round((result.score / result.total) * 100)}%` }]} />
         </View>
       </View>
       {result.items.map((item) => (
@@ -132,9 +118,7 @@ function AssetInsightCard({ assetId, index }: { assetId: string; index: number }
       </View>
       {insights.hook && (
         <View style={styles.hookRow}>
-          <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hookChip}>
-            <Text style={styles.hookChipText}>HOOK</Text>
-          </LinearGradient>
+          <View style={styles.hookChip}><Text style={styles.hookChipText}>HOOK</Text></View>
           <View style={styles.hookBody}>
             <Text style={styles.span}>{formatSpan(insights.hook.start, insights.hook.end)}</Text>
             <Text style={styles.hookText} numberOfLines={2}>{insights.hook.text}</Text>
@@ -158,12 +142,7 @@ function HighlightRow({ highlight }: { highlight: InsightHighlight }) {
       </View>
       <Text style={styles.highlightText} numberOfLines={2}>{highlight.text}</Text>
       <View style={styles.bar}>
-        <LinearGradient
-          colors={gradient}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={[styles.barFill, { width: `${Math.round(score * 100)}%` }]}
-        />
+        <View style={[styles.barFill, { width: `${Math.round(score * 100)}%` }]} />
       </View>
     </View>
   );
@@ -180,46 +159,47 @@ function stamp(value: number): string {
 }
 
 const styles = StyleSheet.create({
-  zone: { borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: 12, paddingVertical: 9, gap: 7 },
-  header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  label: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  chevron: { color: colors.muted, fontFamily: fonts.bold, fontSize: 10 },
+  zone: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg, gap: space.md },
+  header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
+  label: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  chevron: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.md },
   list: { maxHeight: 210 },
-  listContent: { gap: 7, paddingBottom: 2 },
-  card: { borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
-  cardHeader: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
-  source: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.1 },
-  summary: { flex: 1, color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
-  pending: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
-  hookRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
-  hookChip: { borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
-  hookChipText: { color: colors.text, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1 },
-  hookBody: { flex: 1, gap: 2 },
-  hookText: { color: colors.text, fontFamily: fonts.medium, fontSize: 10, lineHeight: 15 },
-  span: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 8 },
-  highlight: { gap: 3 },
-  highlightHeader: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  highlightLabel: { flex: 1, color: colors.text, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.8, textTransform: 'uppercase' },
-  score: { color: colors.text, fontFamily: fonts.semibold, fontSize: 8 },
-  highlightText: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9, lineHeight: 13 },
-  checklist: { borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
-  chipRow: { gap: 5, paddingRight: 4 },
-  chip: { borderRadius: 20, paddingHorizontal: 9, paddingVertical: 4 },
-  chipIdle: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },
-  chipText: { color: colors.text, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1 },
-  chipTextIdle: { color: colors.muted },
-  scoreRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  checklistScore: { color: colors.text, fontFamily: fonts.mono, fontSize: 11 },
-  scoreBar: { flex: 1, height: 3, borderRadius: 2, backgroundColor: '#2A2937', overflow: 'hidden' },
-  criterion: { flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
-  criterionBody: { flex: 1, gap: 2 },
-  tick: { fontFamily: fonts.bold, fontSize: 10, lineHeight: 14, width: 10 },
+  listContent: { gap: space.md, paddingBottom: space.xs },
+  card: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.lg, gap: space.md },
+  cardHeader: { flexDirection: 'row', alignItems: 'baseline', gap: space.lg },
+  source: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.1 },
+  summary: { flex: 1, color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
+  pending: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
+  hookRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.md },
+  hookChip: { borderRadius: radius.sm, borderWidth: 1, borderColor: colors.borderStrong, paddingHorizontal: space.lg, paddingVertical: space.xs },
+  hookChipText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  hookBody: { flex: 1, gap: space.xs },
+  hookText: { color: colors.text, fontFamily: fonts.medium, fontSize: type.md, lineHeight: 15 },
+  span: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.xs },
+  highlight: { gap: space.xs },
+  highlightHeader: { flexDirection: 'row', alignItems: 'baseline', gap: space.md },
+  highlightLabel: { flex: 1, color: colors.text, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.8, textTransform: 'uppercase' },
+  score: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xs },
+  highlightText: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm, lineHeight: 13 },
+  bar: { height: 3, backgroundColor: colors.panelSunken, overflow: 'hidden' },
+  barFill: { height: 3, backgroundColor: colors.borderStrong },
+  checklist: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.lg, gap: space.md },
+  chipRow: { gap: space.sm, paddingRight: space.sm },
+  chip: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  chipActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  chipText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  chipTextActive: { color: colors.text },
+  scoreRow: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  checklistScore: { color: colors.text, fontFamily: fonts.mono, fontSize: type.base },
+  scoreBar: { flex: 1, height: 3, backgroundColor: colors.panelSunken, overflow: 'hidden' },
+  scoreFill: { height: 3, backgroundColor: colors.accent },
+  criterion: { flexDirection: 'row', alignItems: 'flex-start', gap: space.md },
+  criterionBody: { flex: 1, gap: space.xs },
+  tick: { fontFamily: fonts.bold, fontSize: type.md, lineHeight: 14, width: 10 },
   tickMet: { color: colors.success },
   tickUnmet: { color: colors.muted },
-  criterionLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10, lineHeight: 14 },
+  criterionLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md, lineHeight: 14 },
   criterionLabelUnmet: { color: colors.muted },
-  suggestion: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9, lineHeight: 13 },
-  bar: { height: 3, borderRadius: 2, backgroundColor: '#2A2937', overflow: 'hidden' },
-  barFill: { height: 3, borderRadius: 2 },
+  suggestion: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm, lineHeight: 13 },
   pressed: { opacity: 0.7 },
 });

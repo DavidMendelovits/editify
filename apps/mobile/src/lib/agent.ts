@@ -67,7 +67,7 @@ const KIND_GLYPH: Record<TraceKind, string> = {
   preset: '◆',
   add: '+',
   remove: '×',
-  cut: '✂',
+  cut: '/',
   move: '⇄',
   batch: '≡',
   audio: '♪',
@@ -365,7 +365,7 @@ function opEditCount(op: { type: string; params?: unknown }): number {
 
 /**
  * Aggregate the raw applied operations of one agent turn into receipt lines:
- * "✂ 6 trims", "T 8 captions". Batch ops count their inner items so the
+ * "/ 6 trims", "T 8 captions". Batch ops count their inner items so the
  * receipt reflects edits, not tool calls.
  */
 export function receiptItems(ops: Array<{ type: string; params?: unknown }>): ReceiptItem[] {

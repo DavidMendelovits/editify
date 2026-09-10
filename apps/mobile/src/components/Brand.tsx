@@ -1,23 +1,18 @@
 import { StyleSheet, Text, View } from 'react-native';
-import { colors, fonts } from '../lib/theme';
+import { colors, space, type, fonts } from '../lib/theme';
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <View style={styles.row} accessibilityLabel="editify">
-      <Text style={[styles.word, compact && styles.compact]}>
-        <Text style={{ color: colors.blue }}>edi</Text>
-        <Text style={{ color: colors.purple }}>ti</Text>
-        <Text style={{ color: colors.pink }}>fy</Text>
-      </Text>
-      {!compact && <View style={styles.beta}><Text style={styles.betaText}>AI EDITOR</Text></View>}
+      <Text style={[styles.word, compact && styles.compact]}>editify</Text>
+      {!compact && <Text style={styles.tag}>AI EDITOR</Text>}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  word: { fontFamily: fonts.display, fontSize: 24, letterSpacing: 0 },
-  compact: { fontSize: 18 },
-  beta: { borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingHorizontal: 8, paddingVertical: 4 },
-  betaText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.2 },
+  row: { flexDirection: 'row', alignItems: 'baseline', gap: space.lg },
+  word: { color: colors.text, fontFamily: fonts.display, fontSize: type.title, letterSpacing: 0 },
+  compact: { fontSize: type.xxl },
+  tag: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
 });
