@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PanResponder, Platform, Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
-import { colors, fonts } from '../../lib/theme';
+import { colors, fonts, radius } from '../../lib/theme';
 
 /** Sizes the wide editor: dock column width, and preview height inside the edit column. */
 export interface EditorLayout {
@@ -231,14 +231,14 @@ const styles = StyleSheet.create({
   grip: { backgroundColor: colors.border, borderRadius: 1 },
   gripVertical: { width: 2, height: '100%' },
   gripHorizontal: { height: 2, width: '100%' },
-  gripActive: { backgroundColor: colors.purple },
+  gripActive: { backgroundColor: colors.accent },
   presets: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   presetLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.2, marginRight: 2 },
   presetButton: {
     minHeight: 26,
     paddingHorizontal: 10,
     justifyContent: 'center',
-    borderRadius: 8,
+    borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.panel,
