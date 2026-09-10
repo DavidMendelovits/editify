@@ -18,6 +18,12 @@ export class VersionConflictError extends Error {
   }
 }
 
+/** Structural project comparison ignoring `version`, normalized through the schema so key order can't differ. */
+function sameDoc(left: Project, right: Project): boolean {
+  return JSON.stringify(projectSchema.parse({ ...left, version: 0 }))
+    === JSON.stringify(projectSchema.parse({ ...right, version: 0 }));
+}
+
 interface ProjectRow { doc_json: string }
 interface LogRow {
   id: string;
@@ -117,6 +123,7 @@ export class ProjectStore {
       let project = this.get(projectId);
       if (!project) throw new OperationError(`Project ${projectId} was not found`);
       if (project.version !== baseVersion) throw new VersionConflictError(baseVersion, project.version);
+      const original = project;
 
       const operations = rawOperations.map((operation) => operationSchema.parse(operation));
       if (!operations.length) throw new OperationError('At least one operation is required');
@@ -184,7 +191,11 @@ export class ProjectStore {
         project = after;
       });
 
-      if (operations[0]?.type !== 'undo' && operations[0]?.type !== 'revert_run') project.version = baseVersion + 1;
+      const isHistoryOperation = operations[0]?.type === 'undo' || operations[0]?.type === 'revert_run';
+      // A write that changed nothing must not bump the version: it would create a
+      // bogus revert checkpoint and make the client flash an identical document.
+      if (!isHistoryOperation && sameDoc(original, project)) return original;
+      if (!isHistoryOperation) project.version = baseVersion + 1;
       const now = new Date().toISOString();
       for (const entry of pendingLogs) {
         const loggedAfter = entry.sequence === pendingLogs.length - 1

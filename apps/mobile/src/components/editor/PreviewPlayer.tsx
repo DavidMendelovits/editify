@@ -7,7 +7,7 @@ import type { VideoPlayer } from 'expo-video';
 import type { AssetMetadata, Callout, Clip, ClipTransform, Operation, OverlayPlacement, Project } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { assetFilmstripUrl, assetOriginalUrl, assetProxyUrl, assetThumbUrl } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 import { FILMSTRIP_TILES, anchorIndexAtSorted, clipIndexAtSorted, formatTimecode, sortClips, visibleIdsAt } from '../../lib/timeline';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 
@@ -605,8 +605,8 @@ export function PreviewPlayer({ project, assets, clock, playing, scrubbing, sele
         </View>
       </View>
       <View style={styles.transport}>
-        <Control label="⏮" hint="start" onPress={() => onSeek(0)} />
-        <Control label={playing ? '⏸' : '▶'} hint={playing ? 'pause' : 'play'} primary onPress={onTogglePlay} />
+        <Control label="|◀" hint="start" onPress={() => onSeek(0)} />
+        <Control label={playing ? '❚❚' : '▶'} hint={playing ? 'pause' : 'play'} primary onPress={onTogglePlay} />
         <TransportTimecode clock={clock} />
         <Text style={styles.timecodeMuted}>/ {formatTimecode(project.duration)}</Text>
         <View style={styles.spacer} />
@@ -1016,39 +1016,39 @@ function Control({ label, hint, onPress, primary }: { label: string; hint: strin
 }
 
 const styles = StyleSheet.create({
-  panel: { flex: 1, minHeight: 220, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: '#101016', padding: 10, gap: 8 },
+  panel: { flex: 1, minHeight: 220, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelSunken, padding: space.lg, gap: space.lg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  meta: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9, flexShrink: 1 },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  meta: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm, flexShrink: 1 },
   stageWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 140 },
-  stage: { borderRadius: 8, overflow: 'hidden', backgroundColor: '#000000' },
+  stage: { borderRadius: radius.md, overflow: 'hidden', backgroundColor: '#000000' },
   video: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' },
   videoFill: { width: '100%', height: '100%' },
   audioElement: { position: 'absolute', width: 1, height: 1, opacity: 0 },
   poster: { overflow: 'hidden', backgroundColor: '#000000' },
   dip: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000000' },
   gap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
-  gapText: { color: '#4A4860', fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.2 },
+  gapText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
   sticker: { position: 'absolute', alignItems: 'center', justifyContent: 'center' },
-  stickerSelected: { borderWidth: 1, borderColor: colors.pink, borderRadius: 6 },
+  stickerSelected: { borderWidth: 1, borderColor: colors.accent, borderRadius: radius.md },
   stickerImage: { width: '100%', height: '100%' },
   stickerEmoji: { textAlign: 'center' },
   callout: { maxWidth: '100%', flexDirection: 'row', alignItems: 'center' },
   calloutGlyph: { fontFamily: fonts.bold },
   calloutText: { flexShrink: 1, color: '#FFFFFF', fontFamily: fonts.bold },
-  guide: { position: 'absolute', backgroundColor: colors.pink, opacity: 0.8, zIndex: 5 },
+  guide: { position: 'absolute', backgroundColor: colors.accent, opacity: 0.8, zIndex: 5 },
   guideVertical: { top: 0, bottom: 0, width: 1 },
   guideHorizontal: { left: 0, right: 0, height: 1 },
   captionLayer: { position: 'absolute', left: 8, right: 8, alignItems: 'center' },
   captionText: { fontFamily: fonts.bold, textAlign: 'center' },
-  transport: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  control: { minWidth: 30, height: 26, borderRadius: 7, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
-  controlPrimary: { backgroundColor: colors.purple, borderColor: colors.purple },
-  controlText: { color: colors.text, fontFamily: fonts.bold, fontSize: 11 },
+  transport: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  control: { minWidth: 30, height: 26, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.lg },
+  controlPrimary: { backgroundColor: colors.accentStrong, borderColor: colors.accentStrong },
+  controlText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base },
   controlTextPrimary: { color: '#FFFFFF' },
-  timecode: { color: colors.text, fontFamily: fonts.bold, fontSize: 11, fontVariant: ['tabular-nums'] },
-  timecodeMuted: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
+  timecode: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base, fontVariant: ['tabular-nums'] },
+  timecodeMuted: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
   spacer: { flex: 1 },
-  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 8 },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.xs },
   pressed: { opacity: 0.65 },
 });
