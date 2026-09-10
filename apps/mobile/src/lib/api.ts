@@ -223,6 +223,11 @@ export const api = {
   listProjects: () => request<Project[]>('/projects'),
   createProject: (input: NewProject) => request<Project>('/projects', { method: 'POST', body: JSON.stringify(input) }),
   getProject: (id: string) => request<Project>(`/projects/${id}`),
+  /** Answers 204 with no body, so it cannot go through `request`'s JSON parse. */
+  deleteProject: async (id: string): Promise<void> => {
+    const response = await fetch(`${API_URL}/projects/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
+  },
   applyOps: (id: string, ops: Operation[], baseVersion: number) => request<Project>(`/projects/${id}/ops`, {
     method: 'POST', body: JSON.stringify({ ops, baseVersion }),
   }),

@@ -1,9 +1,8 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { contentTagLabel, FALLBACK_PRESETS, presetTitle, type EditPreset } from '../lib/presets';
-import { colors, gradient, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 interface Props {
   /** Name of the preset whose prompt is currently loaded in the composer. */
@@ -61,29 +60,21 @@ function PresetCard({ preset, active, onPress }: { preset: EditPreset; active: b
       onPress={onPress}
       style={({ pressed }) => [styles.card, pressed && styles.pressed]}
     >
-      {active ? (
-        <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.frame}>
-          <View style={[styles.inner, styles.innerActive]}>{body}</View>
-        </LinearGradient>
-      ) : (
-        <View style={[styles.frame, styles.frameIdle]}><View style={styles.inner}>{body}</View></View>
-      )}
+      <View style={[styles.inner, active && styles.innerActive]}>{body}</View>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  section: { gap: 5 },
-  label: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.5 },
-  row: { gap: 6, paddingBottom: 2 },
-  card: { width: 168, borderRadius: 13 },
-  frame: { borderRadius: 13, padding: 1.5 },
-  frameIdle: { backgroundColor: colors.border },
-  inner: { flex: 1, borderRadius: 11.5, backgroundColor: colors.panelRaised, paddingHorizontal: 9, paddingVertical: 8, gap: 3 },
-  innerActive: { backgroundColor: colors.background },
-  name: { color: colors.muted, fontFamily: fonts.bold, fontSize: 11 },
+  section: { gap: space.sm },
+  label: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.5 },
+  row: { gap: space.md, paddingBottom: space.xs },
+  card: { width: 160 },
+  inner: { flex: 1, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.xs },
+  innerActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  name: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.base },
   nameActive: { color: colors.text },
-  tags: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.4 },
-  description: { color: colors.muted, fontFamily: fonts.regular, fontSize: 8, lineHeight: 12 },
+  tags: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.4 },
+  description: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.xs, lineHeight: 12 },
   pressed: { opacity: 0.75 },
 });
