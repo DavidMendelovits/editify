@@ -7,10 +7,11 @@ import type { AssetMetadata } from '@editify/shared';
 import { AssetActionSheet } from '../src/components/AssetActionSheet';
 import { Markdown } from '../src/components/editor/Markdown';
 import { Brand } from '../src/components/Brand';
-import { GradientButton } from '../src/components/GradientButton';
+import { Button } from '../src/components/Button';
 import { Screen } from '../src/components/Screen';
 import { api, uploadAsset } from '../src/lib/api';
-import { colors, fonts } from '../src/lib/theme';
+import { backControlStyle, goBack } from '../src/lib/nav';
+import { colors, radius, space, type, fonts } from '../src/lib/theme';
 
 export default function StyleScreen() {
   const router = useRouter();
@@ -43,19 +44,18 @@ export default function StyleScreen() {
   const failure = analyze.error?.message ?? (profile.data?.status === 'error' ? profile.data.error ?? 'Analysis failed' : undefined);
 
   return (
-    <Screen header={<View style={styles.header}><Pressable onPress={() => router.back()}><Text style={styles.back}>‹  HOME</Text></Pressable><Brand compact /></View>}>
+    <Screen header={<View style={styles.header}><Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  HOME</Text></Pressable><Brand compact /></View>}>
       <View style={styles.hero}>
         <Text style={styles.kicker}>STYLE MEMORY</Text>
         <Text style={styles.title}>Show us your rhythm.</Text>
         <Text style={styles.subtitle}>Upload up to ten past videos. We measure cuts, loudness, framing, and pace with ffmpeg—your footage is never sent to an AI model.</Text>
       </View>
       <View style={styles.uploadCard}>
-        <View style={styles.uploadIcon}><Text style={styles.uploadIconText}>↑</Text></View>
         <Text style={styles.uploadTitle}>{busy ? 'Reading the edit language…' : 'Drop in your best past cuts'}</Text>
         <Text style={styles.uploadSubtitle}>{busy ? 'Probing footage, detecting scene changes, and measuring loudness.' : 'MP4, MOV, or WebM · up to 10 videos'}</Text>
-        <GradientButton disabled={busy} onPress={() => analyze.mutate()} style={styles.uploadButton}>
+        <Button disabled={busy} onPress={() => analyze.mutate()} style={styles.uploadButton}>
           {busy ? 'analyzing…' : current ? 'analyze new videos' : 'choose videos'}
-        </GradientButton>
+        </Button>
         {busy && <View style={styles.progress}><View style={styles.progressFill} /></View>}
       </View>
       {failure && <Text style={styles.error}>{failure}</Text>}
@@ -123,41 +123,39 @@ function mode(values: string[]): string { return values.sort((a, b) => values.fi
 
 const styles = StyleSheet.create({
   header: { minHeight: 52, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 1.4 },
-  hero: { paddingVertical: 34, gap: 12, maxWidth: 760 },
-  kicker: { color: colors.purple, fontFamily: fonts.mono, fontSize: 11, letterSpacing: 2.2 },
-  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 42, lineHeight: 48, letterSpacing: -1.8 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14, lineHeight: 23, maxWidth: 650 },
-  uploadCard: { borderWidth: 1, borderStyle: 'dashed', borderColor: '#6D5AC7', borderRadius: 24, backgroundColor: '#181625', minHeight: 270, alignItems: 'center', justifyContent: 'center', padding: 28, gap: 9 },
-  uploadIcon: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#292342', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
-  uploadIconText: { color: colors.purple, fontSize: 25 },
-  uploadTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 17, textAlign: 'center' },
-  uploadSubtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12, textAlign: 'center' },
-  uploadButton: { width: 210, marginTop: 12 },
-  progress: { height: 4, width: 210, marginTop: 8, borderRadius: 4, backgroundColor: colors.border, overflow: 'hidden' },
-  progressFill: { width: '68%', height: '100%', backgroundColor: colors.purple },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
-  sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 21 },
-  sectionNote: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11, marginTop: 4, maxWidth: 520 },
-  clipList: { gap: 8 },
+  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.md, letterSpacing: 1.4 },
+  hero: { paddingVertical: space.xl, gap: space.md, maxWidth: 760 },
+  kicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.6 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.display, lineHeight: 34, letterSpacing: -0.8 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.lg, lineHeight: 18, maxWidth: 650 },
+  uploadCard: { borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.panel, minHeight: 200, alignItems: 'center', justifyContent: 'center', padding: space.section, gap: space.lg },
+  uploadTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl, textAlign: 'center' },
+  uploadSubtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, textAlign: 'center' },
+  uploadButton: { width: 210, marginTop: space.xl },
+  progress: { height: 4, width: 210, marginTop: space.lg, borderRadius: radius.md, backgroundColor: colors.border, overflow: 'hidden' },
+  progressFill: { width: '68%', height: '100%', backgroundColor: colors.accent },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: space.xl },
+  sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
+  sectionNote: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, marginTop: space.sm, maxWidth: 520 },
+  clipList: { gap: space.lg },
   clipRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 52, borderRadius: 14,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: 14, paddingVertical: 10,
+    flexDirection: 'row', alignItems: 'center', gap: space.xl, minHeight: 40, borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg,
   },
-  clipName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
-  clipMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 10, fontVariant: ['tabular-nums'] },
-  clipMore: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
+  clipName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
+  clipMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.md, fontVariant: ['tabular-nums'] },
+  clipMore: { width: 28, height: 28, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
   clipMorePressed: { opacity: 0.6 },
-  clipMoreText: { color: colors.text, fontFamily: fonts.bold, fontSize: 15, lineHeight: 17 },
-  count: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.4 },
-  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  metric: { flexGrow: 1, flexBasis: 210, borderRadius: 18, padding: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },
-  metricLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.3 },
-  metricValue: { color: colors.text, fontFamily: fonts.bold, fontSize: 28, marginTop: 14 },
-  metricDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11, marginTop: 4 },
-  styleDoc: { borderRadius: 22, padding: 24, backgroundColor: '#211A36', borderWidth: 1, borderColor: '#473673', gap: 12 },
-  styleDocEyebrow: { color: colors.pink, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  quote: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18, lineHeight: 28 },
-  styleFoot: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12 },
+  clipMoreText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl, lineHeight: 17 },
+  count: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.4 },
+  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xl },
+  metric: { flexGrow: 1, flexBasis: 180, borderRadius: radius.md, padding: space.xl, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },
+  metricLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.3 },
+  metricValue: { color: colors.text, fontFamily: fonts.bold, fontSize: type.title, marginTop: space.md },
+  metricDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, marginTop: space.sm },
+  styleDoc: { borderRadius: radius.md, padding: space.xxl, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, gap: space.lg },
+  styleDocEyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  quote: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xxl, lineHeight: 28 },
+  styleFoot: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
 });

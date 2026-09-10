@@ -114,3 +114,13 @@ export async function pickFromFiles(projectId: string, onProgress?: PickProgress
     ...(file.file ? { file: file.file } : {}),
   })), onProgress);
 }
+
+/** Files dropped on the editor (web only) — same upload path as the pickers. */
+export async function uploadFiles(projectId: string, files: File[], onProgress?: PickProgress): Promise<PickResult> {
+  return await uploadAll(projectId, files.map((file) => ({
+    uri: '', // unused: `uploadAsset` posts the File itself when it has one.
+    name: file.name,
+    ...(file.type ? { mimeType: file.type } : {}),
+    file,
+  })), onProgress);
+}

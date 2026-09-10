@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
-import { mkdir, rename } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import {
+  COLOR_PIPELINE_VERSION, normalizeFilter, outputColorArgs, outputColorFilter, probeColor, zscaleAvailable,
+  type SourceColor,
+} from './color.js';
 
 export interface ProbeResult {
   duration: number;
@@ -66,20 +70,23 @@ export async function createProxyAndThumbnail(
   const proxyPath = join(destinationDirectory, 'proxy.mp4');
   const thumbnailPath = join(destinationDirectory, 'thumb.jpg');
   if (probe.hasVideo) {
+    // Proxy and thumbnail share one normalization, so the library, the preview
+    // and the export all describe the same colour.
+    const color = await probeColor(sourcePath);
+    const normalize = normalizeFilter(color, 'sdr', { zscale: await zscaleAvailable() });
     await runProcess('ffmpeg', [
       '-y', '-i', sourcePath,
-      '-vf', 'scale=540:540:force_original_aspect_ratio=decrease:force_divisible_by=2',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27', '-pix_fmt', 'yuv420p',
+      '-vf', `${normalize},scale=540:540:force_original_aspect_ratio=decrease:force_divisible_by=2,${outputColorFilter('sdr', false)}`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27',
       // A keyframe every second: x264's default ~250-frame GOP makes every
       // preview seek decode seconds of video. Costs little at CRF 27.
       // Proxies made before this keep their long GOP until re-imported.
       '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
+      ...outputColorArgs('sdr', false),
       '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', proxyPath,
     ]);
-    await runProcess('ffmpeg', [
-      '-y', '-ss', String(Math.max(0, Math.min(probe.duration * 0.1, 2))),
-      '-i', sourcePath, '-frames:v', '1', '-vf', 'scale=720:-2', '-q:v', '3', thumbnailPath,
-    ]);
+    await renderThumbnail(sourcePath, thumbnailPath, probe, normalize);
+    await writeColorSidecar(destinationDirectory, color);
   } else {
     await runProcess('ffmpeg', [
       '-y', '-f', 'lavfi', '-i', `color=c=0x171721:s=960x540:r=30:d=${Math.max(probe.duration, 0.1)}`,
@@ -91,6 +98,38 @@ export async function createProxyAndThumbnail(
     ]);
   }
   return { proxyPath, thumbnailPath };
+}
+
+async function renderThumbnail(
+  sourcePath: string,
+  thumbnailPath: string,
+  probe: Pick<ProbeResult, 'duration'>,
+  normalize: string,
+): Promise<void> {
+  await runProcess('ffmpeg', [
+    '-y', '-ss', String(Math.max(0, Math.min(probe.duration * 0.1, 2))),
+    '-i', sourcePath, '-frames:v', '1', '-vf', `${normalize},scale=720:-2`, '-q:v', '3', thumbnailPath,
+  ]);
+}
+
+/** Records which pipeline produced the files in `directory` so stale ones can be spotted. */
+async function writeColorSidecar(directory: string, source: SourceColor): Promise<void> {
+  await writeFile(join(directory, 'color.json'), JSON.stringify({ version: COLOR_PIPELINE_VERSION, source }));
+}
+
+/**
+ * Re-shoot one thumbnail through the current colour pipeline. Assets imported
+ * before it existed carry a cast the preview does not; the thumb route calls
+ * this the first time such an asset is browsed.
+ */
+export async function regenerateThumbnail(
+  sourcePath: string,
+  thumbnailPath: string,
+  probe: Pick<ProbeResult, 'duration'>,
+): Promise<void> {
+  const color = await probeColor(sourcePath);
+  await renderThumbnail(sourcePath, thumbnailPath, probe, normalizeFilter(color, 'sdr', { zscale: await zscaleAvailable() }));
+  await writeColorSidecar(dirname(thumbnailPath), color);
 }
 
 export const FILMSTRIP_TILES = 20;

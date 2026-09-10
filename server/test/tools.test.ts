@@ -23,7 +23,7 @@ const inputs: Record<(typeof OPERATION_CATALOG)[number], unknown> = {
   set_speed: { clipId: 'clip-a', speed: 1.25 },
   set_transform: { clipId: 'clip-a', transform: { scale: 1.2, x: 0, y: 0 } },
   set_overlay: { clipId: 'sticker-a', overlay: { x: 0.5, y: 0.3, width: 0.2, rotation: 15 } },
-  set_transition: { clipId: 'clip-b', transition: { type: 'crossfade', duration: 0.5 } },
+  set_transition: { clipId: 'clip-b', transition: { type: 'crossfade', duration: 0.4 } },
   add_caption: { trackId: 'captions', clip: { id: 'caption-new', start: 0, in: 0, out: 2, text: 'Hello' } },
   update_caption: { clipId: 'caption-a', text: 'Updated' },
   remove_caption: { clipId: 'caption-a' },

@@ -48,6 +48,12 @@ export function captureError(error: unknown): void {
   const message = (raw.trim() || 'Unknown error').slice(0, 2000);
   const stack = error instanceof Error ? error.stack?.slice(0, 8000) : undefined;
   track('error', message);
+  // The preview <video> rejects play() for entirely routine reasons — a pause()
+  // arriving mid-play, or autoplay before the first user gesture. Those are
+  // worth logging but must not raise the "something broke" dialog: it is
+  // fixed-position and full-bleed, so it swallows every click behind it
+  // (including the header's "‹ PROJECTS"), with nothing on screen to explain why.
+  if (/play\(\)|The fetching process for the media resource was aborted/.test(message)) return;
   onError?.({ message, ...(stack ? { stack } : {}) });
 }
 
