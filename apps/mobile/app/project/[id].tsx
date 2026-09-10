@@ -414,13 +414,13 @@ export default function EditorScreen() {
           {!wide && library}
           {timeline}
           {!wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {!wide && <InsightsPanel assetIds={assetIds} />}
+          {!wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
         <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>
           {wide && library}
           {dock}
           {wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {wide && <InsightsPanel assetIds={assetIds} />}
+          {wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
       </View>
       <ImportSheet
