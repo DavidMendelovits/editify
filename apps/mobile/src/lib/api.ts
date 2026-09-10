@@ -52,6 +52,9 @@ export interface ChatMessage {
 
 export interface ChatResponse { reply: string; trace: AgentTraceStep[]; opsApplied: Operation[]; doc: Project; runId?: string }
 
+/** `POST /projects/:id/chat/improve` — `improved: null` when there was nothing to improve. */
+export interface PromptImprovement { improved: string | null; changes?: string[] }
+
 /** `GET /projects/:id/chat/live` — steps of the turn currently running, if any. */
 export interface ChatLive { running: boolean; steps: AgentTraceStep[] }
 
@@ -248,6 +251,11 @@ export const api = {
   chat: (id: string, message: string) => request<ChatResponse>(`/projects/${id}/chat`, {
     method: 'POST', body: JSON.stringify({ message }),
   }),
+  /** Rule-based rewrite of a casual message; `improved: null` means send as typed. */
+  improvePrompt: (id: string, message: string, previous?: string) =>
+    request<PromptImprovement>(`/projects/${id}/chat/improve`, {
+      method: 'POST', body: JSON.stringify(previous ? { message, previous } : { message }),
+    }),
   getChat: (id: string) => request<ChatMessage[]>(`/projects/${id}/chat`),
   /** Undo a whole agent turn in one step. */
   revertRun: (id: string, runId: string) => request<Project>(`/projects/${id}/runs/${runId}/revert`, { method: 'POST', body: '{}' }),

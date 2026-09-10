@@ -41,18 +41,35 @@ interface Props {
 export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend, onRevert, reverting, onSeek }: Props) {
   const [text, setText] = useState('');
   const [preset, setPreset] = useState<string>();
+  // The improver's suggestion, held until the user picks: nothing is ever sent
+  // behind their back (issue #19 — "never silently rewrites and sends").
+  const [suggestion, setSuggestion] = useState<{ original: string; improved: string; changes: string[] }>();
+  const [improving, setImproving] = useState(false);
   const scroller = useRef<ScrollView>(null);
+  const lastUserMessage = [...(messages ?? [])].reverse().find((message) => message.role === 'user')?.content;
 
   function draft(next: string): void {
     setText(next);
     setPreset((current) => (current !== undefined && next === presetPrompt(current) ? current : undefined));
   }
-  function send(): void {
-    const message = text.trim();
-    if (!message || pending) return;
+  function dispatch(message: string): void {
     onSend(message);
     setText('');
     setPreset(undefined);
+    setSuggestion(undefined);
+  }
+  function send(): void {
+    const message = text.trim();
+    if (!message || pending || improving) return;
+    setImproving(true);
+    // A failed improve must never block the edit: fall through to the raw send.
+    api.improvePrompt(projectId, message, lastUserMessage)
+      .then((result) => {
+        if (result.improved) setSuggestion({ original: message, improved: result.improved, changes: result.changes ?? [] });
+        else dispatch(message);
+      })
+      .catch(() => dispatch(message))
+      .finally(() => setImproving(false));
   }
 
   return (
@@ -121,7 +138,16 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
         ))}
       </View>
       {/* Keeps the composer above the software keyboard on phones. */}
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80} style={styles.composerLayer}>
+        {suggestion && (
+          <ImprovedPrompt
+            suggestion={suggestion}
+            onChange={(improved) => setSuggestion((current) => (current ? { ...current, improved } : current))}
+            onUse={() => dispatch(suggestion.improved.trim() || suggestion.original)}
+            onOriginal={() => dispatch(suggestion.original)}
+            onDismiss={() => setSuggestion(undefined)}
+          />
+        )}
         <View style={styles.composer}>
           <TextInput
             value={text}
@@ -138,14 +164,66 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             accessibilityLabel="send"
             hitSlop={6}
             onPress={send}
-            disabled={!text.trim() || pending}
-            style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending) && styles.sendDisabled]}
+            disabled={!text.trim() || pending || improving}
+            style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending || improving) && styles.sendDisabled]}
           >
             <Text style={styles.sendText}>↑</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
       {error && <Text style={styles.error}>{error}</Text>}
+    </View>
+  );
+}
+
+/**
+ * The improver's preview, wedged between the prompt chips and the composer:
+ * the rewritten instruction is editable in place, and nothing leaves the
+ * client until the user picks "use this", "send original", or dismisses.
+ */
+function ImprovedPrompt({ suggestion, onChange, onUse, onOriginal, onDismiss }: {
+  suggestion: { original: string; improved: string; changes: string[] };
+  onChange: (improved: string) => void;
+  onUse: () => void;
+  onOriginal: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <View style={styles.improve}>
+      <View style={styles.improveHead}>
+        <Text style={styles.improveLabel}>IMPROVED PROMPT</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="dismiss improved prompt" hitSlop={8} onPress={onDismiss}>
+          <Text style={styles.improveClose}>✕</Text>
+        </Pressable>
+      </View>
+      {suggestion.changes.map((change) => (
+        <Text key={change} style={styles.improveChange}>• {change}</Text>
+      ))}
+      <TextInput
+        value={suggestion.improved}
+        onChangeText={onChange}
+        multiline
+        accessibilityLabel="improved prompt text"
+        style={styles.improveInput}
+      />
+      <View style={styles.improveActions}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="use this"
+          onPress={onUse}
+          style={({ pressed }) => [styles.improveUse, pressed && styles.pressed]}
+        >
+          <Text style={styles.improveUseText}>use this</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="send original"
+          onPress={onOriginal}
+          style={({ pressed }) => [styles.improveOriginal, pressed && styles.pressed]}
+        >
+          <Text style={styles.improveOriginalText}>send original</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -243,7 +321,9 @@ function Message({ message, trace, onRevert, reverting, onSeek }: {
 }
 
 const styles = StyleSheet.create({
-  panel: { flex: 1, minHeight: 380, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xl, gap: space.lg },
+  // On short viewports the dock's content spills past its box; the collapsed summary
+  // panels below it in the column would otherwise paint over the composer and improver card.
+  panel: { flex: 1, minHeight: 380, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xl, gap: space.lg, zIndex: 1 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: space.lg, borderBottomWidth: 1, borderBottomColor: colors.border },
   zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
   title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl, marginTop: space.sm },
@@ -277,6 +357,18 @@ const styles = StyleSheet.create({
   prompts: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   prompt: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: space.lg, paddingVertical: space.sm },
   promptText: { color: colors.text, fontFamily: fonts.medium, fontSize: type.sm },
+  improve: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.accent, backgroundColor: colors.accentSoft, padding: space.lg, gap: space.sm },
+  composerLayer: { gap: space.lg },
+  improveHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  improveLabel: { color: colors.accent, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.4 },
+  improveClose: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.base },
+  improveChange: { color: colors.text, fontFamily: fonts.medium, fontSize: type.sm, lineHeight: 13 },
+  improveInput: { color: colors.text, fontFamily: fonts.regular, fontSize: type.base, lineHeight: 16, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, padding: space.md, maxHeight: 120 },
+  improveActions: { flexDirection: 'row', gap: space.md },
+  improveUse: { borderRadius: radius.md, backgroundColor: colors.accentStrong, paddingHorizontal: space.xl, paddingVertical: space.sm },
+  improveUseText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.sm },
+  improveOriginal: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: space.xl, paddingVertical: space.sm },
+  improveOriginalText: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm },
   composer: { minHeight: 50, flexDirection: 'row', alignItems: 'flex-end', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.background, padding: space.md },
   input: { flex: 1, minHeight: 34, maxHeight: 90, color: colors.text, fontFamily: fonts.regular, fontSize: type.lg, paddingHorizontal: space.md, paddingTop: space.lg },
   send: { width: 30, height: 30, borderRadius: radius.md, backgroundColor: colors.accentStrong, alignItems: 'center', justifyContent: 'center' },
