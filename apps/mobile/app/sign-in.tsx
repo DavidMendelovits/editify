@@ -118,9 +118,7 @@ export default function SignInScreen() {
         <View style={styles.brand}><Brand /></View>
         <View style={styles.shell}>
           <View style={styles.intro}>
-            <Text style={styles.kicker}>YOUR CUTTING ROOM</Text>
-            <Text style={styles.title}>Make the first cut.</Text>
-            <Text style={styles.subtitle}>Sign in to keep your footage, timelines, and editing style together.</Text>
+            <Text style={styles.title}>Sign in</Text>
           </View>
 
           <View style={styles.card}>
@@ -201,9 +199,7 @@ const styles = StyleSheet.create({
   brand: { minHeight: 58, justifyContent: 'center' },
   shell: { flex: 1, width: '100%', maxWidth: 460, alignSelf: 'center', justifyContent: 'center', gap: space.section, paddingVertical: space.section },
   intro: { alignItems: 'center', gap: space.lg },
-  kicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.6 },
   title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.display, lineHeight: 34, letterSpacing: -0.8, textAlign: 'center' },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.lg, lineHeight: 18, textAlign: 'center', maxWidth: 390 },
   card: { gap: space.xl, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl },
   fieldGroup: { gap: space.md },
   label: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },

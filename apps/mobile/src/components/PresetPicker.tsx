@@ -49,7 +49,6 @@ function PresetCard({ preset, active, onPress }: { preset: EditPreset; active: b
     <>
       <Text style={[styles.name, active && styles.nameActive]} numberOfLines={1}>{presetTitle(preset.name)}</Text>
       {tags.length > 0 && <Text style={styles.tags} numberOfLines={1}>{tags}</Text>}
-      <Text style={styles.description} numberOfLines={3}>{preset.description}</Text>
     </>
   );
   return (
@@ -75,6 +74,5 @@ const styles = StyleSheet.create({
   name: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.base },
   nameActive: { color: colors.text },
   tags: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.4 },
-  description: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.xs, lineHeight: 12 },
   pressed: { opacity: 0.75 },
 });

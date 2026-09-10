@@ -60,7 +60,6 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
         <Pressable style={styles.sheet} onPress={() => undefined}>
           <View style={styles.header}>
             <View style={styles.headerText}>
-              <Text style={styles.eyebrow}>MEDIA</Text>
               <Text style={styles.title}>import test clip</Text>
               <Text style={styles.subtitle}>
                 {pending > 0 ? `${pending} in queue · importing one at a time` : 'files sitting in the server media folder'}
@@ -118,7 +117,6 @@ const styles = StyleSheet.create({
   sheet: { width: '100%', maxWidth: 460, maxHeight: '82%', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.xl },
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: space.xl, borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: space.xl },
   headerText: { flex: 1, gap: space.sm },
-  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.5 },
   title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
   subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   close: { width: 30, height: 30, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
