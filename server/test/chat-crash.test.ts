@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
-import type { Project } from '@editify/shared';
+import { MAX_CHAT_MESSAGE_CHARS, chatRequestSchema, type Project } from '@editify/shared';
 import { AgentService } from '../src/agent/service.js';
 import { MockToolProvider, type ToolProvider } from '../src/agent/providers.js';
 import { AssetStore } from '../src/db/asset-store.js';
@@ -116,6 +116,23 @@ describe('a crashed agent turn stays revertable', () => {
     const listed = (listing.json() as Array<{ runId?: string; reverted?: boolean }>).at(-1);
     expect(listed?.runId).toBe(errorMessage?.runId);
     expect(listed?.reverted).toBe(true);
+  });
+
+  it('rejects an oversized pasted transcript with an actionable 413, and still accepts a 20k message', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/projects/${projectId}/chat`,
+      payload: { message: `trim to this transcript ${'x'.repeat(MAX_CHAT_MESSAGE_CHARS)}` },
+    });
+    expect(response.statusCode).toBe(413);
+    const body = response.json() as { error: string; code: string; limit: number; actual: number };
+    expect(body.code).toBe('message-too-large');
+    expect(body.limit).toBe(MAX_CHAT_MESSAGE_CHARS);
+    expect(body.actual).toBeGreaterThan(MAX_CHAT_MESSAGE_CHARS);
+    expect(body.error).toContain('get_transcript');
+
+    // A transcript-sized message that fits the cap is ordinary input.
+    expect(chatRequestSchema.parse({ message: 'a'.repeat(20_000) }).message).toHaveLength(20_000);
   });
 
   it('records no ops when the crash happens before any edit', async () => {
