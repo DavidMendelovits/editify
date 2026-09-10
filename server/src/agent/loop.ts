@@ -79,6 +79,7 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes. Trimming several clips is one set_clip_properties call with in/out per update, never repeated trim_clip calls; captioning several clips is one caption_clip_from_transcript call with clipIds.',
     'You are told exactly what changed after every edit — do not re-read the project between your own edits; re-read only after an error.',
     'Whenever a reply contains tool calls, open it with one or two plain sentences saying what you are about to do and why — that text is shown to the user as your thinking.',
+    'Never use emoji in anything you write; the interface is a professional editing tool.',
     'set_speed and trim_clip change a clip duration but never move its neighbors — after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
     'When the user names a style or content type, fetch the matching preset and follow its parameters. Presets are guidance, not law.',
     styleDoc ? `Editing style profile: ${styleDoc}` : 'No editing style profile is available.',

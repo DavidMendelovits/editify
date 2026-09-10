@@ -3,7 +3,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import * as ImagePicker from 'expo-image-picker';
 import type { AssetMetadata, Callout } from '@editify/shared';
 import { uploadAsset } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 /** The three card treatments, in the order they read: right, wrong, plain. */
 const CALLOUT_VARIANTS: readonly { variant: Callout['variant']; glyph: string; label: string }[] = [
@@ -91,7 +91,7 @@ export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddIma
           <View style={styles.header}>
             <Text style={styles.title}>STICKERS</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={onClose}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={styles.close}>×</Text>
             </Pressable>
           </View>
           <Text style={styles.subtitle}>lands at the playhead · drag it on the preview to place it</Text>
@@ -156,7 +156,7 @@ export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddIma
               onPress={() => void pickImage()}
               style={({ pressed }) => [styles.imageButton, pressed && styles.pressed, uploading && styles.disabled]}
             >
-              <Text style={styles.imageButtonText}>{uploading ? 'uploading…' : '🖼  image / GIF from photos'}</Text>
+              <Text style={styles.imageButtonText}>{uploading ? 'uploading…' : 'image / GIF from photos'}</Text>
             </Pressable>
             {error && <Text style={styles.error}>{error}</Text>}
           </ScrollView>
@@ -169,41 +169,41 @@ export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddIma
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#000000AA' },
   sheet: {
-    maxHeight: '72%', borderTopLeftRadius: 18, borderTopRightRadius: 18,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 8,
+    maxHeight: '72%', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.lg,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
   body: { minHeight: 200 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, paddingVertical: 8 },
-  cell: { width: 44, height: 44, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.panelRaised },
-  cellEmoji: { fontSize: 24 },
-  customRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, paddingVertical: space.lg },
+  cell: { width: 44, height: 44, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.panelRaised },
+  cellEmoji: { fontSize: type.title },
+  customRow: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.lg },
   input: {
-    flex: 1, minHeight: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
-    backgroundColor: colors.panelRaised, color: colors.text, paddingHorizontal: 12,
-    fontFamily: fonts.medium, fontSize: 12,
+    flex: 1, minHeight: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panelRaised, color: colors.text, paddingHorizontal: space.xl,
+    fontFamily: fonts.medium, fontSize: type.lg,
   },
   add: {
-    minWidth: 64, minHeight: 44, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.purple,
+    minWidth: 64, minHeight: 44, borderRadius: radius.lg, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.accentStrong,
   },
-  addText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 12 },
-  section: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5, paddingTop: 4 },
-  calloutRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  addText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: type.lg },
+  section: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5, paddingTop: space.sm },
+  calloutRow: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.lg },
   calloutButton: {
-    width: 44, height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
+    width: 44, height: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
     alignItems: 'center', justifyContent: 'center', backgroundColor: colors.panelRaised,
   },
-  calloutGlyph: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
+  calloutGlyph: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
   imageButton: {
-    minHeight: 48, borderRadius: 10, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border,
-    alignItems: 'center', justifyContent: 'center', marginTop: 4,
+    minHeight: 48, borderRadius: radius.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border,
+    alignItems: 'center', justifyContent: 'center', marginTop: space.sm,
   },
-  imageButtonText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingTop: 8 },
+  imageButtonText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md, paddingTop: space.lg },
   disabled: { opacity: 0.4 },
   pressed: { opacity: 0.65 },
 });
