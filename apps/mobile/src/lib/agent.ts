@@ -193,6 +193,9 @@ export function humanizeToolName(tool: string): string {
 /** Human-readable one-liner for a step, e.g. "Split clip at 4.2s". */
 export function describeTraceStep(step: AgentTraceStep): string {
   if (step.kind === 'thought') return step.summary;
+  // A step that changed nothing must not be labelled from its request: the
+  // server already reported the truth, so show that instead of "Updated 3 clips".
+  if (step.summary.startsWith('No change')) return 'No change: the project already matched this request';
   const input = toolInput(step);
   switch (step.tool) {
     case 'get_project':
