@@ -3,7 +3,7 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { Operation, Project } from '@editify/shared';
 import { apiFetch } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 interface Props {
   projectId: string;
@@ -75,10 +75,10 @@ export function CleanupSheet({ projectId, project, visible, onClose, onApply }: 
           <View style={styles.header}>
             <Text style={styles.title}>CLEANUP</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={onClose}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={styles.close}>×</Text>
             </Pressable>
           </View>
-          <Text style={styles.subtitle}>measured on the video track · ✂ cuts and closes the gap</Text>
+          <Text style={styles.subtitle}>measured on the video track · cuts and closes the gap</Text>
 
           {planQuery.isLoading && <Text style={styles.hint}>measuring…</Text>}
           {planQuery.isError && <Text style={styles.error}>Could not measure: {planQuery.error.message}</Text>}
@@ -126,7 +126,7 @@ function Row({ name, meta, done, onPress }: { name: string; meta: string; done: 
         onPress={onPress}
         style={({ pressed }) => [styles.apply, pressed && styles.pressed, done && styles.applyDone]}
       >
-        <Text style={styles.applyText}>{done ? '✓' : '✂'}</Text>
+        <Text style={styles.applyText}>{done ? '✓' : 'cut'}</Text>
       </Pressable>
     </View>
   );
@@ -135,26 +135,26 @@ function Row({ name, meta, done, onPress }: { name: string; meta: string; done: 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#000000AA' },
   sheet: {
-    borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: colors.border,
-    backgroundColor: colors.panel, padding: 16, gap: 8,
+    borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panel, padding: space.xxl, gap: space.lg,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
-  rows: { gap: 2 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
+  rows: { gap: space.xs },
+  row: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.sm },
   rowText: { flex: 1, gap: 1, minHeight: 44, justifyContent: 'center' },
-  rowName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
-  rowMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 9 },
+  rowName: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
+  rowMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
   apply: {
-    width: 44, height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
+    width: 44, height: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
   },
-  applyDone: { borderColor: '#2E7D4F', backgroundColor: '#153524' },
-  applyText: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
+  applyDone: { borderColor: colors.success, backgroundColor: colors.successSoft },
+  applyText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.md },
   pressed: { opacity: 0.65 },
-  note: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9, paddingTop: 4 },
-  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, paddingVertical: 12 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingVertical: 12 },
+  note: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm, paddingTop: space.sm },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, paddingVertical: space.xl },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md, paddingVertical: space.xl },
 });

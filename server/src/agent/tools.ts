@@ -1,5 +1,6 @@
 import {
   EDITING_PRESETS,
+  MAX_CHAT_MESSAGE_CHARS,
   OPERATION_CATALOG,
   PACKETS_BY_ID,
   PRESETS_BY_NAME,
@@ -33,6 +34,7 @@ import {
 import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
+import { parseTranscriptInput } from './transcript-input.js';
 
 export { buildTimelineTranscript, planWordCutRanges } from '../services/cleanup.js';
 export type { TimelineTranscript, TimelineTranscriptWord } from '../services/cleanup.js';
@@ -59,6 +61,7 @@ export interface ToolDef {
 }
 
 const emptyInputSchema = operationParamsSchemas.undo;
+const parseTranscriptTextSchema = z.object({ text: z.string().min(1).max(MAX_CHAT_MESSAGE_CHARS) }).strict();
 const assetInputSchema = z.object({ assetId: z.string().min(1) }).strict();
 const captionFromTranscriptSchema = z.object({
   clipId: z.string().min(1).optional(),
@@ -251,8 +254,14 @@ export function createMutationDelta(before: Project, after: Project, extraNotes:
   const removedClipIds = [...beforeClips.keys()].filter((id) => !afterClips.has(id));
   const notes = [...extraNotes];
   if (changed.length > 20) notes.push(`${changed.length - 20} additional changed clips omitted.`);
+  // Structural comparison catches top-level changes (format, duration) that the
+  // clip diff above cannot see; a batch tool with nothing to do lands here too.
+  const changedDoc = JSON.stringify({ ...before, version: 0 }) !== JSON.stringify({ ...after, version: 0 });
+  const didChange = changed.length > 0 || removedClipIds.length > 0 || shifts.size > 0 || changedDoc;
+  if (!didChange) notes.push('No change: the project already matched this request.');
   return {
     ok: true,
+    changed: didChange,
     version: after.version,
     changedClips: changed.slice(0, 20),
     removedClipIds,
@@ -308,15 +317,19 @@ function requireProject(ctx: ToolContext): Project {
 
 function applyMany(ctx: ToolContext, operations: Operation[]): Project {
   let project: Project;
+  let versionBefore = ctx.currentVersion;
   try {
     project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion, ctx.runId);
   } catch (error) {
     if (!(error instanceof VersionConflictError)) throw error;
     ctx.currentVersion = error.actual;
+    versionBefore = error.actual;
     project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion, ctx.runId);
   }
   ctx.currentVersion = project.version;
-  ctx.appliedOperations?.push(...operations);
+  // The store leaves the version alone when a write changed nothing. Recording such
+  // an operation would give the client a receipt chip and a revert for a non-edit.
+  if (project.version !== versionBefore) ctx.appliedOperations?.push(...operations);
   return project;
 }
 
@@ -809,6 +822,17 @@ export function createToolRegistry(): ToolDef[] {
           wordCount: transcript.words.length,
           words: transcript.words.map((word) => [word.w, word.s, word.e]),
         };
+      },
+    },
+    {
+      name: 'parse_transcript_text',
+      description: 'Parse a transcript the user pasted into chat (SRT, VTT, or lines prefixed with timestamps like [00:01:02]) into segments. Use this whenever the user pastes a transcript in chat instead of guessing times. Returned start/end are source-time seconds to feed straight into trim_clip / set_clip_properties in/out.',
+      schema: parseTranscriptTextSchema,
+      execute: async (_ctx, input) => {
+        const { text } = parseTranscriptTextSchema.parse(input);
+        const parsed = parseTranscriptInput(text);
+        if (!parsed.ok) return { ok: false, error: parsed.error, code: parsed.code };
+        return { format: parsed.format, segmentCount: parsed.segments.length, segments: parsed.segments };
       },
     },
     {

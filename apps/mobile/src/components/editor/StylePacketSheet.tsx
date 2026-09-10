@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { STYLE_PACKETS, type StylePacket } from '@editify/shared';
 import { api } from '../../lib/api';
 import { PACKET_DRAFTS_KEY, packetFromProfile } from '../../lib/packets';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 interface Props {
   visible: boolean;
@@ -42,7 +42,7 @@ export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
           <View style={styles.header}>
             <Text style={styles.title}>STYLE PACKETS</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={onClose}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={styles.close}>×</Text>
             </Pressable>
           </View>
           <Text style={styles.subtitle}>one tap restyles the whole edit: captions, music, transitions, devices</Text>
@@ -86,28 +86,28 @@ export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#000000AA' },
   sheet: {
-    maxHeight: '72%', borderTopLeftRadius: 18, borderTopRightRadius: 18,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 8,
+    maxHeight: '72%', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.lg,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
   list: { minHeight: 160 },
-  sectionLabel: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.4, paddingTop: 12 },
-  row: { flexDirection: 'row', gap: 10, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border },
-  swatches: { gap: 3, paddingTop: 3 },
-  swatch: { width: 10, height: 10, borderRadius: 3 },
-  rowText: { flex: 1, gap: 2 },
-  rowName: { color: colors.text, fontFamily: fonts.bold, fontSize: 13 },
-  rowSource: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9 },
-  rowMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, lineHeight: 15 },
+  sectionLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.4, paddingTop: space.xl },
+  row: { flexDirection: 'row', gap: space.lg, paddingVertical: space.lg, borderTopWidth: 1, borderTopColor: colors.border },
+  swatches: { gap: space.xs, paddingTop: space.xs },
+  swatch: { width: 10, height: 10, borderRadius: radius.md },
+  rowText: { flex: 1, gap: space.xs },
+  rowName: { color: colors.text, fontFamily: fonts.bold, fontSize: type.lg },
+  rowSource: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
+  rowMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, lineHeight: 15 },
   apply: {
-    alignSelf: 'center', minHeight: 44, minWidth: 64, borderRadius: 10, borderWidth: 1,
-    borderColor: colors.purple, backgroundColor: '#2A1F47', alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: 12,
+    alignSelf: 'center', minHeight: 44, minWidth: 64, borderRadius: radius.lg, borderWidth: 1,
+    borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: space.xl,
   },
-  applyText: { color: colors.text, fontFamily: fonts.bold, fontSize: 11 },
+  applyText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base },
   pressed: { opacity: 0.65 },
   disabled: { opacity: 0.5 },
 });

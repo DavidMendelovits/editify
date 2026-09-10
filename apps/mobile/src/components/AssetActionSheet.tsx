@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, StylePacket } from '@editify/shared';
 import { api } from '../lib/api';
 import { PACKET_DRAFTS_KEY, packetFromDissection } from '../lib/packets';
-import { colors, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 import { DissectPanel } from './DissectPanel';
 
 interface Props {
@@ -54,7 +54,7 @@ export function AssetActionSheet({ asset, onClose }: Props) {
               <Text style={styles.title} numberOfLines={1}>{name}</Text>
             </View>
             <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="close" hitSlop={10}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={styles.close}>×</Text>
             </Pressable>
           </View>
           <ScrollView contentContainerStyle={styles.body}>
@@ -74,7 +74,7 @@ export function AssetActionSheet({ asset, onClose }: Props) {
                     : 'dissect the clip first: the preset comes off its measurements'}
                 </Text>
               </View>
-              <Text style={styles.actionCue}>{saved ? '✓' : '＋'}</Text>
+              <Text style={styles.actionCue}>{saved ? '✓' : '+'}</Text>
             </Pressable>
           </ScrollView>
         </Pressable>
@@ -86,23 +86,23 @@ export function AssetActionSheet({ asset, onClose }: Props) {
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#000000AA' },
   sheet: {
-    maxHeight: '82%', borderTopLeftRadius: 18, borderTopRightRadius: 18,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 10,
+    maxHeight: '82%', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.lg,
   },
-  header: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
-  headerText: { flex: 1, gap: 3 },
-  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
-  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
-  body: { gap: 10, paddingBottom: 8 },
+  header: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: space.xl },
+  headerText: { flex: 1, gap: space.xs },
+  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
+  body: { gap: space.lg, paddingBottom: space.lg },
   action: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 56, borderRadius: 12,
-    borderWidth: 1, borderColor: colors.purple, backgroundColor: '#2A1F47', paddingHorizontal: 14, paddingVertical: 10,
+    flexDirection: 'row', alignItems: 'center', gap: space.xl, minHeight: 56, borderRadius: radius.lg,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.xl, paddingVertical: space.lg,
   },
-  actionText: { flex: 1, gap: 3 },
-  actionLabel: { color: colors.text, fontFamily: fonts.bold, fontSize: 12 },
-  actionHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, lineHeight: 15 },
-  actionCue: { color: colors.text, fontFamily: fonts.bold, fontSize: 15 },
+  actionText: { flex: 1, gap: space.xs },
+  actionLabel: { color: colors.text, fontFamily: fonts.bold, fontSize: type.lg },
+  actionHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, lineHeight: 15 },
+  actionCue: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl },
   pressed: { opacity: 0.65 },
   disabled: { opacity: 0.5 },
 });

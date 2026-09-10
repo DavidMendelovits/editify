@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { EDITING_PRESETS, type EditingPreset, type Project } from '@editify/shared';
 import type { ToolDef } from './tools.js';
+import { parseTranscriptInput } from './transcript-input.js';
 import { generateMockInsights } from '../services/insight-service.js';
 
 export interface ToolCallRequest { id: string; name: string; input: unknown }
@@ -277,8 +278,9 @@ export class MockToolProvider implements ToolProvider {
       return { text: 'Fast-punch pacing with short shots, strong loudness, clean framing, and bold creator captions.', toolCalls: [] };
     }
 
-    const prompt = messages.find((message): message is Extract<LoopMessage, { role: 'user' }> => message.role === 'user')
-      ?.content.toLowerCase() ?? '';
+    const rawPrompt = messages.find((message): message is Extract<LoopMessage, { role: 'user' }> => message.role === 'user')
+      ?.content ?? '';
+    const prompt = rawPrompt.toLowerCase();
     const previousCalls = toolCalls(messages);
     const called = (name: string): boolean => previousCalls.some((call) => call.name === name);
     if (!called('list_assets')) {
@@ -305,6 +307,28 @@ export class MockToolProvider implements ToolProvider {
     const preset = latestToolResult<EditingPreset>(messages, 'get_preset');
     const videoTrack = project?.tracks.find((track) => track.kind === 'video');
     const videoClips = videoTrack?.clips ?? [];
+    // A transcript pasted straight into chat: parse it, then trim the first
+    // video clip to the span its timecodes describe.
+    const pastedTranscript = parseTranscriptInput(rawPrompt);
+    if (pastedTranscript.ok || (/transcript/.test(prompt) && /trim/.test(prompt))) {
+      if (!pastedTranscript.ok) {
+        return { text: `I could not use that pasted transcript: ${pastedTranscript.error}`, toolCalls: [] };
+      }
+      const clip = videoClips[0];
+      if (clip && !called('parse_transcript_text')) {
+        return calls('transcript', [{ name: 'parse_transcript_text', input: { text: rawPrompt } }]);
+      }
+      if (clip && !called('trim_clip')) {
+        const first = pastedTranscript.segments[0];
+        const last = pastedTranscript.segments[pastedTranscript.segments.length - 1];
+        const assetDuration = assets.find((asset) => asset.id === clip.assetId)?.duration ?? Number.POSITIVE_INFINITY;
+        const trimIn = Math.max(0, Math.min(first?.start ?? 0, Math.max(0, assetDuration - 0.1)));
+        const rawOut = last?.end ?? (last?.start ?? 0) + 2;
+        const trimOut = Math.min(assetDuration, Math.max(rawOut, trimIn + 0.1));
+        return calls('trim', [{ name: 'trim_clip', input: { clipId: clip.id, in: trimIn, out: trimOut } }]);
+      }
+    }
+
     const wantsBuild = /\b(build|style)\b/.test(prompt)
       || /\bmake\b.*\b(cut|video|edit)\b/.test(prompt) || Boolean(matchingPreset);
     const wantsPunch = /punch|chopp|fast/.test(prompt);
@@ -426,7 +450,7 @@ export class MockToolProvider implements ToolProvider {
     }
 
     const applied = previousCalls.filter((call) => ![
-      'list_assets', 'get_project', 'get_style_profile', 'get_insights', 'get_transcript', 'get_preset', 'list_presets',
+      'list_assets', 'get_project', 'get_style_profile', 'get_insights', 'get_transcript', 'get_preset', 'list_presets', 'parse_transcript_text',
     ].includes(call.name));
     const reply = applied.length
       ? `I built the cut through ${applied.length} live editor operations, including ${[...new Set(applied.map((call) => call.name.replaceAll('_', ' ')))].join(', ')}.`

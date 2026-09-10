@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { AssetDissection, AssetMetadata } from '@editify/shared';
 import { api } from '../lib/api';
-import { colors, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 interface Props {
   assetIds: string[];
@@ -142,35 +142,35 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   panel: {
-    borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel,
-    padding: 12, gap: 8,
+    borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel,
+    padding: space.xl, gap: space.lg,
   },
-  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
-  row: { gap: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border },
-  rowHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  rowName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: 11 },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
+  row: { gap: space.md, paddingTop: space.md, borderTopWidth: 1, borderTopColor: colors.border },
+  rowHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
+  rowName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: type.base },
   button: {
-    minHeight: 30, borderRadius: 8, borderWidth: 1, borderColor: colors.border,
-    backgroundColor: colors.panelRaised, paddingHorizontal: 12, justifyContent: 'center',
+    minHeight: 30, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panelRaised, paddingHorizontal: space.xl, justifyContent: 'center',
   },
-  buttonText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
-  body: { gap: 6 },
-  summary: { color: colors.text, fontFamily: fonts.medium, fontSize: 10, lineHeight: 15 },
-  statRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
-  stat: { gap: 2 },
-  statLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1 },
-  statValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
-  lane: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  laneLabel: { width: 52, color: colors.muted, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1 },
-  laneTrack: { flex: 1, height: 18, borderRadius: 4, backgroundColor: '#0D0D13', overflow: 'hidden' },
-  cutTick: { position: 'absolute', top: 2, bottom: 2, width: 1, backgroundColor: colors.pink },
+  buttonText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md },
+  body: { gap: space.md },
+  summary: { color: colors.text, fontFamily: fonts.medium, fontSize: type.md, lineHeight: 15 },
+  statRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xl },
+  stat: { gap: space.xs },
+  statLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  statValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
+  lane: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  laneLabel: { width: 52, color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  laneTrack: { flex: 1, height: 18, borderRadius: radius.md, backgroundColor: colors.panelSunken, overflow: 'hidden' },
+  cutTick: { position: 'absolute', top: 2, bottom: 2, width: 1, backgroundColor: colors.muted },
   energyTrack: { flexDirection: 'row', alignItems: 'flex-end' },
-  energyBar: { flex: 1, backgroundColor: '#4C3E8F', marginRight: StyleSheet.hairlineWidth },
-  overlaySpan: { position: 'absolute', height: 6, borderRadius: 2 },
-  overlayTop: { top: 2, backgroundColor: '#C98A2B' },
-  overlayBottom: { bottom: 2, backgroundColor: '#2E9E6B' },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 9 },
+  energyBar: { flex: 1, backgroundColor: colors.borderStrong, marginRight: StyleSheet.hairlineWidth },
+  overlaySpan: { position: 'absolute', height: 6, borderRadius: radius.sm },
+  overlayTop: { top: 2, backgroundColor: colors.warn },
+  overlayBottom: { bottom: 2, backgroundColor: colors.success },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.sm },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.65 },
 });

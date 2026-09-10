@@ -10,7 +10,7 @@ import { ProviderPicker } from './ProviderPicker';
 import { api, rebaseServerUrl, type ChatMessage, type RenderRecord } from '../../lib/api';
 import { receiptItems, type AgentTraceStep } from '../../lib/agent';
 import { presetPrompt } from '../../lib/presets';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 const QUICK_PROMPTS = ['add bold captions', 'remove the silence', 'punch in on the hook', 'tighten the ending'];
 
@@ -41,26 +41,43 @@ interface Props {
 export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, liveTrace, optimisticMessage, pending, error, onSend, onRevert, reverting, onSeek }: Props) {
   const [text, setText] = useState('');
   const [preset, setPreset] = useState<string>();
+  // The improver's suggestion, held until the user picks: nothing is ever sent
+  // behind their back (issue #19 — "never silently rewrites and sends").
+  const [suggestion, setSuggestion] = useState<{ original: string; improved: string; changes: string[] }>();
+  const [improving, setImproving] = useState(false);
   const scroller = useRef<ScrollView>(null);
+  const lastUserMessage = [...(messages ?? [])].reverse().find((message) => message.role === 'user')?.content;
 
   function draft(next: string): void {
     setText(next);
     setPreset((current) => (current !== undefined && next === presetPrompt(current) ? current : undefined));
   }
-  function send(): void {
-    const message = text.trim();
-    if (!message || pending) return;
+  function dispatch(message: string): void {
     onSend(message);
     setText('');
     setPreset(undefined);
+    setSuggestion(undefined);
+  }
+  function send(): void {
+    const message = text.trim();
+    if (!message || pending || improving) return;
+    setImproving(true);
+    // A failed improve must never block the edit: fall through to the raw send.
+    api.improvePrompt(projectId, message, lastUserMessage)
+      .then((result) => {
+        if (result.improved) setSuggestion({ original: message, improved: result.improved, changes: result.changes ?? [] });
+        else dispatch(message);
+      })
+      .catch(() => dispatch(message))
+      .finally(() => setImproving(false));
   }
 
   return (
     <View style={styles.panel}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.zoneLabel}>EDIT WITH AI</Text>
-          <Text style={styles.title}>Your creative copilot</Text>
+          <Text style={styles.zoneLabel}>AGENT</Text>
+          <Text style={styles.title}>Editor</Text>
         </View>
         <View style={styles.status}>
           <View style={[styles.dot, pending && styles.dotWorking]} />
@@ -121,7 +138,16 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
         ))}
       </View>
       {/* Keeps the composer above the software keyboard on phones. */}
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80} style={styles.composerLayer}>
+        {suggestion && (
+          <ImprovedPrompt
+            suggestion={suggestion}
+            onChange={(improved) => setSuggestion((current) => (current ? { ...current, improved } : current))}
+            onUse={() => dispatch(suggestion.improved.trim() || suggestion.original)}
+            onOriginal={() => dispatch(suggestion.original)}
+            onDismiss={() => setSuggestion(undefined)}
+          />
+        )}
         <View style={styles.composer}>
           <TextInput
             value={text}
@@ -138,14 +164,66 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             accessibilityLabel="send"
             hitSlop={6}
             onPress={send}
-            disabled={!text.trim() || pending}
-            style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending) && styles.sendDisabled]}
+            disabled={!text.trim() || pending || improving}
+            style={({ pressed }) => [styles.send, pressed && styles.pressed, (!text.trim() || pending || improving) && styles.sendDisabled]}
           >
             <Text style={styles.sendText}>↑</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
       {error && <Text style={styles.error}>{error}</Text>}
+    </View>
+  );
+}
+
+/**
+ * The improver's preview, wedged between the prompt chips and the composer:
+ * the rewritten instruction is editable in place, and nothing leaves the
+ * client until the user picks "use this", "send original", or dismisses.
+ */
+function ImprovedPrompt({ suggestion, onChange, onUse, onOriginal, onDismiss }: {
+  suggestion: { original: string; improved: string; changes: string[] };
+  onChange: (improved: string) => void;
+  onUse: () => void;
+  onOriginal: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <View style={styles.improve}>
+      <View style={styles.improveHead}>
+        <Text style={styles.improveLabel}>IMPROVED PROMPT</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="dismiss improved prompt" hitSlop={8} onPress={onDismiss}>
+          <Text style={styles.improveClose}>✕</Text>
+        </Pressable>
+      </View>
+      {suggestion.changes.map((change) => (
+        <Text key={change} style={styles.improveChange}>• {change}</Text>
+      ))}
+      <TextInput
+        value={suggestion.improved}
+        onChangeText={onChange}
+        multiline
+        accessibilityLabel="improved prompt text"
+        style={styles.improveInput}
+      />
+      <View style={styles.improveActions}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="use this"
+          onPress={onUse}
+          style={({ pressed }) => [styles.improveUse, pressed && styles.pressed]}
+        >
+          <Text style={styles.improveUseText}>use this</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="send original"
+          onPress={onOriginal}
+          style={({ pressed }) => [styles.improveOriginal, pressed && styles.pressed]}
+        >
+          <Text style={styles.improveOriginalText}>send original</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -243,45 +321,59 @@ function Message({ message, trace, onRevert, reverting, onSeek }: {
 }
 
 const styles = StyleSheet.create({
-  panel: { flex: 1, minHeight: 380, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 12, gap: 9 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 9, borderBottomWidth: 1, borderBottomColor: colors.border },
-  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 16, marginTop: 4 },
-  status: { flexDirection: 'row', gap: 5, alignItems: 'center' },
-  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.success },
-  dotWorking: { backgroundColor: colors.purple },
-  statusText: { color: colors.success, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1 },
-  statusWorking: { color: colors.purple },
+  // On short viewports the dock's content spills past its box; the collapsed summary
+  // panels below it in the column would otherwise paint over the composer and improver card.
+  panel: { flex: 1, minHeight: 380, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xl, gap: space.lg, zIndex: 1 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: space.lg, borderBottomWidth: 1, borderBottomColor: colors.border },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl, marginTop: space.sm },
+  status: { flexDirection: 'row', gap: space.sm, alignItems: 'center' },
+  dot: { width: 6, height: 6, borderRadius: radius.md, backgroundColor: colors.success },
+  dotWorking: { backgroundColor: colors.accent },
+  statusText: { color: colors.success, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  statusWorking: { color: colors.accent },
   messages: { flex: 1, minHeight: 120 },
-  messagesContent: { gap: 9, paddingVertical: 4 },
-  agentMessage: { alignSelf: 'stretch', borderRadius: 12, borderTopLeftRadius: 3, backgroundColor: '#201A31', padding: 11, gap: 6 },
-  userMessage: { alignSelf: 'flex-end', maxWidth: '88%', borderRadius: 12, borderTopRightRadius: 3, backgroundColor: '#30303C', padding: 11, gap: 6 },
-  agentLabel: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.2 },
-  userLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.2 },
-  messageText: { color: colors.text, fontFamily: fonts.regular, fontSize: 12, lineHeight: 18 },
-  opChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  opChip: { backgroundColor: '#372A55', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
-  opText: { color: '#C9B4FF', fontFamily: fonts.semibold, fontSize: 8 },
-  revert: { alignSelf: 'flex-start', borderRadius: 7, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 9, paddingVertical: 4 },
+  messagesContent: { gap: space.lg, paddingVertical: space.sm },
+  agentMessage: { alignSelf: 'stretch', borderLeftWidth: 2, borderLeftColor: colors.border, paddingLeft: space.lg, paddingVertical: space.xs, gap: space.md },
+  userMessage: { alignSelf: 'flex-end', maxWidth: '88%', borderRadius: radius.md, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.sm },
+  agentLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
+  userLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
+  messageText: { color: colors.text, fontFamily: fonts.regular, fontSize: type.lg, lineHeight: 18 },
+  opChips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  opChip: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: space.md, paddingVertical: space.xs },
+  opText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xs },
+  revert: { alignSelf: 'flex-start', borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: space.lg, paddingVertical: space.sm },
   revertDisabled: { opacity: 0.45 },
-  revertText: { color: colors.muted, fontFamily: fonts.bold, fontSize: 9 },
-  render: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, padding: 8, gap: 8 },
-  renderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  renderLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.2 },
-  renderButton: { borderRadius: 7, borderWidth: 1, borderColor: colors.purple, paddingHorizontal: 9, paddingVertical: 4 },
-  renderButtonText: { color: '#C9B4FF', fontFamily: fonts.bold, fontSize: 9 },
-  renderPreview: { gap: 6 },
-  renderVideo: { width: '100%', height: 150, borderRadius: 8, backgroundColor: '#000000' },
+  revertText: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm },
+  render: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, padding: space.lg, gap: space.lg },
+  renderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
+  renderLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
+  renderButton: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.borderStrong, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  renderButtonText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.sm },
+  renderPreview: { gap: space.md },
+  renderVideo: { width: '100%', height: 150, borderRadius: radius.md, backgroundColor: '#000000' },
   renderLink: { alignSelf: 'flex-start' },
-  renderLinkText: { color: colors.success, fontFamily: fonts.bold, fontSize: 9 },
-  prompts: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  prompt: { borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingHorizontal: 8, paddingVertical: 4 },
-  promptText: { color: colors.muted, fontFamily: fonts.medium, fontSize: 8 },
-  composer: { minHeight: 50, flexDirection: 'row', alignItems: 'flex-end', borderRadius: 13, borderWidth: 1, borderColor: '#484459', backgroundColor: colors.background, padding: 6 },
-  input: { flex: 1, minHeight: 34, maxHeight: 90, color: colors.text, fontFamily: fonts.regular, fontSize: 12, paddingHorizontal: 7, paddingTop: 8 },
-  send: { width: 34, height: 34, borderRadius: 11, backgroundColor: colors.purple, alignItems: 'center', justifyContent: 'center' },
+  renderLinkText: { color: colors.success, fontFamily: fonts.bold, fontSize: type.sm },
+  prompts: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  prompt: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  promptText: { color: colors.text, fontFamily: fonts.medium, fontSize: type.sm },
+  improve: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.accent, backgroundColor: colors.accentSoft, padding: space.lg, gap: space.sm },
+  composerLayer: { gap: space.lg },
+  improveHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  improveLabel: { color: colors.accent, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.4 },
+  improveClose: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.base },
+  improveChange: { color: colors.text, fontFamily: fonts.medium, fontSize: type.sm, lineHeight: 13 },
+  improveInput: { color: colors.text, fontFamily: fonts.regular, fontSize: type.base, lineHeight: 16, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, padding: space.md, maxHeight: 120 },
+  improveActions: { flexDirection: 'row', gap: space.md },
+  improveUse: { borderRadius: radius.md, backgroundColor: colors.accentStrong, paddingHorizontal: space.xl, paddingVertical: space.sm },
+  improveUseText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.sm },
+  improveOriginal: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: space.xl, paddingVertical: space.sm },
+  improveOriginalText: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm },
+  composer: { minHeight: 50, flexDirection: 'row', alignItems: 'flex-end', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.background, padding: space.md },
+  input: { flex: 1, minHeight: 34, maxHeight: 90, color: colors.text, fontFamily: fonts.regular, fontSize: type.lg, paddingHorizontal: space.md, paddingTop: space.lg },
+  send: { width: 30, height: 30, borderRadius: radius.md, backgroundColor: colors.accentStrong, alignItems: 'center', justifyContent: 'center' },
   sendDisabled: { opacity: 0.4 },
-  sendText: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10 },
+  sendText: { color: colors.text, fontSize: type.xxl, fontWeight: '700' },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
   pressed: { opacity: 0.7 },
 });
