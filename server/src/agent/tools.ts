@@ -254,8 +254,14 @@ export function createMutationDelta(before: Project, after: Project, extraNotes:
   const removedClipIds = [...beforeClips.keys()].filter((id) => !afterClips.has(id));
   const notes = [...extraNotes];
   if (changed.length > 20) notes.push(`${changed.length - 20} additional changed clips omitted.`);
+  // Structural comparison catches top-level changes (format, duration) that the
+  // clip diff above cannot see; a batch tool with nothing to do lands here too.
+  const changedDoc = JSON.stringify({ ...before, version: 0 }) !== JSON.stringify({ ...after, version: 0 });
+  const didChange = changed.length > 0 || removedClipIds.length > 0 || shifts.size > 0 || changedDoc;
+  if (!didChange) notes.push('No change: the project already matched this request.');
   return {
     ok: true,
+    changed: didChange,
     version: after.version,
     changedClips: changed.slice(0, 20),
     removedClipIds,
@@ -311,15 +317,19 @@ function requireProject(ctx: ToolContext): Project {
 
 function applyMany(ctx: ToolContext, operations: Operation[]): Project {
   let project: Project;
+  let versionBefore = ctx.currentVersion;
   try {
     project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion, ctx.runId);
   } catch (error) {
     if (!(error instanceof VersionConflictError)) throw error;
     ctx.currentVersion = error.actual;
+    versionBefore = error.actual;
     project = ctx.projects.applyOperations(ctx.projectId, operations, ctx.currentVersion, ctx.runId);
   }
   ctx.currentVersion = project.version;
-  ctx.appliedOperations?.push(...operations);
+  // The store leaves the version alone when a write changed nothing. Recording such
+  // an operation would give the client a receipt chip and a revert for a non-edit.
+  if (project.version !== versionBefore) ctx.appliedOperations?.push(...operations);
   return project;
 }
 
