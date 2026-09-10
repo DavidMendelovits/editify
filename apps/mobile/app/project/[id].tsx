@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
@@ -174,6 +174,22 @@ export default function EditorScreen() {
     flash.setValue(0.4);
     Animated.timing(flash, { toValue: 1, duration: 420, useNativeDriver: NATIVE_DRIVER }).start();
   }, [flash, project?.version]);
+
+  // Stage changes are click-only in the editor. A horizontal trackpad/touch
+  // swipe used to leave mid-edit: on web the browser turns horizontal
+  // overscroll into back/forward history navigation (format selection /
+  // export), and on iOS the stack's edge swipe pops the screen. Both are
+  // switched off here only, so the other stages keep their normal gestures.
+  // Focus-scoped, not mount-scoped: the router keeps this screen mounted while
+  // export is pushed on top of it, so a plain effect would leak the guard onto
+  // the other stages and never clean up.
+  useFocusEffect(useCallback(() => {
+    if (Platform.OS !== 'web') return undefined;
+    const root = document.documentElement;
+    const previous = root.style.overscrollBehaviorX;
+    root.style.overscrollBehaviorX = 'none';
+    return () => { root.style.overscrollBehaviorX = previous; };
+  }, []));
 
   // Space toggles playback on web, unless the composer has focus.
   useEffect(() => {
@@ -392,6 +408,8 @@ export default function EditorScreen() {
 
   return (
     <Screen scroll={!wide} bleed header={header}>
+      {/* Native counterpart of the overscroll guard above: no edge-swipe back. */}
+      <Stack.Screen options={{ gestureEnabled: false }} />
       <View style={[styles.workspace, !wide && styles.workspaceStacked]}>
         <View style={[styles.editColumn, !wide && styles.editColumnStacked]}>
           {/* The preview is the editor's centrepiece: stacked mode hands it half
