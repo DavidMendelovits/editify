@@ -17,6 +17,7 @@ import { StickerSheet } from '../../src/components/editor/StickerSheet';
 import { CleanupSheet } from '../../src/components/editor/CleanupSheet';
 import { VoiceSheet } from '../../src/components/editor/VoiceSheet';
 import { StylePacketSheet } from '../../src/components/editor/StylePacketSheet';
+import { LayoutPresets, PanelDivider, useEditorLayout } from '../../src/components/editor/PanelLayout';
 import { Timeline } from '../../src/components/editor/Timeline';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
@@ -46,6 +47,12 @@ export default function EditorScreen() {
   // Stacked mode gives the preview a real share of the screen instead of the
   // leftovers under the library and timeline.
   const previewHeight = Math.min(620, Math.max(320, Math.round(height * 0.5)));
+  // Measured once per window size; the wide layout's minimums are enforced
+  // against the room the workspace actually has.
+  const [bounds, setBounds] = useState({ width: 0, height: 0 });
+  const { layout, resize, commit, preset, reset } = useEditorLayout(id, bounds);
+  // The panel size a drag started from; the divider reports travel, not position.
+  const dragBase = useRef(layout);
 
   const [selectedId, setSelectedId] = useState<string>();
   const [importOpen, setImportOpen] = useState(false);
@@ -410,12 +417,19 @@ export default function EditorScreen() {
     <Screen scroll={!wide} bleed header={header}>
       {/* Native counterpart of the overscroll guard above: no edge-swipe back. */}
       <Stack.Screen options={{ gestureEnabled: false }} />
-      <View style={[styles.workspace, !wide && styles.workspaceStacked]}>
+      {wide && <View style={styles.layoutBar}><LayoutPresets onPreset={preset} onReset={reset} /></View>}
+      <View
+        style={[styles.workspace, !wide && styles.workspaceStacked]}
+        onLayout={(event) => {
+          const { width: w, height: h } = event.nativeEvent.layout;
+          setBounds((current) => (current.width === w && current.height === h ? current : { width: w, height: h }));
+        }}
+      >
         <View style={[styles.editColumn, !wide && styles.editColumnStacked]}>
           {/* The preview is the editor's centrepiece: stacked mode hands it half
               the screen outright, wide mode the whole column above the timeline
               (the library and insights move to the dock column there). */}
-          <View style={wide ? styles.previewWide : { height: previewHeight }}>
+          <View style={wide ? { height: layout.previewHeight } : { height: previewHeight }}>
             <PreviewPlayer
               project={project}
               assets={assets}
@@ -430,11 +444,31 @@ export default function EditorScreen() {
             />
           </View>
           {!wide && library}
-          {timeline}
+          {wide && (
+            <PanelDivider
+              orientation="horizontal"
+              testID="divider-preview"
+              accessibilityLabel="Resize the preview"
+              onDragStart={() => { dragBase.current = layout; }}
+              onDrag={(delta) => resize({ previewHeight: dragBase.current.previewHeight + delta })}
+              onDragEnd={commit}
+            />
+          )}
+          {wide ? <View style={styles.timelineWide}>{timeline}</View> : timeline}
           {!wide && <EditSummaryPanel messages={chatQuery.data} />}
           {!wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
-        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>
+        {wide && (
+          <PanelDivider
+            orientation="vertical"
+            testID="divider-dock"
+            accessibilityLabel="Resize the chat dock"
+            onDragStart={() => { dragBase.current = layout; }}
+            onDrag={(delta) => resize({ dockWidth: dragBase.current.dockWidth - delta })}
+            onDragEnd={commit}
+          />
+        )}
+        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked, wide && { width: layout.dockWidth }]}>
           {wide && library}
           {dock}
           {wide && <EditSummaryPanel messages={chatQuery.data} />}
@@ -500,11 +534,13 @@ const styles = StyleSheet.create({
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
   exportButton: { width: 96, minHeight: 30 },
-  workspace: { flex: 1, flexDirection: 'row', gap: space.xl, minHeight: 0 },
-  workspaceStacked: { flexDirection: 'column' },
+  layoutBar: { flexDirection: 'row', justifyContent: 'flex-end', marginBottom: space.md },
+  // Wide mode: the dividers occupy the gutter between panels, so no gap here.
+  workspace: { flex: 1, flexDirection: 'row', minHeight: 0 },
+  workspaceStacked: { flexDirection: 'column', gap: space.xl },
   editColumn: { flex: 1, minWidth: 0, gap: space.lg },
+  timelineWide: { flex: 1, minHeight: 180 },
   editColumnStacked: {},
-  previewWide: { flex: 1, minHeight: 260 },
   dockColumn: { width: 372, minHeight: 0, gap: space.lg },
   dockColumnStacked: { width: '100%', height: 560 },
   center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
