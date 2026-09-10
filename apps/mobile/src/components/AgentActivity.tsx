@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Platform, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { describeTraceStep, type AgentTraceStep } from '../lib/agent';
-import { colors, gradient, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 /**
  * `useNativeDriver` is a no-op on react-native-web and logs a warning, so drive
@@ -14,7 +13,7 @@ const NATIVE_DRIVER = Platform.OS !== 'web';
 const WARMUP_PHRASE = 'reading the timeline…';
 
 /**
- * In-flight indicator for the agent loop: a sliding gradient sweep, three
+ * In-flight indicator for the agent loop: a sliding accent sweep, three
  * pulsing dots, and an elapsed-time readout so a long tool loop still feels
  * alive. The phrase is the latest REAL step from the live trace — never a
  * timer-driven guess about what the agent might be doing.
@@ -75,9 +74,7 @@ export function AgentActivity({ latestStep }: { latestStep?: AgentTraceStep }) {
       </View>
       <View style={styles.track} onLayout={(event) => setBarWidth(event.nativeEvent.layout.width)}>
         {barWidth > 0 && (
-          <Animated.View style={[styles.sweep, { width: barWidth * 0.45, transform: [{ translateX }] }]}>
-            <LinearGradient colors={gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
-          </Animated.View>
+          <Animated.View style={[styles.sweep, { width: barWidth * 0.45, transform: [{ translateX }] }]} />
         )}
       </View>
       <Text style={styles.phrase} numberOfLines={2}>{phrase}</Text>
@@ -86,13 +83,13 @@ export function AgentActivity({ latestStep }: { latestStep?: AgentTraceStep }) {
 }
 
 const styles = StyleSheet.create({
-  card: { alignSelf: 'stretch', borderRadius: 14, borderTopLeftRadius: 4, backgroundColor: '#201A31', borderWidth: 1, borderColor: '#332A4D', padding: 12, gap: 9 },
-  headline: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dots: { flexDirection: 'row', gap: 3 },
-  dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.purple },
-  title: { flex: 1, color: colors.text, fontFamily: fonts.bold, fontSize: 11 },
-  elapsed: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9 },
-  track: { height: 3, borderRadius: 2, backgroundColor: '#2A2440', overflow: 'hidden' },
-  sweep: { height: 3, borderRadius: 2, overflow: 'hidden' },
-  phrase: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10 },
+  card: { alignSelf: 'stretch', borderRadius: radius.md, backgroundColor: colors.panelRaised, borderWidth: 1, borderColor: colors.border, padding: space.xl, gap: space.lg },
+  headline: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  dots: { flexDirection: 'row', gap: space.xs },
+  dot: { width: 5, height: 5, borderRadius: radius.md, backgroundColor: colors.accent },
+  title: { flex: 1, color: colors.text, fontFamily: fonts.bold, fontSize: type.base },
+  elapsed: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
+  track: { height: 3, borderRadius: radius.sm, backgroundColor: colors.border, overflow: 'hidden' },
+  sweep: { height: 3, backgroundColor: colors.accent },
+  phrase: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
 });

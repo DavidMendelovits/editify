@@ -5,7 +5,7 @@ import {
 } from 'expo-audio';
 import type { AssetMetadata } from '@editify/shared';
 import { uploadAsset } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 interface Props {
   projectId: string;
@@ -118,7 +118,7 @@ export function VoiceSheet({ projectId, visible, onClose, onRecorded }: Props) {
           <View style={styles.header}>
             <Text style={styles.title}>VOICEOVER</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={close}>
-              <Text style={styles.close}>✕</Text>
+              <Text style={styles.close}>×</Text>
             </Pressable>
           </View>
           <Text style={styles.subtitle}>lands at the playhead · everything else ducks under it</Text>
@@ -152,28 +152,28 @@ export function VoiceSheet({ projectId, visible, onClose, onRecorded }: Props) {
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#000000AA' },
   sheet: {
-    borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: colors.border,
-    backgroundColor: colors.panel, padding: 16, gap: 8,
+    borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panel, padding: space.xxl, gap: space.lg,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
-  stage: { alignItems: 'center', gap: 12, paddingVertical: 20 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
+  stage: { alignItems: 'center', gap: space.xl, paddingVertical: space.xxl },
   timer: {
-    color: colors.muted, fontFamily: fonts.bold, fontSize: 26, letterSpacing: 2,
+    color: colors.muted, fontFamily: fonts.bold, fontSize: type.display, letterSpacing: 2,
     fontVariant: ['tabular-nums'],
   },
   timerLive: { color: colors.text },
   button: {
-    width: 76, height: 76, borderRadius: 38, borderWidth: 2, borderColor: colors.border,
+    width: 64, height: 64, borderRadius: radius.full, borderWidth: 2, borderColor: colors.border,
     backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
   },
   buttonLive: { borderColor: colors.danger },
-  recordIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.danger },
-  stopIcon: { width: 26, height: 26, borderRadius: 4, backgroundColor: colors.danger },
-  caption: { color: colors.muted, fontFamily: fonts.medium, fontSize: 10 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingBottom: 4 },
+  recordIcon: { width: 36, height: 36, borderRadius: radius.full, backgroundColor: colors.danger },
+  stopIcon: { width: 24, height: 24, borderRadius: radius.sm, backgroundColor: colors.danger },
+  caption: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.md },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md, paddingBottom: space.sm },
   disabled: { opacity: 0.4 },
   pressed: { opacity: 0.65 },
 });

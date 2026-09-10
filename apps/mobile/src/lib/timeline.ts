@@ -11,7 +11,7 @@ export const MAX_PX_PER_SEC = 600;
 export const VIDEO_LANE_HEIGHT = 62;
 export const CAPTION_ROW_HEIGHT = 22;
 /** Fixed gutter on the left of the timeline holding the lane labels. */
-export const LANE_GUTTER = 54;
+export const LANE_GUTTER = 60;
 
 export function clipEnd(clip: Clip): number {
   return clip.start + clipTimelineDuration(clip);
