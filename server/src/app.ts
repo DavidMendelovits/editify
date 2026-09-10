@@ -16,6 +16,7 @@ import { createDatabase, type EditifyDatabase } from './db/database.js';
 import { InsightStore } from './db/insight-store.js';
 import { ProjectStore, VersionConflictError } from './db/project-store.js';
 import { RenderStore } from './db/render-store.js';
+import { ReportStore } from './db/report-store.js';
 import { SettingsStore } from './db/settings-store.js';
 import { TranscriptStore } from './db/transcript-store.js';
 import { OperationError } from './operations/apply.js';
@@ -25,11 +26,13 @@ import { registerChatRoutes } from './routes/chat.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerRenderRoutes } from './routes/renders.js';
 import { registerStyleRoutes } from './routes/style.js';
+import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { ensureSoundLibrary } from './media/sound-library.js';
 import { RenderQueue } from './services/render-queue.js';
 import { DissectService } from './services/dissect-service.js';
 import { InsightService } from './services/insight-service.js';
 import { StyleService } from './services/style-service.js';
+import { TelemetryService } from './services/telemetry-service.js';
 import { TranscriptService } from './services/transcript-service.js';
 
 export interface AppOptions { database?: EditifyDatabase; logger?: boolean }
@@ -50,17 +53,22 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const renderQueue = new RenderQueue(renders, projects, assets);
   renderQueue.recover();
   const dissections = new DissectService(database);
+  const telemetry = new TelemetryService(new ReportStore(database), resolveProvider);
 
   registerAuth(app, {
     sharedToken: process.env.EDITIFY_TOKEN,
     supabaseUrl,
-    // The exported web client is public — the sign-in screen IS the gate. Only
-    // the static wildcard route (and the index.html 404 fallback for deep
-    // links) skip auth; every matched API route still demands credentials.
+    // The exported web client is public — the sign-in screen IS the gate, so the
+    // static wildcard route (and the index.html 404 fallback for deep links)
+    // skip auth. POST /telemetry joins them because a crash on the sign-in
+    // screen has no credentials to send, and a report that only works once you
+    // are logged in cannot report a broken login. Every other API route still
+    // demands credentials.
     isPublic: (request) =>
-      (request.method === 'GET' || request.method === 'HEAD') &&
-      (request.routeOptions.url === '/*' ||
-        (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html'))),
+      (request.method === 'POST' && request.routeOptions.url === '/telemetry') ||
+      ((request.method === 'GET' || request.method === 'HEAD') &&
+        (request.routeOptions.url === '/*' ||
+          (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html')))),
   });
   await app.register(cors, { origin: true });
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });
@@ -76,6 +84,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections);
+  registerTelemetryRoutes(app, telemetry);
 
   app.setErrorHandler(async (error, _request, reply) => {
     if (error instanceof VersionConflictError) {

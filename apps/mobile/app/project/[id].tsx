@@ -4,7 +4,7 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-rou
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
-import { GradientButton } from '../../src/components/GradientButton';
+import { Button } from '../../src/components/Button';
 import { EditSummaryPanel } from '../../src/components/EditSummaryPanel';
 import { ImportSheet } from '../../src/components/ImportSheet';
 import { InsightsPanel } from '../../src/components/InsightsPanel';
@@ -23,7 +23,8 @@ import { api } from '../../src/lib/api';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
-import { colors, fonts } from '../../src/lib/theme';
+import { track } from '../../src/lib/telemetry';
+import { colors, space, type, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
 const WIDE_BREAKPOINT = 1024;
@@ -133,7 +134,7 @@ export default function EditorScreen() {
   });
   const sendChat = useMutation({
     mutationFn: (message: string) => api.chat(id, message),
-    onMutate: (message: string) => { setOptimisticMessage(message); setLatestTrace(undefined); },
+    onMutate: (message: string) => { track('chat_message'); setOptimisticMessage(message); setLatestTrace(undefined); },
     onSuccess: async (response) => {
       queryClient.setQueryData(['project', id], response.doc);
       setLatestTrace(response.trace ?? []);
@@ -151,6 +152,8 @@ export default function EditorScreen() {
 
   // The timeline is the trace: refetch the project as live mutation steps land
   // so agent edits appear while the turn is still running, not only at the end.
+  useEffect(() => { if (id) track('project_open', id); }, [id]);
+
   const liveSteps = sendChat.isPending ? liveQuery.data?.steps : undefined;
   const seenLiveSteps = useRef(0);
   useEffect(() => {
@@ -279,7 +282,7 @@ export default function EditorScreen() {
           id: clipId,
           ...(content.callout
             ? { text: content.callout.text, callout: { variant: content.callout.variant } }
-            : content.asset ? { assetId: content.asset.id } : { text: content.emoji ?? '✨' }),
+            : content.asset ? { assetId: content.asset.id } : { text: content.emoji ?? '★' }),
           start: round3(clock.get()),
           in: 0,
           out: 3,
@@ -338,13 +341,13 @@ export default function EditorScreen() {
         {/* The media library carries its own +photos; the header duplicate
             only fits once the title has room to breathe. */}
         {width >= 560 && (
-          <GradientButton secondary style={styles.headerButton} onPress={() => void addFrom(pickFromPhotos)} disabled={uploading}>
+          <Button secondary style={styles.headerButton} onPress={() => void addFrom(pickFromPhotos)} disabled={uploading}>
             {progress ? `${progress.done}/${progress.total}…` : uploading ? 'processing…' : '+ photos'}
-          </GradientButton>
+          </Button>
         )}
-        <GradientButton style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
+        <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
           export ↗
-        </GradientButton>
+        </Button>
       </View>
     </View>
   );
@@ -429,13 +432,13 @@ export default function EditorScreen() {
           {!wide && library}
           {timeline}
           {!wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {!wide && <InsightsPanel assetIds={assetIds} />}
+          {!wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
         <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>
           {wide && library}
           {dock}
           {wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {wide && <InsightsPanel assetIds={assetIds} />}
+          {wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
       </View>
       <ImportSheet
@@ -488,23 +491,23 @@ export default function EditorScreen() {
 }
 
 const styles = StyleSheet.create({
-  header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.2 },
-  heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
+  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
+  heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xl },
   headingText: { flexShrink: 1, minWidth: 0 },
   divider: { width: 1, height: 26, backgroundColor: colors.border },
-  projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
-  projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, marginTop: 3, letterSpacing: 0.5 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerButton: { minHeight: 36, paddingHorizontal: 12, borderColor: colors.border, backgroundColor: colors.panel },
-  exportButton: { width: 104, minHeight: 36 },
-  workspace: { flex: 1, flexDirection: 'row', gap: 12, minHeight: 0 },
+  projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
+  projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  headerButton: { minHeight: 30, paddingHorizontal: space.xl },
+  exportButton: { width: 96, minHeight: 30 },
+  workspace: { flex: 1, flexDirection: 'row', gap: space.xl, minHeight: 0 },
   workspaceStacked: { flexDirection: 'column' },
-  editColumn: { flex: 1, minWidth: 0, gap: 10 },
+  editColumn: { flex: 1, minWidth: 0, gap: space.lg },
   editColumnStacked: {},
   previewWide: { flex: 1, minHeight: 260 },
-  dockColumn: { width: 372, minHeight: 0, gap: 10 },
+  dockColumn: { width: 372, minHeight: 0, gap: space.lg },
   dockColumnStacked: { width: '100%', height: 560 },
   center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
 });

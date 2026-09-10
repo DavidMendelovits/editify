@@ -12,6 +12,6 @@ await app.listen({ port, host: '0.0.0.0' });
 // deploy that has not bound yet is reported as unreachable.
 void Promise.all([binaryAvailable('ffmpeg'), binaryAvailable('ffprobe')]).then(([ffmpeg, ffprobe]) => {
   if (!ffmpeg || !ffprobe) {
-    console.warn('⚠️  Editify needs ffmpeg and ffprobe on PATH. Upload, analysis, seed, and render jobs will fail until installed.');
+    console.warn('WARN: Editify needs ffmpeg and ffprobe on PATH. Upload, analysis, seed, and render jobs will fail until installed.');
   }
 });
