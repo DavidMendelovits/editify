@@ -15,10 +15,17 @@ const resolutions: Array<{ value: RenderRecord['resolution']; label: string; det
   { value: '4k', label: '4K', detail: 'Maximum · master file' },
 ];
 
+/** HDR sources otherwise land in the export at whatever colour ffmpeg guesses. */
+const hdrOptions: Array<{ value: 'sdr' | 'hdr'; label: string; detail: string }> = [
+  { value: 'sdr', label: 'Convert to SDR (BT.709)', detail: 'Default · matches the preview exactly' },
+  { value: 'hdr', label: 'Keep HDR (BT.2020 PQ)', detail: '10-bit master · preview shown is the SDR proof' },
+];
+
 export default function ExportScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [resolution, setResolution] = useState<RenderRecord['resolution']>('1080p');
+  const [hdr, setHdr] = useState<'sdr' | 'hdr'>('sdr');
   const [renderId, setRenderId] = useState<string>();
   const project = useQuery({ queryKey: ['project', id], queryFn: () => api.getProject(id) });
   const render = useQuery({
@@ -28,7 +35,7 @@ export default function ExportScreen() {
     refetchInterval: (query) => query.state.data?.status === 'done' || query.state.data?.status === 'error' ? false : 1200,
   });
   const start = useMutation({
-    mutationFn: () => api.render(id, resolution),
+    mutationFn: () => api.render(id, resolution, hdr),
     onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
   });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
@@ -51,6 +58,12 @@ export default function ExportScreen() {
       <View><Text style={styles.sectionKicker}>OUTPUT QUALITY</Text><Text style={styles.sectionTitle}>Choose a resolution</Text></View>
       <View style={styles.resolutions}>
         {resolutions.map((item) => <Pressable key={item.value} disabled={Boolean(renderId)} onPress={() => setResolution(item.value)} style={[styles.resolution, resolution === item.value && styles.resolutionSelected]}><View style={[styles.radio, resolution === item.value && styles.radioSelected]}>{resolution === item.value && <View style={styles.radioDot} />}</View><View><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
+      </View>
+      <View testID="color-section" style={styles.colorSection}>
+        <View><Text style={styles.sectionKicker}>COLOR</Text><Text style={styles.sectionTitle}>HDR &amp; wide gamut</Text></View>
+        <View style={styles.resolutions}>
+          {hdrOptions.map((item) => <Pressable key={item.value} testID={`hdr-${item.value}`} disabled={Boolean(renderId)} onPress={() => setHdr(item.value)} style={[styles.resolution, hdr === item.value && styles.resolutionSelected]}><View style={[styles.radio, hdr === item.value && styles.radioSelected]}>{hdr === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
+        </View>
       </View>
       {!renderId && <Button onPress={() => start.mutate()} disabled={start.isPending || !project.data} style={styles.renderButton}>{start.isPending ? 'joining the queue…' : `render ${resolution} master`}</Button>}
       {status && (
@@ -86,12 +99,14 @@ const styles = StyleSheet.create({
   summaryValue: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl },
   sectionKicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5, marginBottom: space.sm },
   sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
+  colorSection: { gap: space.lg },
   resolutions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.lg },
   resolution: { flexGrow: 1, flexBasis: 200, minHeight: 60, flexDirection: 'row', alignItems: 'center', gap: space.xl, padding: space.xl, borderRadius: radius.md, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   resolutionSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   radio: { width: 16, height: 16, borderRadius: radius.full, borderWidth: 2, borderColor: colors.muted, alignItems: 'center', justifyContent: 'center' },
   radioSelected: { borderColor: colors.accent },
   radioDot: { width: 8, height: 8, borderRadius: radius.full, backgroundColor: colors.accent },
+  resolutionText: { flex: 1 },
   resolutionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl },
   resolutionDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, marginTop: space.sm },
   renderButton: { maxWidth: 520, width: '100%', alignSelf: 'center', minHeight: 40 },

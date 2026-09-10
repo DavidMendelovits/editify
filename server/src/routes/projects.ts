@@ -95,7 +95,7 @@ export function registerProjectRoutes(
   app.post<{ Params: { id: string } }>('/projects/:id/render', async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
-    const { resolution } = renderRequestSchema.parse(request.body ?? {});
-    return await reply.code(202).send(renderQueue.enqueue(project.id, resolution));
+    const { resolution, hdr } = renderRequestSchema.parse(request.body ?? {});
+    return await reply.code(202).send(renderQueue.enqueue(project.id, resolution, hdr));
   });
 }
