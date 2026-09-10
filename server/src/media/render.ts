@@ -5,6 +5,7 @@ import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { rendersRoot } from '../config.js';
 import { writeAssFile } from './ass.js';
 import { rasterizeCallout } from './callout.js';
+import { isHdr, normalizeFilter, outputColorArgs, outputColorFilter, probeColor, zscaleAvailable, type HdrHandling, type SourceColor } from './color.js';
 import { duckExpression, duckWindows } from './duck.js';
 import { rasterizeEmoji } from './emoji.js';
 import { runProcess } from './process.js';
@@ -39,7 +40,8 @@ function atempoChain(speed: number): string {
 }
 
 interface InputClip { clip: Clip; asset: StoredAsset; inputIndex: number; kind: 'video' | 'audio' }
-interface StickerInput { clip: Clip; inputIndex: number }
+/** `assetPath` is set only for b-roll — an overlay clip on a video asset, which needs colour work. */
+interface StickerInput { clip: Clip; inputIndex: number; assetPath?: string | undefined }
 
 /** Filtergraph time argument — millisecond precision keeps float noise out of the graph. */
 function timeArg(value: number): string {
@@ -81,6 +83,7 @@ export async function renderProject(
   resolution: Resolution,
   renderId: string,
   assets: AssetStore,
+  hdr: HdrHandling = 'sdr',
 ): Promise<string> {
   const destinationDirectory = join(rendersRoot, renderId);
   await mkdir(destinationDirectory, { recursive: true });
@@ -115,12 +118,14 @@ export async function renderProject(
     for (const clip of orderedClips) {
       if (track.kind === 'overlay') {
         let source: string | undefined;
+        let videoOverlayPath: string | undefined;
         if (clip.assetId) {
           const asset = assets.get(clip.assetId);
           if (!asset) throw new Error(`Asset ${clip.assetId} referenced by sticker ${clip.id} was not found`);
           // B-roll is an overlay clip on a VIDEO asset at full-frame placement:
           // it rides this same path, picture only — nothing below maps [N:a].
           source = asset.originalPath;
+          if (asset.mimeType.startsWith('video/')) videoOverlayPath = source;
         } else if (clip.callout && clip.text) {
           // Callout cards: CoreText draws the rounded card, verdict glyph and
           // label to a transparent PNG, then the sticker chain places it.
@@ -135,7 +140,7 @@ export async function renderProject(
         if (!source) continue;
         // Loop the source so GIF animations run for the sticker's whole window.
         args.push('-stream_loop', '-1', '-i', source);
-        stickers.push({ clip, inputIndex: nextInputIndex });
+        stickers.push({ clip, inputIndex: nextInputIndex, assetPath: videoOverlayPath });
         nextInputIndex += 1;
         continue;
       }
@@ -148,7 +153,28 @@ export async function renderProject(
     }
   }
 
-  const filters: string[] = [`[0:v]format=yuv420p[base0]`, `[1:a]atrim=0:${duration},asetpts=PTS-STARTPTS[asilence]`];
+  // Colour is probed for every video source up front: the graph builder below
+  // is synchronous, and each original is only probed once anyway.
+  const zscale = await zscaleAvailable();
+  const sourceColors = new Map<string, SourceColor>();
+  for (const path of new Set([
+    ...inputs.filter((input) => input.kind === 'video').map((input) => input.asset.originalPath),
+    ...stickers.map((sticker) => sticker.assetPath).filter((path): path is string => Boolean(path)),
+  ])) {
+    sourceColors.set(path, await probeColor(path));
+  }
+  const anyInputIsHdr = [...sourceColors.values()].some(isHdr);
+  const targetIsHdr = hdr === 'hdr' && anyInputIsHdr;
+  /** The chain that lands one source in the output space; alpha for crossfades. */
+  function normalize(path: string | undefined, alpha: boolean): string {
+    const color = sourceColors.get(path ?? '');
+    const chain = color ? normalizeFilter(color, hdr, { zscale }) : `format=${targetIsHdr ? 'yuv420p10le' : 'yuv420p'}`;
+    // fade=alpha=1 needs an alpha channel, so the chain re-lands in yuva420p.
+    return alpha ? `${chain},format=yuva420p` : chain;
+  }
+
+  const basePixelFormat = targetIsHdr ? 'yuv420p10le' : 'yuv420p';
+  const filters: string[] = [`[0:v]format=${basePixelFormat}[base0]`, `[1:a]atrim=0:${duration},asetpts=PTS-STARTPTS[asilence]`];
   let currentVideo = 'base0';
   let videoNumber = 0;
   const audioLabels = ['[asilence]'];
@@ -164,7 +190,7 @@ export async function renderProject(
     const trimEnd = plan?.extendSourceBy ? timeArg(clip.out + plan.extendSourceBy) : `${clip.out}`;
     if (input.kind === 'video' && asset.width > 0 && asset.height > 0) {
       const transform = clip.transform ?? { scale: 1, x: 0, y: 0 };
-      const formatted = `format=${plan?.videoFadeIn?.alpha ? 'yuva420p' : 'yuv420p'}${videoFades(plan)}`;
+      const formatted = `${normalize(asset.originalPath, Boolean(plan?.videoFadeIn?.alpha))}${videoFades(plan)}`;
       if (clip.transformEnd) {
         // Animated zoom: cover-scale to an oversized frame, then zoompan tweens
         // scale and pan per frame across the clip.
@@ -221,8 +247,11 @@ export async function renderProject(
   }
 
   // Image/GIF stickers, callout cards and b-roll all sit above the video and
-  // below captions, so text stays readable. `format=rgba` is a no-op for the
-  // PNGs and a cheap conversion for yuv b-roll — the alpha it adds is opaque.
+  // below captions, so text stays readable. The alpha format matches the base's
+  // bit depth so overlay does not quietly drag a 10-bit master back to 8-bit.
+  // ponytail: the ASS caption pass is still 8-bit, so an HDR export with
+  // captions round-trips through 8-bit there. Fine until HDR captions matter.
+  const overlayFormat = targetIsHdr ? 'yuva420p10le' : 'rgba';
   stickers.forEach((sticker, index) => {
     const placement = sticker.clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
     const stickerWidth = Math.max(2, Math.round(width * placement.width / 2) * 2);
@@ -230,7 +259,10 @@ export async function renderProject(
     const rotate = placement.rotation === 0 ? '' : `,rotate=${radians.toFixed(5)}:c=none:ow='rotw(${radians.toFixed(5)})':oh='roth(${radians.toFixed(5)})'`;
     const begin = sticker.clip.start;
     const end = sticker.clip.start + (sticker.clip.out - sticker.clip.in) / (sticker.clip.speed ?? 1);
-    filters.push(`[${sticker.inputIndex}:v]format=rgba,scale=${stickerWidth}:-2${rotate}[stk${index}]`);
+    // B-roll gets the same normalization as a main clip before it turns rgba;
+    // PNG stickers are already sRGB and just need the alpha format.
+    const prefix = sticker.assetPath ? `${normalize(sticker.assetPath, false)},` : '';
+    filters.push(`[${sticker.inputIndex}:v]${prefix}format=${overlayFormat},scale=${stickerWidth}:-2${rotate}[stk${index}]`);
     filters.push(
       `[${currentVideo}][stk${index}]overlay=x=${Math.round(placement.x * width)}-w/2:y=${Math.round(placement.y * height)}-h/2` +
       `:enable='between(t,${begin},${end})'[vstk${index}]`,
@@ -266,11 +298,19 @@ export async function renderProject(
   } else {
     filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,atrim=0:${duration}[aout]`);
   }
+  // Tag the frames themselves before they reach the encoder, not just the stream.
+  filters.push(`[${currentVideo}]${outputColorFilter(hdr, anyInputIsHdr)}[vout]`);
+  currentVideo = 'vout';
   args.push(
     '-filter_complex', filters.join(';'),
     '-map', `[${currentVideo}]`, '-map', '[aout]',
-    '-t', String(duration), '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outputPath,
+    '-t', String(duration),
+    // An HDR master is HEVC main10 — x264 has no main10 profile, and PQ in
+    // H.264 is not something players expect. SDR stays on the x264 path.
+    ...(targetIsHdr ? ['-c:v', 'libx265', '-tag:v', 'hvc1'] : ['-c:v', 'libx264']),
+    '-preset', 'medium', '-crf', '18',
+    '-pix_fmt', basePixelFormat, ...outputColorArgs(hdr, anyInputIsHdr),
+    '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outputPath,
   );
   await runProcess('ffmpeg', args);
   return outputPath;

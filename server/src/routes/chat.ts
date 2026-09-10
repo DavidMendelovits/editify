@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { chatRequestSchema, improveRequestSchema, type AgentTraceStep } from '@editify/shared';
+import { MAX_CHAT_MESSAGE_CHARS, chatRequestSchema, improveRequestSchema, type AgentTraceStep } from '@editify/shared';
 import { improvePrompt } from '../agent/improve.js';
 import type { AgentService } from '../agent/service.js';
 import type { ToolContext } from '../agent/tools.js';
@@ -32,6 +32,17 @@ export function registerChatRoutes(
   app.post<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
+    // A pasted transcript that blows the cap is a real, actionable situation —
+    // say so instead of letting zod turn it into a generic validation failure.
+    const raw = (request.body as { message?: unknown } | undefined)?.message;
+    if (typeof raw === 'string' && raw.length > MAX_CHAT_MESSAGE_CHARS) {
+      return await reply.code(413).send({
+        error: `Message is ${raw.length} characters; the limit is ${MAX_CHAT_MESSAGE_CHARS}. Send the transcript as an asset transcript (get_transcript) or paste only the segments you want trimmed to.`,
+        code: 'message-too-large',
+        limit: MAX_CHAT_MESSAGE_CHARS,
+        actual: raw.length,
+      });
+    }
     const { message } = chatRequestSchema.parse(request.body);
     // One turn, one checkpoint: everything this run applies carries this id.
     const runId = randomUUID();
