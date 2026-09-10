@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 import { describeTraceStep, isReadStep, traceGlyph, type AgentTraceStep } from '../lib/agent';
 
 /** Steps shown before the feed collapses behind a "show all N steps" toggle. */
@@ -74,27 +74,27 @@ function TraceRow({ step, last }: { step: AgentTraceStep; last: boolean }) {
 }
 
 const styles = StyleSheet.create({
-  feed: { gap: 2, marginTop: 2 },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  headerLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.2 },
-  headerFailures: { color: colors.danger, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.8 },
-  row: { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
+  feed: { gap: space.xs, marginTop: space.xs },
+  header: { flexDirection: 'row', alignItems: 'center', gap: space.lg, marginBottom: space.sm },
+  headerLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
+  headerFailures: { color: colors.danger, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.8 },
+  row: { flexDirection: 'row', gap: space.lg, alignItems: 'stretch' },
   rail: { width: 18, alignItems: 'center' },
-  bubble: { width: 18, height: 18, borderRadius: 9, backgroundColor: '#372A55', alignItems: 'center', justifyContent: 'center' },
-  bubbleRead: { backgroundColor: '#252135' },
-  bubbleError: { backgroundColor: '#43202B' },
-  railLine: { flex: 1, width: 1, minHeight: 6, backgroundColor: '#3B3752', marginVertical: 2 },
-  glyph: { color: '#C9B4FF', fontFamily: fonts.bold, fontSize: 9, lineHeight: 12 },
+  bubble: { width: 18, height: 18, borderRadius: radius.md, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' },
+  bubbleRead: { backgroundColor: colors.panelRaised },
+  bubbleError: { backgroundColor: colors.dangerSoft },
+  railLine: { flex: 1, width: 1, minHeight: 6, backgroundColor: colors.borderStrong, marginVertical: space.xs },
+  glyph: { color: colors.text, fontFamily: fonts.bold, fontSize: type.sm, lineHeight: 12 },
   glyphRead: { color: colors.muted },
   glyphError: { color: colors.danger },
-  body: { flex: 1, paddingBottom: 7, gap: 3 },
-  bodyError: { borderRadius: 8, backgroundColor: '#3A1B24', borderWidth: 1, borderColor: '#5A2836', paddingHorizontal: 8, paddingVertical: 6, marginBottom: 5 },
-  label: { color: colors.text, fontFamily: fonts.medium, fontSize: 11, lineHeight: 16 },
+  body: { flex: 1, paddingBottom: space.md, gap: space.xs },
+  bodyError: { borderRadius: radius.md, backgroundColor: colors.dangerSoft, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: space.lg, paddingVertical: space.md, marginBottom: space.sm },
+  label: { color: colors.text, fontFamily: fonts.medium, fontSize: type.base, lineHeight: 16 },
   labelRead: { color: colors.muted },
-  labelThought: { color: '#B6ADD0', fontFamily: fonts.regular, fontStyle: 'italic' },
+  labelThought: { color: colors.muted, fontFamily: fonts.regular, fontStyle: 'italic' },
   labelError: { color: colors.danger, fontFamily: fonts.semibold },
-  errorText: { color: '#FFA8B4', fontFamily: fonts.regular, fontSize: 10, lineHeight: 14 },
-  toggle: { alignSelf: 'flex-start', borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingHorizontal: 9, paddingVertical: 4, marginTop: 2 },
-  toggleText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.6 },
+  errorText: { color: colors.danger, fontFamily: fonts.regular, fontSize: type.md, lineHeight: 14 },
+  toggle: { alignSelf: 'flex-start', borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg, paddingHorizontal: space.lg, paddingVertical: space.sm, marginTop: space.xs },
+  toggleText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6 },
   pressed: { opacity: 0.7 },
 });

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +10,8 @@ import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import type { EditifyDatabase } from '../db/database.js';
 import type { ProjectStore } from '../db/project-store.js';
 import { assetsRoot, mediaImportDir } from '../config.js';
-import { createFilmstrip, createProxyAndThumbnail, probeMedia, type ProbeResult } from '../media/process.js';
+import { COLOR_PIPELINE_VERSION } from '../media/color.js';
+import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbnail, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
@@ -430,10 +431,37 @@ export function registerAssetRoutes(
     return await sendFile(reply, asset.proxyPath, 'video/mp4', request.headers.range);
   });
 
+  /**
+   * Thumbnails cut before the colour pipeline landed carry a cast the preview
+   * does not, so the first browse after an upgrade re-shoots them. In-flight
+   * regenerations are shared, and a failure serves the old file rather than
+   * turning a stale thumb into a broken one.
+   */
+  const recolors = new Map<string, Promise<void>>();
+  function colorPipelineIsStale(asset: StoredAsset): boolean {
+    // Image assets serve the original as their thumb: nothing to regenerate.
+    if (asset.thumbnailPath === asset.originalPath) return false;
+    if (!existsSync(asset.originalPath)) return false;
+    try {
+      const sidecar = JSON.parse(readFileSync(join(dirname(asset.thumbnailPath), 'color.json'), 'utf8')) as { version?: number };
+      return (sidecar.version ?? 0) < COLOR_PIPELINE_VERSION;
+    } catch {
+      return true;
+    }
+  }
+
   app.get<{ Params: { id: string } }>('/assets/:id/thumb.jpg', async (request, reply) => {
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!existsSync(asset.thumbnailPath)) return notReady(reply, asset);
+    if (colorPipelineIsStale(asset)) {
+      const pending = recolors.get(asset.id) ?? regenerateThumbnail(asset.originalPath, asset.thumbnailPath, asset)
+        .then(async () => { await rm(join(dirname(asset.thumbnailPath), 'filmstrip.jpg'), { force: true }); })
+        .catch((error: unknown) => { app.log.warn({ err: error, assetId: asset.id }, 'thumbnail recolor failed'); })
+        .finally(() => recolors.delete(asset.id));
+      recolors.set(asset.id, pending);
+      await pending;
+    }
     // Image assets serve their original as the thumb — honour its real type.
     const type = asset.thumbnailPath === asset.originalPath ? asset.mimeType : 'image/jpeg';
     return await sendFile(reply, asset.thumbnailPath, type, request.headers.range);
