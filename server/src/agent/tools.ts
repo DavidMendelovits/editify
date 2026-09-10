@@ -281,14 +281,14 @@ const operationDescriptions: Record<(typeof OPERATION_CATALOG)[number], string> 
   reorder_clips: 'Reorder every clip in a track. clipIds must contain each current clip ID exactly once; the operation lays clips sequentially from timeline second 0.',
   set_volume: 'Set a clip volume from 0 (silent) to 1 (full volume).',
   set_speed: 'Set playback speed as a 0.1–8 multiplier. Timeline duration is (out-in)/speed, so 1.25 is 25% faster.',
-  set_transform: 'Set a clip crop/zoom pose: scale 1–10 (values under 1 render as 1), x -1–1, and y -1–1. Supplying transformEnd animates linearly from transform to transformEnd across the clip — the dynamic-zoom primitive. A tasteful punch-in goes from scale 1 to 1.08–1.15; omit transformEnd to clear any zoom.',
+  set_transform: 'Set a clip crop/zoom pose: scale 1–10 (values under 1 render as 1), x -1–1, and y -1–1. Supplying transformEnd animates linearly from transform to transformEnd across the clip: this is the dynamic-zoom primitive. A tasteful punch-in goes from scale 1 to 1.08–1.15; omit transformEnd to clear any zoom.',
   set_overlay: 'Reposition an overlay-track sticker: x/y are the sticker centre as 0–1 fractions of the frame, width is the sticker width as a 0.04–1 fraction of frame width, rotation is clockwise degrees.',
-  set_transition: 'Set or clear (transition: null) the transition INTO a video-track clip at its start. `crossfade` overlaps the previous clip by borrowing source frames past its out point — timeline positions never move; `dip` fades through black around the cut. duration 0.1–2s (0.3–0.5 reads snappy). For a whoosh-cut, keep the hard cut and add a whoosh from the sound library at the cut instead.',
+  set_transition: 'Set or clear (transition: null) the transition INTO a video-track clip at its start. `crossfade` overlaps the previous clip by borrowing source frames past its out point; timeline positions never move. `dip` fades through black around the cut. duration 0.1–2s (0.3–0.5 reads snappy). For a whoosh-cut, keep the hard cut and add a whoosh from the sound library at the cut instead.',
   add_caption: 'Add a timed caption. Use a unique readable clip.id, absolute timeline seconds for clip.start, and a caption-local range where clip.in is normally 0 and clip.out is its duration. Prefer trackId `captions`; style supports font, size, color, position, and emphasis.',
   update_caption: 'Update an existing caption by clipId. start is an absolute timeline second; in/out are caption-local seconds and out must remain greater than in.',
   remove_caption: 'Remove an existing caption by its clipId.',
   ripple_delete_ranges: 'Atomically delete and close multiple absolute timeline ranges on one video/audio track. Overlaps are merged; intersecting clips are split or trimmed, later clips shift left, and captions are cut and shifted with the deleted time.',
-  set_clip_properties: 'Atomically batch-update 1-100 clips — the preferred way to trim or retime many clips at once. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, source-time in/out (out must stay greater than in), or duck (true ducks all other audio beneath this clip while it plays — the voiceover treatment). Any invalid update rejects the entire operation.',
+  set_clip_properties: 'Atomically batch-update 1-100 clips: the preferred way to trim or retime many clips at once. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, source-time in/out (out must stay greater than in), or duck (true ducks all other audio beneath this clip while it plays, the voiceover treatment). Any invalid update rejects the entire operation.',
   set_format: 'Set the project canvas format to 9:16, 1:1, or 16:9.',
   undo: 'Undo the latest non-undone project operation using project history. Input must be an empty object.',
 };
@@ -494,7 +494,7 @@ async function removeWords(ctx: ToolContext, rawInput: unknown): Promise<unknown
     if (!operations.length) return { ...createMutationDelta(project, project), wordsRemoved: 0 };
     const after = applyMany(ctx, operations);
     return {
-      ...createMutationDelta(project, after, ['Word indices shifted — re-read get_timeline_transcript before another remove_words.']),
+      ...createMutationDelta(project, after, ['Word indices shifted. Re-read get_timeline_transcript before another remove_words.']),
       wordsRemoved: selected.size,
     };
   } catch (error) {
@@ -660,15 +660,15 @@ async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<un
     // add_clip only auto-creates the `overlays` track, so without an audio track
     // there is nowhere to put a bed or a cut hit.
     if (!audioTrack && (packet.music.soundId || packet.transition.soundId)) {
-      guidance.push('This project has no audio track, so the music bed and cut SFX were skipped — add_clip cannot create one. Add an audio track to the project, then re-apply the packet.');
+      guidance.push('This project has no audio track, so the music bed and cut SFX were skipped: add_clip cannot create one. Add an audio track to the project, then re-apply the packet.');
     }
 
     // Music bed, tiled back-to-back under the video.
     if (audioTrack && packet.music.soundId && videoEnd > 0) {
       const bed = await resolveSound(ctx, packet.music.soundId);
-      if (!bed?.duration) notes.push(`Music bed skipped — sound ${packet.music.soundId} is unavailable.`);
+      if (!bed?.duration) notes.push(`Music bed skipped: sound ${packet.music.soundId} is unavailable.`);
       else if (audioTrack.clips.some((clip) => clip.assetId === bed.id)) {
-        notes.push(`Music bed skipped — ${bed.id} is already on ${audioTrack.id}.`);
+        notes.push(`Music bed skipped: ${bed.id} is already on ${audioTrack.id}.`);
       } else {
         ctx.assets.link(ctx.projectId, bed.id);
         for (let cursor = 0; videoEnd - cursor > BED_MIN_TILE_SEC; cursor += bed.duration) {
@@ -707,7 +707,7 @@ async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<un
 
     if (audioTrack && packet.transition.soundId && cutStarts.length) {
       const sfx = await resolveSound(ctx, packet.transition.soundId);
-      if (!sfx?.duration) notes.push(`Cut SFX skipped — sound ${packet.transition.soundId} is unavailable.`);
+      if (!sfx?.duration) notes.push(`Cut SFX skipped: sound ${packet.transition.soundId} is unavailable.`);
       else {
         ctx.assets.link(ctx.projectId, sfx.id);
         const placed = audioTrack.clips.filter((clip) => clip.assetId === sfx.id).map((clip) => clip.start);
@@ -749,20 +749,20 @@ async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<un
     // The creative half: what the packet wants that only judgment can place.
     const missingWords = captions.filter((caption) => !caption.style?.words?.length).length;
     if (typography.karaoke && missingWords) {
-      guidance.push(`Karaoke is part of this look but ${missingWords} caption clip(s) carry no word timings — run caption_clip_from_transcript with wordsPerChunk 3 on the source video clips, then re-apply this packet.`);
+      guidance.push(`Karaoke is part of this look but ${missingWords} caption clip(s) carry no word timings, so run caption_clip_from_transcript with wordsPerChunk 3 on the source video clips, then re-apply this packet.`);
     }
     if (packet.callouts.density !== 'off') {
       const cadence = packet.callouts.density === 'every-line' ? 'roughly one per caption line' : 'roughly one per scene';
-      guidance.push(`Callouts (${packet.callouts.density} — ${cadence}): add_clip on trackId 'overlays' with the callout line as clip.text, callout: {variant: 'check' | 'x' | 'card'}, and overlay: {x: 0.5, y: 0.3, width: 0.56, rotation: 0}; in: 0 and out: the seconds it holds. Use 'check' for the right way (${packet.colors.good ?? packet.colors.accent}), 'x' for the wrong way (${packet.colors.bad ?? packet.colors.accent}), and 'card' for a neutral card (${packet.colors.accent}).`);
+      guidance.push(`Callouts (${packet.callouts.density}, ${cadence}): add_clip on trackId 'overlays' with the callout line as clip.text, callout: {variant: 'check' | 'x' | 'card'}, and overlay: {x: 0.5, y: 0.3, width: 0.56, rotation: 0}; in: 0 and out: the seconds it holds. Use 'check' for the right way (${packet.colors.good ?? packet.colors.accent}), 'x' for the wrong way (${packet.colors.bad ?? packet.colors.accent}), and 'card' for a neutral card (${packet.colors.accent}).`);
     }
     if (packet.broll.density !== 'off') {
       const cadence = packet.broll.density === 'frequent' ? 'a cutaway every few shots' : 'only where the words name something visual';
-      guidance.push(`B-roll (${packet.broll.density} — ${cadence}): cover narration moments with full-frame overlay clips — add_clip on trackId 'overlays' with a video assetId from list_assets, overlay: {x: 0.5, y: 0.5, width: 1, rotation: 0}, in: the source second to start from, and out: in plus the cutaway seconds.`);
+      guidance.push(`B-roll (${packet.broll.density}, ${cadence}): cover narration moments with full-frame overlay clips, using add_clip on trackId 'overlays' with a video assetId from list_assets, overlay: {x: 0.5, y: 0.5, width: 1, rotation: 0}, in: the source second to start from, and out: in plus the cutaway seconds.`);
     }
     const averageShot = videoClips.length ? videoEnd / videoClips.length : 0;
     const target = packet.pacing.targetShotSeconds;
     if (target && averageShot > target * 1.5) {
-      guidance.push(`Pacing: shots average ${averageShot.toFixed(1)}s against this look's ${target}s target — tighten with cut_to_beats on the long clips, or split_clip plus trim_clip, until the average lands near ${target}s.`);
+      guidance.push(`Pacing: shots average ${averageShot.toFixed(1)}s against this look's ${target}s target. Tighten with cut_to_beats on the long clips, or split_clip plus trim_clip, until the average lands near ${target}s.`);
     }
 
     const after = operations.length ? applyMany(ctx, operations) : project;
@@ -851,7 +851,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'caption_clip_from_transcript',
-      description: 'Replace generated captions for video clips using their asset transcripts, transcribing missing ones on demand. Pass clipId for one clip or clipIds for up to 100 in one call — always prefer clipIds when captioning several clips. wordsPerChunk is 1-4 (default 3). Source word times are mapped through clip.in, clip.start, and speed to absolute timeline seconds. Default captions are uppercase Montserrat Bold, size 64, white, and bottom-positioned.',
+      description: 'Replace generated captions for video clips using their asset transcripts, transcribing missing ones on demand. Pass clipId for one clip or clipIds for up to 100 in one call; always prefer clipIds when captioning several clips. wordsPerChunk is 1-4 (default 3). Source word times are mapped through clip.in, clip.start, and speed to absolute timeline seconds. Default captions are uppercase Montserrat Bold, size 64, white, and bottom-positioned.',
       schema: captionFromTranscriptSchema,
       execute: captionClipFromTranscript,
     },
@@ -867,7 +867,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'dissect_asset',
-      description: 'Measure a source video with ffmpeg only: scene-cut timestamps and cadence, audio energy curve and onset peaks, estimated tempo BPM, loudness, and spans where burned-in text/graphics sit (top/bottom zones). Use it to mirror a reference video\'s rhythm — cut on its cadence, land edits on its energy peaks. All times are source seconds. Slow on first call; cached afterwards.',
+      description: 'Measure a source video with ffmpeg only: scene-cut timestamps and cadence, audio energy curve and onset peaks, estimated tempo BPM, loudness, and spans where burned-in text/graphics sit (top/bottom zones). Use it to mirror a reference video\'s rhythm: cut on its cadence, land edits on its energy peaks. All times are source seconds. Slow on first call; cached afterwards.',
       schema: assetInputSchema,
       execute: async (ctx, input) => {
         const { assetId } = assetInputSchema.parse(input);
@@ -900,7 +900,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_style_packets',
-      description: 'List the built-in style packets — a creator\'s repeatable look captured as data: typography, colour system, music bed, transition habit, punch-in cadence, and callout/b-roll density. Read one before calling apply_style_packet.',
+      description: 'List the built-in style packets, a creator\'s repeatable look captured as data: typography, colour system, music bed, transition habit, punch-in cadence, and callout/b-roll density. Read one before calling apply_style_packet.',
       schema: emptyInputSchema,
       execute: async (_ctx, input) => {
         emptyInputSchema.parse(input);
@@ -930,13 +930,13 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'cut_to_beats',
-      description: 'Split one video clip on its measured audio onsets so the cuts land on the beat — the montage-pacing primitive. Beats come from the asset dissection (computed on first use, cached after); cuts stay at least 0.25s from the clip edges and from each other, and maxCuts (default 12, max 30) thins them evenly across the clip. Right-hand pieces are named <clipId>-beat-1..N left to right. Follow with reorder_clips, trim_clip, or set_speed to shape the rhythm.',
+      description: 'Split one video clip on its measured audio onsets so the cuts land on the beat: the montage-pacing primitive. Beats come from the asset dissection (computed on first use, cached after); cuts stay at least 0.25s from the clip edges and from each other, and maxCuts (default 12, max 30) thins them evenly across the clip. Right-hand pieces are named <clipId>-beat-1..N left to right. Follow with reorder_clips, trim_clip, or set_speed to shape the rhythm.',
       schema: cutToBeatsSchema,
       execute: cutToBeats,
     },
     {
       name: 'apply_style_packet',
-      description: 'Apply one style packet — either `packetId` for a built-in from get_style_packets, or a whole `packet` object inline (the shape get_style_packets returns; that is how a look derived from the user\'s style profile or a dissected reference arrives, usually pasted into the message). Runs in one atomic batch: restyle every caption to its typography (karaoke word timings are preserved), tile its music bed under the video, set its transition and cut SFX at every adjacent cut, and set its punch-in cadence. Returns the timeline delta plus `guidance` — the creative half (callouts, b-roll, pacing) that you still have to author yourself.',
+      description: 'Apply one style packet, either `packetId` for a built-in from get_style_packets, or a whole `packet` object inline (the shape get_style_packets returns; that is how a look derived from the user\'s style profile or a dissected reference arrives, usually pasted into the message). Runs in one atomic batch: restyle every caption to its typography (karaoke word timings are preserved), tile its music bed under the video, set its transition and cut SFX at every adjacent cut, and set its punch-in cadence. Returns the timeline delta plus `guidance`: the creative half (callouts, b-roll, pacing) that you still have to author yourself.',
       schema: applyPacketSchema,
       execute: applyStylePacket,
     },

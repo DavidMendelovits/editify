@@ -50,7 +50,7 @@ export default function ExportScreen() {
       <View style={styles.hero}>
         <Text style={styles.kicker}>FINAL FRAME</Text>
         <Text style={styles.title}>Ready to ship the cut?</Text>
-        <Text style={styles.subtitle}>{project.data?.title ?? 'Your project'} · {project.data?.format ?? '—'} · {formatDuration(project.data?.duration ?? 0)}</Text>
+        <Text style={styles.subtitle}>{project.data?.title ?? 'Your project'} · {project.data?.format ?? 'n/a'} · {formatDuration(project.data?.duration ?? 0)}</Text>
       </View>
       <View style={styles.previewCard}>
         <View style={styles.previewFrame}><Text style={styles.previewTitle}>{project.data?.format ?? '9:16'} MASTER</Text></View>

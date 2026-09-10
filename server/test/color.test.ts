@@ -17,7 +17,7 @@ describe('normalizeFilter', () => {
       .toBe('format=yuv420p');
   });
 
-  it('maps full-range levels to limited — the common washed-out cast', () => {
+  it('maps full-range levels to limited, the common washed-out cast', () => {
     const filter = normalizeFilter(color({ range: 'pc' }), 'sdr');
     expect(filter).toContain('in_range=full:out_range=limited');
     expect(filter.endsWith('format=yuv420p')).toBe(true);
@@ -36,7 +36,7 @@ describe('normalizeFilter', () => {
     expect(filter).toBe('format=yuv420p10le');
   });
 
-  it('still converts an SDR source when the target is HDR — there is nothing to keep', () => {
+  it('still converts an SDR source when the target is HDR, there is nothing to keep', () => {
     expect(normalizeFilter(color(), 'hdr')).toBe('format=yuv420p');
   });
 

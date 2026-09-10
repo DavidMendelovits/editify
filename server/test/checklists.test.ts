@@ -56,7 +56,7 @@ describe('preset checklists', () => {
     const result = evaluateChecklist('talking_head_punchy', doc, [insights()]);
     const hook = unmet(result, 'hook');
     expect(hook.met).toBe(false);
-    expect(hook.suggestion).toMatch(/film a punchy opening line/);
+    expect(hook.suggestion).toMatch(/film a punchy opening line/i);
   });
 
   it('flags missing captions, flat captions, thin punch-ins and long shots one at a time', () => {

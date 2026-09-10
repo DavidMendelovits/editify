@@ -231,7 +231,7 @@ export const CaptionChip = memo(function CaptionChip({
       ]}
     >
       <Text numberOfLines={1} style={[styles.captionText, overlapping && styles.captionTextOverlap]}>
-        {clip.text ?? '—'}
+        {clip.text ?? 'n/a'}
       </Text>
     </View>
   );

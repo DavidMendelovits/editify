@@ -522,7 +522,7 @@ function cliPrompt(messages: LoopMessage[], toolDefs: ToolDef[]): string {
     )}` : '',
     `# Conversation so far\n${transcript}`,
     '# Your reply',
-    'Respond with a single JSON object and nothing else — no prose, no code fence:',
+    'Respond with a single JSON object and nothing else. No prose, no code fence:',
     '{"text": "<message to the user>", "toolCalls": [{"name": "<tool>", "input": {}}]}',
     'Put the tools you want run next in toolCalls; their results come back on the next turn.',
     'When the work is done, return an empty toolCalls array and your final message in text.',
@@ -560,7 +560,7 @@ export class CliToolProvider implements ToolProvider {
       prompt,
       'Your previous reply was not the required JSON envelope. It began:',
       raw.slice(0, 400),
-      'Reply again with ONLY the JSON object described above — no prose, no code fence.',
+      'Reply again with ONLY the JSON object described above. No prose, no code fence.',
     ].join('\n\n'));
     return parseCliTurn(retried.trim() ? retried : raw);
   }

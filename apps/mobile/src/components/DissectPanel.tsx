@@ -26,7 +26,7 @@ export function DissectPanel({ assetIds, assets }: Props) {
   return (
     <View style={styles.panel}>
       <Text style={styles.zoneLabel}>DISSECTION</Text>
-      <Text style={styles.subtitle}>measure a source video — cadence, sound, and overlays</Text>
+      <Text style={styles.subtitle}>measure a source video: cadence, sound, and overlays</Text>
       {candidates.map((assetId) => (
         <AssetDissectionRow key={assetId} assetId={assetId} asset={assets[assetId]} />
       ))}
@@ -76,8 +76,8 @@ function DissectionBody({ dissection }: { dissection: AssetDissection }) {
       <View style={styles.statRow}>
         <Stat label="CUTS" value={String(dissection.cuts.length)} />
         <Stat label="AVG SHOT" value={`${dissection.averageShotLength.toFixed(1)}s`} />
-        <Stat label="TEMPO" value={dissection.tempoBpm ? `${dissection.tempoBpm} BPM` : '—'} />
-        <Stat label="LOUDNESS" value={dissection.loudnessLufs !== null ? `${dissection.loudnessLufs.toFixed(0)} LUFS` : '—'} />
+        <Stat label="TEMPO" value={dissection.tempoBpm ? `${dissection.tempoBpm} BPM` : 'n/a'} />
+        <Stat label="LOUDNESS" value={dissection.loudnessLufs !== null ? `${dissection.loudnessLufs.toFixed(0)} LUFS` : 'n/a'} />
       </View>
       {/* Cut cadence: one tick per scene change across the source. */}
       <View style={styles.lane}>

@@ -120,7 +120,7 @@ describe('agent honesty and batching', () => {
         { name: 'set_volume', input: { clipId: 'clip-a', volume: 0.5 } },
         { name: 'set_format', input: { format: '16:9' } },
       ] },
-      { text: 'Done — I adjusted the audio and changed the format.' },
+      { text: 'Done. I adjusted the audio and changed the format.' },
     ]), ctx, 'quieter and widescreen');
     expect(response.opsApplied).toHaveLength(1);
     expect(response.opsApplied[0]?.type).toBe('set_format');

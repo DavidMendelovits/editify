@@ -185,7 +185,7 @@ function describeFailure(status: number, body: string): string {
     const parsed = JSON.parse(body) as { error?: string };
     if (parsed.error) {
       return status === 409 && parsed.error.startsWith('Version conflict')
-        ? 'The project changed underneath this edit — try again.'
+        ? 'The project changed underneath this edit. Try again.'
         : parsed.error;
     }
   } catch { /* not JSON — fall through to the raw body */ }

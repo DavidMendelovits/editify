@@ -51,7 +51,7 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
   if (!clip) {
     return (
       <View style={styles.bar}>
-        <Text style={styles.hint}>Select a clip to inspect it — or ask the agent for an edit.</Text>
+        <Text style={styles.hint}>Select a clip to inspect it, or ask the agent for an edit.</Text>
       </View>
     );
   }

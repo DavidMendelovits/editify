@@ -583,7 +583,7 @@ export function PreviewPlayer({ project, assets, clock, playing, scrubbing, sele
           ))}
           {!uri && (
             <View style={styles.gap}>
-              <Text style={styles.gapText}>{videoClips.length === 0 ? 'no clips yet' : 'gap — black frame'}</Text>
+              <Text style={styles.gapText}>{videoClips.length === 0 ? 'no clips yet' : 'gap: black frame'}</Text>
             </View>
           )}
           {scrubbing && <ScrubPoster clock={clock} clips={videoClips} assets={assets} stage={stage} />}

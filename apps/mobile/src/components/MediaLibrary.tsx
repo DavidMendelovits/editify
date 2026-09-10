@@ -115,8 +115,8 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
         {!library.isLoading && assets.length === 0 && (
           <Text style={styles.empty}>
             {scope === 'project'
-              ? 'No media in this project yet — pull clips in from photos, files, or the server media folder. Switch to “all clips” to borrow from another project.'
-              : 'Nothing on the server yet — pull a clip in from photos, files, or the server media folder.'}
+              ? 'No media in this project yet. Pull clips in from photos, files, or the server media folder. Switch to “all clips” to borrow from another project.'
+              : 'Nothing on the server yet. Pull a clip in from photos, files, or the server media folder.'}
           </Text>
         )}
         {assets.map((asset) => (

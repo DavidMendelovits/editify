@@ -48,7 +48,7 @@ export default function StyleScreen() {
       <View style={styles.hero}>
         <Text style={styles.kicker}>STYLE MEMORY</Text>
         <Text style={styles.title}>Show us your rhythm.</Text>
-        <Text style={styles.subtitle}>Upload up to ten past videos. We measure cuts, loudness, framing, and pace with ffmpeg—your footage is never sent to an AI model.</Text>
+        <Text style={styles.subtitle}>Upload up to ten past videos. We measure cuts, loudness, framing, and pace with ffmpeg. Your footage is never sent to an AI model.</Text>
       </View>
       <View style={styles.uploadCard}>
         <Text style={styles.uploadTitle}>{busy ? 'Reading the edit language…' : 'Drop in your best past cuts'}</Text>
@@ -80,7 +80,7 @@ export default function StyleScreen() {
           <View style={styles.sectionHeader}>
             <View>
               <Text style={styles.sectionTitle}>Your clips</Text>
-              <Text style={styles.sectionNote}>Dissect one to measure its rhythm — and to get a preset you can apply in the editor.</Text>
+              <Text style={styles.sectionNote}>Dissect one to measure its rhythm, and to get a preset you can apply in the editor.</Text>
             </View>
             <Text style={styles.count}>{references.length} CLIPS</Text>
           </View>
@@ -119,7 +119,7 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 function average(values: number[]): number { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0; }
 function loudness(values: Array<number | null>): string { const valid = values.filter((value): value is number => value !== null); return valid.length ? `${average(valid).toFixed(1)}` : 'silent'; }
-function mode(values: string[]): string { return values.sort((a, b) => values.filter((v) => v === a).length - values.filter((v) => v === b).length).at(-1) ?? '—'; }
+function mode(values: string[]): string { return values.sort((a, b) => values.filter((v) => v === a).length - values.filter((v) => v === b).length).at(-1) ?? 'n/a'; }
 
 const styles = StyleSheet.create({
   header: { minHeight: 52, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

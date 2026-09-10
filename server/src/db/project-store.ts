@@ -178,7 +178,7 @@ export class ProjectStore {
               AND (run_id IS NULL OR run_id != ?)
               AND json_extract(op_json, '$.type') != 'undo'
           `).get(projectId, lastRowid, target) as { count: number }).count;
-          if (foreign > 0) throw new OperationError('The timeline changed after this edit — revert unavailable');
+          if (foreign > 0) throw new OperationError('The timeline changed after this edit, so revert is unavailable');
           const snapshot = projectSchema.parse(JSON.parse(earliest.before_doc_json));
           after = { ...snapshot, version: before.version + 1 };
           this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND run_id = ?')

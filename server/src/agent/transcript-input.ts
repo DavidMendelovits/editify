@@ -22,7 +22,7 @@ export type TranscriptInputResult =
 const CUE_TIME = String.raw`(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?`;
 const CUE_LINE = new RegExp(String.raw`^\s*${CUE_TIME}\s*-->\s*${CUE_TIME}`);
 /** A leading `[0:01:02.5]`, `(1:02)`, or bare `01:02` before the line's text. */
-const PREFIX_LINE = new RegExp(String.raw`^\s*(?:\[\s*${CUE_TIME}\s*\]|\(\s*${CUE_TIME}\s*\)|${CUE_TIME})\s*[-–—:]?\s*(.*)$`);
+const PREFIX_LINE = new RegExp(String.raw`^\s*(?:\[\s*${CUE_TIME}\s*\]|\(\s*${CUE_TIME}\s*\)|${CUE_TIME})\s*[-\u2013\u2014:]?\s*(.*)$`);
 
 function toSeconds(hours: string | undefined, minutes: string, seconds: string, fraction: string | undefined): number {
   const fractional = fraction ? Number(fraction) / 10 ** fraction.length : 0;

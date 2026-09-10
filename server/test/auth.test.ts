@@ -39,7 +39,7 @@ describe('shared-token auth', () => {
     expect((await app.inject({ url: '/projects?k=s3cret' })).statusCode).toBe(200);
   });
 
-  it('lets a crash report through unauthenticated — the sign-in screen has no token to send', async () => {
+  it('lets a crash report through unauthenticated: the sign-in screen has no token to send', async () => {
     const app = await serve('s3cret');
     const report = await app.inject({ method: 'POST', url: '/telemetry', payload: { kind: 'error' } });
     expect(report.statusCode).toBe(200);

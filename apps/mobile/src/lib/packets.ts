@@ -105,7 +105,7 @@ export function packetPrompt(packet: StylePacket): string {
   const call = builtin
     ? `packetId "${packet.id}"`
     : `packet: ${JSON.stringify(packet)}`;
-  return `Apply the "${packet.name}" style packet to this project — call apply_style_packet with ${call}. After the sweep, follow its guidance notes for callouts and b-roll where the footage supports them.`;
+  return `Apply the "${packet.name}" style packet to this project: call apply_style_packet with ${call}. After the sweep, follow its guidance notes for callouts and b-roll where the footage supports them.`;
 }
 
 // ponytail: no packet fusion — blending two packets needs a rule per field
