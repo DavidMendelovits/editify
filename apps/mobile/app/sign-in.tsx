@@ -118,9 +118,7 @@ export default function SignInScreen() {
         <View style={styles.brand}><Brand /></View>
         <View style={styles.shell}>
           <View style={styles.intro}>
-            <Text style={styles.kicker}>YOUR CUTTING ROOM</Text>
-            <Text style={styles.title}>Make the first cut.</Text>
-            <Text style={styles.subtitle}>Sign in to keep your footage, timelines, and editing style together.</Text>
+            <Text style={styles.title}>Sign in</Text>
           </View>
 
           <View style={styles.card}>
@@ -201,9 +199,7 @@ const styles = StyleSheet.create({
   brand: { minHeight: 58, justifyContent: 'center' },
   shell: { flex: 1, width: '100%', maxWidth: 460, alignSelf: 'center', justifyContent: 'center', gap: 28, paddingVertical: 34 },
   intro: { alignItems: 'center', gap: 10 },
-  kicker: { color: colors.purple, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 2.2 },
   title: { color: colors.text, fontFamily: fonts.bold, fontSize: 38, lineHeight: 44, letterSpacing: -1.7, textAlign: 'center' },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14, lineHeight: 22, textAlign: 'center', maxWidth: 390 },
   card: { gap: 14, borderRadius: 24, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 22 },
   fieldGroup: { gap: 7 },
   label: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },

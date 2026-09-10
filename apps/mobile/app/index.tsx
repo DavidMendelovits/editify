@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NewProject, Project, ProjectFormat } from '@editify/shared';
 import { Brand } from '../src/components/Brand';
 import { GradientButton } from '../src/components/GradientButton';
@@ -13,16 +13,15 @@ import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
 import { colors, fonts } from '../src/lib/theme';
 
-const formats: Array<{ label: string; format: ProjectFormat; meta: string; blurb: string; glyph: string; tint: readonly [string, string] }> = [
-  { label: 'Instagram Reel', format: '9:16', meta: '9:16 · UP TO 90S', blurb: 'Vertical reel with trending audio and kinetic captions.', glyph: '◉', tint: ['#213973', '#6D3C8E'] },
-  { label: 'TikTok', format: '9:16', meta: '9:16 · 15-60S', blurb: 'Fast-cut vertical edit built around a 2-second hook.', glyph: '♪', tint: ['#4B276F', '#982F6D'] },
-  { label: 'YouTube', format: '16:9', meta: '16:9 · LONG FORM', blurb: 'Widescreen edit with chapters, b-roll and clean pacing.', glyph: '▶', tint: ['#3A255C', '#71314A'] },
+const formats: Array<{ label: string; format: ProjectFormat; meta: string; glyph: string; tint: readonly [string, string] }> = [
+  { label: 'Instagram Reel', format: '9:16', meta: '9:16 · UP TO 90S', glyph: '◉', tint: ['#213973', '#6D3C8E'] },
+  { label: 'TikTok', format: '9:16', meta: '9:16 · 15-60S', glyph: '♪', tint: ['#4B276F', '#982F6D'] },
+  { label: 'YouTube', format: '16:9', meta: '16:9 · LONG FORM', glyph: '▶', tint: ['#3A255C', '#71314A'] },
 ];
 
 export default function HomeScreen() {
   const router = useRouter();
   const client = useQueryClient();
-  const { width } = useWindowDimensions();
   const [importOpen, setImportOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -33,7 +32,6 @@ export default function HomeScreen() {
       router.push({ pathname: '/project/[id]', params: { id: project.id } });
     },
   });
-  const compact = width < 760;
 
   return (
     <Screen header={
@@ -48,8 +46,7 @@ export default function HomeScreen() {
       </View>
     }>
       <View style={styles.hero}>
-        <Text style={styles.kicker}>START A NEW CUT</Text>
-        <Text style={styles.subtitle}>What are you creating today? Each format has its own folder, style memory and export presets.</Text>
+        <Text style={styles.kicker}>NEW PROJECT</Text>
       </View>
 
       <View style={styles.formatList}>
@@ -67,22 +64,20 @@ export default function HomeScreen() {
             <View style={styles.rowCopy}>
               <Text style={styles.rowTitle}>{item.label}</Text>
               <Text style={styles.rowMeta}>{item.meta}</Text>
-              <Text style={styles.rowBlurb} numberOfLines={2}>{item.blurb}</Text>
             </View>
-            {!compact && <Text style={styles.rowLink}>OPEN FOLDER →</Text>}
           </Pressable>
         ))}
       </View>
       {create.error && <Text style={styles.error}>{create.error.message}</Text>}
 
       <View style={styles.sectionHeader}>
-        <View><Text style={styles.sectionKicker}>PICK UP WHERE YOU LEFT OFF</Text><Text style={styles.sectionTitle}>Recent projects</Text></View>
+        <Text style={styles.sectionTitle}>Recent projects</Text>
         <Text style={styles.count}>{projects.data?.length ?? 0} CUTS</Text>
       </View>
       {projects.isLoading && <Text style={styles.empty}>Loading your cuts…</Text>}
       {projects.error && <Text style={styles.error}>The server is offstage: {projects.error.message}</Text>}
       {projects.data?.length === 0 && (
-        <View style={styles.emptyCard}><Text style={styles.emptyIcon}>◫</Text><Text style={styles.emptyTitle}>Your first cut starts above.</Text><Text style={styles.empty}>Choose a format and Editify will build the timeline.</Text></View>
+        <View style={styles.emptyCard}><Text style={styles.emptyIcon}>◫</Text><Text style={styles.empty}>Choose a format above to start a project.</Text></View>
       )}
       <View style={styles.projectGrid}>
         {projects.data?.map((project) => (
@@ -138,7 +133,6 @@ const styles = StyleSheet.create({
   signOutButton: { minHeight: 40, paddingHorizontal: 12, borderColor: colors.border },
   hero: { paddingTop: 28, paddingBottom: 8, gap: 10, maxWidth: 900, width: '100%', alignSelf: 'center' },
   kicker: { color: colors.purple, fontFamily: fonts.mono, fontSize: 11, letterSpacing: 2.4 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 15, lineHeight: 23, maxWidth: 620 },
   formatList: { gap: 16, maxWidth: 900, width: '100%', alignSelf: 'center' },
   formatRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 16, paddingLeft: 20, paddingRight: 18, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   rowAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3 },
@@ -147,11 +141,8 @@ const styles = StyleSheet.create({
   rowCopy: { flex: 1, gap: 3 },
   rowTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
   rowMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.4 },
-  rowBlurb: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19 },
-  rowLink: { color: colors.blue, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 1.2 },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
   sectionHeader: { marginTop: 28, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  sectionKicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.6, marginBottom: 6 },
   sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 24, letterSpacing: -0.8 },
   count: { color: colors.muted, fontFamily: fonts.mono, fontSize: 10, letterSpacing: 1.3 },
   projectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
@@ -169,7 +160,6 @@ const styles = StyleSheet.create({
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   emptyCard: { alignItems: 'center', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed', borderRadius: 20, padding: 36, gap: 8 },
   emptyIcon: { color: colors.purple, fontSize: 28 },
-  emptyTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 15 },
   empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, textAlign: 'center' },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12 },
 });
