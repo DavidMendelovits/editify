@@ -24,6 +24,7 @@ import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { track } from '../../src/lib/telemetry';
+import { backControlStyle, goBack } from '../../src/lib/nav';
 import { colors, space, type, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
@@ -321,7 +322,7 @@ export default function EditorScreen() {
 
   const header = (
     <View style={styles.header}>
-      <Pressable onPress={() => router.back()} accessibilityRole="button"><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
+      <Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
       <View style={styles.heading}>
         {/* The wordmark is decoration; on a phone the title needs the room. */}
         {width >= 560 && (

@@ -7,6 +7,7 @@ import { Button } from '../../../src/components/Button';
 import { Screen } from '../../../src/components/Screen';
 import { api, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
 import { track } from '../../../src/lib/telemetry';
+import { backControlStyle, goBack } from '../../../src/lib/nav';
 import { colors, radius, space, type, fonts } from '../../../src/lib/theme';
 
 const resolutions: Array<{ value: RenderRecord['resolution']; label: string; detail: string }> = [
@@ -45,7 +46,7 @@ export default function ExportScreen() {
   }, [status]);
 
   return (
-    <Screen header={<View style={styles.header}><Pressable onPress={() => router.back()}><Text style={styles.back}>‹  EDITOR</Text></Pressable><Brand compact /></View>}>
+    <Screen header={<View style={styles.header}><Pressable onPress={() => goBack(router, `/project/${id}`)} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  EDITOR</Text></Pressable><Brand compact /></View>}>
       <View style={styles.hero}>
         <Text style={styles.kicker}>FINAL FRAME</Text>
         <Text style={styles.title}>Ready to ship the cut?</Text>
