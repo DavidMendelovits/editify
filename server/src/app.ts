@@ -55,7 +55,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const dissections = new DissectService(database);
   const telemetry = new TelemetryService(new ReportStore(database), resolveProvider);
 
-  registerAuth(app, {
+  // EDITIFY_NO_AUTH=1 disables auth for local agent testing; every request
+  // lands in the shared (NULL userId) scope. Ignored on Fly/production.
+  const noAuth = process.env.EDITIFY_NO_AUTH === '1'
+    && process.env.NODE_ENV !== 'production' && !process.env.FLY_APP_NAME;
+  if (noAuth) app.log.warn('EDITIFY_NO_AUTH=1: serving all requests unauthenticated');
+  else registerAuth(app, {
     sharedToken: process.env.EDITIFY_TOKEN,
     supabaseUrl,
     // The exported web client is public — the sign-in screen IS the gate, so the

@@ -93,6 +93,11 @@ own fetches, HTTP Basic so a browser prompts once and then carries the header
 itself on `<video>`/`<img>` loads, and `?k=` for the native media players that
 cannot set headers at all.
 
+`EDITIFY_NO_AUTH=1` disables auth entirely, for local agent testing, so
+scripted clients need no token even when `SUPABASE_URL` is set. It is ignored
+whenever `NODE_ENV=production` or `FLY_APP_NAME` is present, so it cannot open
+a deployed server.
+
 The browser client needs no configuration: it is same-origin, so the Basic prompt
 covers it. A phone running Expo Go against the deployed server needs both:
 

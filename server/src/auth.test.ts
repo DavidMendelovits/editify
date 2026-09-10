@@ -122,4 +122,24 @@ describe('Supabase auth', () => {
     const app = serve({ sharedToken: 's3cret', supabaseUrl: testSupabaseUrl, jwks });
     expect((await app.inject({ url: '/health' })).statusCode).toBe(200);
   });
+
+  it('EDITIFY_NO_AUTH=1 skips auth locally but never on Fly', async () => {
+    const { buildApp } = await import('./app.js');
+    const { createDatabase } = await import('./db/database.js');
+    process.env.EDITIFY_TOKEN = 's3cret';
+    process.env.EDITIFY_NO_AUTH = '1';
+    try {
+      const open = await buildApp({ database: createDatabase(':memory:') });
+      expect((await open.inject({ url: '/projects' })).statusCode).toBe(200);
+      await open.close();
+
+      process.env.FLY_APP_NAME = 'editify';
+      const guarded = await buildApp({ database: createDatabase(':memory:') });
+      expect((await guarded.inject({ url: '/projects' })).statusCode).toBe(401);
+      await guarded.close();
+    } finally {
+      delete process.env.EDITIFY_NO_AUTH;
+      delete process.env.FLY_APP_NAME;
+    }
+  });
 });
