@@ -79,6 +79,7 @@ export interface RenderRecord {
   id: string;
   projectId: string;
   resolution: '720p' | '1080p' | '4k';
+  hdr?: 'sdr' | 'hdr';
   status: 'queued' | 'processing' | 'done' | 'error';
   outputUrl?: string;
   error?: string;
@@ -222,6 +223,11 @@ export const api = {
   listProjects: () => request<Project[]>('/projects'),
   createProject: (input: NewProject) => request<Project>('/projects', { method: 'POST', body: JSON.stringify(input) }),
   getProject: (id: string) => request<Project>(`/projects/${id}`),
+  /** Answers 204 with no body, so it cannot go through `request`'s JSON parse. */
+  deleteProject: async (id: string): Promise<void> => {
+    const response = await fetch(`${API_URL}/projects/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
+  },
   applyOps: (id: string, ops: Operation[], baseVersion: number) => request<Project>(`/projects/${id}/ops`, {
     method: 'POST', body: JSON.stringify({ ops, baseVersion }),
   }),
@@ -246,8 +252,8 @@ export const api = {
   /** Undo a whole agent turn in one step. */
   revertRun: (id: string, runId: string) => request<Project>(`/projects/${id}/runs/${runId}/revert`, { method: 'POST', body: '{}' }),
   getChatLive: (id: string) => request<ChatLive>(`/projects/${id}/chat/live`),
-  render: (id: string, resolution: RenderRecord['resolution']) => request<RenderRecord>(`/projects/${id}/render`, {
-    method: 'POST', body: JSON.stringify({ resolution }),
+  render: (id: string, resolution: RenderRecord['resolution'], hdr: 'sdr' | 'hdr' = 'sdr') => request<RenderRecord>(`/projects/${id}/render`, {
+    method: 'POST', body: JSON.stringify({ resolution, hdr }),
   }),
   getRender: (id: string) => request<RenderRecord>(`/renders/${id}`),
   /** `null` while the server-side preset routes are still landing (SPEC-WAVE2 §D). */

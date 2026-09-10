@@ -67,7 +67,7 @@ const KIND_GLYPH: Record<TraceKind, string> = {
   preset: '◆',
   add: '+',
   remove: '×',
-  cut: '✂',
+  cut: '/',
   move: '⇄',
   batch: '≡',
   audio: '♪',
@@ -193,6 +193,9 @@ export function humanizeToolName(tool: string): string {
 /** Human-readable one-liner for a step, e.g. "Split clip at 4.2s". */
 export function describeTraceStep(step: AgentTraceStep): string {
   if (step.kind === 'thought') return step.summary;
+  // A step that changed nothing must not be labelled from its request: the
+  // server already reported the truth, so show that instead of "Updated 3 clips".
+  if (step.summary.startsWith('No change')) return 'No change: the project already matched this request';
   const input = toolInput(step);
   switch (step.tool) {
     case 'get_project':
@@ -365,7 +368,7 @@ function opEditCount(op: { type: string; params?: unknown }): number {
 
 /**
  * Aggregate the raw applied operations of one agent turn into receipt lines:
- * "✂ 6 trims", "T 8 captions". Batch ops count their inner items so the
+ * "/ 6 trims", "T 8 captions". Batch ops count their inner items so the
  * receipt reflects edits, not tool calls.
  */
 export function receiptItems(ops: Array<{ type: string; params?: unknown }>): ReceiptItem[] {

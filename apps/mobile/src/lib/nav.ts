@@ -16,6 +16,6 @@ export function backControlStyle(state: { pressed: boolean }): ViewStyle {
   const { hovered, focused } = state as { hovered?: boolean; focused?: boolean };
   return {
     opacity: state.pressed ? 0.5 : hovered ? 0.7 : 1,
-    ...(focused ? { outlineColor: colors.purple, outlineWidth: 2, outlineStyle: 'solid' as const, outlineOffset: 3 } : {}),
+    ...(focused ? { outlineColor: colors.accent, outlineWidth: 2, outlineStyle: 'solid' as const, outlineOffset: 3 } : {}),
   };
 }

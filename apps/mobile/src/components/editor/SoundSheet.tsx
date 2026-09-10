@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useVideoPlayer } from 'expo-video';
 import type { LibrarySound, SoundCategory } from '@editify/shared';
 import { api, mediaUrl } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 const CATEGORY_LABELS: Record<SoundCategory, string> = {
   whoosh: 'Whoosh', impact: 'Impact', pop: 'Pop', ui: 'UI', riser: 'Riser', music: 'Music',
@@ -72,7 +72,7 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
                 try { player.pause(); } catch { /* nothing was playing */ }
               }}
             >
-              <Text style={styles.close}>✕</Text>
+              <Text style={styles.close}>×</Text>
             </Pressable>
           </View>
           <Text style={styles.subtitle}>tap to preview · + drops it at the playhead</Text>
@@ -95,7 +95,7 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
             {sounds.map((sound) => (
               <View key={sound.id} style={styles.row}>
                 <Pressable accessibilityRole="button" accessibilityLabel={`preview ${sound.name}`} style={styles.rowBody} onPress={() => preview(sound)}>
-                  <Text style={styles.playIcon}>{playingId === sound.id ? '⏸' : '▶'}</Text>
+                  <Text style={styles.playIcon}>{playingId === sound.id ? '■' : '▶'}</Text>
                   <View style={styles.rowText}>
                     <Text style={styles.rowName}>{sound.name}</Text>
                     <Text style={styles.rowMeta}>{CATEGORY_LABELS[sound.category]} · {sound.duration.toFixed(1)}s</Text>
@@ -122,36 +122,36 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#000000AA' },
   sheet: {
-    maxHeight: '72%', borderTopLeftRadius: 18, borderTopRightRadius: 18,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 8,
+    maxHeight: '72%', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.lg,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5 },
-  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: 14, padding: 4 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
+  title: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
   chips: { flexGrow: 0 },
-  chipsContent: { gap: 6, paddingVertical: 4 },
+  chipsContent: { gap: space.md, paddingVertical: space.sm },
   chip: {
-    borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
-    paddingHorizontal: 12, minHeight: 30, justifyContent: 'center',
+    borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
+    paddingHorizontal: space.xl, minHeight: 30, justifyContent: 'center',
   },
-  chipActive: { borderColor: colors.purple, backgroundColor: '#2A1F47' },
-  chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 10 },
+  chipActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.md },
   chipTextActive: { color: colors.text },
   list: { minHeight: 180 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
-  rowBody: { flex: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  playIcon: { width: 26, textAlign: 'center', color: colors.text, fontFamily: fonts.bold, fontSize: 12 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.sm },
+  rowBody: { flex: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  playIcon: { width: 26, textAlign: 'center', color: colors.text, fontFamily: fonts.bold, fontSize: type.lg },
   rowText: { flex: 1, gap: 1 },
-  rowName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
-  rowMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 9 },
+  rowName: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
+  rowMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
   add: {
-    width: 44, height: 44, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
+    width: 44, height: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
   },
-  addDone: { borderColor: '#2E7D4F', backgroundColor: '#153524' },
-  addText: { color: colors.text, fontFamily: fonts.bold, fontSize: 16 },
-  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, paddingVertical: 12 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10, paddingVertical: 12 },
+  addDone: { borderColor: colors.success, backgroundColor: colors.successSoft },
+  addText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, paddingVertical: space.xl },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md, paddingVertical: space.xl },
   pressed: { opacity: 0.65 },
 });
