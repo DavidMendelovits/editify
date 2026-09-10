@@ -217,7 +217,21 @@ export const operationBatchSchema = z.object({
   baseVersion: z.number().int().min(0),
 });
 
-export const chatRequestSchema = z.object({ message: z.string().trim().min(1).max(4000) });
+/** Chat messages carry pasted transcripts, so the cap is generous rather than prose-sized. */
+export const MAX_CHAT_MESSAGE_CHARS = 24000;
+
+export const chatRequestSchema = z.object({ message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_CHARS) });
+/** `POST /projects/:id/chat/improve` — rewrite a casual message before it is sent. */
+export const improveRequestSchema = z.object({
+  message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_CHARS),
+  /** The user's previous message, so a follow-up reads as a refinement of it. */
+  previous: z.string().trim().max(MAX_CHAT_MESSAGE_CHARS).optional(),
+});
+export const improveResponseSchema = z.object({
+  improved: z.string().nullable(),
+  changes: z.array(z.string()).optional(),
+});
+export type ImproveResponse = z.infer<typeof improveResponseSchema>;
 export const agentResponseSchema = z.object({
   reply: z.string().min(1),
   ops: z.array(operationSchema).max(100),
@@ -335,6 +349,8 @@ export type AssetDissection = z.infer<typeof assetDissectionSchema>;
 
 export const renderRequestSchema = z.object({
   resolution: z.enum(['720p', '1080p', '4k']).default('1080p'),
+  /** 'sdr' tone maps HDR sources to BT.709 so the export matches the preview. */
+  hdr: z.enum(['sdr', 'hdr']).default('sdr'),
 });
 
 export const styleAnalyzeSchema = z.object({
@@ -364,4 +380,5 @@ export const OPERATION_CATALOG = [
 
 export * from './presets.js';
 export * from './packets.js';
+export * from './checklists.js';
 export * from './telemetry.js';

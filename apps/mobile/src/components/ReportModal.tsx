@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Linking, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation } from '@tanstack/react-query';
-import { GradientButton } from './GradientButton';
+import { Button } from './Button';
 import { sendReport } from '../lib/telemetry';
-import { colors, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 interface Props {
   mode: 'error' | 'feedback';
@@ -47,13 +47,13 @@ export function ReportModal({ mode, error, onClose }: Props) {
                   <Text style={styles.issue}>issue #{receipt.issueNumber} ↗</Text>
                 </Pressable>
               )}
-              <GradientButton onPress={onClose}>done</GradientButton>
+              <Button onPress={onClose}>done</Button>
             </>
           ) : (
             <>
               <Text style={styles.subtitle}>
                 {mode === 'error'
-                  ? 'Send it over and we will open a tracked issue. Add anything you were doing — optional.'
+                  ? 'Send it over and we will open a tracked issue. Add anything you were doing (optional).'
                   : 'Tell us what is missing or wrong. We assess it and open a tracked issue.'}
               </Text>
               <TextInput
@@ -66,14 +66,14 @@ export function ReportModal({ mode, error, onClose }: Props) {
               />
               {report.error && <Text style={styles.error}>{report.error.message}</Text>}
               <View style={styles.actions}>
-                <GradientButton secondary style={styles.dismiss} onPress={onClose}>dismiss</GradientButton>
-                <GradientButton
+                <Button secondary style={styles.dismiss} onPress={onClose}>dismiss</Button>
+                <Button
                   style={styles.send}
                   disabled={report.isPending || (mode === 'feedback' && !comment.trim())}
                   onPress={() => report.mutate()}
                 >
                   {report.isPending ? 'sending…' : 'report'}
-                </GradientButton>
+                </Button>
               </View>
             </>
           )}
@@ -84,21 +84,21 @@ export function ReportModal({ mode, error, onClose }: Props) {
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: '#04040899', alignItems: 'center', justifyContent: 'center', padding: 20 },
-  sheet: { width: '100%', maxWidth: 460, borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 20, gap: 10 },
-  sheetError: { borderColor: colors.danger, backgroundColor: '#221420' },
-  eyebrow: { color: colors.purple, fontFamily: fonts.bold, fontSize: 9, letterSpacing: 1.5 },
+  backdrop: { flex: 1, backgroundColor: '#04040899', alignItems: 'center', justifyContent: 'center', padding: space.xxl },
+  sheet: { width: '100%', maxWidth: 460, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.lg },
+  sheetError: { borderColor: colors.danger, backgroundColor: colors.dangerSoft },
+  eyebrow: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm, letterSpacing: 1.5 },
   eyebrowError: { color: colors.danger },
-  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 19 },
-  message: { color: colors.danger, fontFamily: fonts.medium, fontSize: 11, lineHeight: 17 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12, lineHeight: 19 },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.title },
+  message: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.base, lineHeight: 17 },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.lg, lineHeight: 19 },
   input: {
-    minHeight: 84, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
-    color: colors.text, fontFamily: fonts.regular, fontSize: 13, padding: 12, textAlignVertical: 'top',
+    minHeight: 84, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
+    color: colors.text, fontFamily: fonts.regular, fontSize: type.lg, padding: space.xl, textAlignVertical: 'top',
   },
-  actions: { flexDirection: 'row', gap: 10, marginTop: 2 },
+  actions: { flexDirection: 'row', gap: space.lg, marginTop: space.xs },
   dismiss: { flex: 1, borderColor: colors.border },
   send: { flex: 1 },
-  issue: { color: colors.purple, fontFamily: fonts.bold, fontSize: 13 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 11 },
+  issue: { color: colors.accent, fontFamily: fonts.bold, fontSize: type.lg },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.base },
 });

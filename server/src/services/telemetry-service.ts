@@ -5,6 +5,7 @@ import type { TelemetryEvent, TelemetryReceipt, TelemetryReport } from '@editify
 import type { ToolProvider } from '../agent/providers.js';
 import { dataRoot } from '../config.js';
 import type { ReportStore, StoredIssue } from '../db/report-store.js';
+import { NO_DASHES_RULE } from '../agent/prose-style.js';
 
 const GITHUB_REPO = 'DavidMendelovits/editify';
 
@@ -43,7 +44,7 @@ export class TelemetryService {
     const known = fingerprint ? this.store.findIssue(fingerprint) : undefined;
     if (known) {
       this.store.attachIssue(reportId, known);
-      return { reportId, ...known, note: 'Already tracked — added to the open issue.' };
+      return { reportId, ...known, note: 'Already tracked, added to the open issue.' };
     }
 
     const assessment = await this.assess(report);
@@ -52,9 +53,9 @@ export class TelemetryService {
       this.appendInsight(`## ${assessment.title}`, [
         assessment.feasibility,
         ...this.details(report),
-        '_Not filed on GitHub — GITHUB_TOKEN is unset or the API call failed._',
+        '_Not filed on GitHub: GITHUB_TOKEN is unset or the API call failed._',
       ]);
-      return { reportId, issueNumber: null, issueUrl: null, note: 'Logged for review — we could not open a tracker issue.' };
+      return { reportId, issueNumber: null, issueUrl: null, note: 'Logged for review. We could not open a tracker issue.' };
     }
     this.store.attachIssue(reportId, issue);
     return { reportId, ...issue, note: 'Filed as an issue.' };
@@ -71,6 +72,7 @@ export class TelemetryService {
       'Return only one JSON object: {"title": string, "feasibility": string}.',
       'Title is under 80 characters and names the problem or request.',
       'Feasibility is one short paragraph: the likely cause or change, and how hard it looks.',
+      NO_DASHES_RULE,
     ].join(' ');
     try {
       const provider = await this.provider();
@@ -91,7 +93,7 @@ export class TelemetryService {
     }
     return {
       title: `${report.kind === 'error' ? 'Crash' : 'Feedback'}: ${subject.split('\n')[0]?.slice(0, 90) ?? subject}`,
-      feasibility: 'Not assessed automatically — no LLM provider was reachable. Triage by hand.',
+      feasibility: 'Not assessed automatically: no LLM provider was reachable. Triage by hand.',
     };
   }
 
@@ -99,7 +101,7 @@ export class TelemetryService {
   private async file(report: TelemetryReport, assessment: Assessment): Promise<StoredIssue | undefined> {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
-      console.warn('[telemetry] GITHUB_TOKEN is unset — storing the report locally instead of filing an issue.');
+      console.warn('[telemetry] GITHUB_TOKEN is unset, storing the report locally instead of filing an issue.');
       return undefined;
     }
     try {

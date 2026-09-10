@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
-import { colors, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 import { api } from '../lib/api';
 import { track } from '../lib/telemetry';
 import { formatMegabytes } from '../lib/agent';
@@ -60,7 +60,6 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
         <Pressable style={styles.sheet} onPress={() => undefined}>
           <View style={styles.header}>
             <View style={styles.headerText}>
-              <Text style={styles.eyebrow}>MEDIA</Text>
               <Text style={styles.title}>import test clip</Text>
               <Text style={styles.subtitle}>
                 {pending > 0 ? `${pending} in queue · importing one at a time` : 'files sitting in the server media folder'}
@@ -73,7 +72,7 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
 
           <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
             {files.isLoading && (
-              <View style={styles.stateRow}><ActivityIndicator color={colors.purple} /><Text style={styles.stateText}>looking for clips…</Text></View>
+              <View style={styles.stateRow}><ActivityIndicator color={colors.accent} /><Text style={styles.stateText}>looking for clips…</Text></View>
             )}
             {files.error && <Text style={styles.error}>{files.error.message}</Text>}
             {!files.isLoading && !files.error && list.length === 0 && (
@@ -100,7 +99,7 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
                     </Text>
                     {state === 'error' && <Text style={styles.error} numberOfLines={2}>{errors[file.name]}</Text>}
                   </View>
-                  {busy ? <ActivityIndicator color={colors.purple} />
+                  {busy ? <ActivityIndicator color={colors.accent} />
                     : inLibrary ? <View style={styles.badge}><Text style={styles.badgeText}>IN LIBRARY</Text></View>
                     : <Text style={styles.importCue}>import ↓</Text>}
                 </Pressable>
@@ -114,28 +113,27 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: '#04040899', alignItems: 'center', justifyContent: 'center', padding: 20 },
-  sheet: { width: '100%', maxWidth: 460, maxHeight: '82%', borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 16, gap: 12 },
-  header: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: 12 },
-  headerText: { flex: 1, gap: 4 },
-  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.5 },
-  title: { color: colors.text, fontFamily: fonts.bold, fontSize: 17 },
-  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10 },
-  close: { width: 30, height: 30, borderRadius: 10, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
-  closeText: { color: colors.muted, fontSize: 17, lineHeight: 20 },
+  backdrop: { flex: 1, backgroundColor: '#04040899', alignItems: 'center', justifyContent: 'center', padding: space.xxl },
+  sheet: { width: '100%', maxWidth: 460, maxHeight: '82%', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.xl },
+  header: { flexDirection: 'row', alignItems: 'flex-start', gap: space.xl, borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: space.xl },
+  headerText: { flex: 1, gap: space.sm },
+  title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
+  subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
+  close: { width: 30, height: 30, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  closeText: { color: colors.muted, fontSize: type.xxl, lineHeight: 20 },
   list: { flexGrow: 0 },
-  listContent: { gap: 7, paddingVertical: 2 },
-  stateRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 10 },
-  stateText: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11 },
-  empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11, lineHeight: 17, paddingVertical: 8 },
-  file: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 54, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 12, paddingVertical: 9 },
-  fileError: { borderColor: '#5A2836' },
-  fileText: { flex: 1, gap: 3 },
-  fileName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
-  fileMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 9 },
-  badge: { borderRadius: 20, backgroundColor: '#1D3B2C', paddingHorizontal: 8, paddingVertical: 4 },
-  badgeText: { color: colors.success, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.8 },
-  importCue: { color: colors.purple, fontFamily: fonts.bold, fontSize: 10 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10 },
+  listContent: { gap: space.md, paddingVertical: space.xs },
+  stateRow: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.lg },
+  stateText: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base },
+  empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, lineHeight: 17, paddingVertical: space.lg },
+  file: { flexDirection: 'row', alignItems: 'center', gap: space.xl, minHeight: 54, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.xl, paddingVertical: space.lg },
+  fileError: { borderColor: colors.danger },
+  fileText: { flex: 1, gap: space.xs },
+  fileName: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
+  fileMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
+  badge: { borderRadius: radius.lg, backgroundColor: colors.successSoft, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  badgeText: { color: colors.success, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.8 },
+  importCue: { color: colors.accent, fontFamily: fonts.bold, fontSize: type.md },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
   pressed: { opacity: 0.7 },
 });

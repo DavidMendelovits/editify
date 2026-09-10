@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type AgentProviderId, type ProviderStatus } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 /** Short enough for the collapsed chip; the full label lives in the open list. */
 const SHORT: Record<AgentProviderId, string> = {
@@ -47,7 +47,7 @@ export function ProviderPicker() {
       </Pressable>
 
       {status?.requested && (
-        <Text style={styles.warning}>{SHORT[status.requested]} is unavailable — running {SHORT[status.active]}</Text>
+        <Text style={styles.warning}>{SHORT[status.requested]} is unavailable, running {SHORT[status.active]}</Text>
       )}
 
       {open && (
@@ -69,7 +69,7 @@ export function ProviderPicker() {
               <View style={styles.optionHead}>
                 <Text style={styles.optionLabel}>{option.label}</Text>
                 {option.id === active && <Text style={styles.activeTag}>ACTIVE</Text>}
-                {select.isPending && select.variables === option.id && <ActivityIndicator size="small" color={colors.purple} />}
+                {select.isPending && select.variables === option.id && <ActivityIndicator size="small" color={colors.accent} />}
               </View>
               <Text style={styles.optionDetail}>{option.detail}</Text>
             </Pressable>
@@ -82,24 +82,24 @@ export function ProviderPicker() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 5 },
+  wrap: { gap: space.sm },
   chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
-    borderRadius: 7, borderWidth: 1, borderColor: colors.border,
-    backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 4,
+    flexDirection: 'row', alignItems: 'center', gap: space.md, alignSelf: 'flex-start',
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.sm,
   },
-  dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.purple },
+  dot: { width: 5, height: 5, borderRadius: radius.md, backgroundColor: colors.accent },
   dotMock: { backgroundColor: colors.muted },
-  chipText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 9 },
-  caret: { color: colors.muted, fontSize: 8 },
-  list: { gap: 4, borderRadius: 9, borderWidth: 1, borderColor: colors.border, backgroundColor: '#0D0D13', padding: 6 },
-  option: { borderRadius: 7, borderWidth: 1, borderColor: 'transparent', paddingHorizontal: 8, paddingVertical: 6, gap: 2 },
-  optionActive: { borderColor: colors.purple, backgroundColor: colors.panelRaised },
+  chipText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.sm },
+  caret: { color: colors.muted, fontSize: type.xs },
+  list: { gap: space.sm, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelSunken, padding: space.md },
+  option: { borderRadius: radius.md, borderWidth: 1, borderColor: 'transparent', paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.xs },
+  optionActive: { borderColor: colors.accent, backgroundColor: colors.panelRaised },
   optionDisabled: { opacity: 0.4 },
-  optionHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  optionLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
-  activeTag: { color: colors.purple, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 0.8 },
-  optionDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: 8 },
-  warning: { color: colors.danger, fontFamily: fonts.medium, fontSize: 8 },
+  optionHead: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  optionLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md },
+  activeTag: { color: colors.accent, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.8 },
+  optionDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.xs },
+  warning: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.xs },
   pressed: { opacity: 0.65 },
 });

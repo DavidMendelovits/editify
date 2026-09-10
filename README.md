@@ -29,8 +29,8 @@ No model key is required. The deterministic mock agent supports prompts such as 
 ### Choosing the model in the app
 
 The provider chip at the top of the chat dock switches which model runs the
-agent. The server probes what is actually usable — whether `claude` and `codex`
-are on `PATH`, whether the API keys are set — and unavailable options stay
+agent. The server probes what is actually usable, checking whether `claude` and
+`codex` are on `PATH` and whether the API keys are set. Unavailable options stay
 listed but disabled with the reason. The choice is stored in the `settings`
 table and applies to the next message; no restart.
 
@@ -48,13 +48,13 @@ through the UI.
 
 `claude-cli` and `codex-cli` run the agent on the
 [Claude Code](https://claude.com/claude-code) or Codex CLI already installed and
-signed in on your machine — the subscription pays for it, not a key.
+signed in on your machine: the subscription pays for it, not a key.
 
 Each loop turn spawns one CLI process with the conversation replayed and the
 tool catalog attached, and the reply is parsed back into tool calls. Both CLIs
-are launched isolated — no MCP servers, no user settings, none of their own
-tools, in a throwaway working directory. Expect roughly 20–60 seconds and a few
-cents per chat message; `EDITIFY_AGENT_CLI_MODEL` and
+are launched isolated, with no MCP servers, no user settings, and none of their
+own tools, in a throwaway working directory. Expect roughly 20–60 seconds and a
+few cents per chat message; `EDITIFY_AGENT_CLI_MODEL` and
 `EDITIFY_AGENT_CLI_TIMEOUT_MS` (default 240000) tune it. Anything in
 `server/.env` is loaded at boot, so these can live there.
 
@@ -62,12 +62,13 @@ cents per chat message; `EDITIFY_AGENT_CLI_MODEL` and
 
 The `Dockerfile` builds the Expo web client and serves it from Fastify's own
 origin, so one container is the whole product: API, media, and browser client on
-a single URL. It needs ffmpeg (in the image) and a persistent disk — SQLite,
+a single URL. It needs ffmpeg (in the image) and a persistent disk: SQLite,
 uploaded originals, proxies, and rendered masters all live under
 `EDITIFY_DATA_DIR`, and losing it loses every project.
 
 `fly.toml` is set up for that: a 4GB `shared-cpu-4x` machine with a volume on
-`/data` — `fly scale vm performance-2x` when ffmpeg renders start dragging. Change `app`, `primary_region`, and
+`/data`. Use `fly scale vm performance-2x` when ffmpeg renders start dragging.
+Change `app`, `primary_region`, and
 `PUBLIC_BASE_URL` to match your deployment, then:
 
 ```bash
@@ -83,7 +84,8 @@ started them returns, and a suspended machine would abandon them mid-encode.
 ### Auth
 
 `EDITIFY_TOKEN` is one shared password guarding every route except `/health`.
-Unset — the default, and what local development wants — the server is open;
+When it is unset, which is the default and what local development wants, the
+server is open;
 **set it anywhere the server is reachable from the internet**, or strangers can
 upload video and run renders on your machine. It is accepted three ways, because
 three kinds of client ask differently: `Authorization: Bearer` from the app's
@@ -91,7 +93,7 @@ own fetches, HTTP Basic so a browser prompts once and then carries the header
 itself on `<video>`/`<img>` loads, and `?k=` for the native media players that
 cannot set headers at all.
 
-The browser client needs no configuration — same-origin, so the Basic prompt
+The browser client needs no configuration: it is same-origin, so the Basic prompt
 covers it. A phone running Expo Go against the deployed server needs both:
 
 ```bash

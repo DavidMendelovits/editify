@@ -19,8 +19,9 @@ all_prs=$(gh pr list --state open --limit 100 --json number,headRefName,mergeSta
 prs=$(jq -c '[.[] | select(.headRefName|startswith("bot/"))]' <<<"$all_prs")
 
 # Issue number a PR is for: branch .../issue-<N>-... (fallback: "closes #N" in body).
-# The parens matter: without them the `//` fallback runs inside the `.headRefName |` pipe
-# and indexes .body on a string.
+# NOTE: `|` binds looser than `//`, so each source needs its own parens. Otherwise
+# `.body` is evaluated against the headRefName string and jq dies on branches like
+# bot/ignore-demo-media that carry no issue number.
 issue_of='((.headRefName | capture("issue-(?<n>[0-9]+)").n) // (.body | capture("[Cc]loses #(?<n>[0-9]+)").n) // "0") | tonumber'
 
 # 1. conflicts first — cheapest, and they block the user

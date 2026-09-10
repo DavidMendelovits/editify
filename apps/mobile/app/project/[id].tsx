@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
-import { GradientButton } from '../../src/components/GradientButton';
+import { Button } from '../../src/components/Button';
 import { EditSummaryPanel } from '../../src/components/EditSummaryPanel';
 import { ImportSheet } from '../../src/components/ImportSheet';
 import { InsightsPanel } from '../../src/components/InsightsPanel';
@@ -17,14 +17,16 @@ import { StickerSheet } from '../../src/components/editor/StickerSheet';
 import { CleanupSheet } from '../../src/components/editor/CleanupSheet';
 import { VoiceSheet } from '../../src/components/editor/VoiceSheet';
 import { StylePacketSheet } from '../../src/components/editor/StylePacketSheet';
+import { LayoutPresets, PanelDivider, useEditorLayout } from '../../src/components/editor/PanelLayout';
 import { Timeline } from '../../src/components/editor/Timeline';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
 import { packetPrompt } from '../../src/lib/packets';
-import { pickFromFiles, pickFromPhotos, type PickProgress, type PickResult } from '../../src/lib/pick';
+import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { track } from '../../src/lib/telemetry';
-import { colors, fonts } from '../../src/lib/theme';
+import { backControlStyle, goBack } from '../../src/lib/nav';
+import { colors, space, type, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
 const WIDE_BREAKPOINT = 1024;
@@ -45,6 +47,12 @@ export default function EditorScreen() {
   // Stacked mode gives the preview a real share of the screen instead of the
   // leftovers under the library and timeline.
   const previewHeight = Math.min(620, Math.max(320, Math.round(height * 0.5)));
+  // Measured once per window size; the wide layout's minimums are enforced
+  // against the room the workspace actually has.
+  const [bounds, setBounds] = useState({ width: 0, height: 0 });
+  const { layout, resize, commit, preset, reset } = useEditorLayout(id, bounds);
+  // The panel size a drag started from; the divider reports travel, not position.
+  const dragBase = useRef(layout);
 
   const [selectedId, setSelectedId] = useState<string>();
   const [importOpen, setImportOpen] = useState(false);
@@ -175,6 +183,22 @@ export default function EditorScreen() {
     Animated.timing(flash, { toValue: 1, duration: 420, useNativeDriver: NATIVE_DRIVER }).start();
   }, [flash, project?.version]);
 
+  // Stage changes are click-only in the editor. A horizontal trackpad/touch
+  // swipe used to leave mid-edit: on web the browser turns horizontal
+  // overscroll into back/forward history navigation (format selection /
+  // export), and on iOS the stack's edge swipe pops the screen. Both are
+  // switched off here only, so the other stages keep their normal gestures.
+  // Focus-scoped, not mount-scoped: the router keeps this screen mounted while
+  // export is pushed on top of it, so a plain effect would leak the guard onto
+  // the other stages and never clean up.
+  useFocusEffect(useCallback(() => {
+    if (Platform.OS !== 'web') return undefined;
+    const root = document.documentElement;
+    const previous = root.style.overscrollBehaviorX;
+    root.style.overscrollBehaviorX = 'none';
+    return () => { root.style.overscrollBehaviorX = previous; };
+  }, []));
+
   // Space toggles playback on web, unless the composer has focus.
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -266,7 +290,7 @@ export default function EditorScreen() {
           id: clipId,
           ...(content.callout
             ? { text: content.callout.text, callout: { variant: content.callout.variant } }
-            : content.asset ? { assetId: content.asset.id } : { text: content.emoji ?? '✨' }),
+            : content.asset ? { assetId: content.asset.id } : { text: content.emoji ?? '★' }),
           start: round3(clock.get()),
           in: 0,
           out: 3,
@@ -305,7 +329,7 @@ export default function EditorScreen() {
 
   const header = (
     <View style={styles.header}>
-      <Pressable onPress={() => router.back()} accessibilityRole="button"><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
+      <Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
       <View style={styles.heading}>
         {/* The wordmark is decoration; on a phone the title needs the room. */}
         {width >= 560 && (
@@ -322,16 +346,11 @@ export default function EditorScreen() {
         </View>
       </View>
       <View style={styles.headerActions}>
-        {/* The media library carries its own +photos; the header duplicate
-            only fits once the title has room to breathe. */}
-        {width >= 560 && (
-          <GradientButton secondary style={styles.headerButton} onPress={() => void addFrom(pickFromPhotos)} disabled={uploading}>
-            {progress ? `${progress.done}/${progress.total}…` : uploading ? 'processing…' : '+ photos'}
-          </GradientButton>
-        )}
-        <GradientButton style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
+        {/* Adding media lives in the library (+ photos / + files / + folder), which also
+            reports import progress. The header keeps only the global action. */}
+        <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
           export ↗
-        </GradientButton>
+        </Button>
       </View>
     </View>
   );
@@ -350,7 +369,11 @@ export default function EditorScreen() {
         onScrub={setScrubbing}
         onSelect={setSelectedId}
         onApply={applyOps}
-        onImport={() => setImportOpen(true)}
+        onImport={() => void addFrom(pickFromFiles)}
+        onImportFiles={(files) => void addFrom((projectId, onProgress) => uploadFiles(projectId, files, onProgress))}
+        importing={uploading}
+        importProgress={progress}
+        importError={uploadError}
         onAddSound={() => setSoundOpen(true)}
         onAddSticker={() => setStickerOpen(true)}
         onCleanup={() => setCleanupOpen(true)}
@@ -392,12 +415,21 @@ export default function EditorScreen() {
 
   return (
     <Screen scroll={!wide} bleed header={header}>
-      <View style={[styles.workspace, !wide && styles.workspaceStacked]}>
+      {/* Native counterpart of the overscroll guard above: no edge-swipe back. */}
+      <Stack.Screen options={{ gestureEnabled: false }} />
+      {wide && <View style={styles.layoutBar}><LayoutPresets onPreset={preset} onReset={reset} /></View>}
+      <View
+        style={[styles.workspace, !wide && styles.workspaceStacked]}
+        onLayout={(event) => {
+          const { width: w, height: h } = event.nativeEvent.layout;
+          setBounds((current) => (current.width === w && current.height === h ? current : { width: w, height: h }));
+        }}
+      >
         <View style={[styles.editColumn, !wide && styles.editColumnStacked]}>
           {/* The preview is the editor's centrepiece: stacked mode hands it half
               the screen outright, wide mode the whole column above the timeline
               (the library and insights move to the dock column there). */}
-          <View style={wide ? styles.previewWide : { height: previewHeight }}>
+          <View style={wide ? { height: layout.previewHeight } : { height: previewHeight }}>
             <PreviewPlayer
               project={project}
               assets={assets}
@@ -412,15 +444,35 @@ export default function EditorScreen() {
             />
           </View>
           {!wide && library}
-          {timeline}
+          {wide && (
+            <PanelDivider
+              orientation="horizontal"
+              testID="divider-preview"
+              accessibilityLabel="Resize the preview"
+              onDragStart={() => { dragBase.current = layout; }}
+              onDrag={(delta) => resize({ previewHeight: dragBase.current.previewHeight + delta })}
+              onDragEnd={commit}
+            />
+          )}
+          {wide ? <View style={styles.timelineWide}>{timeline}</View> : timeline}
           {!wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {!wide && <InsightsPanel assetIds={assetIds} />}
+          {!wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
-        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked]}>
+        {wide && (
+          <PanelDivider
+            orientation="vertical"
+            testID="divider-dock"
+            accessibilityLabel="Resize the chat dock"
+            onDragStart={() => { dragBase.current = layout; }}
+            onDrag={(delta) => resize({ dockWidth: dragBase.current.dockWidth - delta })}
+            onDragEnd={commit}
+          />
+        )}
+        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked, wide && { width: layout.dockWidth }]}>
           {wide && library}
           {dock}
           {wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {wide && <InsightsPanel assetIds={assetIds} />}
+          {wide && <InsightsPanel assetIds={assetIds} project={project} />}
         </View>
       </View>
       <ImportSheet
@@ -473,23 +525,24 @@ export default function EditorScreen() {
 }
 
 const styles = StyleSheet.create({
-  header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.2 },
-  heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
+  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
+  heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xl },
   headingText: { flexShrink: 1, minWidth: 0 },
   divider: { width: 1, height: 26, backgroundColor: colors.border },
-  projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12 },
-  projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, marginTop: 3, letterSpacing: 0.5 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerButton: { minHeight: 36, paddingHorizontal: 12, borderColor: colors.border, backgroundColor: colors.panel },
-  exportButton: { width: 104, minHeight: 36 },
-  workspace: { flex: 1, flexDirection: 'row', gap: 12, minHeight: 0 },
-  workspaceStacked: { flexDirection: 'column' },
-  editColumn: { flex: 1, minWidth: 0, gap: 10 },
+  projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
+  projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  exportButton: { width: 96, minHeight: 30 },
+  layoutBar: { flexDirection: 'row', justifyContent: 'flex-end', marginBottom: space.md },
+  // Wide mode: the dividers occupy the gutter between panels, so no gap here.
+  workspace: { flex: 1, flexDirection: 'row', minHeight: 0 },
+  workspaceStacked: { flexDirection: 'column', gap: space.xl },
+  editColumn: { flex: 1, minWidth: 0, gap: space.lg },
+  timelineWide: { flex: 1, minHeight: 180 },
   editColumnStacked: {},
-  previewWide: { flex: 1, minHeight: 260 },
-  dockColumn: { width: 372, minHeight: 0, gap: 10 },
+  dockColumn: { width: 372, minHeight: 0, gap: space.lg },
   dockColumnStacked: { width: '100%', height: 560 },
   center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 12 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
 });

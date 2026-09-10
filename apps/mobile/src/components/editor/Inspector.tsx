@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { AssetMetadata, Clip, ClipTransform, ClipTransition, Operation } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 import { formatTimecode } from '../../lib/timeline';
 
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
@@ -51,7 +51,7 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
   if (!clip) {
     return (
       <View style={styles.bar}>
-        <Text style={styles.hint}>Select a clip to inspect it — or ask the agent for an edit.</Text>
+        <Text style={styles.hint}>Select a clip to inspect it, or ask the agent for an edit.</Text>
       </View>
     );
   }
@@ -233,32 +233,32 @@ function Stepper({ label, value, onDown, onUp }: { label: string; value: string;
 
 const styles = StyleSheet.create({
   bar: {
-    minHeight: 40, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 16,
-    borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 8, marginTop: 6,
+    minHeight: 40, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.xxl,
+    borderTopWidth: 1, borderTopColor: colors.border, paddingTop: space.lg, marginTop: space.md,
   },
   barPending: { opacity: 0.55 },
-  identity: { minWidth: 140, maxWidth: 240, gap: 2 },
-  kind: { color: colors.purple, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1.2 },
-  name: { color: colors.text, fontFamily: fonts.semibold, fontSize: 11 },
-  field: { gap: 3 },
-  fieldLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 1 },
-  fieldValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
-  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  identity: { minWidth: 140, maxWidth: 240, gap: space.xs },
+  kind: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
+  name: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.base },
+  field: { gap: space.xs },
+  fieldLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  fieldValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   step: {
-    width: 26, height: 26, borderRadius: 6, borderWidth: 1, borderColor: colors.border,
+    width: 26, height: 26, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
   },
-  stepText: { color: colors.text, fontFamily: fonts.bold, fontSize: 12, lineHeight: 15 },
-  stepValue: { minWidth: 42, textAlign: 'center', color: colors.text, fontFamily: fonts.semibold, fontSize: 11, fontVariant: ['tabular-nums'] },
-  chipRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  stepText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.lg, lineHeight: 15 },
+  stepValue: { minWidth: 42, textAlign: 'center', color: colors.text, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
+  chipRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   chip: {
-    borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
-    paddingHorizontal: 8, minHeight: 26, justifyContent: 'center',
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
+    paddingHorizontal: space.lg, minHeight: 26, justifyContent: 'center',
   },
-  chipActive: { borderColor: colors.purple, backgroundColor: '#2A1F47' },
-  chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 9 },
+  chipActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   chipTextActive: { color: colors.text },
-  zoomCustom: { color: colors.pink, fontFamily: fonts.semibold, fontSize: 9 },
-  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10 },
+  zoomCustom: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
+  hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   pressed: { opacity: 0.6 },
 });

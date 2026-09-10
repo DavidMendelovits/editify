@@ -1,12 +1,12 @@
-import { memo, useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { AssetMetadata, Callout, Clip } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { Filmstrip } from './Filmstrip';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { api, type WaveformEnvelope } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 export type DragMode = 'move' | 'in' | 'out';
 
@@ -231,7 +231,7 @@ export const CaptionChip = memo(function CaptionChip({
       ]}
     >
       <Text numberOfLines={1} style={[styles.captionText, overlapping && styles.captionTextOverlap]}>
-        {clip.text ?? '—'}
+        {clip.text ?? 'n/a'}
       </Text>
     </View>
   );
@@ -313,79 +313,139 @@ export function DragTooltip({ left, label }: { left: number; label: string }) {
   );
 }
 
-/** Empty-state block shown when a video track has no clips at all. */
-export function EmptyLane({ onPress }: { onPress: () => void }) {
+interface EmptyLaneProps {
+  /** Opens the file picker; also the retry affordance after a failed import. */
+  onPress: () => void;
+  /** Files dropped on the lane. Never called off web, where nothing can be dropped. */
+  onDropFiles: (files: File[]) => void;
+  uploading: boolean;
+  progress: { done: number; total: number } | undefined;
+  error: string | undefined;
+}
+
+/**
+ * Empty-state block shown when a video track has no clips at all: a press opens
+ * the file picker, and on web a dropped file uploads through the same path.
+ */
+export function EmptyLane({ onPress, onDropFiles, uploading, progress, error }: EmptyLaneProps) {
+  const ref = useRef<View>(null);
+  const [dropping, setDropping] = useState(false);
+
+  // react-native-web 0.21 picks View props from a whitelist that has no drag
+  // events, so the DOM node has to be wired by hand. Native has no drop target
+  // at all, hence the platform guard rather than a no-op listener.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const node = ref.current as unknown as HTMLElement | null;
+    if (!node) return;
+    // Without preventDefault the browser navigates to the dropped file.
+    const onOver = (event: DragEvent): void => { event.preventDefault(); setDropping(true); };
+    // Moving onto the label inside fires a bubbling dragleave; only a pointer
+    // that actually left the block should clear the highlight.
+    const onLeave = (event: DragEvent): void => {
+      if (!node.contains(event.relatedTarget as Node | null)) setDropping(false);
+    };
+    const onDrop = (event: DragEvent): void => {
+      event.preventDefault();
+      setDropping(false);
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length > 0) onDropFiles(files);
+    };
+    node.addEventListener('dragover', onOver);
+    node.addEventListener('dragleave', onLeave);
+    node.addEventListener('drop', onDrop);
+    return () => {
+      node.removeEventListener('dragover', onOver);
+      node.removeEventListener('dragleave', onLeave);
+      node.removeEventListener('drop', onDrop);
+    };
+  }, [onDropFiles]);
+
+  const label = dropping ? 'DROP TO IMPORT'
+    : progress ? `UPLOADING ${progress.done} OF ${progress.total}…`
+    : uploading ? 'UPLOADING…'
+    : '+  IMPORT MEDIA TO START THE TIMELINE';
   return (
-    <Pressable onPress={onPress} style={styles.empty} accessibilityRole="button">
-      <Text style={styles.emptyText}>+  IMPORT MEDIA TO START THE TIMELINE</Text>
+    <Pressable
+      ref={ref}
+      onPress={onPress}
+      disabled={uploading}
+      style={[styles.empty, dropping ? styles.emptyDropping : null, error ? styles.emptyError : null]}
+      accessibilityRole="button"
+    >
+      <Text style={styles.emptyText}>{label}</Text>
+      {error ? <Text style={styles.emptyErrorText} numberOfLines={2}>{error} · TAP TO RETRY</Text> : null}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   block: {
-    position: 'absolute', top: 0, borderRadius: 5, overflow: 'hidden',
-    borderWidth: 1, borderColor: '#3A3850', backgroundColor: '#0A0A0F',
+    position: 'absolute', top: 0, borderRadius: radius.md, overflow: 'hidden',
+    borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panelSunken,
   },
-  blockSelected: { borderColor: colors.purple, borderWidth: 1 },
-  blockDragging: { opacity: 0.92, borderColor: colors.pink },
+  blockSelected: { borderColor: colors.accent, borderWidth: 1 },
+  blockDragging: { opacity: 0.92, borderColor: colors.text },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: '#05040A40' },
   waveform: {
     position: 'absolute', left: 2, right: 2, bottom: 0,
     flexDirection: 'row', alignItems: 'flex-end', gap: 1, opacity: 0.38,
   },
-  waveformBar: { flex: 1, minWidth: 1, borderRadius: 1, backgroundColor: colors.purple },
+  waveformBar: { flex: 1, minWidth: 1, backgroundColor: colors.muted },
   meta: {
-    position: 'absolute', top: 0, left: 0, right: 0, height: 15, paddingHorizontal: 6,
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#05040ACC',
+    position: 'absolute', top: 0, left: 0, right: 0, height: 15, paddingHorizontal: space.md,
+    flexDirection: 'row', alignItems: 'center', gap: space.md, backgroundColor: '#05040ACC',
   },
-  number: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.4 },
-  name: { flex: 1, color: '#FFFFFFCC', fontFamily: fonts.semibold, fontSize: 8 },
-  badges: { position: 'absolute', bottom: 4, left: 6, right: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  badge: { borderRadius: 3, backgroundColor: '#00000099', paddingHorizontal: 4, paddingVertical: 2 },
-  badgeAccent: { backgroundColor: '#6D28D9CC' },
-  badgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 7, letterSpacing: 0.4 },
+  number: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.4 },
+  name: { flex: 1, color: '#FFFFFFCC', fontFamily: fonts.semibold, fontSize: type.xs },
+  badges: { position: 'absolute', bottom: 4, left: 6, right: 6, flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  badge: { borderRadius: radius.md, backgroundColor: '#00000099', paddingHorizontal: space.sm, paddingVertical: space.xs },
+  badgeAccent: { backgroundColor: colors.accentStrong },
+  badgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.4 },
   transition: {
     position: 'absolute', left: 0, top: 15, width: 10, height: 16,
     alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#05040A99', borderBottomRightRadius: 4,
+    backgroundColor: '#05040A99', borderBottomRightRadius: radius.md,
   },
-  transitionGlyph: { color: colors.muted, fontFamily: fonts.bold, fontSize: 9 },
+  transitionGlyph: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm },
   handle: {
     position: 'absolute', top: 0, bottom: 0, width: 10,
     alignItems: 'center', justifyContent: 'center', backgroundColor: '#0B0B0F55',
   },
-  handleVisible: { backgroundColor: colors.purple },
+  handleVisible: { backgroundColor: colors.accent },
   handleLeft: { left: 0 },
   handleRight: { right: 0 },
-  grip: { width: 2, height: 16, borderRadius: 1, backgroundColor: '#FFFFFFAA' },
+  grip: { width: 2, height: 16, borderRadius: radius.sm, backgroundColor: '#FFFFFFAA' },
   caption: {
-    position: 'absolute', borderRadius: 4, justifyContent: 'center', paddingHorizontal: 6,
-    backgroundColor: '#3B2C63', borderWidth: 1, borderColor: '#54427F',
+    position: 'absolute', borderRadius: radius.md, justifyContent: 'center', paddingHorizontal: space.md,
+    backgroundColor: '#26303A', borderWidth: 1, borderColor: '#3A4A58',
   },
-  captionOverlap: { backgroundColor: '#5A3D18', borderColor: '#C98A2B' },
-  captionSelected: { borderColor: colors.purple, backgroundColor: '#4B3785' },
-  captionText: { color: '#E7E1FF', fontFamily: fonts.semibold, fontSize: 8 },
-  captionTextOverlap: { color: '#FFD79A' },
+  captionOverlap: { backgroundColor: colors.warnSoft, borderColor: colors.warn },
+  captionSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  captionText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xs },
+  captionTextOverlap: { color: colors.warn },
   sticker: {
-    position: 'absolute', borderRadius: 4, justifyContent: 'center', paddingHorizontal: 6,
-    backgroundColor: '#43214B', borderWidth: 1, borderColor: '#6E3B77',
+    position: 'absolute', borderRadius: radius.md, justifyContent: 'center', paddingHorizontal: space.md,
+    backgroundColor: '#332B26', borderWidth: 1, borderColor: '#4E4238',
   },
-  stickerSelected: { borderColor: colors.pink, backgroundColor: '#571F63' },
-  stickerText: { color: '#F5D9FF', fontFamily: fonts.semibold, fontSize: 9 },
+  stickerSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  stickerText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.sm },
   ghost: {
-    position: 'absolute', top: 0, borderRadius: 5, borderWidth: 1,
+    position: 'absolute', top: 0, borderRadius: radius.md, borderWidth: 1,
     borderColor: '#FFFFFF33', borderStyle: 'dashed', backgroundColor: '#FFFFFF08',
   },
   tooltip: {
-    position: 'absolute', top: -2, borderRadius: 4, backgroundColor: colors.pink,
-    paddingHorizontal: 5, paddingVertical: 2, zIndex: 40,
+    position: 'absolute', top: -2, borderRadius: radius.sm, backgroundColor: colors.accentStrong,
+    paddingHorizontal: space.sm, paddingVertical: space.xs, zIndex: 40,
   },
-  tooltipText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 8 },
+  tooltipText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: type.xs },
   empty: {
-    position: 'absolute', left: 0, top: 8, height: 44, width: 320, borderRadius: 6,
+    position: 'absolute', left: 0, top: 8, minHeight: 44, width: 320, borderRadius: radius.md,
     borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border,
-    alignItems: 'center', justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 6,
   },
-  emptyText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1 },
+  emptyDropping: { borderColor: colors.accent, borderStyle: 'solid', backgroundColor: colors.accentSoft },
+  emptyError: { borderColor: colors.danger },
+  emptyText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  emptyErrorText: { color: colors.danger, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6, marginTop: space.sm, textAlign: 'center' },
 });

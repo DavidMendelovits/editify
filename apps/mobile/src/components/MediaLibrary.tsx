@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
 import { api, assetThumbUrl } from '../lib/api';
 import { formatTimecode } from '../lib/timeline';
-import { colors, fonts } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 interface Props {
   projectId: string;
@@ -105,7 +105,7 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
           <Source label="photos" hint="device library" onPress={onPickPhotos} disabled={busy} />
           <Source label="files" hint="documents" onPress={onPickFiles} disabled={busy} />
           <Source label="folder" hint="server media" onPress={onOpenFolder} disabled={busy} />
-          {busy && <ActivityIndicator color={colors.purple} />}
+          {busy && <ActivityIndicator color={colors.accent} />}
         </View>
       </View>
 
@@ -115,8 +115,8 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
         {!library.isLoading && assets.length === 0 && (
           <Text style={styles.empty}>
             {scope === 'project'
-              ? 'No media in this project yet — pull clips in from photos, files, or the server media folder. Switch to “all clips” to borrow from another project.'
-              : 'Nothing on the server yet — pull a clip in from photos, files, or the server media folder.'}
+              ? 'No media in this project yet. Add from photos, files, or the server media folder.'
+              : 'Nothing on the server yet. Pull a clip in from photos, files, or the server media folder.'}
           </Text>
         )}
         {assets.map((asset) => (
@@ -134,7 +134,7 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
                 : <View style={styles.thumb} />}
               {asset.status !== 'ready' && (
                 <View style={styles.processing}>
-                  {asset.status === 'processing' && <ActivityIndicator size="small" color={colors.purple} />}
+                  {asset.status === 'processing' && <ActivityIndicator size="small" color={colors.accent} />}
                   <Text style={styles.processingText}>{asset.status === 'processing' ? 'processing…' : 'failed'}</Text>
                 </View>
               )}
@@ -183,31 +183,31 @@ function Source({ label, hint, onPress, disabled }: { label: string; hint: strin
 }
 
 const styles = StyleSheet.create({
-  panel: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 10, gap: 8 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  headerText: { gap: 3, flexShrink: 1 },
-  scopeRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  scope: { borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 3 },
-  scopeText: { color: colors.purple, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.6 },
-  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1.5 },
-  count: { color: colors.muted, fontFamily: fonts.medium, fontSize: 9 },
-  sources: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  source: { borderRadius: 9, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: 10, paddingVertical: 6 },
+  panel: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.lg, gap: space.lg },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
+  headerText: { gap: space.xs, flexShrink: 1 },
+  scopeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  scope: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.xs },
+  scopeText: { color: colors.text, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6 },
+  eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.5 },
+  count: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
+  sources: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  source: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.md },
   sourceDisabled: { opacity: 0.45 },
-  sourceText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 9 },
-  strip: { gap: 8, paddingVertical: 2, alignItems: 'flex-start' },
-  empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: 10, lineHeight: 16, maxWidth: 460, paddingVertical: 14 },
-  card: { width: 128, gap: 5 },
-  thumbWrap: { borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised },
+  sourceText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.sm },
+  strip: { gap: space.lg, paddingVertical: space.xs, alignItems: 'flex-start' },
+  empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, lineHeight: 16, maxWidth: 460, paddingVertical: space.xl },
+  card: { width: 128, gap: space.sm },
+  thumbWrap: { borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised },
   thumb: { width: '100%', height: 72 },
-  processing: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#0404089C' },
-  processingText: { color: colors.text, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.6 },
-  duration: { position: 'absolute', left: 5, bottom: 5, color: colors.text, fontFamily: fonts.bold, fontSize: 8, backgroundColor: '#04040899', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5 },
-  addCue: { position: 'absolute', right: 5, bottom: 5, width: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.purple },
-  addCueText: { color: colors.text, fontFamily: fonts.bold, fontSize: 11, lineHeight: 13 },
-  name: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
+  processing: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: space.sm, backgroundColor: '#0404089C' },
+  processingText: { color: colors.text, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6 },
+  duration: { position: 'absolute', left: 5, bottom: 5, color: colors.text, fontFamily: fonts.bold, fontSize: type.xs, backgroundColor: '#04040899', paddingHorizontal: space.sm, paddingVertical: space.xs, borderRadius: radius.md },
+  addCue: { position: 'absolute', right: 5, bottom: 5, width: 18, height: 18, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentStrong },
+  addCueText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base, lineHeight: 13 },
+  name: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md },
   nameUnlabelled: { color: colors.muted, fontFamily: fonts.medium },
-  nameInput: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.purple, paddingHorizontal: 6, paddingVertical: 3 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10 },
+  nameInput: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.accent, paddingHorizontal: space.md, paddingVertical: space.xs },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
   pressed: { opacity: 0.7 },
 });
