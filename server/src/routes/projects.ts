@@ -33,6 +33,13 @@ export function registerProjectRoutes(
     return project ?? await reply.code(404).send({ error: 'Project not found' });
   });
 
+  app.delete<{ Params: { id: string } }>('/projects/:id', async (request, reply) => {
+    if (!await projects.delete(request.params.id, request.userId)) {
+      return await reply.code(404).send({ error: 'Project not found' });
+    }
+    return await reply.code(204).send();
+  });
+
   app.post<{ Params: { id: string } }>('/projects/:id/ops', async (request, reply) => {
     const batch = operationBatchSchema.parse(request.body);
     const project = projects.get(request.params.id, request.userId);
