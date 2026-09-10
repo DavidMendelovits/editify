@@ -6,7 +6,7 @@ import { clipTimelineDuration } from '@editify/shared';
 import { Filmstrip } from './Filmstrip';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { api, type WaveformEnvelope } from '../../lib/api';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 export type DragMode = 'move' | 'in' | 'out';
 
@@ -381,71 +381,71 @@ export function EmptyLane({ onPress, onDropFiles, uploading, progress, error }: 
 
 const styles = StyleSheet.create({
   block: {
-    position: 'absolute', top: 0, borderRadius: 5, overflow: 'hidden',
-    borderWidth: 1, borderColor: '#3A3850', backgroundColor: '#0A0A0F',
+    position: 'absolute', top: 0, borderRadius: radius.md, overflow: 'hidden',
+    borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panelSunken,
   },
-  blockSelected: { borderColor: colors.purple, borderWidth: 1 },
-  blockDragging: { opacity: 0.92, borderColor: colors.pink },
+  blockSelected: { borderColor: colors.accent, borderWidth: 1 },
+  blockDragging: { opacity: 0.92, borderColor: colors.text },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: '#05040A40' },
   waveform: {
     position: 'absolute', left: 2, right: 2, bottom: 0,
     flexDirection: 'row', alignItems: 'flex-end', gap: 1, opacity: 0.38,
   },
-  waveformBar: { flex: 1, minWidth: 1, borderRadius: 1, backgroundColor: colors.purple },
+  waveformBar: { flex: 1, minWidth: 1, backgroundColor: colors.muted },
   meta: {
-    position: 'absolute', top: 0, left: 0, right: 0, height: 15, paddingHorizontal: 6,
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#05040ACC',
+    position: 'absolute', top: 0, left: 0, right: 0, height: 15, paddingHorizontal: space.md,
+    flexDirection: 'row', alignItems: 'center', gap: space.md, backgroundColor: '#05040ACC',
   },
-  number: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 8, letterSpacing: 0.4 },
-  name: { flex: 1, color: '#FFFFFFCC', fontFamily: fonts.semibold, fontSize: 8 },
-  badges: { position: 'absolute', bottom: 4, left: 6, right: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  badge: { borderRadius: 3, backgroundColor: '#00000099', paddingHorizontal: 4, paddingVertical: 2 },
-  badgeAccent: { backgroundColor: '#6D28D9CC' },
-  badgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: 7, letterSpacing: 0.4 },
+  number: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.4 },
+  name: { flex: 1, color: '#FFFFFFCC', fontFamily: fonts.semibold, fontSize: type.xs },
+  badges: { position: 'absolute', bottom: 4, left: 6, right: 6, flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  badge: { borderRadius: radius.md, backgroundColor: '#00000099', paddingHorizontal: space.sm, paddingVertical: space.xs },
+  badgeAccent: { backgroundColor: colors.accentStrong },
+  badgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.4 },
   transition: {
     position: 'absolute', left: 0, top: 15, width: 10, height: 16,
     alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#05040A99', borderBottomRightRadius: 4,
+    backgroundColor: '#05040A99', borderBottomRightRadius: radius.md,
   },
-  transitionGlyph: { color: colors.muted, fontFamily: fonts.bold, fontSize: 9 },
+  transitionGlyph: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm },
   handle: {
     position: 'absolute', top: 0, bottom: 0, width: 10,
     alignItems: 'center', justifyContent: 'center', backgroundColor: '#0B0B0F55',
   },
-  handleVisible: { backgroundColor: colors.purple },
+  handleVisible: { backgroundColor: colors.accent },
   handleLeft: { left: 0 },
   handleRight: { right: 0 },
-  grip: { width: 2, height: 16, borderRadius: 1, backgroundColor: '#FFFFFFAA' },
+  grip: { width: 2, height: 16, borderRadius: radius.sm, backgroundColor: '#FFFFFFAA' },
   caption: {
-    position: 'absolute', borderRadius: 4, justifyContent: 'center', paddingHorizontal: 6,
-    backgroundColor: '#3B2C63', borderWidth: 1, borderColor: '#54427F',
+    position: 'absolute', borderRadius: radius.md, justifyContent: 'center', paddingHorizontal: space.md,
+    backgroundColor: '#26303A', borderWidth: 1, borderColor: '#3A4A58',
   },
-  captionOverlap: { backgroundColor: '#5A3D18', borderColor: '#C98A2B' },
-  captionSelected: { borderColor: colors.purple, backgroundColor: '#4B3785' },
-  captionText: { color: '#E7E1FF', fontFamily: fonts.semibold, fontSize: 8 },
-  captionTextOverlap: { color: '#FFD79A' },
+  captionOverlap: { backgroundColor: colors.warnSoft, borderColor: colors.warn },
+  captionSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  captionText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xs },
+  captionTextOverlap: { color: colors.warn },
   sticker: {
-    position: 'absolute', borderRadius: 4, justifyContent: 'center', paddingHorizontal: 6,
-    backgroundColor: '#43214B', borderWidth: 1, borderColor: '#6E3B77',
+    position: 'absolute', borderRadius: radius.md, justifyContent: 'center', paddingHorizontal: space.md,
+    backgroundColor: '#332B26', borderWidth: 1, borderColor: '#4E4238',
   },
-  stickerSelected: { borderColor: colors.pink, backgroundColor: '#571F63' },
-  stickerText: { color: '#F5D9FF', fontFamily: fonts.semibold, fontSize: 9 },
+  stickerSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  stickerText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.sm },
   ghost: {
-    position: 'absolute', top: 0, borderRadius: 5, borderWidth: 1,
+    position: 'absolute', top: 0, borderRadius: radius.md, borderWidth: 1,
     borderColor: '#FFFFFF33', borderStyle: 'dashed', backgroundColor: '#FFFFFF08',
   },
   tooltip: {
-    position: 'absolute', top: -2, borderRadius: 4, backgroundColor: colors.pink,
-    paddingHorizontal: 5, paddingVertical: 2, zIndex: 40,
+    position: 'absolute', top: -2, borderRadius: radius.sm, backgroundColor: colors.accentStrong,
+    paddingHorizontal: space.sm, paddingVertical: space.xs, zIndex: 40,
   },
-  tooltipText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 8 },
+  tooltipText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: type.xs },
   empty: {
-    position: 'absolute', left: 0, top: 8, minHeight: 44, width: 320, borderRadius: 6,
+    position: 'absolute', left: 0, top: 8, minHeight: 44, width: 320, borderRadius: radius.md,
     borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border,
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 6,
   },
-  emptyDropping: { borderColor: colors.purple, borderStyle: 'solid', backgroundColor: '#8B5CF61A' },
+  emptyDropping: { borderColor: colors.accent, borderStyle: 'solid', backgroundColor: colors.accentSoft },
   emptyError: { borderColor: colors.danger },
-  emptyText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 8, letterSpacing: 1 },
-  emptyErrorText: { color: colors.danger, fontFamily: fonts.mono, fontSize: 7, letterSpacing: 0.6, marginTop: 4, textAlign: 'center' },
+  emptyText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  emptyErrorText: { color: colors.danger, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6, marginTop: space.sm, textAlign: 'center' },
 });

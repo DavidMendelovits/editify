@@ -8,7 +8,7 @@ import { CaptionChip, DragGhost, DragTooltip, EmptyLane, StickerChip, TimelineCl
 import { Inspector } from './Inspector';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 import {
   CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
   beatTargets, captionRows, clampStart, clipEnd, closeGapUpdates, findClip, formatTimecode, patchClip, patchStarts,
@@ -321,11 +321,11 @@ export function Timeline({
           <Tool label="undo" hint="last batch" onPress={() => onApply([{ type: 'undo', params: {} }])} disabled={pending} />
         </View>
         <View style={styles.toolGroup}>
-          <Tool label="♪ sound" hint="at playhead" onPress={onAddSound} disabled={pending} />
-          <Tool label="✦ sticker" hint="at playhead" onPress={onAddSticker} disabled={pending} />
-          <Tool label="✂ cleanup" hint="fillers & silence" onPress={onCleanup} disabled={pending} />
-          <Tool label="⏺ voice" hint="record at playhead" onPress={onRecordVoice} disabled={pending} />
-          <Tool label="✨ style" hint="apply a packet" onPress={onStyle} disabled={pending} />
+          <Tool label="sound" hint="at playhead" onPress={onAddSound} disabled={pending} />
+          <Tool label="sticker" hint="at playhead" onPress={onAddSticker} disabled={pending} />
+          <Tool label="cleanup" hint="fillers & silence" onPress={onCleanup} disabled={pending} />
+          <Tool label="voice" hint="record at playhead" onPress={onRecordVoice} disabled={pending} />
+          <Tool label="style" hint="apply a packet" onPress={onStyle} disabled={pending} />
         </View>
         <View style={styles.toolGroup}>
           <Tool label="−" hint="zoom" compact onPress={() => zoom(1 / 1.6)} disabled={pxPerSec <= MIN_PX_PER_SEC} />
@@ -549,39 +549,39 @@ function clampZoom(value: number): number {
 }
 
 const styles = StyleSheet.create({
-  panel: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: 10, gap: 8, minHeight: 0 },
-  toolbar: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
-  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: 9, letterSpacing: 1.5, marginRight: 'auto' },
+  panel: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.lg, gap: space.lg, minHeight: 0 },
+  toolbar: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.lg },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5, marginRight: 'auto' },
   // Wraps so a narrow phone stacks tools instead of clipping the row's tail.
-  toolGroup: { flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap', flexShrink: 1 },
+  toolGroup: { flexDirection: 'row', alignItems: 'center', gap: space.sm, flexWrap: 'wrap', flexShrink: 1 },
   tool: {
-    minWidth: 62, borderRadius: 7, borderWidth: 1, borderColor: colors.border,
-    backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 5,
+    minWidth: 62, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.sm,
   },
   toolCompact: { minWidth: 30, alignItems: 'center', justifyContent: 'center' },
-  toolDanger: { borderColor: '#5A2836' },
+  toolDanger: {},
   toolDisabled: { opacity: 0.38 },
-  toolLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: 10 },
+  toolLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md },
   toolLabelDanger: { color: colors.danger },
-  toolHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 7, marginTop: 1 },
-  zoomValue: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 8, minWidth: 46, textAlign: 'center' },
-  body: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: '#0D0D13', overflow: 'hidden' },
-  gutter: { width: LANE_GUTTER, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: '#101017' },
-  gutterLane: { justifyContent: 'center', paddingLeft: 8, borderTopWidth: 1, borderTopColor: '#1E1D2A' },
-  laneName: { color: colors.purple, fontFamily: fonts.bold, fontSize: 9 },
-  laneKind: { color: colors.muted, fontFamily: fonts.mono, fontSize: 6, letterSpacing: 0.8, marginTop: 2 },
+  toolHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.xs, marginTop: 1 },
+  zoomValue: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.xs, minWidth: 46, textAlign: 'center' },
+  body: { flexDirection: 'row', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelSunken, overflow: 'hidden' },
+  gutter: { width: LANE_GUTTER, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.panelSunken },
+  gutterLane: { justifyContent: 'center', paddingLeft: space.lg, borderTopWidth: 1, borderTopColor: colors.border },
+  laneName: { color: colors.text, fontFamily: fonts.bold, fontSize: type.sm },
+  laneKind: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.8, marginTop: space.xs },
   scroll: { flex: 1 },
-  ruler: { height: RULER_HEIGHT, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: '#101017' },
-  tick: { position: 'absolute', top: 0, bottom: 0, flexDirection: 'row', alignItems: 'flex-end', paddingBottom: 3 },
-  tickMark: { width: 1, height: 7, backgroundColor: '#3A3850' },
-  tickLabel: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 8, marginLeft: 4, fontVariant: ['tabular-nums'] },
-  lane: { justifyContent: 'center', paddingVertical: LANE_PADDING, borderTopWidth: 1, borderTopColor: '#1E1D2A' },
+  ruler: { height: RULER_HEIGHT, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.panelSunken },
+  tick: { position: 'absolute', top: 0, bottom: 0, flexDirection: 'row', alignItems: 'flex-end', paddingBottom: space.xs },
+  tickMark: { width: 1, height: 7, backgroundColor: colors.borderStrong },
+  tickLabel: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.xs, marginLeft: space.sm, fontVariant: ['tabular-nums'] },
+  lane: { justifyContent: 'center', paddingVertical: LANE_PADDING, borderTopWidth: 1, borderTopColor: colors.border },
   laneInner: { position: 'relative' },
-  laneHint: { position: 'absolute', left: 6, top: 4, color: colors.muted, fontFamily: fonts.regular, fontSize: 9 },
-  beatTick: { position: 'absolute', top: 0, width: 1, height: 6, backgroundColor: '#4A4767', zIndex: 20 },
+  laneHint: { position: 'absolute', left: 6, top: 4, color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
+  beatTick: { position: 'absolute', top: 0, width: 1, height: 6, backgroundColor: colors.borderStrong, zIndex: 20 },
   playhead: { position: 'absolute', top: 0, width: 1, alignItems: 'center', zIndex: 30 },
-  playheadLine: { flex: 1, width: 1, backgroundColor: colors.pink },
-  playheadHead: { width: 9, height: 9, borderRadius: 2, backgroundColor: colors.pink, transform: [{ rotate: '45deg' }], marginBottom: -3 },
-  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: 10 },
+  playheadLine: { flex: 1, width: 1, backgroundColor: colors.accent },
+  playheadHead: { width: 9, height: 9, borderRadius: radius.sm, backgroundColor: colors.accent, transform: [{ rotate: '45deg' }], marginBottom: -3 },
+  error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
   pressed: { opacity: 0.65 },
 });

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { editSummary } from '../lib/agent';
 import type { ChatMessage } from '../lib/api';
-import { colors } from '../lib/theme';
+import { colors, radius, space, type, fonts } from '../lib/theme';
 
 /**
  * Plain-language digest of what the agent has done to this video so far —
@@ -40,13 +40,13 @@ export function EditSummaryPanel({ messages }: { messages: ChatMessage[] | undef
 }
 
 const styles = StyleSheet.create({
-  zone: { borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: 12, paddingVertical: 9, gap: 7 },
-  header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  label: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 9, letterSpacing: 1.5 },
-  chevron: { color: colors.muted, fontFamily: 'Montserrat_700Bold', fontSize: 10 },
-  list: { gap: 5, paddingBottom: 2 },
-  row: { flexDirection: 'row', alignItems: 'baseline', gap: 7 },
-  bullet: { color: colors.purple, fontFamily: 'Montserrat_800ExtraBold', fontSize: 9 },
-  line: { flex: 1, color: colors.text, fontFamily: 'Montserrat_500Medium', fontSize: 10, lineHeight: 15 },
+  zone: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg, gap: space.md },
+  header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
+  label: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm, letterSpacing: 1.5 },
+  chevron: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.md },
+  list: { gap: space.sm, paddingBottom: space.xs },
+  row: { flexDirection: 'row', alignItems: 'baseline', gap: space.md },
+  bullet: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm },
+  line: { flex: 1, color: colors.text, fontFamily: fonts.medium, fontSize: type.md, lineHeight: 15 },
   pressed: { opacity: 0.7 },
 });
