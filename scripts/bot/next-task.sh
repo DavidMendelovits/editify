@@ -15,14 +15,14 @@ if [[ -f "$LOCK" ]] && (( $(date +%s) - $(stat -f %m "$LOCK") < 14400 )); then
 fi
 touch "$LOCK"
 
-prs=$(gh pr list --state open --limit 100 --json number,headRefName,mergeStateStatus,reviewDecision,body \
-  --jq '[.[] | select(.headRefName|startswith("bot/"))]')
+all_prs=$(gh pr list --state open --limit 100 --json number,headRefName,mergeStateStatus,reviewDecision,body)
+prs=$(jq -c '[.[] | select(.headRefName|startswith("bot/"))]' <<<"$all_prs")
 
-# Issue number a bot PR is for: branch bot/issue-<N>-... (fallback: "closes #N" in body)
-# NOTE: `|` binds looser than `//`, so each source needs its own parens — otherwise
+# Issue number a PR is for: branch .../issue-<N>-... (fallback: "closes #N" in body).
+# NOTE: `|` binds looser than `//`, so each source needs its own parens. Otherwise
 # `.body` is evaluated against the headRefName string and jq dies on branches like
 # bot/ignore-demo-media that carry no issue number.
-issue_of='((.headRefName | capture("bot/issue-(?<n>[0-9]+)").n) // (.body | capture("[Cc]loses #(?<n>[0-9]+)").n) // "0") | tonumber'
+issue_of='((.headRefName | capture("issue-(?<n>[0-9]+)").n) // (.body | capture("[Cc]loses #(?<n>[0-9]+)").n) // "0") | tonumber'
 
 # 1. conflicts first — cheapest, and they block the user
 conflict=$(jq -c "[.[] | select(.mergeStateStatus==\"DIRTY\")] | sort_by(.number) | first // empty
@@ -41,7 +41,9 @@ for n in $(jq -r 'sort_by(.number) | .[].number' <<<"$prs"); do
 done
 
 # 3. earliest open issue with no open PR, no bot/ branch, not labeled blocked
-taken=$(jq -r ".[] | $issue_of" <<<"$prs"; git ls-remote --heads origin 'bot/issue-*' | sed -E 's#.*bot/issue-([0-9]+).*#\1#')
+# Any open PR claims its issue, not just bot/ ones — otherwise a human PR for issue N
+# leaves N looking unclaimed and every run re-implements it.
+taken=$(jq -r ".[] | $issue_of" <<<"$all_prs"; git ls-remote --heads origin '*issue-*' | sed -E 's#.*issue-([0-9]+).*#\1#')
 issue=$(gh issue list --state open --limit 200 --json number,labels \
   --jq '[.[] | select(all(.labels[]?.name; . != "blocked" and . != "wontfix"))] | sort_by(.number) | .[].number' \
   | grep -vxF -f <(printf '%s\n' $taken) | head -1 || true)
