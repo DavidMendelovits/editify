@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { chatRequestSchema, type AgentTraceStep } from '@editify/shared';
+import { MAX_CHAT_MESSAGE_CHARS, chatRequestSchema, improveRequestSchema, type AgentTraceStep } from '@editify/shared';
+import { improvePrompt } from '../agent/improve.js';
 import type { AgentService } from '../agent/service.js';
 import type { ToolContext } from '../agent/tools.js';
 import type { AssetStore } from '../db/asset-store.js';
@@ -31,6 +32,17 @@ export function registerChatRoutes(
   app.post<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
+    // A pasted transcript that blows the cap is a real, actionable situation —
+    // say so instead of letting zod turn it into a generic validation failure.
+    const raw = (request.body as { message?: unknown } | undefined)?.message;
+    if (typeof raw === 'string' && raw.length > MAX_CHAT_MESSAGE_CHARS) {
+      return await reply.code(413).send({
+        error: `Message is ${raw.length} characters; the limit is ${MAX_CHAT_MESSAGE_CHARS}. Send the transcript as an asset transcript (get_transcript) or paste only the segments you want trimmed to.`,
+        code: 'message-too-large',
+        limit: MAX_CHAT_MESSAGE_CHARS,
+        actual: raw.length,
+      });
+    }
     const { message } = chatRequestSchema.parse(request.body);
     // One turn, one checkpoint: everything this run applies carries this id.
     const runId = randomUUID();
@@ -65,6 +77,19 @@ export function registerChatRoutes(
     }
     chats.add(project.id, 'assistant', response.reply, response.opsApplied, response.trace, runId);
     return { ...response, runId };
+  });
+
+  /**
+   * Rewrites a casual message into an explicit instruction before it is sent.
+   * Deterministic and local — no model call — so the answer is instant and can
+   * only ever name operations, transitions and sounds the platform has.
+   * `{ improved: null }` means "nothing to add"; the client sends as typed.
+   */
+  app.post<{ Params: { id: string } }>('/projects/:id/chat/improve', async (request, reply) => {
+    if (!projects.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Project not found' });
+    const { message, previous } = improveRequestSchema.parse(request.body);
+    const improvement = improvePrompt(message, previous);
+    return improvement ?? { improved: null };
   });
 
   /** Poll target while a turn is in flight; `{ running: false, steps: [] }` when idle. */

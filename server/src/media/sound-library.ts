@@ -111,6 +111,9 @@ let generated: Promise<LibrarySound[]> | undefined;
  * timeline clips, the preview, and the renderer treat them like any upload.
  * Idempotent across restarts via `getByOriginalName`.
  */
+/** Every built-in sound id, so callers (and tests) can name sounds without ffmpeg. */
+export const SOUND_LIBRARY_IDS = RECIPES.map((recipe) => recipe.id);
+
 export async function ensureSoundLibrary(assets: AssetStore): Promise<LibrarySound[]> {
   generated ??= (async () => {
     await mkdir(soundsRoot, { recursive: true });

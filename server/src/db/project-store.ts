@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import {
   newProjectSchema,
   operationSchema,
@@ -15,6 +16,12 @@ export class VersionConflictError extends Error {
     super(`Version conflict: expected ${expected}, current version is ${actual}`);
     this.name = 'VersionConflictError';
   }
+}
+
+/** Structural project comparison ignoring `version`, normalized through the schema so key order can't differ. */
+function sameDoc(left: Project, right: Project): boolean {
+  return JSON.stringify(projectSchema.parse({ ...left, version: 0 }))
+    === JSON.stringify(projectSchema.parse({ ...right, version: 0 }));
 }
 
 interface ProjectRow { doc_json: string }
@@ -93,6 +100,21 @@ export class ProjectStore {
   }
 
   /**
+   * Removes the project and, through `ON DELETE CASCADE`, its operation log,
+   * asset links, renders and chat. Rows in `assets` deliberately stay: media is
+   * shared between projects, so deleting one must not strand another's clips.
+   * Rendered outputs on disk belong to this project alone, so they are unlinked.
+   */
+  async delete(id: string, userId?: string): Promise<boolean> {
+    if (!this.get(id, userId)) return false;
+    const outputs = (this.database.prepare(
+      'SELECT output_path FROM renders WHERE project_id = ? AND output_path IS NOT NULL',
+    ).all(id) as Array<{ output_path: string }>).map((row) => row.output_path);
+    await Promise.all(outputs.map(async (path) => { await rm(path, { force: true }); }));
+    return this.database.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
+  }
+
+  /**
    * `runId` tags every row this call logs so a whole agent turn can be reverted
    * as one checkpoint; client edits leave it undefined (NULL).
    */
@@ -101,6 +123,7 @@ export class ProjectStore {
       let project = this.get(projectId);
       if (!project) throw new OperationError(`Project ${projectId} was not found`);
       if (project.version !== baseVersion) throw new VersionConflictError(baseVersion, project.version);
+      const original = project;
 
       const operations = rawOperations.map((operation) => operationSchema.parse(operation));
       if (!operations.length) throw new OperationError('At least one operation is required');
@@ -155,7 +178,7 @@ export class ProjectStore {
               AND (run_id IS NULL OR run_id != ?)
               AND json_extract(op_json, '$.type') != 'undo'
           `).get(projectId, lastRowid, target) as { count: number }).count;
-          if (foreign > 0) throw new OperationError('The timeline changed after this edit — revert unavailable');
+          if (foreign > 0) throw new OperationError('The timeline changed after this edit, so revert is unavailable');
           const snapshot = projectSchema.parse(JSON.parse(earliest.before_doc_json));
           after = { ...snapshot, version: before.version + 1 };
           this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND run_id = ?')
@@ -168,7 +191,11 @@ export class ProjectStore {
         project = after;
       });
 
-      if (operations[0]?.type !== 'undo' && operations[0]?.type !== 'revert_run') project.version = baseVersion + 1;
+      const isHistoryOperation = operations[0]?.type === 'undo' || operations[0]?.type === 'revert_run';
+      // A write that changed nothing must not bump the version: it would create a
+      // bogus revert checkpoint and make the client flash an identical document.
+      if (!isHistoryOperation && sameDoc(original, project)) return original;
+      if (!isHistoryOperation) project.version = baseVersion + 1;
       const now = new Date().toISOString();
       for (const entry of pendingLogs) {
         const loggedAfter = entry.sequence === pendingLogs.length - 1

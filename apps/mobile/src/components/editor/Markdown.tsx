@@ -1,6 +1,6 @@
 import { memo, useMemo, type ReactNode } from 'react';
 import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
-import { colors, fonts } from '../../lib/theme';
+import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 // Order matters: `**` must be tried before `*`.
@@ -136,18 +136,18 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
 });
 
 const styles = StyleSheet.create({
-  body: { gap: 5 },
-  text: { flex: 1, color: colors.text, fontFamily: fonts.regular, fontSize: 12, lineHeight: 18 },
+  body: { gap: space.sm },
+  text: { flex: 1, color: colors.text, fontFamily: fonts.regular, fontSize: type.lg, lineHeight: 18 },
   bold: { fontFamily: fonts.bold },
   italic: { fontStyle: 'italic' },
-  link: { color: '#C9B4FF', textDecorationLine: 'underline' },
-  h1: { color: colors.text, fontFamily: fonts.bold, fontSize: 15, lineHeight: 20, marginTop: 2 },
-  h2: { color: colors.text, fontFamily: fonts.bold, fontSize: 13, lineHeight: 18, marginTop: 2 },
-  h3: { color: colors.muted, fontFamily: fonts.bold, fontSize: 11, lineHeight: 16, letterSpacing: 0.5, marginTop: 2 },
-  item: { flexDirection: 'row', gap: 6, alignItems: 'flex-start' },
-  itemNested: { paddingLeft: 12 },
-  itemMarker: { minWidth: 12, color: '#C9B4FF', fontFamily: fonts.semibold, fontSize: 11, lineHeight: 18 },
-  inlineCode: { color: '#D8CCFF', fontFamily: MONO, fontSize: 11, backgroundColor: '#2C2440' },
-  codeBlock: { borderRadius: 8, backgroundColor: '#171327', padding: 8 },
-  codeBlockText: { color: '#D8D2E8', fontFamily: MONO, fontSize: 11, lineHeight: 16 },
+  link: { color: colors.accent, textDecorationLine: 'underline' },
+  h1: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl, lineHeight: 20, marginTop: space.xs },
+  h2: { color: colors.text, fontFamily: fonts.bold, fontSize: type.lg, lineHeight: 18, marginTop: space.xs },
+  h3: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.base, lineHeight: 16, letterSpacing: 0.5, marginTop: space.xs },
+  item: { flexDirection: 'row', gap: space.md, alignItems: 'flex-start' },
+  itemNested: { paddingLeft: space.xl },
+  itemMarker: { minWidth: 12, color: colors.muted, fontFamily: fonts.semibold, fontSize: type.base, lineHeight: 18 },
+  inlineCode: { color: colors.text, fontFamily: MONO, fontSize: type.base, backgroundColor: colors.panelRaised },
+  codeBlock: { borderRadius: radius.md, backgroundColor: colors.panelSunken, padding: space.lg },
+  codeBlockText: { color: colors.text, fontFamily: MONO, fontSize: type.base, lineHeight: 16 },
 });

@@ -92,6 +92,42 @@ describe('agent honesty and batching', () => {
     expect(edited.reply).toContain('1 edit applied');
   });
 
+  it('treats an operation with no effect as no edit at all', async () => {
+    // Establish the value first, so the second identical set_volume changes nothing.
+    await runAgentLoop(scriptedProvider([
+      { toolCalls: [{ name: 'set_volume', input: { clipId: 'clip-a', volume: 0.5 } }] },
+      {},
+    ]), ctx, 'quieter please');
+    const settledVersion = projects.get(ctx.projectId)?.version;
+
+    const response = await runAgentLoop(scriptedProvider([
+      { toolCalls: [{ name: 'set_volume', input: { clipId: 'clip-a', volume: 0.5 } }] },
+      { text: 'Done! I adjusted the volume for you.' },
+    ]), ctx, 'quieter please');
+    expect(projects.get(ctx.projectId)?.version).toBe(settledVersion);
+    expect(response.opsApplied).toHaveLength(0);
+    expect(response.reply).toContain('no edits were actually applied');
+  });
+
+  it('flags a no-op beside a real edit as a partial result', async () => {
+    await runAgentLoop(scriptedProvider([
+      { toolCalls: [{ name: 'set_volume', input: { clipId: 'clip-a', volume: 0.5 } }] },
+      {},
+    ]), ctx, 'quieter please');
+
+    const response = await runAgentLoop(scriptedProvider([
+      { toolCalls: [
+        { name: 'set_volume', input: { clipId: 'clip-a', volume: 0.5 } },
+        { name: 'set_format', input: { format: '16:9' } },
+      ] },
+      { text: 'Done. I adjusted the audio and changed the format.' },
+    ]), ctx, 'quieter and widescreen');
+    expect(response.opsApplied).toHaveLength(1);
+    expect(response.opsApplied[0]?.type).toBe('set_format');
+    expect(response.reply).toContain('(Partial: set_volume made no change');
+    expect(response.doc.format).toBe('16:9');
+  });
+
   it('leaves an honest question-answer reply alone', async () => {
     const response = await runAgentLoop(scriptedProvider([{ text: 'The project has two clips of three seconds each.' }]), ctx, 'what is on the timeline?');
     expect(response.reply).toBe('The project has two clips of three seconds each.');

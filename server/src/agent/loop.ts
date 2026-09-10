@@ -7,6 +7,7 @@ import {
 } from '@editify/shared';
 import type { LoopMessage, ToolProvider } from './providers.js';
 import { createMutationDelta, createToolRegistry, type ToolContext, type ToolDef } from './tools.js';
+import { NO_DASHES_RULE } from './prose-style.js';
 
 const MAX_ITERATIONS = 24;
 
@@ -19,6 +20,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Did the project document actually change, ignoring the version counter? */
+function docChanged(before: Project, after: Project): boolean {
+  return JSON.stringify({ ...before, version: 0 }) !== JSON.stringify({ ...after, version: 0 });
 }
 
 function resultSucceeded(result: unknown): boolean {
@@ -36,14 +42,16 @@ function summarizeResult(tool: string, result: unknown, ok: boolean): string {
   if (tool === 'list_assets' && Array.isArray(result)) return `Found ${result.length} available assets.`;
   if (tool === 'get_style_profile') return result === null ? 'No style profile is available.' : 'Loaded the current style profile.';
   if (tool === 'get_transcript' && isRecord(result)) return `Loaded ${String(result.wordCount)} timed words.`;
+  if (tool === 'parse_transcript_text' && isRecord(result)) return `Parsed ${String(result.segmentCount)} ${String(result.format)} transcript segments.`;
   if (tool === 'get_insights' && isRecord(result)) return 'Loaded transcript hook and highlight insights.';
   if (tool === 'get_timeline_transcript' && isRecord(result)) return `Loaded ${Array.isArray(result.words) ? result.words.length : 0} timeline words.`;
   if (tool === 'list_presets' && Array.isArray(result)) return `Found ${result.length} editing presets.`;
   if (tool === 'get_preset' && isRecord(result)) return `Loaded the ${String(result.name)} preset.`;
-  if (tool === 'caption_clip_from_transcript' && isRecord(result)) {
+  if (tool === 'caption_clip_from_transcript' && isRecord(result) && result.changed !== false) {
     return `Added ${String(result.captionsAdded)} transcript captions; project is now version ${String(result.version)}.`;
   }
   if (isRecord(result) && result.ok === true) {
+    if (result.changed === false) return `No change from ${tool}: the project already matched this request.`;
     const changed = Array.isArray(result.changedClips) ? result.changedClips.length : 0;
     const removed = Array.isArray(result.removedClipIds) ? result.removedClipIds.length : 0;
     return `Applied ${tool}; project is now version ${String(result.version)} (${changed} changed, ${removed} removed).`;
@@ -69,12 +77,15 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'Inspect the project and assets before editing. Use operation tools for every mutation; never invent that an edit succeeded.',
     'When a tool reports an error, inspect fresh state as needed, correct the input, and try again.',
     'Use readable unique clip IDs. Keep edits faithful to the user request and finish with a concise, honest description.',
+    'When the user pastes a transcript into the chat message, call parse_transcript_text on that pasted text and trim with the segment timecodes it returns rather than guessing times.',
     'Asset transcripts and transcript insights may be available. Strong edits trim to highlight spans, lead with the hook, and use caption_clip_from_transcript for speech captions.',
     'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes. Trimming several clips is one set_clip_properties call with in/out per update, never repeated trim_clip calls; captioning several clips is one caption_clip_from_transcript call with clipIds.',
-    'You are told exactly what changed after every edit — do not re-read the project between your own edits; re-read only after an error.',
-    'Whenever a reply contains tool calls, open it with one or two plain sentences saying what you are about to do and why — that text is shown to the user as your thinking.',
-    'set_speed and trim_clip change a clip duration but never move its neighbors — after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
+    'You are told exactly what changed after every edit, so do not re-read the project between your own edits; re-read only after an error.',
+    'Whenever a reply contains tool calls, open it with one or two plain sentences saying what you are about to do and why. That text is shown to the user as your thinking.',
+    'Never use emoji in anything you write; the interface is a professional editing tool.',
+    'set_speed and trim_clip change a clip duration but never move its neighbors, so after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
     'When the user names a style or content type, fetch the matching preset and follow its parameters. Presets are guidance, not law.',
+    NO_DASHES_RULE,
     styleDoc ? `Editing style profile: ${styleDoc}` : 'No editing style profile is available.',
     `Initial project summary: ${projectSummary(project)}`,
   ].join('\n');
@@ -145,6 +156,7 @@ export async function runAgentLoop(
     options.onStep?.(step);
   };
   const opsApplied: Operation[] = [];
+  const noOpCalls: Array<{ tool: string; input: unknown }> = [];
   ctx.appliedOperations = [];
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
@@ -162,10 +174,17 @@ export async function runAgentLoop(
       // gets corrected rather than trusted.
       let reply = turn.text?.trim()
         || (opsApplied.length
-          ? `Done — ${opsApplied.length} edit${opsApplied.length === 1 ? '' : 's'} applied. The trace lists each one.`
+          ? `Done: ${opsApplied.length} edit${opsApplied.length === 1 ? '' : 's'} applied. The trace lists each one.`
           : 'I didn’t make any changes to the project.');
-      if (opsApplied.length === 0 && EDIT_CLAIM.test(reply)) {
+      // Honesty is judged on the document, not on the op count: an operation that
+      // changed nothing must not count as an edit.
+      const anythingChanged = docChanged(initialProject, doc);
+      if (!anythingChanged && EDIT_CLAIM.test(reply)) {
         reply += '\n\n(Note: no edits were actually applied to the project in this run.)';
+      } else if (anythingChanged && noOpCalls.length) {
+        const names = [...new Set(noOpCalls.map((entry) => entry.tool))];
+        const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+        reply += `\n\n(Partial: ${list} made no change: the project already matched those requests.)`;
       }
       return chatResponseSchema.parse({ reply, trace, opsApplied, doc });
     }
@@ -183,6 +202,14 @@ export async function runAgentLoop(
         ok: executed.ok,
         summary: summarizeResult(call.name, executed.result, executed.ok),
       });
+      // A mutating tool that reports success while changing nothing is the silent
+      // no-op this run must not claim as an edit — log it and remember it.
+      if (executed.ok && isRecord(executed.result) && executed.result.changed === false) {
+        noOpCalls.push({ tool: call.name, input: executed.parsedInput });
+        console.warn('[agent] no-op tool call', {
+          projectId: ctx.projectId, runId: ctx.runId, tool: call.name, input: executed.parsedInput,
+        });
+      }
       opsApplied.push(...ctx.appliedOperations.slice(appliedBefore));
       messages.push({
         role: 'tool',
