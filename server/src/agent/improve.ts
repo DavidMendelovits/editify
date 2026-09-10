@@ -307,7 +307,7 @@ export function improvePrompt(message: string, previous?: string): PromptImprove
     : (clauses[0] ?? `Keep the previous instruction and adjust it: ${text}`);
 
   const head = refining
-    ? `Refine the previous instruction ("${previous?.trim()}") rather than starting a new edit — keep everything it produced and layer this on top:`
+    ? `Refine the previous instruction ("${previous?.trim()}") rather than starting a new edit: keep everything it produced and layer this on top:`
     : `Original request: "${text}". Do this:`;
   if (refining) changes.unshift('kept as a refinement of the previous instruction');
 

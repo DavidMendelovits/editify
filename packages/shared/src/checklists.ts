@@ -76,14 +76,14 @@ function median(values: number[]): number {
 const HOOK: CriterionDef = {
   id: 'hook',
   label: 'Opens on a hook',
-  suggestion: "We couldn't find a hook in the cut — film a punchy opening line and put it first.",
+  suggestion: "We couldn't find a hook in the cut. Film a punchy opening line and put it first.",
   test: hasHookInCut,
 };
 
 const CAPTIONS: CriterionDef = {
   id: 'captions',
   label: 'Captions on screen',
-  suggestion: 'No captions yet — ask for burned-in captions so the edit reads with the sound off.',
+  suggestion: 'No captions yet. Ask for burned-in captions so the edit reads with the sound off.',
   test: (scope) => scope.captionClips.length > 0,
 };
 
@@ -96,7 +96,7 @@ const CHECKLIST_DEFS: Record<string, { title: string; criteria: CriterionDef[] }
       {
         id: 'action_words',
         label: 'Key words emphasised',
-        suggestion: 'Captions are flat — turn on keyword highlighting so the punch words pop.',
+        suggestion: 'Captions are flat. Turn on keyword highlighting so the punch words pop.',
         test: (scope) => scope.captionClips.some((clip) => clip.style?.emphasis === 'highlight' || Boolean(clip.style?.emphasisColor)),
       },
       {
@@ -108,7 +108,7 @@ const CHECKLIST_DEFS: Record<string, { title: string; criteria: CriterionDef[] }
       {
         id: 'pacing',
         label: 'Punchy pacing',
-        suggestion: 'A shot runs long — cut the dead air or split it so nothing holds past the preset ceiling.',
+        suggestion: 'A shot runs long. Cut the dead air or split it so nothing holds past the preset ceiling.',
         test: (scope) => scope.videoClips.length > 0
           && scope.videoClips.every((clip) => timelineDuration(clip) <= scope.maxShotSeconds),
       },
@@ -122,7 +122,7 @@ const CHECKLIST_DEFS: Record<string, { title: string; criteria: CriterionDef[] }
       {
         id: 'punchline',
         label: 'Punchline protected',
-        suggestion: "The punchline didn't make the cut — extend the clip to include it or re-record the ending.",
+        suggestion: "The punchline didn't make the cut. Extend the clip to include it or re-record the ending.",
         test: (scope) => scope.insights.some((insight) => insight.highlights.some((highlight) =>
           highlight.label.toLowerCase() === 'punchline'
           && spanFullyKept(scope.videoClips, insight.assetId, highlight.start, highlight.end))),
@@ -130,7 +130,7 @@ const CHECKLIST_DEFS: Record<string, { title: string; criteria: CriterionDef[] }
       {
         id: 'tight_duration',
         label: 'Tight duration',
-        suggestion: 'The cut sits outside the sweet spot for this format — trim the setup or add another beat.',
+        suggestion: 'The cut sits outside the sweet spot for this format. Trim the setup or add another beat.',
         test: (scope) => scope.project.duration >= scope.targetDurationSec[0]
           && scope.project.duration <= scope.targetDurationSec[1],
       },
@@ -142,13 +142,13 @@ const CHECKLIST_DEFS: Record<string, { title: string; criteria: CriterionDef[] }
       {
         id: 'music',
         label: 'Music bed',
-        suggestion: 'A montage needs music — drop a track underneath and let it set the pace.',
+        suggestion: 'A montage needs music. Drop a track underneath and let it set the pace.',
         test: (scope) => scope.audioClips.length > 0,
       },
       {
         id: 'quick_cuts',
         label: 'Quick cuts',
-        suggestion: 'Shots are lingering — tighten them so the montage keeps moving, or shoot more coverage to cut to.',
+        suggestion: 'Shots are lingering. Tighten them so the montage keeps moving, or shoot more coverage to cut to.',
         test: (scope) => scope.videoClips.length > 0
           && median(scope.videoClips.map(timelineDuration)) <= scope.maxShotSeconds,
       },
