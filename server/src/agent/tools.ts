@@ -24,7 +24,7 @@ import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { ProjectStore, VersionConflictError } from '../db/project-store.js';
 import type { StoredTranscript, TranscriptWord } from '../db/transcript-store.js';
 import { ensureSoundLibrary } from '../media/sound-library.js';
-import { OperationError } from '../operations/apply.js';
+import { OperationError, describeTrackIds } from '../operations/apply.js';
 import {
   buildTimelineTranscript,
   normalizeWord,
@@ -207,7 +207,7 @@ function compactClip(trackId: string, clip: Clip): Record<string, unknown> {
   return {
     id: clip.id, trackId,
     ...(clip.assetId ? { assetId: clip.assetId } : {}),
-    start: clip.start, in: clip.in, out: clip.out,
+    start: clip.start, end: round(clip.start + clipTimelineDuration(clip)), in: clip.in, out: clip.out,
     ...(clip.volume !== undefined && clip.volume !== 1 ? { volume: clip.volume } : {}),
     ...(clip.speed !== undefined && clip.speed !== 1 ? { speed: clip.speed } : {}),
     ...(clip.text ? { text: clip.text } : {}),
@@ -219,6 +219,92 @@ function compactClip(trackId: string, clip: Clip): Record<string, unknown> {
     ...(clip.transition ? { transition: clip.transition } : {}),
     ...(clip.duck ? { duck: true } : {}),
   };
+}
+
+function round(seconds: number): number {
+  return Math.round(seconds * 1000) / 1000;
+}
+
+export interface TimelineIssue {
+  kind: 'gap' | 'overlap';
+  trackId: string;
+  from: number;
+  to: number;
+}
+
+/**
+ * Black frames and double-exposed clips are invisible in a JSON document, so
+ * every mutation result names them: a gap is empty timeline between two video
+ * clips, an overlap is two video clips claiming the same second. Audio,
+ * caption, and overlay tracks are allowed both.
+ */
+export function findTimelineIssues(project: Project): TimelineIssue[] {
+  const tolerance = 1 / project.fps;
+  const issues: TimelineIssue[] = [];
+  for (const track of project.tracks) {
+    if (track.kind !== 'video') continue;
+    const ordered = [...track.clips].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+    let cursor = ordered[0]?.start ?? 0;
+    for (const clip of ordered) {
+      if (clip.start - cursor > tolerance) issues.push({ kind: 'gap', trackId: track.id, from: round(cursor), to: round(clip.start) });
+      else if (cursor - clip.start > tolerance) issues.push({ kind: 'overlap', trackId: track.id, from: round(clip.start), to: round(cursor) });
+      cursor = Math.max(cursor, clip.start + clipTimelineDuration(clip));
+    }
+  }
+  return issues;
+}
+
+function describeTimelineIssues(issues: TimelineIssue[]): string[] {
+  if (!issues.length) return [];
+  const shown = issues.slice(0, 5).map((issue) => `${issue.kind} on ${issue.trackId} ${issue.from}s to ${issue.to}s`);
+  const more = issues.length > 5 ? ` and ${issues.length - 5} more` : '';
+  return [`Timeline has ${shown.join('; ')}${more}. Gaps render as black frames and overlaps hide a clip: call close_gaps(trackId) or move clips deliberately.`];
+}
+
+/**
+ * The whole project as the agent should picture it: one row per clip with its
+ * timeline span, source range, and only the properties that differ from the
+ * defaults. Caption word timings are collapsed to a count; they are large and
+ * never needed to plan an edit.
+ */
+export function describeProject(project: Project): Record<string, unknown> {
+  return {
+    id: project.id,
+    title: project.title,
+    format: project.format,
+    fps: project.fps,
+    duration: round(project.duration),
+    version: project.version,
+    tracks: project.tracks.map((track) => ({
+      id: track.id,
+      kind: track.kind,
+      clips: [...track.clips].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id)).map((clip) => {
+        const { trackId: _trackId, style, ...compact } = compactClip(track.id, clip);
+        const words = clip.style?.words?.length;
+        return {
+          ...compact,
+          ...(style ? { styled: true } : {}),
+          ...(words ? { wordTimings: words } : {}),
+          ...(clip.callout ? { callout: clip.callout } : {}),
+        };
+      }),
+    })),
+    issues: findTimelineIssues(project),
+  };
+}
+
+/** Errors the agent can act on come back as results; anything else is a server bug and still throws. */
+export function toolFailure(error: unknown): { ok: false; error: string } | undefined {
+  if (error instanceof ZodError) return { ok: false, error: formatZodError(error) };
+  if (error instanceof OperationError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+  return undefined;
+}
+
+/** `updates.1.out: Number must be greater than 0` beats a pretty-printed issue array. */
+export function formatZodError(error: ZodError): string {
+  const lines = error.issues.slice(0, 8).map((issue) => `${issue.path.length ? issue.path.join('.') : 'input'}: ${issue.message}`);
+  const more = error.issues.length > 8 ? `; ${error.issues.length - 8} more issues` : '';
+  return `Invalid input. ${lines.join('; ')}${more}`;
 }
 
 function equalExceptStart(left: Clip, right: Clip): boolean {
@@ -259,10 +345,12 @@ export function createMutationDelta(before: Project, after: Project, extraNotes:
   const changedDoc = JSON.stringify({ ...before, version: 0 }) !== JSON.stringify({ ...after, version: 0 });
   const didChange = changed.length > 0 || removedClipIds.length > 0 || shifts.size > 0 || changedDoc;
   if (!didChange) notes.push('No change: the project already matched this request.');
+  notes.push(...describeTimelineIssues(findTimelineIssues(after)));
   return {
     ok: true,
     changed: didChange,
     version: after.version,
+    duration: round(after.duration),
     changedClips: changed.slice(0, 20),
     removedClipIds,
     shifted: [...shifts.values()].sort((left, right) => left.trackId.localeCompare(right.trackId) || left.fromSec - right.fromSec),
@@ -301,9 +389,8 @@ async function executeOperation(ctx: ToolContext, type: Operation['type'], rawIn
     const project = applyMany(ctx, [operation]);
     return createMutationDelta(before, project);
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) {
-      return { ok: false, error: error.message };
-    }
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -339,9 +426,8 @@ async function executeBatch(ctx: ToolContext, operations: Operation[], notes: st
     const after = applyMany(ctx, operations);
     return createMutationDelta(before, after, notes);
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) {
-      return { ok: false, error: error.message };
-    }
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -386,9 +472,8 @@ async function captionClipFromTranscript(ctx: ToolContext, rawInput: unknown): P
       results,
     };
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) {
-      return { ok: false, error: error.message };
-    }
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -455,9 +540,8 @@ async function captionOneClip(
     const after = applyMany(ctx, operations);
     return { ...createMutationDelta(project, after, notes), captionsAdded: chunks.length };
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) {
-      return { ok: false, error: error.message };
-    }
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -498,7 +582,8 @@ async function removeWords(ctx: ToolContext, rawInput: unknown): Promise<unknown
       wordsRemoved: selected.size,
     };
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -517,7 +602,8 @@ async function removeSilence(ctx: ToolContext, rawInput: unknown): Promise<unkno
     const after = applyMany(ctx, operations);
     return { ...createMutationDelta(project, after), removedSec, gapsCut, gapsProtected };
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -571,7 +657,8 @@ async function cutToBeats(ctx: ToolContext, rawInput: unknown): Promise<unknown>
       : [];
     return { ...createMutationDelta(project, after, notes), cutTimes, tempoBpm: dissection.tempoBpm };
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -768,7 +855,8 @@ async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<un
     const after = operations.length ? applyMany(ctx, operations) : project;
     return { ...createMutationDelta(project, after, notes), guidance };
   } catch (error) {
-    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    const failure = toolFailure(error);
+    if (failure) return failure;
     throw error;
   }
 }
@@ -777,7 +865,7 @@ export function createToolRegistry(): ToolDef[] {
   const readTools: ToolDef[] = [
     {
       name: 'get_project',
-      description: 'Get the complete current project document, including tracks, clips, timing, format, duration, and version. Call this after mutations when you need fresh clip state.',
+      description: 'Get the complete current project document, including tracks, clips, timing, format, duration, and version. The turn already opens with the timeline and every edit returns its delta, so call this only after an error or when you need a field those omit (full caption styles, word timings).',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
         emptyInputSchema.parse(input);
@@ -961,7 +1049,7 @@ export function createToolRegistry(): ToolDef[] {
           const { trackId } = closeGapsSchema.parse(rawInput);
           const project = requireProject(ctx);
           const track = project.tracks.find((candidate) => candidate.id === trackId);
-          if (!track) throw new OperationError(`Track ${trackId} was not found`);
+          if (!track) throw new OperationError(`Track ${trackId} was not found. ${describeTrackIds(project)}`);
           const ordered = [...track.clips].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
           let cursor = ordered[0]?.start ?? 0;
           const updates: Array<{ clipId: string; start: number }> = [];
@@ -972,7 +1060,8 @@ export function createToolRegistry(): ToolDef[] {
           if (!updates.length) return createMutationDelta(project, project, ['Track already had no gaps.']);
           return await executeBatch(ctx, [operationSchema.parse({ type: 'set_clip_properties', params: { updates } })]);
         } catch (error) {
-          if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+          const failure = toolFailure(error);
+          if (failure) return failure;
           throw error;
         }
       },

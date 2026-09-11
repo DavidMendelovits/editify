@@ -152,10 +152,14 @@ All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "
 | `reorder_clips` | `trackId`, complete ordered `clipIds` | Reorders and packs the track sequentially. |
 | `set_volume` | `clipId`, `volume` (0–1) | Sets clip gain. |
 | `set_speed` | `clipId`, `speed` (0.1–8) | Sets playback rate and recalculates timeline duration. |
-| `set_transform` | `clipId`, `{ scale, x, y }` | Sets crop/zoom transform. |
+| `set_transform` | `clipId`, `transform`, optional `transformEnd` | Sets the crop/zoom pose; with `transformEnd` it animates between the two across the clip. |
+| `set_overlay` | `clipId`, `overlay` | Repositions an overlay-track sticker (`x`, `y`, `width` as frame fractions, `rotation` in degrees). |
+| `set_transition` | `clipId`, `transition` or `null` | Sets or clears the crossfade or dip into a video clip. |
 | `add_caption` | `trackId`, text `clip` | Creates or appends to a caption track. |
 | `update_caption` | `clipId` plus text/timing/style fields | Updates a caption. |
 | `remove_caption` | `clipId` | Removes a caption clip. |
+| `ripple_delete_ranges` | `trackId`, `ranges` | Deletes timeline ranges on a video/audio track and shifts every track left to close them. |
+| `set_clip_properties` | `updates` | Atomically updates volume, speed, transform, start, in/out, or duck on up to 100 clips. |
 | `set_format` | `format` | Changes output canvas to 9:16, 1:1, or 16:9. |
 | `undo` | `{}` | Reverts the latest non-undone mutation using its stored snapshot. |
 
@@ -166,5 +170,15 @@ All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "
 - Agent: `POST /projects/:id/chat`, `GET /projects/:id/chat`
 - Styles: `POST /style-profile/analyze`, `GET /style-profile`
 - Rendering: `POST /projects/:id/render`, `GET /renders/:id`, `GET /renders/:id/file.mp4`
+
+## What the editing agent sees
+
+The chat agent's manual is the system prompt in `server/src/agent/loop.ts` and the tool descriptions in `server/src/agent/tools.ts`. The contract is designed so a model can drive the timeline without reading it back:
+
+- Every turn opens with the units (timeline seconds vs source seconds), the four track ids, the full compact timeline with each clip's start and end, and the assets linked to the project. Read tools exist for after an error or for fields the summary omits.
+- Every mutation returns the clips it changed with their new spans, the project duration, and any gaps or overlaps on the video track, so black frames are never silent.
+- Errors name what exists: an unknown clip id lists the clip ids, an unknown track lists the tracks, and a schema failure is one line per field.
+
+`server/test/agent-legibility.test.ts` pins that shape.
 
 The v1 server is intentionally single-user and local: no authentication, cloud storage, billing, or predictive analytics.

@@ -25,13 +25,25 @@ function findClip(project: Project, clipId: string): { track: Track; clip: Clip;
       if (clip) return { track, clip, index };
     }
   }
-  throw new OperationError(`Clip ${clipId} was not found`);
+  throw new OperationError(`Clip ${clipId} was not found. ${describeClipIds(project)}`);
 }
 
 function findTrack(project: Project, trackId: string): Track {
   const track = project.tracks.find((candidate) => candidate.id === trackId);
-  if (!track) throw new OperationError(`Track ${trackId} was not found`);
+  if (!track) throw new OperationError(`Track ${trackId} was not found. ${describeTrackIds(project)}`);
   return track;
+}
+
+/** An unknown id is usually a typo or a stale read, so the error names what exists. */
+function describeClipIds(project: Project): string {
+  const ids = project.tracks.flatMap((track) => track.clips.map((clip) => clip.id));
+  if (!ids.length) return 'The project has no clips yet.';
+  const shown = ids.slice(0, 40).join(', ');
+  return `Existing clips: ${shown}${ids.length > 40 ? ` and ${ids.length - 40} more` : ''}.`;
+}
+
+export function describeTrackIds(project: Project): string {
+  return `Existing tracks: ${project.tracks.map((track) => `${track.id} (${track.kind})`).join(', ')}.`;
 }
 
 function assertUniqueClipId(project: Project, clipId: string): void {

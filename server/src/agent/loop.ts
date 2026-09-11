@@ -6,7 +6,7 @@ import {
   type Project,
 } from '@editify/shared';
 import type { LoopMessage, ToolProvider } from './providers.js';
-import { createMutationDelta, createToolRegistry, type ToolContext, type ToolDef } from './tools.js';
+import { createMutationDelta, createToolRegistry, describeProject, formatZodError, type ToolContext, type ToolDef } from './tools.js';
 import { NO_DASHES_RULE } from './prose-style.js';
 
 const MAX_ITERATIONS = 24;
@@ -71,23 +71,66 @@ function projectSummary(project: Project): string {
   });
 }
 
-function buildSystem(project: Project, styleDoc: string | null): string {
+/** Past this, the timeline is summarized and the agent reads it with get_project. */
+const MAX_EMBEDDED_CLIPS = 120;
+const MAX_EMBEDDED_ASSETS = 60;
+
+export interface AssetSummary {
+  id: string;
+  name: string;
+  kind: 'video' | 'audio' | 'image' | 'other';
+  duration: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+}
+
+export function summarizeAssets(ctx: ToolContext): AssetSummary[] {
+  return ctx.assets.listForProject(ctx.projectId).map((asset) => ({
+    id: asset.id,
+    name: asset.label ?? asset.originalName,
+    kind: asset.mimeType.startsWith('video/') ? 'video'
+      : asset.mimeType.startsWith('audio/') ? 'audio'
+        : asset.mimeType.startsWith('image/') ? 'image' : 'other',
+    duration: asset.duration,
+    width: asset.width,
+    height: asset.height,
+    hasAudio: asset.hasAudio,
+  }));
+}
+
+/**
+ * The agent's whole situation in one place: the units every number is in, the
+ * tracks that exist, the timeline as it stands, and the media it may cut with.
+ * Sending the state up front saves the two read calls every turn used to open
+ * with, which on the CLI providers is two whole process spawns.
+ */
+export function buildSystem(project: Project, assets: AssetSummary[], styleDoc: string | null): string {
+  const clipCount = project.tracks.reduce((total, track) => total + track.clips.length, 0);
+  const embedProject = clipCount <= MAX_EMBEDDED_CLIPS;
+  const embedAssets = assets.length <= MAX_EMBEDDED_ASSETS;
   return [
     'You are Editify, a precise video-editing agent operating a live project through tools.',
-    'Inspect the project and assets before editing. Use operation tools for every mutation; never invent that an edit succeeded.',
-    'When a tool reports an error, inspect fresh state as needed, correct the input, and try again.',
+    'Units: clip.start is an absolute timeline second and clip.in/clip.out are seconds inside the source asset, so a clip ends at start + (out - in) / speed. split_clip.at, move_clip.start, ripple ranges, and caption starts are timeline seconds. Transcript, insight, and dissection timestamps are source seconds until a tool says otherwise. Tracks: video-main is the cut, audio-main holds music, voiceover, and SFX, overlays holds stickers, callouts, and b-roll, captions holds captions.',
+    embedProject && embedAssets
+      ? 'The current timeline and the assets you may cut with are at the end of this message. Plan from them directly; call get_project or list_assets only after an error or when you need a field they omit.'
+      : 'This project is large, so only a summary is included below. Call get_project and list_assets before editing.',
+    'Use operation tools for every mutation; never invent that an edit succeeded.',
+    'Every edit returns the clips it changed with their new start and end, the project duration, and any gaps or overlaps on the video track. When a tool reports an error, it names what exists; correct the input from that and try again.',
     'Use readable unique clip IDs. Keep edits faithful to the user request and finish with a concise, honest description.',
     'When the user pastes a transcript into the chat message, call parse_transcript_text on that pasted text and trim with the segment timecodes it returns rather than guessing times.',
     'Asset transcripts and transcript insights may be available. Strong edits trim to highlight spans, lead with the hook, and use caption_clip_from_transcript for speech captions.',
     'Prefer batch tools add_clips, split_clips, ripple_delete_ranges, and set_clip_properties for coherent edits; keep singular tools for cheap one-off changes. Trimming several clips is one set_clip_properties call with in/out per update, never repeated trim_clip calls; captioning several clips is one caption_clip_from_transcript call with clipIds.',
-    'You are told exactly what changed after every edit, so do not re-read the project between your own edits; re-read only after an error.',
     'Whenever a reply contains tool calls, open it with one or two plain sentences saying what you are about to do and why. That text is shown to the user as your thinking.',
     'Never use emoji in anything you write; the interface is a professional editing tool.',
     'set_speed and trim_clip change a clip duration but never move its neighbors, so after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
     'When the user names a style or content type, fetch the matching preset and follow its parameters. Presets are guidance, not law.',
     NO_DASHES_RULE,
     styleDoc ? `Editing style profile: ${styleDoc}` : 'No editing style profile is available.',
-    `Initial project summary: ${projectSummary(project)}`,
+    embedProject ? `Current project: ${JSON.stringify(describeProject(project))}` : `Project summary: ${projectSummary(project)}`,
+    embedAssets
+      ? `Assets (duration in source seconds): ${JSON.stringify(assets)}`
+      : `Assets: ${assets.length} linked to this project; call list_assets for their ids and durations.`,
   ].join('\n');
 }
 
@@ -107,7 +150,7 @@ async function executeCall(
   const validated = tool.schema.safeParse(call.input);
   if (!validated.success) {
     return {
-      result: { ok: false, error: validated.error.message },
+      result: { ok: false, error: formatZodError(validated.error) },
       parsedInput: call.input,
       ok: false,
     };
@@ -147,7 +190,7 @@ export async function runAgentLoop(
   const initialProject = ctx.projects.get(ctx.projectId);
   if (!initialProject) throw new Error(`Project ${ctx.projectId} was not found`);
   ctx.currentVersion = initialProject.version;
-  const system = buildSystem(initialProject, ctx.styleDoc);
+  const system = buildSystem(initialProject, summarizeAssets(ctx), ctx.styleDoc);
   const messages: LoopMessage[] = [{ role: 'user', content: userMessage }];
   const toolsByName = new Map(toolRegistry.map((tool) => [tool.name, tool]));
   const trace: AgentTraceStep[] = [];
