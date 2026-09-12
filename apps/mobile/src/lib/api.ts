@@ -102,6 +102,8 @@ export interface StyleMetric {
 
 export interface StyleProfile {
   id: string;
+  /** Every style is named; older profiles predating names fall back on the server. */
+  name: string;
   assetIds: string[];
   metrics: StyleMetric[];
   styleDoc: string;
@@ -286,9 +288,17 @@ export const api = {
     };
   },
   /** 202 — the scan runs in the background; poll `getStyle` for the result. */
-  analyzeStyle: (assetIds: string[]) => request<{ status: StyleRunStatus }>('/style-profile/analyze', {
-    method: 'POST', body: JSON.stringify({ assetIds }),
+  analyzeStyle: (assetIds: string[], name?: string) => request<{ status: StyleRunStatus }>('/style-profile/analyze', {
+    method: 'POST', body: JSON.stringify({ assetIds, ...(name ? { name } : {}) }),
   }),
+  /** Every saved style, newest first, plus which one briefs the agent. */
+  listStyles: () => request<{ profiles: StyleProfile[]; selectedId: string | null }>('/style-profiles'),
+  selectStyle: (id: string) => request<StyleProfile>(`/style-profiles/${id}/select`, { method: 'POST' }),
+  renameStyle: (id: string, name: string) => request<StyleProfile>(`/style-profiles/${id}`, {
+    method: 'PATCH', body: JSON.stringify({ name }),
+  }),
+  duplicateStyle: (id: string) => request<StyleProfile>(`/style-profiles/${id}/duplicate`, { method: 'POST' }),
+  deleteStyle: (id: string) => request<{ ok: true; selectedId: string | null }>(`/style-profiles/${id}`, { method: 'DELETE' }),
 };
 
 /** `file` is the web pickers' real `File`; native callers only ever have a `uri`. */

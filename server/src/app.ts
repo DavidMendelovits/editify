@@ -39,6 +39,12 @@ export interface AppOptions { database?: EditifyDatabase; logger?: boolean }
 
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 20 * 1024 * 1024 });
+  // The client sends `Content-Type: application/json` on every request, body or
+  // not, and fastify's default parser 500s on an empty one. Bodyless POST/DELETE
+  // (select, duplicate, delete) are ordinary calls — read them as `{}`.
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body: string, done) => {
+    try { done(null, body ? JSON.parse(body) : {}); } catch (error) { done(error as Error, undefined); }
+  });
   const database = options.database ?? createDatabase();
   const projects = new ProjectStore(database);
   const assets = new AssetStore(database);

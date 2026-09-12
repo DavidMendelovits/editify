@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import { useRouter } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { AssetMetadata } from '@editify/shared';
 import { AssetActionSheet } from '../src/components/AssetActionSheet';
 import { Markdown } from '../src/components/editor/Markdown';
@@ -33,12 +33,32 @@ export default function StyleScreen() {
     // The POST only starts the scan — refetch so the poll above picks it up.
     onSuccess: async () => { await client.invalidateQueries({ queryKey: ['style-profile'] }); },
   });
+  // Which row's ⋯ menu is open, and the row being renamed inline (no window.prompt on web).
+  const [menuId, setMenuId] = useState<string>();
+  const [renaming, setRenaming] = useState<{ id: string; name: string }>();
+  const styleList = useQuery({ queryKey: ['style-profiles'], queryFn: api.listStyles });
+  // Every mutation moves both the list and the selected profile, so refresh both.
+  const refreshStyles = async () => {
+    await Promise.all([
+      client.invalidateQueries({ queryKey: ['style-profiles'] }),
+      client.invalidateQueries({ queryKey: ['style-profile'] }),
+    ]);
+  };
+  const selectStyle = useMutation({ mutationFn: api.selectStyle, onSuccess: refreshStyles });
+  const renameStyle = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.renameStyle(id, name),
+    onSuccess: async () => { setRenaming(undefined); await refreshStyles(); },
+  });
+  const duplicateStyle = useMutation({ mutationFn: api.duplicateStyle, onSuccess: refreshStyles });
+  const deleteStyle = useMutation({ mutationFn: api.deleteStyle, onSuccess: refreshStyles });
   // Every clip on the server, so a reference can be measured before any project
   // adopts it — dissection is a pre-edit decision, not a timeline action.
   const clips = useQuery({ queryKey: ['library', 'all'], queryFn: () => api.listAssets() });
   const [actionAsset, setActionAsset] = useState<AssetMetadata>();
   const references = (clips.data ?? []).filter((asset) => asset.width > 0 && !asset.mimeType.startsWith('image/'));
   const current = profile.data?.profile;
+  const saved = styleList.data?.profiles ?? [];
+  const selectedId = styleList.data?.selectedId ?? current?.id;
   // Uploading, or the server still scanning after the 202.
   const busy = analyze.isPending || profile.data?.status === 'processing';
   const failure = analyze.error?.message ?? (profile.data?.status === 'error' ? profile.data.error ?? 'Analysis failed' : undefined);
@@ -58,6 +78,60 @@ export default function StyleScreen() {
         {busy && <View style={styles.progress}><View style={styles.progressFill} /></View>}
       </View>
       {failure && <Text style={styles.error}>{failure}</Text>}
+      {saved.length > 0 && (
+        <>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>Your styles</Text>
+              <Text style={styles.sectionNote}>Tap a style to brief the agent with it.</Text>
+            </View>
+            <Text style={styles.count}>{saved.length} STYLES</Text>
+          </View>
+          <View style={styles.clipList}>
+            {saved.map((item) => (
+              <View key={item.id} style={[styles.clipRow, item.id === selectedId && styles.styleRowSelected]}>
+                {renaming?.id === item.id ? (
+                  <TextInput
+                    value={renaming.name}
+                    onChangeText={(name) => setRenaming({ id: item.id, name })}
+                    onSubmitEditing={() => renameStyle.mutate(renaming)}
+                    onBlur={() => renameStyle.mutate(renaming)}
+                    autoFocus
+                    accessibilityLabel={`new name for ${item.name}`}
+                    style={styles.renameInput}
+                  />
+                ) : (
+                  <Pressable
+                    onPress={() => selectStyle.mutate(item.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`select style ${item.name}`}
+                    style={styles.styleNameTap}
+                  >
+                    <Text style={styles.clipName} numberOfLines={1}>{item.name}</Text>
+                  </Pressable>
+                )}
+                <Text style={styles.clipMeta}>{item.id === selectedId ? 'SELECTED' : `${item.metrics.length} VIDEOS`}</Text>
+                <Pressable
+                  onPress={() => setMenuId(menuId === item.id ? undefined : item.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`actions for ${item.name}`}
+                  hitSlop={10}
+                  style={({ pressed }) => [styles.clipMore, pressed && styles.clipMorePressed]}
+                >
+                  <Text style={styles.clipMoreText}>⋯</Text>
+                </Pressable>
+                {menuId === item.id && (
+                  <View style={styles.styleMenu}>
+                    <StyleAction label="rename" onPress={() => { setMenuId(undefined); setRenaming({ id: item.id, name: item.name }); }} />
+                    <StyleAction label="duplicate" onPress={() => { setMenuId(undefined); duplicateStyle.mutate(item.id); }} />
+                    <StyleAction label="delete" onPress={() => { setMenuId(undefined); deleteStyle.mutate(item.id); }} danger />
+                  </View>
+                )}
+              </View>
+            ))}
+          </View>
+        </>
+      )}
       {current && (
         <>
           <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>Style metrics</Text><Text style={styles.count}>{current.metrics.length} VIDEOS</Text></View>
@@ -113,6 +187,14 @@ export default function StyleScreen() {
   );
 }
 
+function StyleAction({ label, onPress, danger }: { label: string; onPress: () => void; danger?: boolean }) {
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={({ pressed }) => [styles.styleMenuItem, pressed && styles.clipMorePressed]}>
+      <Text style={[styles.styleMenuText, danger && styles.styleMenuDanger]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <View style={styles.metric}><Text style={styles.metricLabel}>{label}</Text><Text style={styles.metricValue}>{value}</Text><Text style={styles.metricDetail}>{detail}</Text></View>;
 }
@@ -140,6 +222,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: space.xl, minHeight: 40, borderRadius: radius.md,
     borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg,
   },
+  styleRowSelected: { borderColor: colors.accent },
+  styleNameTap: { flex: 1 },
+  renameInput: {
+    flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg,
+    borderWidth: 1, borderColor: colors.accent, borderRadius: radius.md, paddingHorizontal: space.lg, paddingVertical: space.sm,
+  },
+  // Inline, not a popover: a floating menu on the last row opens below the fold
+  // and RN Web gives each row its own stacking context, so it ended up
+  // unreachable. Expanding inside the row is always on screen and always on top.
+  styleMenu: {
+    flexDirection: 'row', alignItems: 'center',
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.panel, overflow: 'hidden',
+  },
+  styleMenuItem: { paddingHorizontal: space.lg, paddingVertical: space.sm },
+  styleMenuText: { color: colors.text, fontFamily: fonts.medium, fontSize: type.md },
+  styleMenuDanger: { color: colors.danger },
   clipName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
   clipMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.md, fontVariant: ['tabular-nums'] },
   clipMore: { width: 28, height: 28, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },

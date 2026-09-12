@@ -167,6 +167,13 @@ function migrate(database: EditifyDatabase): void {
     database.exec('ALTER TABLE assets ADD COLUMN user_id TEXT');
   }
 
+  // Named style profiles: pre-existing rows have no name and fall back to a
+  // date label in the service. The selected one lives in `settings`.
+  const styleColumns = database.prepare('PRAGMA table_info(style_profiles)').all() as Array<{ name: string }>;
+  if (!styleColumns.some((column) => column.name === 'name')) {
+    database.exec('ALTER TABLE style_profiles ADD COLUMN name TEXT');
+  }
+
   // One agent turn is one run: every row it logs shares a run_id, so the whole
   // turn can be reverted as a unit. Client edits leave it NULL.
   const operationLogColumns = database.prepare('PRAGMA table_info(operation_log)').all() as Array<{ name: string }>;

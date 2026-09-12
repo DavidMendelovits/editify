@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildApp } from '../src/app.js';
 import type { AgentService } from '../src/agent/service.js';
 import { AssetStore } from '../src/db/asset-store.js';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
@@ -81,6 +82,51 @@ describe('style profile analysis', () => {
     await app.close();
   });
 
+  it('lists, selects, renames, duplicates, and repoints on delete', async () => {
+    const app = buildStyleApp(database);
+    const styles = new StyleService(database, new AssetStore(database), agent);
+    const first = await styles.analyze(['a1'], 'Punchy');
+    const second = await styles.analyze(['a1']);
+
+    // Newest first, and the freshest analysis is the selected one.
+    const listed = await app.inject({ method: 'GET', url: '/style-profiles' });
+    expect(listed.json().profiles.map((profile: { name: string }) => profile.name)).toEqual(['Style 2', 'Punchy']);
+    expect(listed.json().selectedId).toBe(second.id);
+    expect((await app.inject({ method: 'GET', url: '/style-profile' })).json()).toMatchObject({ id: second.id });
+
+    // Selecting round-trips through GET /style-profile.
+    expect((await app.inject({ method: 'POST', url: `/style-profiles/${first.id}/select` })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/style-profile' })).json()).toMatchObject({ id: first.id, name: 'Punchy' });
+
+    const renamed = await app.inject({ method: 'PATCH', url: `/style-profiles/${first.id}`, payload: { name: 'Slow burn' } });
+    expect(renamed.json()).toMatchObject({ id: first.id, name: 'Slow burn' });
+
+    // A duplicate copies the measurements but does not steal the selection.
+    const copy = await app.inject({ method: 'POST', url: `/style-profiles/${first.id}/duplicate` });
+    expect(copy.statusCode).toBe(201);
+    expect(copy.json()).toMatchObject({ name: 'Slow burn copy', styleDoc: first.styleDoc, assetIds: ['a1'] });
+    expect(copy.json().id).not.toBe(first.id);
+    expect((await app.inject({ method: 'GET', url: '/style-profiles' })).json().selectedId).toBe(first.id);
+
+    // Deleting the selected profile repoints the setting at what is left.
+    const removed = await app.inject({ method: 'DELETE', url: `/style-profiles/${first.id}` });
+    expect(removed.json().selectedId).toBe(copy.json().id);
+    expect((await app.inject({ method: 'GET', url: '/style-profile' })).json()).toMatchObject({ id: copy.json().id });
+    await app.close();
+  });
+
+  it('404s every style-profile action on an unknown id', async () => {
+    const app = buildStyleApp(database);
+    for (const [method, url] of [
+      ['POST', '/style-profiles/nope/select'], ['POST', '/style-profiles/nope/duplicate'], ['DELETE', '/style-profiles/nope'],
+    ] as const) {
+      expect((await app.inject({ method, url })).statusCode).toBe(404);
+    }
+    const renamed = await app.inject({ method: 'PATCH', url: '/style-profiles/nope', payload: { name: 'x' } });
+    expect(renamed.statusCode).toBe(404);
+    await app.close();
+  });
+
   it('captures a background failure instead of crashing the process', async () => {
     const app = buildStyleApp(database, '/boom.mp4');
     expect((await app.inject({ method: 'POST', url: '/style-profile/analyze', payload: { assetIds: ['a1'] } })).statusCode).toBe(202);
@@ -88,6 +134,20 @@ describe('style profile analysis', () => {
       expect((await app.inject({ method: 'GET', url: '/style-profile' })).json())
         .toMatchObject({ status: 'error', error: 'ffmpeg exploded' });
     });
+    await app.close();
+  });
+});
+
+describe('empty JSON bodies', () => {
+  // The client sets Content-Type: application/json on every call; fastify's
+  // default parser 500s when such a request carries no body, which broke
+  // POST /style-profiles/:id/select from the app.
+  it('reads a bodyless application/json request as {}', async () => {
+    const app = await buildApp({ database: createDatabase(':memory:') });
+    const response = await app.inject({
+      method: 'DELETE', url: '/style-profiles/nope', headers: { 'content-type': 'application/json' },
+    });
+    expect(response.statusCode).toBe(404);
     await app.close();
   });
 });
