@@ -355,7 +355,10 @@ export const renderRequestSchema = z.object({
 
 export const styleAnalyzeSchema = z.object({
   assetIds: z.array(z.string().min(1)).min(1).max(10),
+  name: z.string().min(1).max(60).optional(),
 });
+
+export const styleRenameSchema = z.object({ name: z.string().min(1).max(60) });
 
 export function clipTimelineDuration(clip: Clip): number {
   return (clip.out - clip.in) / (clip.speed ?? 1);
