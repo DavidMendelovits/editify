@@ -23,9 +23,9 @@ const UPLOAD_CONCURRENCY = 4;
  * to the background — so the network transfer is the part worth overlapping.
  * Results go in by index because completions arrive out of order and the picked
  * order is the order the clips land on the timeline. One bad file does not sink
- * the batch. Everything lands in `projectId`'s library.
+ * the batch. Everything lands in `projectId`'s library, or unattached without one.
  */
-async function uploadAll(projectId: string, files: PendingFile[], onProgress?: PickProgress): Promise<PickResult> {
+async function uploadAll(projectId: string | undefined, files: PendingFile[], onProgress?: PickProgress): Promise<PickResult> {
   const uploaded = new Array<AssetMetadata | undefined>(files.length);
   const failed: string[] = [];
   let next = 0;
@@ -35,7 +35,7 @@ async function uploadAll(projectId: string, files: PendingFile[], onProgress?: P
     for (let index = next++; index < files.length; index = next++) {
       const file = files[index] as PendingFile;
       try {
-        uploaded[index] = await uploadAsset({ ...file, projectId });
+        uploaded[index] = await uploadAsset({ ...file, ...(projectId ? { projectId } : {}) });
       } catch {
         failed.push(file.name);
       }
@@ -82,7 +82,7 @@ function describePickerError(error: unknown): string {
  * friends) on Android, a file input on web. Videos only — a clip needs a media
  * stream the server can probe, and stills have none.
  */
-export async function pickFromPhotos(projectId: string, onProgress?: PickProgress): Promise<PickResult> {
+export async function pickFromPhotos(projectId: string | undefined, onProgress?: PickProgress): Promise<PickResult> {
   let picked: ImagePicker.ImagePickerResult;
   try {
     picked = await launchLibrary();
@@ -100,7 +100,7 @@ export async function pickFromPhotos(projectId: string, onProgress?: PickProgres
 }
 
 /** Files app / Finder / Drive — anything the OS document provider exposes. */
-export async function pickFromFiles(projectId: string, onProgress?: PickProgress): Promise<PickResult> {
+export async function pickFromFiles(projectId: string | undefined, onProgress?: PickProgress): Promise<PickResult> {
   const picked = await DocumentPicker.getDocumentAsync({
     type: ['video/*', 'audio/*'],
     multiple: true,
@@ -116,7 +116,7 @@ export async function pickFromFiles(projectId: string, onProgress?: PickProgress
 }
 
 /** Files dropped on the editor (web only) — same upload path as the pickers. */
-export async function uploadFiles(projectId: string, files: File[], onProgress?: PickProgress): Promise<PickResult> {
+export async function uploadFiles(projectId: string | undefined, files: File[], onProgress?: PickProgress): Promise<PickResult> {
   return await uploadAll(projectId, files.map((file) => ({
     uri: '', // unused: `uploadAsset` posts the File itself when it has one.
     name: file.name,

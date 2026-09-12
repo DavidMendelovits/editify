@@ -1,11 +1,12 @@
-import { useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
 import { colors, radius, space, type, fonts } from '../lib/theme';
 import { api } from '../lib/api';
 import { track } from '../lib/telemetry';
 import { formatMegabytes } from '../lib/agent';
+import { pickFromFiles, uploadFiles, type PickResult } from '../lib/pick';
 
 type ImportState = 'queued' | 'importing' | 'done' | 'error';
 
@@ -19,9 +20,10 @@ interface Props {
 }
 
 /**
- * Media sheet for `GET /assets/importable` — the local test-clip drop folder.
- * Imports run strictly one at a time (ffprobe + proxy + thumbnail is slow on
- * big files); extra taps queue up behind the running one.
+ * Media sheet: upload from this machine (picker or, on web, drag-and-drop), with
+ * the server's own drop folder kept as a secondary section when it has anything.
+ * Those folder imports run strictly one at a time (ffprobe + proxy + thumbnail is
+ * slow on big files); extra taps queue up behind the running one.
  */
 export function ImportSheet({ projectId, visible, onClose, onImported }: Props) {
   const files = useQuery({ queryKey: ['importable'], queryFn: () => api.listImportable(), enabled: visible });
@@ -29,6 +31,61 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Promise chain that serializes imports without blocking the UI thread.
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const dropRef = useRef<View>(null);
+  const [dropping, setDropping] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number }>();
+  const [uploadError, setUploadError] = useState<string>();
+
+  async function upload(run: () => Promise<PickResult>): Promise<void> {
+    setUploading(true);
+    setUploadError(undefined);
+    setUploadProgress(undefined);
+    try {
+      const { assets, failed } = await run();
+      for (const asset of assets) onImported(asset);
+      if (assets.length > 0) track('import', `upload:${assets.length}`);
+      if (failed.length > 0) setUploadError(`Could not upload ${failed.length} of ${assets.length + failed.length}: ${failed.join(', ')}`);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+      setUploadProgress(undefined);
+    }
+  }
+
+  function onProgress(done: number, total: number): void {
+    setUploadProgress(total > 1 ? { done, total } : undefined);
+  }
+
+  // react-native-web 0.21 picks View props from a whitelist that has no drag
+  // events, so the DOM node has to be wired by hand. Native has nothing to drop.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !visible) return;
+    const node = dropRef.current as unknown as HTMLElement | null;
+    if (!node) return;
+    // Without preventDefault the browser navigates to the dropped file.
+    const onOver = (event: DragEvent): void => { event.preventDefault(); setDropping(true); };
+    // A bubbling dragleave off a child is not a leave; only a pointer that left
+    // the zone should clear the highlight.
+    const onLeave = (event: DragEvent): void => {
+      if (!node.contains(event.relatedTarget as Node | null)) setDropping(false);
+    };
+    const onDrop = (event: DragEvent): void => {
+      event.preventDefault();
+      setDropping(false);
+      const dropped = Array.from(event.dataTransfer?.files ?? []);
+      if (dropped.length > 0) void upload(async () => await uploadFiles(projectId, dropped, onProgress));
+    };
+    node.addEventListener('dragover', onOver);
+    node.addEventListener('dragleave', onLeave);
+    node.addEventListener('drop', onDrop);
+    return () => {
+      node.removeEventListener('dragover', onOver);
+      node.removeEventListener('dragleave', onLeave);
+      node.removeEventListener('drop', onDrop);
+    };
+  }, [visible, projectId]);
 
   function enqueue(name: string): void {
     if (states[name]) return;
@@ -60,9 +117,9 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
         <Pressable style={styles.sheet} onPress={() => undefined}>
           <View style={styles.header}>
             <View style={styles.headerText}>
-              <Text style={styles.title}>import test clip</Text>
+              <Text style={styles.title}>import media</Text>
               <Text style={styles.subtitle}>
-                {pending > 0 ? `${pending} in queue · importing one at a time` : 'files sitting in the server media folder'}
+                {pending > 0 ? `${pending} in queue · importing one at a time` : 'video and audio from this device'}
               </Text>
             </View>
             <Pressable onPress={onClose} style={({ pressed }) => [styles.close, pressed && styles.pressed]} accessibilityRole="button">
@@ -70,14 +127,37 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
             </Pressable>
           </View>
 
+          <Pressable
+            ref={dropRef}
+            onPress={() => void upload(async () => await pickFromFiles(projectId, onProgress))}
+            disabled={uploading}
+            accessibilityRole="button"
+            accessibilityLabel="choose files to import"
+            style={({ pressed }) => [styles.drop, dropping && styles.dropActive, pressed && !uploading && styles.pressed, uploadError && styles.dropError]}
+          >
+            {uploading ? <ActivityIndicator color={colors.accent} /> : null}
+            <Text style={styles.dropTitle}>
+              {dropping ? 'drop to upload'
+                : uploadProgress ? `uploading ${uploadProgress.done} of ${uploadProgress.total}…`
+                : uploading ? 'uploading…'
+                : 'choose files'}
+            </Text>
+            {!uploading && (
+              <Text style={styles.dropHint}>
+                {Platform.OS === 'web' ? 'or drag videos here from your machine' : 'video and audio from your device'}
+              </Text>
+            )}
+            {uploadError ? <Text style={styles.error} numberOfLines={3}>{uploadError}</Text> : null}
+          </Pressable>
+
+          {list.length > 0 && <Text style={styles.section}>or from the server media folder</Text>}
+
+          {(files.isLoading || files.error || list.length > 0) && (
           <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
             {files.isLoading && (
               <View style={styles.stateRow}><ActivityIndicator color={colors.accent} /><Text style={styles.stateText}>looking for clips…</Text></View>
             )}
             {files.error && <Text style={styles.error}>{files.error.message}</Text>}
-            {!files.isLoading && !files.error && list.length === 0 && (
-              <Text style={styles.empty}>No importable files. Drop videos into the server’s media import folder and reopen this sheet.</Text>
-            )}
             {list.map((file) => {
               const state = states[file.name];
               const inLibrary = file.alreadyImported || state === 'done';
@@ -106,6 +186,7 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
               );
             })}
           </ScrollView>
+          )}
         </Pressable>
       </Pressable>
     </Modal>
@@ -121,11 +202,16 @@ const styles = StyleSheet.create({
   subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   close: { width: 30, height: 30, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
   closeText: { color: colors.muted, fontSize: type.xxl, lineHeight: 20 },
+  drop: { alignItems: 'center', justifyContent: 'center', gap: space.sm, minHeight: 116, borderRadius: radius.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border, backgroundColor: colors.panelRaised, padding: space.xl },
+  dropActive: { borderColor: colors.accent, borderStyle: 'solid' },
+  dropError: { borderColor: colors.danger },
+  dropTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.lg },
+  dropHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
+  section: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm, letterSpacing: 0.4 },
   list: { flexGrow: 0 },
   listContent: { gap: space.md, paddingVertical: space.xs },
   stateRow: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.lg },
   stateText: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base },
-  empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, lineHeight: 17, paddingVertical: space.lg },
   file: { flexDirection: 'row', alignItems: 'center', gap: space.xl, minHeight: 54, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.xl, paddingVertical: space.lg },
   fileError: { borderColor: colors.danger },
   fileText: { flex: 1, gap: space.xs },
