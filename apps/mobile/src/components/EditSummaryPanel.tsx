@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useMemo } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { editSummary } from '../lib/agent';
 import type { ChatMessage } from '../lib/api';
 import { colors, radius, space, type, fonts } from '../lib/theme';
@@ -9,38 +9,41 @@ import { colors, radius, space, type, fonts } from '../lib/theme';
  * "Made 6 cuts to tighten pacing", "Added captions (12)". The per-message trace
  * and receipts in the chat dock stay the detailed record; this is the glance.
  */
-export function EditSummaryPanel({ messages }: { messages: ChatMessage[] | undefined }) {
-  const [open, setOpen] = useState(false);
+export function EditSummaryPanel({ messages, open, onToggle }: { messages: ChatMessage[] | undefined; open: boolean; onToggle: () => void }) {
   const lines = useMemo(() => editSummary(messages ?? []), [messages]);
   if (lines.length === 0) return null;
 
   return (
-    <View style={styles.zone}>
+    <View style={[styles.zone, open && styles.zoneOpen]}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
+        onPress={onToggle}
         style={({ pressed }) => [styles.header, pressed && styles.pressed]}
       >
         <Text style={styles.label}>WHAT THE AI DID · {lines.length} {lines.length === 1 ? 'CHANGE' : 'CHANGES'}</Text>
         <Text style={styles.chevron}>{open ? '▾' : '▸'}</Text>
       </Pressable>
       {open && (
-        <View style={styles.list}>
+        <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={styles.list} nestedScrollEnabled>
           {lines.map((line) => (
             <View key={line} style={styles.row}>
               <Text style={styles.bullet}>•</Text>
               <Text style={styles.line}>{line}</Text>
             </View>
           ))}
-        </View>
+        </ScrollView>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  zone: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg, gap: space.md },
+  // minHeight 0 + hidden overflow let the expanded panel shrink inside the wide dock
+  // column instead of spilling over its neighbours; collapsed zones keep flexShrink 0
+  // so their header is never squeezed.
+  zone: { minHeight: 0, overflow: 'hidden', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg, gap: space.md },
+  zoneOpen: { flexShrink: 1, minHeight: 40 },
   header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
   label: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm, letterSpacing: 1.5 },
   chevron: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.md },

@@ -323,7 +323,7 @@ function Message({ message, trace, onRevert, reverting, onSeek }: {
 const styles = StyleSheet.create({
   // On short viewports the dock's content spills past its box; the collapsed summary
   // panels below it in the column would otherwise paint over the composer and improver card.
-  panel: { flex: 1, minHeight: 380, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xl, gap: space.lg, zIndex: 1 },
+  panel: { flex: 1, minHeight: 470, overflow: 'hidden', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xl, gap: space.lg, zIndex: 1 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: space.lg, borderBottomWidth: 1, borderBottomColor: colors.border },
   zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
   title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl, marginTop: space.sm },
@@ -332,7 +332,7 @@ const styles = StyleSheet.create({
   dotWorking: { backgroundColor: colors.accent },
   statusText: { color: colors.success, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
   statusWorking: { color: colors.accent },
-  messages: { flex: 1, minHeight: 120 },
+  messages: { flex: 1, minHeight: 60 },
   messagesContent: { gap: space.lg, paddingVertical: space.sm },
   agentMessage: { alignSelf: 'stretch', borderLeftWidth: 2, borderLeftColor: colors.border, paddingLeft: space.lg, paddingVertical: space.xs, gap: space.md },
   userMessage: { alignSelf: 'flex-end', maxWidth: '88%', borderRadius: radius.md, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.sm },
