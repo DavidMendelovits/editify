@@ -8,41 +8,88 @@ const MAX_EDGE = 1600;
 const JPEG_QUALITY = 0.72;
 
 /**
- * Paints each <video> onto a canvas pinned over it. The rasteriser walks the
- * DOM, and a <video> carries no frame in the DOM: without this pass the preview
- * comes out as an empty rectangle, which on a video editor is the middle of the
- * picture. Returns the undo, and never throws: a frame we cannot read (a
- * cross-origin source taints the canvas) just stays blank.
+ * Everything on screen that could be the user's footage: the preview video, the
+ * filmstrips, the thumbnails and poster frames, any sticker they imported.
+ *
+ * A screenshot exists to show the interface, and none of that needs a single
+ * frame of what someone filmed. The rule is deliberately blunt: every <img> and
+ * <video>, and every background image that is not a data URI, is replaced with
+ * a labelled placeholder of exactly the same size and position. Layout bugs
+ * still read perfectly; the footage never leaves the device.
  */
-function freezeVideos(): () => void {
-  const covers: HTMLCanvasElement[] = [];
-  for (const video of Array.from(document.querySelectorAll('video'))) {
-    const box = video.getBoundingClientRect();
-    if (!box.width || !box.height || !video.videoWidth) continue;
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext('2d')?.drawImage(video, 0, 0);
-      // Round-trips the pixels to prove the canvas is readable before it goes
-      // anywhere near the capture.
-      canvas.toDataURL('image/jpeg', 0.1);
-      Object.assign(canvas.style, {
-        position: 'fixed',
-        left: `${box.left}px`,
-        top: `${box.top}px`,
-        width: `${box.width}px`,
-        height: `${box.height}px`,
-        objectFit: 'contain',
-        zIndex: '2147483646',
-      });
-      document.body.appendChild(canvas);
-      covers.push(canvas);
-    } catch {
-      // Tainted or not yet decoded. The rest of the screenshot is still worth having.
-    }
+const PLACEHOLDER_FILL = '#1E1E21';
+const PLACEHOLDER_EDGE = '#3A3A42';
+const PLACEHOLDER_TEXT = '#7A7A85';
+
+function placeholder(box: DOMRect, label: string): HTMLElement {
+  const cover = document.createElement('div');
+  cover.dataset['editifyRedaction'] = 'true';
+  cover.textContent = label;
+  Object.assign(cover.style, {
+    position: 'fixed',
+    left: `${box.left}px`,
+    top: `${box.top}px`,
+    width: `${box.width}px`,
+    height: `${box.height}px`,
+    // A diagonal hatch reads as "deliberately removed" rather than as a bug in
+    // the app or in the capture.
+    background: `repeating-linear-gradient(45deg, ${PLACEHOLDER_FILL}, ${PLACEHOLDER_FILL} 6px, #17171A 6px, #17171A 12px)`,
+    border: `1px solid ${PLACEHOLDER_EDGE}`,
+    boxSizing: 'border-box',
+    color: PLACEHOLDER_TEXT,
+    font: '500 11px system-ui, sans-serif',
+    letterSpacing: '0.5px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    zIndex: '2147483646',
+  });
+  return cover;
+}
+
+/**
+ * Covers every piece of media and suppresses CSS background images. Returns the
+ * undo, which the caller runs in a `finally` so a failed capture cannot leave
+ * the app looking redacted.
+ */
+function redactMedia(): () => void {
+  const covers: HTMLElement[] = [];
+  const restores: Array<() => void> = [];
+
+  for (const element of Array.from(document.querySelectorAll('video, img'))) {
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) continue;
+    const isVideo = element.tagName === 'VIDEO';
+    // The dimensions are the diagnostic part: a clip laid out at the wrong size
+    // is visible here, the picture is not.
+    const size = `${Math.round(box.width)}x${Math.round(box.height)}`;
+    const cover = placeholder(box, box.width > 90 ? `${isVideo ? 'VIDEO' : 'MEDIA'} ${size}` : '');
+    document.body.appendChild(cover);
+    covers.push(cover);
   }
-  return () => { for (const cover of covers) cover.remove(); };
+
+  for (const element of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+    // Every url() background, whatever the scheme. A picked file renders as a
+    // blob: or data: URI, so exempting those would be exempting exactly the
+    // media that never came from our own server. CSS gradients carry no url()
+    // and are left alone, which is all the app itself uses.
+    const image = getComputedStyle(element).backgroundImage;
+    if (image === 'none' || !image.includes('url(')) continue;
+    const previous = element.style.backgroundImage;
+    element.style.backgroundImage = 'none';
+    restores.push(() => { element.style.backgroundImage = previous; });
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) continue;
+    const cover = placeholder(box, box.width > 90 ? `MEDIA ${Math.round(box.width)}x${Math.round(box.height)}` : '');
+    document.body.appendChild(cover);
+    covers.push(cover);
+  }
+
+  return () => {
+    for (const cover of covers) cover.remove();
+    for (const restore of restores) restore();
+  };
 }
 
 function toJpeg(canvas: HTMLCanvasElement): Screenshot {
@@ -58,18 +105,20 @@ function toJpeg(canvas: HTMLCanvasElement): Screenshot {
 }
 
 /**
- * The current screen as a JPEG. Called before the report sheet opens, so what
- * it captures is what the user was looking at when they decided to report.
- * Stays on the device unless the user attaches it.
+ * The current screen as a JPEG, with every frame of media replaced by a
+ * placeholder. Called before the report sheet opens, so it shows the interface
+ * the user was looking at when they decided to report, and it stays on the
+ * device unless they attach it.
  */
 export async function captureScreen(): Promise<Screenshot | undefined> {
-  const unfreeze = freezeVideos();
+  const restore = redactMedia();
   try {
     const canvas = await toCanvas(document.body, {
-      // A <video> node fails the rasteriser outright (it inlines the DOM into an
-      // SVG image, and the browser refuses to load one containing a video), so
-      // the elements are skipped and the frozen frames above stand in for them.
-      filter: (node) => node.nodeName !== 'VIDEO',
+      // Belt and braces on top of the placeholders: media nodes never reach the
+      // raster at all. It is also required for correctness, because a <video>
+      // node fails the rasteriser outright (it inlines the DOM into an SVG
+      // image, and the browser refuses to load one containing a video).
+      filter: (node) => node.nodeName !== 'VIDEO' && node.nodeName !== 'IMG',
       backgroundColor: '#040408',
       // 1x: a retina capture of a 1512pt window is 3024px and several megabytes
       // before it is even scaled back down.
@@ -84,7 +133,7 @@ export async function captureScreen(): Promise<Screenshot | undefined> {
     // is still a report.
     return undefined;
   } finally {
-    unfreeze();
+    restore();
   }
 }
 

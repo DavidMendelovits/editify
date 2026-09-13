@@ -45,6 +45,7 @@ export function ScreenshotField({ shot, attached, onAttachedChange, highlight, o
     return (
       <Pressable accessibilityRole="button" accessibilityLabel="attach a screenshot" onPress={() => onAttachedChange(true)}>
         <Text style={styles.offer}>+ attach a screenshot of this screen</Text>
+        <Text style={styles.privacy}>Your footage is not included: every frame and thumbnail is replaced with a placeholder.</Text>
       </Pressable>
     );
   }
@@ -115,5 +116,6 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
   hint: { flex: 1, color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, lineHeight: 15 },
   offer: { color: colors.accent, fontFamily: fonts.medium, fontSize: type.base },
+  privacy: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, lineHeight: 15, marginTop: space.xs },
   remove: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.base },
 });

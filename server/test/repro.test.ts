@@ -26,7 +26,7 @@ function serveWithProject() {
 
   const asset = assets.insert({
     id: 'asset-1',
-    originalName: 'deli-baby.mov',
+    originalName: 'uncle-dave-wedding-speech.mov',
     mimeType: 'video/quicktime',
     duration: 12,
     width: 1080,
@@ -42,11 +42,15 @@ function serveWithProject() {
     filmstripUrl: '/assets/asset-1/filmstrip.jpg',
     createdAt: new Date().toISOString(),
   });
-  const project = projects.create({ title: 'Reel edit', format: '9:16', fps: 30 });
+  const project = projects.create({ title: "Dad's 70th", format: '9:16', fps: 30 });
   projects.applyOperations(project.id, [{
     type: 'add_clip',
     params: { trackId: 'video-main', clip: { id: 'clip-1', assetId: asset.id, start: 0, in: 0, out: 6, volume: 1, speed: 1 } },
   }], 0);
+  projects.applyOperations(project.id, [{
+    type: 'add_caption',
+    params: { trackId: 'captions', clip: { id: 'cap-1', start: 0, in: 0, out: 3, text: 'thanks for coming everyone' } },
+  }], 1);
 
   const app = Fastify();
   const telemetry = new TelemetryService(
@@ -79,13 +83,37 @@ describe('repro bundles', () => {
     expect(response.statusCode).toBe(200);
     const written = readFileSync(insightsPath, 'utf8');
     expect(written).toContain('npm run repro -- --report');
-    expect(written).toContain('9:16 at 30fps, 1 clip');
+    expect(written).toContain('9:16 at 30fps, 2 clips');
 
     const bundle = reports.getRepro(response.json().reportId) as ReproBundle;
     expect(bundle.project.id).toBe(projectId);
     expect(bundle.assets).toHaveLength(1);
-    expect(bundle.assets[0]).toMatchObject({ originalName: 'deli-baby.mov', duration: 12 });
-    expect(bundle.recentOps.map((entry) => entry.operation.type)).toEqual(['add_clip']);
+    expect(bundle.recentOps.map((entry) => entry.operation.type)).toEqual(['add_clip', 'add_caption']);
+    // The shape a repro needs is all there.
+    expect(bundle.assets[0]).toMatchObject({ duration: 12, width: 1080, height: 1920, fps: 30 });
+  });
+
+  it('carries no footage, filename, title or caption wording out of the server', async () => {
+    const { app, projectId, reports } = serveWithProject();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/telemetry',
+      payload: {
+        sessionId: 's1', kind: 'feedback', platform: 'web', events: [],
+        feedback: 'Captions overflow.', context: { screen: 'editor', projectId },
+      },
+    });
+
+    const bundle = reports.getRepro(response.json().reportId) as ReproBundle;
+    const serialized = JSON.stringify(bundle);
+    expect(serialized).not.toContain('uncle-dave');
+    expect(serialized).not.toContain("Dad's 70th");
+    expect(serialized).not.toContain('thanks for coming');
+    // Masked, not dropped: a caption bug about wrapping still reproduces.
+    const caption = bundle.project.tracks.flatMap((track) => track.clips).find((clip) => clip.text);
+    expect(caption?.text).toBe('xxxxxx xxx xxxxxx xxxxxxxx');
+    expect(bundle.assets[0]?.originalName).toMatch(/^clip-[0-9a-f]{8}\.mov$/);
   });
 
   it('files a report with no project without a bundle rather than failing', async () => {

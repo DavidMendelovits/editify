@@ -151,9 +151,10 @@ function describeScreenshot(report: TelemetryReport, stored: StoredScreenshot | 
   const caption = report.screenshot?.highlight
     ? `**They highlighted** ${target ? `\`${target}\`` : 'the boxed area'}.`
     : '**Screenshot** of the screen they reported from.';
+  const note = '_Every frame, thumbnail and imported image is replaced with a placeholder by the client: no footage is in this picture._';
   return [stored.url
-    ? `${caption}\n\n![Screenshot](${stored.url})`
-    : `${caption}\n\n_Not uploaded: the image is on the server at \`${stored.path}\`._`];
+    ? `${caption}\n\n![Screenshot](${stored.url})\n\n${note}`
+    : `${caption}\n\n_Not uploaded: the image is on the server at \`${stored.path}\`._\n\n${note}`];
 }
 
 /** Whatever the current screen published about itself, in the order it sent it. */

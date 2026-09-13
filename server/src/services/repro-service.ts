@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type { Operation, Project } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import type { ChatStore } from '../db/chat-store.js';
@@ -9,7 +10,53 @@ import { PROVIDER_SETTING_KEY } from '../agent/registry.js';
 /** Ops and chat turns are trails, not archives: only the recent end is useful. */
 const RECENT_OPS = 20;
 const RECENT_CHAT = 6;
-const CHAT_EXCERPT = 400;
+
+/**
+ * The bundle leaves the building: it is pasted onto a GitHub issue where the
+ * user never sees it, unlike the screenshot they preview before attaching. So
+ * it carries structure and never content. Durations, dimensions, track shapes
+ * and operation types reproduce the bug; a filename, a project title and a
+ * chat message are the user's own words about their own footage, and none of
+ * them are needed to rebuild a timeline. The unredacted rows stay in the
+ * server's database for anyone who genuinely needs them.
+ */
+function anonymize(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 8);
+}
+
+/**
+ * Caption text is transcribed speech: the words someone said on camera. It is
+ * masked rather than dropped, keeping word count and word lengths, because
+ * half the caption bugs worth reproducing are about how a long line wraps or
+ * overflows and that behaviour has to survive the redaction.
+ */
+function maskText(text: string): string {
+  return text.replace(/\S/g, 'x');
+}
+
+/**
+ * Keys anywhere in an operation whose value is something a person wrote: a
+ * caption line, a project title, an asset label. The operation log is the same
+ * content the document holds, one edit at a time, so it needs the same mask.
+ */
+const AUTHORED_KEYS = new Set(['text', 'title', 'label', 'name']);
+
+function maskAuthored<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((entry) => maskAuthored(entry)) as unknown as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key,
+      AUTHORED_KEYS.has(key) && typeof entry === 'string' ? maskText(entry) : maskAuthored(entry),
+    ])) as T;
+  }
+  return value;
+}
+
+/** `IMG_2231.mov` becomes `clip-9f2a1c04.mov`: same media shape, no name. */
+function anonymizeName(originalName: string): string {
+  const extension = /\.[a-z0-9]{1,5}$/i.exec(originalName)?.[0] ?? '';
+  return `clip-${anonymize(originalName)}${extension.toLowerCase()}`;
+}
 
 /**
  * Everything needed to rebuild the state a report was sent from, minus the
@@ -22,6 +69,7 @@ export interface ReproBundle {
   /** Probe data only, so a repro can substitute footage of the same shape. */
   assets: Array<{
     id: string;
+    /** A stable stand-in for the filename, not the filename. */
     originalName: string;
     mimeType: string;
     duration: number;
@@ -34,8 +82,12 @@ export interface ReproBundle {
   }>;
   /** How the project got here: the newest edits, oldest first. */
   recentOps: Array<{ at: string; batchId: string; operation: Operation; fromVersion: number; toVersion: number; undone: boolean }>;
-  /** The agent's side of it, when the state came out of a conversation. */
-  chat: Array<{ role: string; at: string; text: string; opCount: number }>;
+  /**
+   * The agent's side of it, when the state came out of a conversation. The
+   * prose is not carried: what reproduces an agent-caused state is which turn
+   * produced how many operations, not what the user typed about their footage.
+   */
+  chat: Array<{ role: string; at: string; characters: number; opCount: number }>;
   server: { provider?: string; commit?: string; node: string; platform: string };
 }
 
@@ -84,8 +136,19 @@ export class ReproService {
   ) {}
 
   build(projectId: string): ReproBundle | undefined {
-    const project = this.projects.get(projectId);
-    if (!project) return undefined;
+    const stored = this.projects.get(projectId);
+    if (!stored) return undefined;
+    // The timeline in full: every position, duration, transform and style, with
+    // the two things the user wrote themselves (the title and the caption
+    // lines) masked down to their shape.
+    const project = {
+      ...stored,
+      title: `Project ${anonymize(stored.title)}`,
+      tracks: stored.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => (clip.text ? { ...clip, text: maskText(clip.text) } : clip)),
+      })),
+    };
 
     const referenced = new Set(project.tracks.flatMap((track) => track.clips).flatMap((clip) => (clip.assetId ? [clip.assetId] : [])));
     const assets = [...referenced]
@@ -93,7 +156,7 @@ export class ReproService {
       .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset))
       .map((asset) => ({
         id: asset.id,
-        originalName: asset.originalName,
+        originalName: anonymizeName(asset.originalName),
         mimeType: asset.mimeType,
         duration: asset.duration,
         width: asset.width,
@@ -101,13 +164,15 @@ export class ReproService {
         fps: asset.fps,
         hasAudio: asset.hasAudio,
         status: asset.status,
-        ...(asset.label ? { label: asset.label } : {}),
+        // A label is typed by the user ("uncle dave laughing"), so it travels
+        // as a marker that one exists rather than as its text.
+        ...(asset.label ? { label: `labelled-${anonymize(asset.label)}` } : {}),
       }));
 
     const recentOps = this.projects.operationLog(projectId).slice(-RECENT_OPS).map((entry) => ({
       at: entry.createdAt,
       batchId: entry.batchId,
-      operation: entry.operation,
+      operation: maskAuthored(entry.operation),
       fromVersion: entry.beforeVersion,
       toVersion: entry.afterVersion,
       undone: entry.undone,
@@ -116,7 +181,7 @@ export class ReproService {
     const chat = this.chat.list(projectId).slice(-RECENT_CHAT).map((message) => ({
       role: message.role,
       at: message.createdAt,
-      text: message.content.slice(0, CHAT_EXCERPT),
+      characters: message.content.length,
       opCount: message.ops?.length ?? 0,
     }));
 
