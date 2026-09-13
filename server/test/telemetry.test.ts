@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolProvider } from '../src/agent/providers.js';
@@ -116,5 +116,46 @@ describe('POST /telemetry without GITHUB_TOKEN', () => {
     const written = readFileSync(insightsPath, 'utf8');
     expect(written).toContain('boom in the timeline');
     expect(written).toContain('GITHUB_TOKEN is unset');
+  });
+});
+
+describe('screenshots', () => {
+  const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('saves an attached screenshot and points the issue at the highlighted component', async () => {
+    const response = await serve().inject({
+      method: 'POST',
+      url: '/telemetry',
+      payload: {
+        ...base,
+        kind: 'feedback',
+        feedback: 'This button does nothing.',
+        screenshot: {
+          data: pixel,
+          width: 1512,
+          height: 812,
+          highlight: { x: 0.1, y: 0.2, width: 0.3, height: 0.1 },
+          highlightTarget: 'send feedback in header',
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const saved = join(dirname(insightsPath), 'report-screenshots', `${response.json().reportId}.png`);
+    expect(existsSync(saved)).toBe(true);
+    const written = readFileSync(insightsPath, 'utf8');
+    expect(written).toContain('**They highlighted** `send feedback in header`');
+    // No token here, so the issue says where the image actually is.
+    expect(written).toContain('Not uploaded');
+  });
+
+  it('rejects a payload that is not an image', async () => {
+    const response = await serve().inject({
+      method: 'POST',
+      url: '/telemetry',
+      payload: { ...base, kind: 'feedback', feedback: 'hi', screenshot: { data: 'https://example.com/x.png', width: 10, height: 10 } },
+    });
+
+    expect(response.statusCode).toBe(500);
   });
 });

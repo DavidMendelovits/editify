@@ -48,6 +48,26 @@ export const telemetryContextSchema = z
 export type TelemetryContext = z.infer<typeof telemetryContextSchema>;
 
 /**
+ * A screenshot the user chose to attach, with the area they highlighted. The
+ * image arrives as a data URL (already downscaled and JPEG encoded by the
+ * client) and the highlight is normalized to it, so it survives any resizing.
+ */
+export const telemetryScreenshotSchema = z.object({
+  data: z.string().max(1_500_000).regex(/^data:image\/(jpeg|png);base64,/),
+  width: z.number().int().min(1).max(8000),
+  height: z.number().int().min(1).max(8000),
+  highlight: z.object({
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+    width: z.number().min(0).max(1),
+    height: z.number().min(0).max(1),
+  }).optional(),
+  /** What the app found under the highlight: a testID, a label, or the text there. */
+  highlightTarget: z.string().max(200).optional(),
+});
+export type TelemetryScreenshot = z.infer<typeof telemetryScreenshotSchema>;
+
+/**
  * What the client posts to `POST /telemetry`. A 'session' report is just the
  * event log (it becomes a line in user-insights.md); 'error' and 'feedback'
  * carry something a human should act on, so they get assessed and filed.
@@ -67,6 +87,7 @@ export const telemetryReportSchema = z.object({
   appVersion: z.string().max(40).optional(),
   environment: telemetryEnvironmentSchema.optional(),
   context: telemetryContextSchema.optional(),
+  screenshot: telemetryScreenshotSchema.optional(),
 });
 export type TelemetryReport = z.infer<typeof telemetryReportSchema>;
 

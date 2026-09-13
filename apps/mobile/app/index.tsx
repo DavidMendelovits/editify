@@ -10,6 +10,7 @@ import { ReportModal } from '../src/components/ReportModal';
 import { Screen } from '../src/components/Screen';
 import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
+import { captureScreen, type Screenshot } from '../src/lib/capture';
 import { setReportContext, track } from '../src/lib/telemetry';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
 
@@ -24,6 +25,9 @@ export default function HomeScreen() {
   const client = useQueryClient();
   const [importOpen, setImportOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  // Taken before the sheet covers the screen. It stays in memory unless the
+  // user attaches it.
+  const [shot, setShot] = useState<Screenshot>();
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   const create = useMutation({
     mutationFn: (input: NewProject) => api.createProject(input),
@@ -60,7 +64,7 @@ export default function HomeScreen() {
         <View style={styles.headerActions}>
           <Button secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>import media</Button>
           <Button secondary style={styles.styleButton} onPress={() => router.push('/style')}>learn my style</Button>
-          <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); setFeedbackOpen(true); }}>send feedback</Button>
+          <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); void captureScreen().then(setShot); setFeedbackOpen(true); }}>send feedback</Button>
           <Button accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</Button>
         </View>
       </View>
@@ -108,7 +112,13 @@ export default function HomeScreen() {
         ))}
       </View>
       {remove.error && <Text style={styles.error}>Could not delete: {remove.error.message}</Text>}
-      {feedbackOpen && <ReportModal mode="feedback" onClose={() => setFeedbackOpen(false)} />}
+      {feedbackOpen && (
+        <ReportModal
+          mode="feedback"
+          {...(shot ? { screenshot: shot } : {})}
+          onClose={() => { setFeedbackOpen(false); setShot(undefined); }}
+        />
+      )}
       <ImportSheet
         visible={importOpen}
         onClose={() => setImportOpen(false)}

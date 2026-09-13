@@ -95,9 +95,10 @@ function collectEnvironment(): TelemetryEnvironment {
  * One line for the report sheet naming what the payload carries beyond the
  * user's own words. The reporter shows it before anything is sent.
  */
-export function describeAttachments(): string {
+export function describeAttachments(withScreenshot = false): string {
   const context = collectContext();
   const parts = [
+    ...(withScreenshot ? ['the screenshot above'] : []),
     `${platform} session`,
     ...(context?.screen ? [`the ${String(context.screen)} screen`] : []),
     ...(context?.projectId ? ['the open project'] : []),
@@ -113,7 +114,7 @@ export function describeAttachments(): string {
  */
 export async function sendReport(
   kind: TelemetryReport['kind'],
-  extra: Partial<Pick<TelemetryReport, 'error' | 'feedback'>> = {},
+  extra: Partial<Pick<TelemetryReport, 'error' | 'feedback' | 'screenshot'>> = {},
 ): Promise<TelemetryReceipt> {
   const context = collectContext();
   const report: TelemetryReport = {

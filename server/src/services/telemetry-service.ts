@@ -6,6 +6,7 @@ import type { ToolProvider } from '../agent/providers.js';
 import { dataRoot } from '../config.js';
 import type { ReportStore, StoredIssue } from '../db/report-store.js';
 import type { ReproBundle, ReproService } from './repro-service.js';
+import { storeScreenshot, type StoredScreenshot } from './report-media.js';
 import { NO_DASHES_RULE } from '../agent/prose-style.js';
 
 const GITHUB_REPO = 'DavidMendelovits/editify';
@@ -140,6 +141,21 @@ function describeRepro(bundle: ReproBundle | undefined, reportId: string): strin
   return [`${headline}\n\n<details><summary>repro.json</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`];
 }
 
+/**
+ * The screenshot, and what the user drew on it. The highlight target is the
+ * useful half: it names the component under the box in the app's own terms.
+ */
+function describeScreenshot(report: TelemetryReport, stored: StoredScreenshot | undefined): string[] {
+  if (!stored) return [];
+  const target = report.screenshot?.highlightTarget;
+  const caption = report.screenshot?.highlight
+    ? `**They highlighted** ${target ? `\`${target}\`` : 'the boxed area'}.`
+    : '**Screenshot** of the screen they reported from.';
+  return [stored.url
+    ? `${caption}\n\n![Screenshot](${stored.url})`
+    : `${caption}\n\n_Not uploaded: the image is on the server at \`${stored.path}\`._`];
+}
+
 /** Whatever the current screen published about itself, in the order it sent it. */
 function describeContext(context: TelemetryReport['context']): string[] {
   const entries = Object.entries(context ?? {});
@@ -187,12 +203,18 @@ export class TelemetryService {
     const bundle = projectId ? this.repro?.build(projectId) : undefined;
     if (bundle) this.store.attachRepro(reportId, bundle);
 
+    // Beside the insights file, so a test (or a second instance) keeps its own.
+    const shot = report.screenshot
+      ? await storeScreenshot(reportId, report.screenshot, GITHUB_REPO, join(dirname(this.insightsPath), 'report-screenshots'))
+      : undefined;
+
     const assessment = await this.assess(report, bundle);
-    const issue = await this.file(report, assessment, bundle, reportId);
+    const issue = await this.file(report, assessment, bundle, reportId, shot);
     if (!issue) {
       this.appendInsight(`## ${assessment.title}`, [
         assessment.feasibility,
         ...this.details(report),
+        ...describeScreenshot(report, shot),
         ...describeRepro(bundle, reportId),
         '_Not filed on GitHub: GITHUB_TOKEN is unset or the API call failed._',
       ]);
@@ -228,6 +250,7 @@ export class TelemetryService {
         ...(report.feedback ? { feedback: report.feedback } : {}),
         ...(report.environment ? { environment: report.environment } : {}),
         ...(report.context ? { appState: report.context } : {}),
+        ...(report.screenshot?.highlightTarget ? { userHighlighted: report.screenshot.highlightTarget } : {}),
         recentEvents: report.events.slice(-30),
         // The shape of the timeline, not the timeline itself: enough for the
         // model to reason about scale without spending the context on clip ids.
@@ -271,6 +294,7 @@ export class TelemetryService {
       `No LLM provider was reachable, so this one needs a human read.`,
       `${report.kind === 'error' ? 'A crash' : 'Feedback'} ${where}, from ${client}${report.appVersion ? ` on v${report.appVersion}` : ''}.`,
       last ? `The last thing logged was ${last.type}${last.detail ? ` (${last.detail})` : ''}.` : 'The session log was empty.',
+      ...(report.screenshot?.highlightTarget ? [`They highlighted ${report.screenshot.highlightTarget}.`] : []),
       'Everything the client sent is below.',
     ];
     return parts.join(' ');
@@ -282,6 +306,7 @@ export class TelemetryService {
     assessment: Assessment,
     bundle: ReproBundle | undefined,
     reportId: string,
+    shot: StoredScreenshot | undefined,
   ): Promise<StoredIssue | undefined> {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
@@ -301,6 +326,7 @@ export class TelemetryService {
           body: [
             `**Feasibility.** ${assessment.feasibility}`,
             ...this.details(report),
+            ...describeScreenshot(report, shot),
             ...describeRepro(bundle, reportId),
           ].join('\n\n'),
           // `area:*` is what a triager filters on, so the model's read of which

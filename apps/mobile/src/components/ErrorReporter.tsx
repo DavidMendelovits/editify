@@ -1,5 +1,6 @@
 import { Component, useEffect, useState, type ErrorInfo, type PropsWithChildren } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { captureScreen, type Screenshot } from '../lib/capture';
 import { captureError, startTelemetry, type CapturedError } from '../lib/telemetry';
 import { ReportModal } from './ReportModal';
 import { colors, radius, space, type, fonts } from '../lib/theme';
@@ -42,13 +43,26 @@ class ErrorBoundary extends Component<PropsWithChildren, { crashed: boolean }> {
  */
 export function ErrorReporter({ children }: PropsWithChildren) {
   const [error, setError] = useState<CapturedError>();
+  const [shot, setShot] = useState<Screenshot>();
 
-  useEffect(() => startTelemetry(setError), []);
+  useEffect(() => startTelemetry((captured) => {
+    // Grab the screen as it broke, before the prompt covers it. Best effort:
+    // whatever failed may well be what makes the capture fail too.
+    void captureScreen().then(setShot).catch(() => undefined);
+    setError(captured);
+  }), []);
 
   return (
     <>
       <ErrorBoundary>{children}</ErrorBoundary>
-      {error && <ReportModal mode="error" error={error} onClose={() => setError(undefined)} />}
+      {error && (
+        <ReportModal
+          mode="error"
+          error={error}
+          {...(shot ? { screenshot: shot } : {})}
+          onClose={() => { setError(undefined); setShot(undefined); }}
+        />
+      )}
     </>
   );
 }

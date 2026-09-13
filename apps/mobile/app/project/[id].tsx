@@ -22,6 +22,7 @@ import { ReportModal } from '../../src/components/ReportModal';
 import { Timeline } from '../../src/components/editor/Timeline';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
+import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
@@ -65,6 +66,8 @@ export default function EditorScreen() {
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [styleOpen, setStyleOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  /** Captured when feedback is opened, before the sheet covers the timeline. */
+  const [shot, setShot] = useState<Screenshot>();
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
   /** Only set while a multi-file import is running. */
@@ -395,7 +398,7 @@ export default function EditorScreen() {
           accessibilityLabel="send feedback"
           secondary
           style={styles.feedbackButton}
-          onPress={() => { track('feedback_open', 'editor'); setFeedbackOpen(true); }}
+          onPress={() => { track('feedback_open', 'editor'); void captureScreen().then(setShot); setFeedbackOpen(true); }}
         >
           feedback
         </Button>
@@ -486,7 +489,13 @@ export default function EditorScreen() {
     <Screen scroll={!wide} bleed header={header}>
       {/* Native counterpart of the overscroll guard above: no edge-swipe back. */}
       <Stack.Screen options={{ gestureEnabled: false }} />
-      {feedbackOpen && <ReportModal mode="feedback" onClose={() => setFeedbackOpen(false)} />}
+      {feedbackOpen && (
+        <ReportModal
+          mode="feedback"
+          {...(shot ? { screenshot: shot } : {})}
+          onClose={() => { setFeedbackOpen(false); setShot(undefined); }}
+        />
+      )}
       {wide && <View style={styles.layoutBar}><LayoutPresets onPreset={preset} onReset={reset} /></View>}
       <View
         style={[styles.workspace, !wide && styles.workspaceStacked]}
