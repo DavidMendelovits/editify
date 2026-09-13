@@ -486,6 +486,7 @@ export function Timeline({
         kind={selectedTrack?.kind}
         pending={pending}
         onApply={(ops, patch) => onApply(ops, (current) => (selected ? patchClip(current, selected.id, patch) : current))}
+        onDelete={remove}
       />
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
     </View>
