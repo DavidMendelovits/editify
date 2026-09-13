@@ -11,10 +11,12 @@ import { ProjectStore } from '../src/db/project-store.js';
 import { ReportStore } from '../src/db/report-store.js';
 import { SettingsStore } from '../src/db/settings-store.js';
 import { registerTelemetryRoutes } from '../src/routes/telemetry.js';
-import { chooseSubstitute, ReproService, type ReproBundle } from '../src/services/repro-service.js';
+import { anonymizeName, chooseSubstitute, ReproService, type ReproBundle } from '../src/services/repro-service.js';
 import { TelemetryService } from '../src/services/telemetry-service.js';
 
 const brokenProvider = async (): Promise<ToolProvider> => { throw new Error('no provider configured'); };
+
+const REPORTER = 'user-1';
 
 /** A server holding one real project, the way a reporter's server would. */
 function serveWithProject() {
@@ -42,17 +44,32 @@ function serveWithProject() {
     filmstripUrl: '/assets/asset-1/filmstrip.jpg',
     createdAt: new Date().toISOString(),
   });
-  const project = projects.create({ title: "Dad's 70th", format: '9:16', fps: 30 });
+  const project = projects.create({ title: "Dad's 70th", format: '9:16', fps: 30 }, REPORTER);
   projects.applyOperations(project.id, [{
     type: 'add_clip',
     params: { trackId: 'video-main', clip: { id: 'clip-1', assetId: asset.id, start: 0, in: 0, out: 6, volume: 1, speed: 1 } },
   }], 0);
   projects.applyOperations(project.id, [{
     type: 'add_caption',
-    params: { trackId: 'captions', clip: { id: 'cap-1', start: 0, in: 0, out: 3, text: 'thanks for coming everyone' } },
+    params: {
+      trackId: 'captions',
+      clip: {
+        id: 'cap-1', start: 0, in: 0, out: 3, text: 'thanks for coming everyone',
+        // Karaoke timing: the same speech again, one word at a time.
+        style: {
+          font: 'Montserrat', size: 52, color: '#FFFFFF', position: 'bottom', emphasis: 'bold',
+          words: [{ w: 'thanks', s: 0, e: 0.4 }, { w: 'for', s: 0.4, e: 0.6 }, { w: 'coming', s: 0.6, e: 1 }],
+        },
+      },
+    },
   }], 1);
 
   const app = Fastify();
+  // Stands in for the auth hook: POST /telemetry resolves a token when one is
+  // offered, and the bundle is scoped to whoever that turns out to be.
+  app.addHook('onRequest', async (request) => {
+    if (request.headers.authorization === `Bearer ${REPORTER}`) request.userId = REPORTER;
+  });
   const telemetry = new TelemetryService(
     reports,
     brokenProvider,
@@ -70,6 +87,7 @@ describe('repro bundles', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/telemetry',
+      headers: { authorization: `Bearer ${REPORTER}` },
       payload: {
         sessionId: 's1',
         kind: 'feedback',
@@ -99,6 +117,7 @@ describe('repro bundles', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/telemetry',
+      headers: { authorization: `Bearer ${REPORTER}` },
       payload: {
         sessionId: 's1', kind: 'feedback', platform: 'web', events: [],
         feedback: 'Captions overflow.', context: { screen: 'editor', projectId },
@@ -114,6 +133,45 @@ describe('repro bundles', () => {
     const caption = bundle.project.tracks.flatMap((track) => track.clips).find((clip) => clip.text);
     expect(caption?.text).toBe('xxxxxx xxx xxxxxx xxxxxxxx');
     expect(bundle.assets[0]?.originalName).toMatch(/^clip-[0-9a-f]{8}\.mov$/);
+    // Karaoke timing carries the transcript one word at a time; the timings
+    // stay, the words do not.
+    expect(caption?.style?.words?.map((word) => word.w)).toEqual(['xxxxxx', 'xxx', 'xxxxxx']);
+    expect(caption?.style?.words?.[0]).toMatchObject({ s: 0, e: 0.4 });
+  });
+
+  it('will not attach a project the reporter does not own', async () => {
+    const { app, projectId, reports } = serveWithProject();
+
+    // Same project id, a different signed-in user: the lookup is scoped, so
+    // there is nothing to attach and nothing to leak.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/telemetry',
+      headers: { authorization: 'Bearer someone-else' },
+      payload: {
+        sessionId: 's2', kind: 'feedback', platform: 'web', events: [],
+        feedback: 'give me their timeline', context: { screen: 'editor', projectId },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(reports.getRepro(response.json().reportId)).toBeUndefined();
+  });
+
+  it('attaches nothing to an unauthenticated report, such as a crash on sign-in', async () => {
+    const { app, projectId, reports } = serveWithProject();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/telemetry',
+      payload: {
+        sessionId: 's3', kind: 'error', platform: 'web', events: [],
+        error: { message: 'sign-in blew up' }, context: { screen: 'editor', projectId },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(reports.getRepro(response.json().reportId)).toBeUndefined();
   });
 
   it('files a report with no project without a bundle rather than failing', async () => {
@@ -122,6 +180,7 @@ describe('repro bundles', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/telemetry',
+      headers: { authorization: `Bearer ${REPORTER}` },
       payload: {
         sessionId: 's1', kind: 'feedback', platform: 'web', events: [],
         feedback: 'The home screen is slow.', context: { screen: 'home' },
@@ -146,7 +205,7 @@ describe('media substitution', () => {
   });
 
   it('prefers the same media when this machine already has it', () => {
-    expect(chooseSubstitute({ ...wanted, originalName: 'landscape.mov' }, pool)?.id).toBe('a');
+    expect(chooseSubstitute({ ...wanted, originalName: anonymizeName('landscape.mov') }, pool)?.id).toBe('a');
   });
 
   it('falls back to the nearest duration when nothing matches the orientation', () => {

@@ -78,15 +78,17 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     supabaseUrl,
     // The exported web client is public — the sign-in screen IS the gate, so the
     // static wildcard route (and the index.html 404 fallback for deep links)
-    // skip auth. POST /telemetry joins them because a crash on the sign-in
-    // screen has no credentials to send, and a report that only works once you
-    // are logged in cannot report a broken login. Every other API route still
-    // demands credentials.
+    // skip auth. Every other API route still demands credentials.
     isPublic: (request) =>
-      (request.method === 'POST' && request.routeOptions.url === '/telemetry') ||
-      ((request.method === 'GET' || request.method === 'HEAD') &&
-        (request.routeOptions.url === '/*' ||
-          (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html')))),
+      (request.method === 'GET' || request.method === 'HEAD') &&
+      (request.routeOptions.url === '/*' ||
+        (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html'))),
+    // POST /telemetry takes credentials when there are any and proceeds without
+    // them when there are not: a crash on the sign-in screen has none to send,
+    // and a report that only works once you are logged in cannot report a
+    // broken login. Signed in, the token still resolves the user, which is what
+    // scopes the project state the server attaches to the report.
+    isOptional: (request) => request.method === 'POST' && request.routeOptions.url === '/telemetry',
   });
   await app.register(cors, { origin: true });
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });

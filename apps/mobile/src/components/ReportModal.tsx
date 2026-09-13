@@ -35,13 +35,17 @@ export function ReportModal({ mode, error, screenshot, onClose }: Props) {
       const shot = attached && screenshot
         ? (highlight ? await annotate(screenshot, highlight) : screenshot)
         : undefined;
-      const target = attached && highlight ? describeHighlight(highlight) : undefined;
+      // Resolved against the element index taken with the shot, not the live
+      // DOM: this sheet is on top of the app by now.
+      const target = attached && highlight && screenshot ? describeHighlight(highlight, screenshot.elements) : undefined;
       return await sendReport(mode, {
         ...(error ? { error } : {}),
         ...(comment.trim() ? { feedback: comment.trim() } : {}),
         ...(shot ? {
           screenshot: {
-            ...shot,
+            data: shot.data,
+            width: shot.width,
+            height: shot.height,
             ...(highlight ? { highlight } : {}),
             ...(target ? { highlightTarget: target } : {}),
           },

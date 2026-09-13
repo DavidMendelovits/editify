@@ -40,20 +40,28 @@ function maskText(text: string): string {
  * content the document holds, one edit at a time, so it needs the same mask.
  */
 const AUTHORED_KEYS = new Set(['text', 'title', 'label', 'name']);
+/**
+ * Karaoke timing carries the transcript one word at a time under `w`, which is
+ * the same spoken content as the caption line and needs the same mask. The
+ * timings themselves stay: a word landing at the wrong moment is a real bug.
+ */
+const AUTHORED_WORD_KEY = 'w';
 
 function maskAuthored<T>(value: T): T {
   if (Array.isArray(value)) return value.map((entry) => maskAuthored(entry)) as unknown as T;
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
       key,
-      AUTHORED_KEYS.has(key) && typeof entry === 'string' ? maskText(entry) : maskAuthored(entry),
+      (AUTHORED_KEYS.has(key) || key === AUTHORED_WORD_KEY) && typeof entry === 'string'
+        ? maskText(entry)
+        : maskAuthored(entry),
     ])) as T;
   }
   return value;
 }
 
 /** `IMG_2231.mov` becomes `clip-9f2a1c04.mov`: same media shape, no name. */
-function anonymizeName(originalName: string): string {
+export function anonymizeName(originalName: string): string {
   const extension = /\.[a-z0-9]{1,5}$/i.exec(originalName)?.[0] ?? '';
   return `clip-${anonymize(originalName)}${extension.toLowerCase()}`;
 }
@@ -110,7 +118,10 @@ export interface SubstitutableAsset { id: string; originalName: string; duration
  * at a matching orientation, so a 9:16 clip is never replaced by a landscape one.
  */
 export function chooseSubstitute<T extends SubstitutableAsset>(wanted: ReproBundle['assets'][number], pool: T[]): T | undefined {
-  const exact = pool.find((asset) => asset.id === wanted.id) ?? pool.find((asset) => asset.originalName === wanted.originalName);
+  // The bundle carries anonymized names, so a local file is matched by running
+  // it through the same hash rather than by comparing the names directly.
+  const exact = pool.find((asset) => asset.id === wanted.id)
+    ?? pool.find((asset) => anonymizeName(asset.originalName) === wanted.originalName);
   if (exact) return exact;
   const portrait = wanted.height >= wanted.width;
   const sameShape = pool.filter((asset) => (asset.height >= asset.width) === portrait);
@@ -135,20 +146,16 @@ export class ReproService {
     private readonly settings: SettingsStore,
   ) {}
 
-  build(projectId: string): ReproBundle | undefined {
-    const stored = this.projects.get(projectId);
+  build(projectId: string, userId: string): ReproBundle | undefined {
+    // Scoped: the project id arrives from the client, so it is a request, not a
+    // permission. A project belonging to someone else resolves to nothing.
+    const stored = this.projects.get(projectId, userId);
     if (!stored) return undefined;
     // The timeline in full: every position, duration, transform and style, with
-    // the two things the user wrote themselves (the title and the caption
-    // lines) masked down to their shape.
-    const project = {
-      ...stored,
-      title: `Project ${anonymize(stored.title)}`,
-      tracks: stored.tracks.map((track) => ({
-        ...track,
-        clips: track.clips.map((clip) => (clip.text ? { ...clip, text: maskText(clip.text) } : clip)),
-      })),
-    };
+    // everything the user wrote themselves (the title, the caption lines, the
+    // per-word karaoke timings) masked down to its shape. The mask runs first
+    // and the title is set after, or the deep mask would eat the hash too.
+    const project = { ...maskAuthored(stored), title: `Project ${anonymize(stored.title)}` };
 
     const referenced = new Set(project.tracks.flatMap((track) => track.clips).flatMap((clip) => (clip.assetId ? [clip.assetId] : [])));
     const assets = [...referenced]

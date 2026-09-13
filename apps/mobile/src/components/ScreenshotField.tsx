@@ -15,18 +15,24 @@ interface Props {
 interface Drag { fromX: number; fromY: number; toX: number; toY: number }
 
 function rectOf(drag: Drag, size: { width: number; height: number }): HighlightRect | undefined {
-  const left = Math.min(drag.fromX, drag.toX);
-  const top = Math.min(drag.fromY, drag.toY);
-  const width = Math.abs(drag.toX - drag.fromX);
-  const height = Math.abs(drag.toY - drag.fromY);
+  if (!size.width || !size.height) return undefined;
+  // A drag that runs off the edge of the preview still reports coordinates
+  // outside it, and a highlight outside the image is not a highlight: both
+  // corners are clamped before the box is measured, so the result is always
+  // inside 0..1 and always something the report schema accepts.
+  const clamp = (value: number, limit: number): number => Math.min(Math.max(value, 0), limit);
+  const left = clamp(Math.min(drag.fromX, drag.toX), size.width);
+  const top = clamp(Math.min(drag.fromY, drag.toY), size.height);
+  const right = clamp(Math.max(drag.fromX, drag.toX), size.width);
+  const bottom = clamp(Math.max(drag.fromY, drag.toY), size.height);
   // A tap is not a box. Anything smaller than this is almost certainly a
   // mis-press on the preview rather than an attempt to highlight something.
-  if (width < 12 || height < 12 || !size.width || !size.height) return undefined;
+  if (right - left < 12 || bottom - top < 12) return undefined;
   return {
     x: left / size.width,
     y: top / size.height,
-    width: Math.min(1 - left / size.width, width / size.width),
-    height: Math.min(1 - top / size.height, height / size.height),
+    width: (right - left) / size.width,
+    height: (bottom - top) / size.height,
   };
 }
 

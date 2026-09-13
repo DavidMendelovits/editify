@@ -13,11 +13,13 @@ const GITHUB_REPO = 'DavidMendelovits/editify';
 /** How many log lines the issue prints in full before it falls back to the counts. */
 const TIMELINE_LINES = 30;
 /**
- * GitHub rejects an issue body over 65536 characters, and the repro bundle is
- * the only part that can grow without bound. Over this it is summarised on the
- * issue and left whole on the report row for `npm run repro`.
+ * GitHub rejects an issue body over 65536 characters with a 422, which would
+ * lose the whole report. Every part can grow (a stack, a component stack, a
+ * timeline, a repro bundle), so the body is assembled and then measured, and
+ * the bundle is the piece that gives way: it stays whole on the report row for
+ * `npm run repro` either way.
  */
-const REPRO_BUDGET = 40_000;
+const GITHUB_BODY_LIMIT = 65_536;
 
 /** Title plus the feasibility paragraph that goes at the top of the issue. */
 interface Assessment { title: string; feasibility: string; area?: string }
@@ -122,7 +124,7 @@ function describeEnvironment(environment: TelemetryEnvironment | undefined): str
  * to `npm run repro`. Over the budget the JSON is left out rather than truncated
  * into something that will not parse: the report row still has it whole.
  */
-function describeRepro(bundle: ReproBundle | undefined, reportId: string): string[] {
+function describeRepro(bundle: ReproBundle | undefined, reportId: string, inline = true): string[] {
   if (!bundle) return [];
   const clips = bundle.project.tracks.flatMap((track) => track.clips).length;
   const headline = [
@@ -135,10 +137,24 @@ function describeRepro(bundle: ReproBundle | undefined, reportId: string): strin
   ].filter(Boolean).join(' ');
 
   const json = JSON.stringify(bundle, null, 2);
-  if (json.length > REPRO_BUDGET) {
-    return [`${headline}\n\n_The bundle is ${Math.round(json.length / 1024)}KB, too large to inline. It is stored on report ${reportId}._`];
+  if (!inline) {
+    return [`${headline}\n\n_The bundle is ${Math.round(json.length / 1024)}KB, too large for an issue body. It is stored on report ${reportId}._`];
   }
   return [`${headline}\n\n<details><summary>repro.json</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`];
+}
+
+/**
+ * The issue body, inside GitHub's limit. The bundle is dropped to its summary
+ * first; if the rest is somehow still too long the body is cut, because a
+ * truncated report beats a 422 and no report at all.
+ */
+function assembleBody(parts: string[], repro: (inline: boolean) => string[]): string {
+  const full = [...parts, ...repro(true)].join('\n\n');
+  if (full.length <= GITHUB_BODY_LIMIT) return full;
+  const trimmed = [...parts, ...repro(false)].join('\n\n');
+  if (trimmed.length <= GITHUB_BODY_LIMIT) return trimmed;
+  const marker = "\n\n_Truncated to fit the issue body limit._";
+  return `${trimmed.slice(0, GITHUB_BODY_LIMIT - marker.length)}${marker}`;
 }
 
 /**
@@ -197,11 +213,13 @@ export class TelemetryService {
       return { reportId, ...known, note: 'Already tracked, added to the open issue.' };
     }
 
-    // Built from the server's own tables, keyed off the project the client said
-    // it had open, so the bundle costs the report nothing and cannot be spoofed
-    // into dumping someone else's project.
+    // Built from the server's own tables, so the bundle costs the report
+    // nothing on the wire. The project id is client-supplied, so the lookup is
+    // scoped to the reporter: an id someone else's project owns finds nothing,
+    // and an unauthenticated report (a crash on the sign-in screen) gets no
+    // bundle at all rather than an unscoped one.
     const projectId = typeof report.context?.projectId === 'string' ? report.context.projectId : undefined;
-    const bundle = projectId ? this.repro?.build(projectId) : undefined;
+    const bundle = projectId && userId ? this.repro?.build(projectId, userId) : undefined;
     if (bundle) this.store.attachRepro(reportId, bundle);
 
     // Beside the insights file, so a test (or a second instance) keeps its own.
@@ -324,12 +342,14 @@ export class TelemetryService {
         },
         body: JSON.stringify({
           title: assessment.title,
-          body: [
-            `**Feasibility.** ${assessment.feasibility}`,
-            ...this.details(report),
-            ...describeScreenshot(report, shot),
-            ...describeRepro(bundle, reportId),
-          ].join('\n\n'),
+          body: assembleBody(
+            [
+              `**Feasibility.** ${assessment.feasibility}`,
+              ...this.details(report),
+              ...describeScreenshot(report, shot),
+            ],
+            (inline) => describeRepro(bundle, reportId, inline),
+          ),
           // `area:*` is what a triager filters on, so the model's read of which
           // part of the app is involved is worth carrying onto the issue.
           labels: [

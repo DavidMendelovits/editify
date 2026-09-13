@@ -1,7 +1,7 @@
 import { toCanvas } from 'html-to-image';
-import type { HighlightRect, Screenshot } from './capture';
+import type { CapturedElement, HighlightRect, Screenshot } from './capture';
 
-export type { HighlightRect, Screenshot } from './capture';
+export type { CapturedElement, HighlightRect, Screenshot } from './capture';
 
 /** Long edge of what we send. Big enough to read the timeline, small enough to post. */
 const MAX_EDGE = 1600;
@@ -92,16 +92,44 @@ function redactMedia(): () => void {
   };
 }
 
-function toJpeg(canvas: HTMLCanvasElement): Screenshot {
+function toJpeg(canvas: HTMLCanvasElement, elements: CapturedElement[]): Screenshot {
   const scale = Math.min(1, MAX_EDGE / Math.max(canvas.width, canvas.height));
   if (scale === 1) {
-    return { data: canvas.toDataURL('image/jpeg', JPEG_QUALITY), width: canvas.width, height: canvas.height };
+    return { data: canvas.toDataURL('image/jpeg', JPEG_QUALITY), width: canvas.width, height: canvas.height, elements };
   }
   const scaled = document.createElement('canvas');
   scaled.width = Math.round(canvas.width * scale);
   scaled.height = Math.round(canvas.height * scale);
   scaled.getContext('2d')?.drawImage(canvas, 0, 0, scaled.width, scaled.height);
-  return { data: scaled.toDataURL('image/jpeg', JPEG_QUALITY), width: scaled.width, height: scaled.height };
+  return { data: scaled.toDataURL('image/jpeg', JPEG_QUALITY), width: scaled.width, height: scaled.height, elements };
+}
+
+/** The testID or label RN Web put on the element, whichever the component set. */
+function nameOf(element: Element): string | undefined {
+  return element.getAttribute('data-testid') ?? element.getAttribute('aria-label') ?? undefined;
+}
+
+/**
+ * Every labelled element and where it sat, normalized to the viewport. Taken
+ * with the shot: afterwards the report sheet is on top, and hit-testing the
+ * live DOM would only ever name the sheet's own controls.
+ */
+function indexElements(): CapturedElement[] {
+  const index: CapturedElement[] = [];
+  for (const element of Array.from(document.querySelectorAll('[data-testid], [aria-label]'))) {
+    const name = nameOf(element);
+    if (!name) continue;
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) continue;
+    index.push({
+      name,
+      x: box.left / window.innerWidth,
+      y: box.top / window.innerHeight,
+      width: box.width / window.innerWidth,
+      height: box.height / window.innerHeight,
+    });
+  }
+  return index;
 }
 
 /**
@@ -127,7 +155,7 @@ export async function captureScreen(): Promise<Screenshot | undefined> {
       width: window.innerWidth,
       height: window.innerHeight,
     });
-    return toJpeg(canvas);
+    return toJpeg(canvas, indexElements());
   } catch {
     // A font or image the rasteriser could not read. A report without a picture
     // is still a report.
@@ -165,41 +193,25 @@ export async function annotate(shot: Screenshot, rect: HighlightRect): Promise<S
     context.strokeStyle = '#F0656B';  // colors.danger
     context.lineWidth = Math.max(2, Math.round(shot.width / 400));
     context.strokeRect(box.x, box.y, box.width, box.height);
-    return { data: canvas.toDataURL('image/jpeg', JPEG_QUALITY), width: shot.width, height: shot.height };
+    return { ...shot, data: canvas.toDataURL('image/jpeg', JPEG_QUALITY) };
   } catch {
     return shot;
   }
 }
 
-/** The testID or label RN Web put on the element, whichever the component set. */
-function nameOf(element: Element): string | undefined {
-  const testId = element.getAttribute('data-testid');
-  if (testId) return testId;
-  const label = element.getAttribute('aria-label');
-  if (label) return label;
-  return undefined;
-}
-
 /**
- * What sits under the highlight, in the app's own vocabulary. A box on a picture
- * says where; this says what, so the fix can start from a component rather than
- * from a pixel coordinate.
+ * What sits under the highlight, in the app's own vocabulary. A box on a
+ * picture says where; this says what, so the fix can start from a component
+ * rather than from a pixel coordinate. Resolved against the index taken with
+ * the shot, innermost (smallest containing) element first.
  */
-export function describeHighlight(rect: HighlightRect): string | undefined {
-  try {
-    const x = (rect.x + rect.width / 2) * window.innerWidth;
-    const y = (rect.y + rect.height / 2) * window.innerHeight;
-    const named = document.elementsFromPoint(x, y)
-      .map((element) => nameOf(element))
-      .filter((name): name is string => Boolean(name));
-    if (!named.length) {
-      // Nothing labelled: the text under the cursor is still a lead.
-      const text = document.elementFromPoint(x, y)?.textContent?.trim().slice(0, 80);
-      return text ? `text "${text}"` : undefined;
-    }
-    // Innermost first, and the two above it for context.
-    return named.slice(0, 3).join(' in ');
-  } catch {
-    return undefined;
-  }
+export function describeHighlight(rect: HighlightRect, elements: CapturedElement[]): string | undefined {
+  const x = rect.x + rect.width / 2;
+  const y = rect.y + rect.height / 2;
+  const containing = elements
+    .filter((element) => x >= element.x && x <= element.x + element.width && y >= element.y && y <= element.y + element.height)
+    .sort((left, right) => (left.width * left.height) - (right.width * right.height));
+  if (!containing.length) return undefined;
+  // The element itself, then the two containers around it for context.
+  return containing.slice(0, 3).map((element) => element.name).join(' in ');
 }

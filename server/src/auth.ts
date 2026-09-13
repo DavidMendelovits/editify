@@ -15,6 +15,14 @@ export interface AuthOptions {
   jwks?: JWTVerifyGetKey;
   /** Requests this returns true for skip auth entirely (e.g. the static web client). */
   isPublic?: (request: FastifyRequest) => boolean;
+  /**
+   * Requests this returns true for are let through with or without
+   * credentials, but a valid token still resolves `userId`. POST /telemetry
+   * needs both halves: a crash on the sign-in screen has nothing to send, yet
+   * a report from a signed-in user must be attributable, because what the
+   * server attaches to it (their project) is scoped to who they are.
+   */
+  isOptional?: (request: FastifyRequest) => boolean;
 }
 
 /**
@@ -22,7 +30,7 @@ export interface AuthOptions {
  * Basic for browser media loads, and `?k=` for native media players.
  */
 export function registerAuth(app: FastifyInstance, options?: AuthOptions): void {
-  const { sharedToken, supabaseUrl: authUrl, jwks, isPublic } = options ?? {
+  const { sharedToken, supabaseUrl: authUrl, jwks, isPublic, isOptional } = options ?? {
     sharedToken: process.env.EDITIFY_TOKEN,
     supabaseUrl,
   };
@@ -34,6 +42,7 @@ export function registerAuth(app: FastifyInstance, options?: AuthOptions): void 
   app.addHook('onRequest', async (request, reply) => {
     if (request.url === '/health') return;
     if (isPublic?.(request)) return;
+    const optional = isOptional?.(request) ?? false;
     const query = request.query as { k?: string } | undefined;
     const candidate = offered(request.headers.authorization, query?.k);
 
@@ -53,6 +62,9 @@ export function registerAuth(app: FastifyInstance, options?: AuthOptions): void 
     }
 
     if (sharedToken && matches(candidate, sharedToken)) return;
+    // Anonymous where that is allowed: the request proceeds with no userId, so
+    // everything scoped to a user is simply out of reach for it.
+    if (optional) return;
     // No WWW-Authenticate header: it makes browsers pop a native password
     // dialog on any 401'd fetch or media load. Clients attach tokens themselves.
     return await reply.code(401).send({ error: 'Unauthorized' });

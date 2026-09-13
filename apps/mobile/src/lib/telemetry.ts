@@ -127,20 +127,26 @@ export async function sendReport(
     ...(context ? { context } : {}),
     ...extra,
   };
-  markSent();
   const response = await apiFetch('/telemetry', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(report),
   });
   if (!response.ok) throw new Error(`Report failed with ${response.status}`);
+  // Only now: a send that failed leaves the log intact, so the retry (or the
+  // report the user sends by hand afterwards) still has the history.
+  markSent();
   return await response.json() as TelemetryReceipt;
 }
 
 /** Session log, best effort — losing it must never surface as an error. */
+let flushing = false;
 function flush(): void {
-  if (!hasUnsentEvents()) return;
-  void sendReport('session').catch(() => undefined);
+  // The log now survives a failed send, so an offline client keeps retrying on
+  // the interval. One at a time: a slow or hanging send must not stack up.
+  if (flushing || !hasUnsentEvents()) return;
+  flushing = true;
+  void sendReport('session').catch(() => undefined).finally(() => { flushing = false; });
 }
 
 export function captureError(error: unknown, componentStack?: string): void {

@@ -34,6 +34,12 @@ export function mediaUrl(path: string): string {
 
 /** Anything slower than this is worth a line in the log even when it succeeded. */
 const SLOW_REQUEST_MS = 2500;
+/**
+ * The one endpoint that must never be logged. A failed report would log its own
+ * failure, which marks the buffer unsent, which schedules another report: an
+ * offline client would sit in a retry loop feeding on its own error lines.
+ */
+const UNLOGGED = '/telemetry';
 
 /**
  * Every API call the app makes, timed and logged when it goes wrong. A report
@@ -42,17 +48,21 @@ const SLOW_REQUEST_MS = 2500;
  */
 async function timedFetch(path: string, init?: RequestInit): Promise<Response> {
   const method = init?.method ?? 'GET';
+  const logged = !path.startsWith(UNLOGGED);
   const started = Date.now();
   try {
     const response = await fetch(`${API_URL}${path}`, init);
     const elapsed = Date.now() - started;
+    if (!logged) return response;
     if (!response.ok) track('api_error', `${method} ${path} → ${response.status} in ${elapsed}ms`);
     else if (elapsed > SLOW_REQUEST_MS) track('api_slow', `${method} ${path} → ${response.status} in ${elapsed}ms`);
     return response;
   } catch (error) {
     // A transport failure never reaches a status code, and it is exactly the
     // case a user describes as the app hanging.
-    track('api_offline', `${method} ${path} failed after ${Date.now() - started}ms: ${error instanceof Error ? error.message : String(error)}`);
+    if (logged) {
+      track('api_offline', `${method} ${path} failed after ${Date.now() - started}ms: ${error instanceof Error ? error.message : String(error)}`);
+    }
     throw error;
   }
 }
