@@ -152,7 +152,14 @@ eas submit --platform ios --latest
 - [ ] Confirm on the Devpost rules page that the app's first public release date falls inside August 1 to September 30. Keep the web deploy labeled as a demo, not a launch.
 - [ ] Optional: the HackerNoon writing contest entry.
 
-## 10. Transfer to the company account later
+## 10. Transfer to Editify later (Marta's account or an Editify org)
+
+The transfer works the same whether the receiving account is Marta's
+individual account or an organization. Two hops (David to Marta, Marta to the
+org) are allowed; each hop repeats the Sign in with Apple migration, so going
+straight to the org is less work if it exists by then. Both parties initiate
+and accept the transfer in App Store Connect, and the app must have at least
+one approved version and no IAP pending review at the time.
 
 - App transfer in App Store Connect keeps the bundle id, ratings, reviews, and TestFlight history. Usually completes in a day.
 - Sign in with Apple identifiers change teams. Apple gives a 60-day window and a migration API; storing the Apple `sub` (section 3) makes the re-key possible.
