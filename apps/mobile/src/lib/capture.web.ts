@@ -8,8 +8,9 @@ const MAX_EDGE = 1600;
 const JPEG_QUALITY = 0.72;
 
 /**
- * Everything on screen that could be the user's footage: the preview video, the
- * filmstrips, the thumbnails and poster frames, any sticker they imported.
+ * Everything on screen that is the user's: the preview video, the filmstrips,
+ * the thumbnails and poster frames, any sticker they imported, and the text
+ * they wrote or their footage was transcribed into.
  *
  * A screenshot exists to show the interface, and none of that needs a single
  * frame of what someone filmed. The rule is deliberately blunt: every <img> and
@@ -65,6 +66,18 @@ function redactMedia(): () => void {
     // is visible here, the picture is not.
     const size = `${Math.round(box.width)}x${Math.round(box.height)}`;
     const cover = placeholder(box, box.width > 90 ? `${isVideo ? 'VIDEO' : 'MEDIA'} ${size}` : '');
+    document.body.appendChild(cover);
+    covers.push(cover);
+  }
+
+  // Text the user wrote, or that was transcribed from their footage. The
+  // server masks exactly this out of the repro bundle, and a screenshot that
+  // left it in would hand it back: an editor screen carries the burned-in
+  // captions, which are the words someone said on camera.
+  for (const element of Array.from(document.querySelectorAll<HTMLElement>('[data-editify-sensitive]'))) {
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) continue;
+    const cover = placeholder(box, box.width > 90 ? 'TEXT' : '');
     document.body.appendChild(cover);
     covers.push(cover);
   }

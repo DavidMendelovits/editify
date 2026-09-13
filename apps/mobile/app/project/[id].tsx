@@ -28,6 +28,7 @@ import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type Pic
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { setReportContext, track } from '../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../src/lib/nav';
+import { sensitive } from '../../src/lib/sensitive';
 import { colors, space, type, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
@@ -382,7 +383,7 @@ export default function EditorScreen() {
           </>
         )}
         <View style={styles.headingText}>
-          <Text style={styles.projectTitle} numberOfLines={1}>{project.title}</Text>
+          <Text style={styles.projectTitle} {...sensitive} numberOfLines={1}>{project.title}</Text>
           <Text style={styles.projectMeta} numberOfLines={1}>
             {project.format} · {project.fps} FPS · V{project.version} · {project.tracks.reduce((total, track) => total + track.clips.length, 0)} CLIPS
           </Text>

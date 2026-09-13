@@ -159,7 +159,10 @@ export class ReproService {
 
     const referenced = new Set(project.tracks.flatMap((track) => track.clips).flatMap((clip) => (clip.assetId ? [clip.assetId] : [])));
     const assets = [...referenced]
-      .map((id) => this.assets.get(id))
+      // Scoped like the project above: a clip can name an asset id its owner
+      // never uploaded, and that must not turn a report into a read of someone
+      // else's asset row.
+      .map((id) => this.assets.get(id, userId))
       .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset))
       .map((asset) => ({
         id: asset.id,

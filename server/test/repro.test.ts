@@ -77,7 +77,7 @@ function serveWithProject() {
     new ReproService(projects, assets, new ChatStore(database), new SettingsStore(database)),
   );
   registerTelemetryRoutes(app, telemetry);
-  return { app, insightsPath, projectId: project.id, reports };
+  return { app, insightsPath, projectId: project.id, reports, projects, database };
 }
 
 describe('repro bundles', () => {
@@ -137,6 +137,38 @@ describe('repro bundles', () => {
     // stay, the words do not.
     expect(caption?.style?.words?.map((word) => word.w)).toEqual(['xxxxxx', 'xxx', 'xxxxxx']);
     expect(caption?.style?.words?.[0]).toMatchObject({ s: 0, e: 0.4 });
+  });
+
+  it('leaves out an asset the reporter does not own, even from their own timeline', async () => {
+    const { app, database, projects, projectId, reports } = serveWithProject();
+
+    // Someone else's upload, referenced from a clip in the reporter's project:
+    // the doc is theirs, the asset row is not.
+    new AssetStore(database).insert({
+      id: 'theirs', originalName: 'not-mine.mov', mimeType: 'video/quicktime', duration: 5,
+      width: 1080, height: 1920, fps: 30, hasAudio: true, originalPath: '/x', proxyPath: '/p', thumbnailPath: '/t',
+      originalUrl: '/assets/theirs/original', proxyUrl: '/assets/theirs/proxy.mp4',
+      thumbnailUrl: '/assets/theirs/thumb.jpg', filmstripUrl: '/assets/theirs/filmstrip.jpg',
+      createdAt: new Date().toISOString(),
+    }, 'someone-else');
+    const current = projects.get(projectId)!;
+    projects.applyOperations(projectId, [{
+      type: 'add_clip',
+      params: { trackId: 'video-main', clip: { id: 'clip-2', assetId: 'theirs', start: 20, in: 0, out: 4, volume: 1, speed: 1 } },
+    }], current.version);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/telemetry',
+      headers: { authorization: `Bearer ${REPORTER}` },
+      payload: {
+        sessionId: 's4', kind: 'feedback', platform: 'web', events: [],
+        feedback: 'anything', context: { screen: 'editor', projectId },
+      },
+    });
+
+    const bundle = reports.getRepro(response.json().reportId) as ReproBundle;
+    expect(bundle.assets.map((asset) => asset.id)).toEqual(['asset-1']);
   });
 
   it('will not attach a project the reporter does not own', async () => {

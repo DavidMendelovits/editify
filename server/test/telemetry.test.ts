@@ -2,11 +2,12 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Fastify from 'fastify';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolProvider } from '../src/agent/providers.js';
 import { createDatabase } from '../src/db/database.js';
 import { ReportStore } from '../src/db/report-store.js';
 import { registerTelemetryRoutes } from '../src/routes/telemetry.js';
+import { storeScreenshot } from '../src/services/report-media.js';
 import { TelemetryService } from '../src/services/telemetry-service.js';
 
 // No provider and no token: the report still has to survive somewhere.
@@ -147,6 +148,43 @@ describe('screenshots', () => {
     expect(written).toContain('**They highlighted** `send feedback in header`');
     // No token here, so the issue says where the image actually is.
     expect(written).toContain('Not uploaded');
+  });
+
+  it('refuses bytes that are not the image they claim to be', async () => {
+    // Valid base64 behind a valid image prefix, but the bytes are a zip.
+    const zip = `data:image/png;base64,${Buffer.from('PK\u0003\u0004 not an image at all').toString('base64')}`;
+    const response = await serve().inject({
+      method: 'POST',
+      url: '/telemetry',
+      payload: { ...base, kind: 'feedback', feedback: 'hi', screenshot: { data: zip, width: 10, height: 10 } },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const saved = join(dirname(insightsPath), 'report-screenshots', `${response.json().reportId}.png`);
+    expect(existsSync(saved)).toBe(false);
+    expect(readFileSync(insightsPath, 'utf8')).not.toContain('Screenshot');
+  });
+
+  it('keeps an anonymous screenshot local instead of committing it to the repository', async () => {
+    // POST /telemetry accepts anonymous reports so a crash on the sign-in
+    // screen can file. Pushing their images would let anyone who can reach the
+    // endpoint write into the repository under our own token.
+    process.env.GITHUB_TOKEN = 'test-token';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const directory = mkdtempSync(join(tmpdir(), 'editify-shots-'));
+
+    const stored = await storeScreenshot(
+      'report-1',
+      { data: pixel, width: 1, height: 1 },
+      'DavidMendelovits/editify',
+      directory,
+      false,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(stored?.url).toBeUndefined();
+    expect(existsSync(join(directory, 'report-1.png'))).toBe(true);
+    fetchSpy.mockRestore();
   });
 
   it('rejects a payload that is not an image', async () => {

@@ -6,6 +6,7 @@ import { clipTimelineDuration } from '@editify/shared';
 import { Filmstrip } from './Filmstrip';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { api, type WaveformEnvelope } from '../../lib/api';
+import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 export type DragMode = 'move' | 'in' | 'out';
@@ -91,7 +92,7 @@ export const TimelineClip = memo(function TimelineClip({
       <View style={styles.meta} pointerEvents="none">
         <Text style={styles.number}>{String(index + 1).padStart(2, '0')}</Text>
         {roomy && (
-          <Text style={styles.name} numberOfLines={1}>
+          <Text style={styles.name} {...sensitive} numberOfLines={1}>
             {(asset?.originalName ?? clip.assetId ?? clip.id).replace(/\.[^.]+$/, '')}
           </Text>
         )}
@@ -230,7 +231,7 @@ export const CaptionChip = memo(function CaptionChip({
         selected && styles.captionSelected,
       ]}
     >
-      <Text numberOfLines={1} style={[styles.captionText, overlapping && styles.captionTextOverlap]}>
+      <Text numberOfLines={1} {...sensitive} style={[styles.captionText, overlapping && styles.captionTextOverlap]}>
         {clip.text ?? 'n/a'}
       </Text>
     </View>
@@ -288,7 +289,7 @@ export const StickerChip = memo(function StickerChip({
         selected && styles.stickerSelected,
       ]}
     >
-      <Text numberOfLines={1} style={styles.stickerText}>{label}</Text>
+      <Text numberOfLines={1} {...sensitive} style={styles.stickerText}>{label}</Text>
       {selected && (
         <>
           <View {...leftHandle} hitSlop={{ top: 10, bottom: 10, left: 12, right: 4 }} style={[styles.handle, styles.handleLeft, styles.handleVisible]} />

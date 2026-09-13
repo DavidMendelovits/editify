@@ -21,10 +21,25 @@ export interface StoredScreenshot {
 
 interface GitHubTarget { repo: string; token: string }
 
-function decode(screenshot: TelemetryScreenshot): { bytes: Buffer; extension: string } | undefined {
+/**
+ * The declared media type is just a string the client sent. These bytes are
+ * written to disk and committed to a repository, so the file has to actually be
+ * the image it claims: base64 decodes anything, and `data:image/png;base64,`
+ * in front of an archive or a binary is free to write.
+ */
+const MAGIC: Record<'png' | 'jpg', number[]> = {
+  png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  jpg: [0xff, 0xd8, 0xff],
+};
+
+function decode(screenshot: TelemetryScreenshot): { bytes: Buffer; extension: 'png' | 'jpg' } | undefined {
   const match = /^data:image\/(jpeg|png);base64,(.+)$/s.exec(screenshot.data);
   if (!match?.[1] || !match[2]) return undefined;
-  return { bytes: Buffer.from(match[2], 'base64'), extension: match[1] === 'png' ? 'png' : 'jpg' };
+  const extension = match[1] === 'png' ? 'png' : 'jpg';
+  const bytes = Buffer.from(match[2], 'base64');
+  const magic = MAGIC[extension];
+  if (bytes.length < magic.length || magic.some((byte, index) => bytes[index] !== byte)) return undefined;
+  return { bytes, extension };
 }
 
 async function github(target: GitHubTarget, path: string, init: RequestInit): Promise<Response> {
@@ -69,6 +84,14 @@ export async function storeScreenshot(
   screenshot: TelemetryScreenshot,
   repo: string,
   directory: string,
+  /**
+   * Only a signed-in reporter's screenshot is pushed. POST /telemetry accepts
+   * anonymous reports so a crash on the sign-in screen can still file, and
+   * pushing their images would hand anyone who can reach the endpoint a
+   * commit into the repository under our own token. An anonymous screenshot is
+   * still kept on disk, and the issue says where.
+   */
+  pushable: boolean,
 ): Promise<StoredScreenshot | undefined> {
   const decoded = decode(screenshot);
   if (!decoded) return undefined;
@@ -83,7 +106,7 @@ export async function storeScreenshot(
   }
 
   const token = process.env.GITHUB_TOKEN;
-  if (!token) return { path };
+  if (!token || !pushable) return { path };
 
   const target = { repo, token };
   const remotePath = `reports/${reportId}.${decoded.extension}`;

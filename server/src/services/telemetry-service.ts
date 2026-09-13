@@ -167,7 +167,7 @@ function describeScreenshot(report: TelemetryReport, stored: StoredScreenshot | 
   const caption = report.screenshot?.highlight
     ? `**They highlighted** ${target ? `\`${target}\`` : 'the boxed area'}.`
     : '**Screenshot** of the screen they reported from.';
-  const note = '_Every frame, thumbnail and imported image is replaced with a placeholder by the client: no footage is in this picture._';
+  const note = '_The client replaces every frame, thumbnail, caption, chat turn and file name with a placeholder: the picture carries the interface, not the footage or the words._';
   return [stored.url
     ? `${caption}\n\n![Screenshot](${stored.url})\n\n${note}`
     : `${caption}\n\n_Not uploaded: the image is on the server at \`${stored.path}\`._\n\n${note}`];
@@ -224,7 +224,13 @@ export class TelemetryService {
 
     // Beside the insights file, so a test (or a second instance) keeps its own.
     const shot = report.screenshot
-      ? await storeScreenshot(reportId, report.screenshot, GITHUB_REPO, join(dirname(this.insightsPath), 'report-screenshots'))
+      ? await storeScreenshot(
+        reportId,
+        report.screenshot,
+        GITHUB_REPO,
+        join(dirname(this.insightsPath), 'report-screenshots'),
+        Boolean(userId),
+      )
       : undefined;
 
     const assessment = await this.assess(report, bundle);

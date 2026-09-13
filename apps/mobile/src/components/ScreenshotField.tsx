@@ -51,7 +51,10 @@ export function ScreenshotField({ shot, attached, onAttachedChange, highlight, o
     return (
       <Pressable accessibilityRole="button" accessibilityLabel="attach a screenshot" onPress={() => onAttachedChange(true)}>
         <Text style={styles.offer}>+ attach a screenshot of this screen</Text>
-        <Text style={styles.privacy}>Your footage is not included: every frame and thumbnail is replaced with a placeholder.</Text>
+        <Text style={styles.privacy}>
+          Goes on a tracked issue. Your footage and your words are left out of it: frames, thumbnails,
+          captions, chat and file names are all replaced with placeholders. Check the preview before you send.
+        </Text>
       </Pressable>
     );
   }
