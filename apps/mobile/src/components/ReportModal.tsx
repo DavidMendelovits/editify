@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Linking, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation } from '@tanstack/react-query';
 import { Button } from './Button';
-import { sendReport } from '../lib/telemetry';
+import { describeAttachments, sendReport } from '../lib/telemetry';
 import { colors, radius, space, type, fonts } from '../lib/theme';
 
 interface Props {
@@ -64,6 +64,8 @@ export function ReportModal({ mode, error, onClose }: Props) {
                 multiline
                 style={styles.input}
               />
+              {/* Say what rides along, so nobody has to guess what they just sent. */}
+              <Text style={styles.attachments}>Attached: {describeAttachments()}</Text>
               {report.error && <Text style={styles.error}>{report.error.message}</Text>}
               <View style={styles.actions}>
                 <Button secondary style={styles.dismiss} onPress={onClose}>dismiss</Button>
@@ -101,4 +103,5 @@ const styles = StyleSheet.create({
   send: { flex: 1 },
   issue: { color: colors.accent, fontFamily: fonts.bold, fontSize: type.lg },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.base },
+  attachments: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, lineHeight: 15 },
 });

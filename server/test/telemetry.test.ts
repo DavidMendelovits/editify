@@ -36,6 +36,74 @@ describe('POST /telemetry without GITHUB_TOKEN', () => {
     expect(readFileSync(insightsPath, 'utf8')).toContain('Session s1');
   });
 
+  it('writes the browser, the app state, and the event trail into the fallback', async () => {
+    const now = Date.now();
+    const response = await serve().inject({
+      method: 'POST',
+      url: '/telemetry',
+      payload: {
+        ...base,
+        kind: 'feedback',
+        feedback: 'Let me select more than one clip at a time.',
+        events: [
+          { at: new Date(now - 8000).toISOString(), type: 'project_open', detail: 'p1' },
+          { at: new Date(now - 3000).toISOString(), type: 'edit', detail: 'trim_clip' },
+          { at: new Date(now).toISOString(), type: 'feedback_open', detail: 'editor' },
+        ],
+        environment: {
+          userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+          viewport: '1440x780',
+          screen: '2560x1440',
+          pixelRatio: 2,
+          path: '/project/p1',
+          language: 'en-GB',
+          timezone: 'Europe/London',
+          online: true,
+          connection: '4g',
+          cpuCores: 10,
+          sessionSeconds: 754,
+        },
+        context: { screen: 'editor', projectId: 'p1', clipCount: 14, selectedClip: 'clip-3', playing: false },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const written = readFileSync(insightsPath, 'utf8');
+    // The browser is readable rather than a raw UA string.
+    expect(written).toContain('Client: Chrome 141.0 on macOS 10.15');
+    expect(written).toContain('Viewport: 1440x780 (screen 2560x1440) @2x');
+    expect(written).toContain('Route: /project/p1');
+    expect(written).toContain('In session: 12m 34s');
+    // App state the editor published about itself.
+    expect(written).toContain('clipCount: 14');
+    expect(written).toContain('selectedClip: clip-3');
+    // The trail, stamped against the moment the report was sent.
+    expect(written).toContain('What led up to it.');
+    expect(written).toMatch(/-8\.0s\s+project_open\s+p1/);
+    expect(written).toMatch(/0\.0s\s+feedback_open\s+editor/);
+  });
+
+  it('says what it knows in the feasibility line when no provider answers', async () => {
+    const response = await serve().inject({
+      method: 'POST',
+      url: '/telemetry',
+      payload: {
+        ...base,
+        kind: 'feedback',
+        feedback: 'Multi-select, please.',
+        environment: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/128.0' },
+        context: { screen: 'editor' },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const written = readFileSync(insightsPath, 'utf8');
+    expect(written).toContain('No LLM provider was reachable');
+    expect(written).toContain('on the editor screen');
+    expect(written).toContain('Firefox 128.0 on Windows 10.0');
+    expect(written).toContain('The last thing logged was app_open');
+  });
+
   it('falls back to the insights file for an error report instead of crashing', async () => {
     const response = await serve().inject({
       method: 'POST',

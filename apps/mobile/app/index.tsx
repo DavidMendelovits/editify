@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NewProject, Project, ProjectFormat } from '@editify/shared';
 import { Brand } from '../src/components/Brand';
@@ -10,6 +10,7 @@ import { ReportModal } from '../src/components/ReportModal';
 import { Screen } from '../src/components/Screen';
 import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
+import { setReportContext, track } from '../src/lib/telemetry';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
 
 const formats: Array<{ label: string; format: ProjectFormat; meta: string }> = [
@@ -33,8 +34,24 @@ export default function HomeScreen() {
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteProject(id),
-    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['projects'] }); },
+    onSuccess: async () => { track('project_delete'); await client.invalidateQueries({ queryKey: ['projects'] }); },
   });
+
+  // Feedback sent from here cannot name a project, so it says what this screen
+  // does know: how many cuts the user has and whether the list even loaded.
+  const snapshot = useRef({ projects });
+  snapshot.current = { projects };
+  // Focus-scoped, not mount-scoped: the router keeps this screen mounted behind
+  // the editor, so the screen the user is actually looking at owns the context.
+  useFocusEffect(useCallback(() => setReportContext(() => {
+    const query = snapshot.current.projects;
+    return {
+      screen: 'home',
+      projectCount: query.data?.length ?? 0,
+      projectsLoaded: !query.isLoading && !query.error,
+      ...(query.error ? { projectsError: query.error.message.slice(0, 200) } : {}),
+    };
+  }), []));
 
   return (
     <Screen header={
@@ -43,7 +60,7 @@ export default function HomeScreen() {
         <View style={styles.headerActions}>
           <Button secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>import media</Button>
           <Button secondary style={styles.styleButton} onPress={() => router.push('/style')}>learn my style</Button>
-          <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => setFeedbackOpen(true)}>send feedback</Button>
+          <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); setFeedbackOpen(true); }}>send feedback</Button>
           <Button accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</Button>
         </View>
       </View>
@@ -57,7 +74,7 @@ export default function HomeScreen() {
           <Pressable
             key={`${item.label}-${index}`}
             accessibilityRole="button"
-            onPress={() => create.mutate({ title: `${item.label} edit`, format: item.format, fps: 30 })}
+            onPress={() => { track('project_create', item.label); create.mutate({ title: `${item.label} edit`, format: item.format, fps: 30 }); }}
             style={({ pressed }) => [styles.formatRow, pressed && styles.pressed]}
           >
             <View style={styles.rowFormat}><Text style={styles.rowFormatText}>{item.format}</Text></View>
