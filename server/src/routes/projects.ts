@@ -63,6 +63,12 @@ export function registerProjectRoutes(
     }
   });
 
+  /** Drives the editor's undo/redo buttons: cheap enough to refetch after every edit. */
+  app.get<{ Params: { id: string } }>('/projects/:id/history', async (request, reply) => {
+    if (!projects.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Project not found' });
+    return projects.history(request.params.id);
+  });
+
   app.get<{ Params: { id: string } }>('/projects/:id/oplog', async (request, reply) => {
     if (!projects.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Project not found' });
     return projects.operationLog(request.params.id);

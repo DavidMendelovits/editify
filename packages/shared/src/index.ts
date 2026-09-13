@@ -185,6 +185,7 @@ export const operationParamsSchemas = {
   }),
   set_format: z.object({ format: projectFormatSchema }),
   undo: z.object({}).strict(),
+  redo: z.object({}).strict(),
   /** Not an agent tool: only the client's per-turn Revert issues this. */
   revert_run: z.object({ runId: z.string().min(1) }),
 } as const;
@@ -208,6 +209,7 @@ export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('set_clip_properties'), params: operationParamsSchemas.set_clip_properties }),
   z.object({ type: z.literal('set_format'), params: operationParamsSchemas.set_format }),
   z.object({ type: z.literal('undo'), params: operationParamsSchemas.undo }),
+  z.object({ type: z.literal('redo'), params: operationParamsSchemas.redo }),
   z.object({ type: z.literal('revert_run'), params: operationParamsSchemas.revert_run }),
 ]);
 export type Operation = z.infer<typeof operationSchema>;
@@ -377,7 +379,7 @@ export function deriveProjectDuration(project: Pick<Project, 'tracks'>): number 
 export const OPERATION_CATALOG = [
   'add_clip', 'remove_clip', 'split_clip', 'trim_clip', 'move_clip',
   'reorder_clips', 'set_volume', 'set_speed', 'set_transform', 'set_overlay',
-  'set_transition', 'add_caption', 'update_caption', 'remove_caption', 'set_format', 'undo',
+  'set_transition', 'add_caption', 'update_caption', 'remove_caption', 'set_format', 'undo', 'redo',
   'ripple_delete_ranges', 'set_clip_properties',
 ] as const;
 

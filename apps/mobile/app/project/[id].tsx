@@ -26,7 +26,7 @@ import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type Pic
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { track } from '../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../src/lib/nav';
-import { colors, space, type, fonts } from '../../src/lib/theme';
+import { colors, radius, space, type, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
 const WIDE_BREAKPOINT = 1024;
@@ -73,6 +73,9 @@ export default function EditorScreen() {
 
   const projectQuery = useQuery({ queryKey: ['project', id], queryFn: () => api.getProject(id), enabled: Boolean(id) });
   const chatQuery = useQuery({ queryKey: ['chat', id], queryFn: () => api.getChat(id), enabled: Boolean(id) });
+  // Drives the ↶ / ↷ buttons. Refetched after every edit — including the ones
+  // the agent applies — so the controls always match the server's log.
+  const historyQuery = useQuery({ queryKey: ['history', id], queryFn: () => api.getHistory(id), enabled: Boolean(id) });
   const project = projectQuery.data;
 
   const assetIds = useMemo(() => [...new Set(
@@ -127,6 +130,26 @@ export default function EditorScreen() {
     },
     onSuccess: (updated) => queryClient.setQueryData(['project', id], updated),
     onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
+    onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['history', id] }); },
+  });
+
+  /** Undo and redo ride the same chain as `apply`, so they never race an in-flight batch. */
+  const history = useMutation({
+    mutationFn: (direction: 'undo' | 'redo') => {
+      const run = opChain.current.catch(() => undefined).then(async () => {
+        const current = queryClient.getQueryData<Project>(['project', id]);
+        if (!current) throw new Error('Project is still loading');
+        const updated = direction === 'undo'
+          ? await api.undo(current.id, current.version)
+          : await api.redo(current.id, current.version);
+        queryClient.setQueryData(['project', id], updated);
+        return updated;
+      });
+      opChain.current = run;
+      return run;
+    },
+    onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
+    onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['history', id] }); },
   });
   // Queued behind the same chain as `apply`: a revert must not race a batch of
   // ops that is still in flight.
@@ -139,6 +162,7 @@ export default function EditorScreen() {
     onSuccess: async (doc: Project) => {
       queryClient.setQueryData(['project', id], doc);
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
+      await queryClient.invalidateQueries({ queryKey: ['history', id] });
     },
   });
   const sendChat = useMutation({
@@ -148,6 +172,7 @@ export default function EditorScreen() {
       queryClient.setQueryData(['project', id], response.doc);
       setLatestTrace(response.trace ?? []);
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
+      await queryClient.invalidateQueries({ queryKey: ['history', id] });
     },
     onSettled: () => setOptimisticMessage(undefined),
   });
@@ -172,6 +197,7 @@ export default function EditorScreen() {
     seenLiveSteps.current = liveSteps.length;
     if (fresh.some((step) => step.ok && !isReadStep(step))) {
       void queryClient.invalidateQueries({ queryKey: ['project', id] });
+      void queryClient.invalidateQueries({ queryKey: ['history', id] });
     }
   }, [liveSteps, queryClient, id]);
 
@@ -215,6 +241,30 @@ export default function EditorScreen() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [toggle]);
+
+  const canUndo = Boolean(historyQuery.data?.canUndo) && !history.isPending;
+  const canRedo = Boolean(historyQuery.data?.canRedo) && !history.isPending;
+  const runHistory = useCallback((direction: 'undo' | 'redo') => { history.mutate(direction); }, [history]);
+
+  // cmd/ctrl+Z undoes, cmd/ctrl+shift+Z and ctrl+Y redo — web only, and never
+  // while the caret is in the composer, where the browser's own undo belongs.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+      const key = event.key.toLowerCase();
+      // ctrl+Y is the Windows redo; cmd+Y is a browser shortcut and stays put.
+      const redoing = key === 'z' ? event.shiftKey : true;
+      if (key !== 'z' && !(key === 'y' && event.ctrlKey && !event.metaKey)) return;
+      event.preventDefault();
+      if (redoing ? canRedo : canUndo) runHistory(redoing ? 'redo' : 'undo');
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [canRedo, canUndo, runHistory]);
 
   function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): void {
     apply.mutate(optimistic ? { ops, optimistic } : { ops });
@@ -347,6 +397,8 @@ export default function EditorScreen() {
         </View>
       </View>
       <View style={styles.headerActions}>
+        <HistoryButton label="↶" accessibilityLabel="Undo" testID="undo-button" enabled={canUndo} onPress={() => runHistory('undo')} />
+        <HistoryButton label="↷" accessibilityLabel="Redo" testID="redo-button" enabled={canRedo} onPress={() => runHistory('redo')} />
         {/* Adding media lives in the library (+ photos / + files / + folder), which also
             reports import progress. The header keeps only the global action. */}
         <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
@@ -543,6 +595,25 @@ export default function EditorScreen() {
   );
 }
 
+/** Greyed out and unpressable when the server says there is nothing to step to. */
+function HistoryButton({ label, accessibilityLabel, testID, enabled, onPress }: {
+  label: string; accessibilityLabel: string; testID: string; enabled: boolean; onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled: !enabled }}
+      testID={testID}
+      disabled={!enabled}
+      onPress={onPress}
+      style={({ pressed }) => [styles.historyButton, !enabled && styles.historyButtonDisabled, pressed && enabled && styles.historyButtonPressed]}
+    >
+      <Text style={[styles.historyLabel, !enabled && styles.historyLabelDisabled]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
   back: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
@@ -553,6 +624,14 @@ const styles = StyleSheet.create({
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
   exportButton: { width: 96, minHeight: 30 },
+  historyButton: {
+    minWidth: 30, minHeight: 30, alignItems: 'center', justifyContent: 'center',
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
+  },
+  historyButtonDisabled: { opacity: 0.38 },
+  historyButtonPressed: { borderColor: colors.accent },
+  historyLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xl },
+  historyLabelDisabled: { color: colors.muted },
   layoutBar: { flexDirection: 'row', justifyContent: 'flex-end', marginBottom: space.md },
   // Wide mode: the dividers occupy the gutter between panels, so no gap here.
   workspace: { flex: 1, flexDirection: 'row', minHeight: 0 },
