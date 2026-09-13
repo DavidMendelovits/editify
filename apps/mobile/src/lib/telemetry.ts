@@ -1,35 +1,25 @@
 import { AppState, Dimensions, Platform } from 'react-native';
-import type { TelemetryContext, TelemetryEnvironment, TelemetryEvent, TelemetryReceipt, TelemetryReport } from '@editify/shared';
+import type { TelemetryContext, TelemetryEnvironment, TelemetryReceipt, TelemetryReport } from '@editify/shared';
 import { apiFetch } from './api';
+import { currentEvents, hasUnsentEvents, markSent, track } from './event-log';
 
-/** Newest events win — the buffer is a tail, never a growing log. */
-const MAX_EVENTS = 60;
-/**
- * How much of the log survives a send. The periodic flush used to clear the
- * buffer outright, so a report written a minute into a quiet stretch arrived
- * with "no events" and a triager had nothing to reconstruct. Keeping a tail
- * costs a few repeated lines across reports and buys every report a history.
- */
-const RETAINED_EVENTS = 25;
+export { track } from './event-log';
+
+/** What the reporter needs to describe a failure: the throw, plus React's view of it. */
+export interface CapturedError { message: string; stack?: string; componentStack?: string }
+
 const FLUSH_INTERVAL = 60_000;
+/** Console noise is useful, a render loop screaming into the buffer is not. */
+const CONSOLE_ERROR_LIMIT = 10;
 
 const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const platform = Platform.OS;
 const appVersion = process.env.EXPO_PUBLIC_APP_VERSION;
 const sessionStart = Date.now();
-let events: TelemetryEvent[] = [];
 /** Set by the reporter UI; a captured error opens its modal instead of vanishing. */
-let onError: ((error: { message: string; stack?: string }) => void) | undefined;
+let onError: ((error: CapturedError) => void) | undefined;
 /** Registered by whichever screen is mounted; read at send time, never cached. */
 let contextSource: (() => TelemetryContext) | undefined;
-/** Events tracked since the last send. The retained tail must not re-flush on its own. */
-let unsent = 0;
-
-export function track(type: string, detail?: string): void {
-  events.push({ at: new Date().toISOString(), type, ...(detail ? { detail: detail.slice(0, 400) } : {}) });
-  if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
-  unsent += 1;
-}
 
 /**
  * Lets the current screen describe itself to any report sent while it is up:
@@ -111,7 +101,7 @@ export function describeAttachments(): string {
     `${platform} session`,
     ...(context?.screen ? [`the ${String(context.screen)} screen`] : []),
     ...(context?.projectId ? ['the open project'] : []),
-    ...(events.length ? [`your last ${events.length} ${events.length === 1 ? 'action' : 'actions'}`] : []),
+    ...(currentEvents().length ? [`your last ${currentEvents().length} ${currentEvents().length === 1 ? 'action' : 'actions'}`] : []),
     'browser and screen details',
   ];
   return `${parts.join(', ')}.`;
@@ -129,15 +119,14 @@ export async function sendReport(
   const report: TelemetryReport = {
     sessionId,
     kind,
-    events,
+    events: currentEvents(),
     platform,
     ...(appVersion ? { appVersion } : {}),
     environment: collectEnvironment(),
     ...(context ? { context } : {}),
     ...extra,
   };
-  events = events.slice(-RETAINED_EVENTS);
-  unsent = 0;
+  markSent();
   const response = await apiFetch('/telemetry', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -149,11 +138,11 @@ export async function sendReport(
 
 /** Session log, best effort — losing it must never surface as an error. */
 function flush(): void {
-  if (!unsent) return;
+  if (!hasUnsentEvents()) return;
   void sendReport('session').catch(() => undefined);
 }
 
-export function captureError(error: unknown): void {
+export function captureError(error: unknown, componentStack?: string): void {
   // Clamped to what telemetryReportSchema accepts — a bundled web stack runs
   // well past 8000 characters, and an empty message fails its min(1), either of
   // which would 400 the report the user just chose to send.
@@ -167,7 +156,7 @@ export function captureError(error: unknown): void {
   // fixed-position and full-bleed, so it swallows every click behind it
   // (including the header's "‹ PROJECTS"), with nothing on screen to explain why.
   if (/play\(\)|The fetching process for the media resource was aborted/.test(message)) return;
-  onError?.({ message, ...(stack ? { stack } : {}) });
+  onError?.({ message, ...(stack ? { stack } : {}), ...(componentStack ? { componentStack: componentStack.slice(0, 4000) } : {}) });
 }
 
 /**
@@ -175,13 +164,30 @@ export function captureError(error: unknown): void {
  * flush when the app goes to the background (or the tab hides on web). Returns
  * the teardown for the effect that called it.
  */
-export function startTelemetry(handler: (error: { message: string; stack?: string }) => void): () => void {
+export function startTelemetry(handler: (error: CapturedError) => void): () => void {
   onError = handler;
   track('app_open');
   const timer = setInterval(flush, FLUSH_INTERVAL);
   const teardown: Array<() => void> = [];
 
   if (Platform.OS === 'web') {
+    // React's warnings and any library's console noise go through console.error
+    // and never reach window.onerror, so a report would otherwise miss the one
+    // line that says "a key prop is missing" or "state update on unmounted".
+    // Capped per session: a component erroring in a render loop must not fill
+    // the whole buffer with the same line.
+    let consoleErrors = 0;
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      if (consoleErrors < CONSOLE_ERROR_LIMIT) {
+        consoleErrors += 1;
+        const text = args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' ');
+        track('console_error', text.slice(0, 200));
+      }
+      originalConsoleError(...args);
+    };
+    teardown.push(() => { console.error = originalConsoleError; });
+
     const onWindowError = (event: ErrorEvent) => captureError(event.error ?? event.message);
     const onRejection = (event: PromiseRejectionEvent) => captureError(event.reason);
     window.addEventListener('error', onWindowError);

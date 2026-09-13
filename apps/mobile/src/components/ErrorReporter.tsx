@@ -1,10 +1,8 @@
-import { Component, useEffect, useState, type PropsWithChildren } from 'react';
+import { Component, useEffect, useState, type ErrorInfo, type PropsWithChildren } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { captureError, startTelemetry } from '../lib/telemetry';
+import { captureError, startTelemetry, type CapturedError } from '../lib/telemetry';
 import { ReportModal } from './ReportModal';
 import { colors, radius, space, type, fonts } from '../lib/theme';
-
-interface CapturedError { message: string; stack?: string }
 
 /**
  * A render error takes its whole subtree with it, so the boundary swaps in a
@@ -18,8 +16,10 @@ class ErrorBoundary extends Component<PropsWithChildren, { crashed: boolean }> {
     return { crashed: true };
   }
 
-  override componentDidCatch(error: Error): void {
-    captureError(error);
+  override componentDidCatch(error: Error, info: ErrorInfo): void {
+    // The component stack is the one thing a bare stack trace cannot give us:
+    // which screen and which subtree the failure happened inside.
+    captureError(error, info.componentStack ?? undefined);
   }
 
   override render() {

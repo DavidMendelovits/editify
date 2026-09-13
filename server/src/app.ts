@@ -32,6 +32,7 @@ import { RenderQueue } from './services/render-queue.js';
 import { DissectService } from './services/dissect-service.js';
 import { InsightService } from './services/insight-service.js';
 import { StyleService } from './services/style-service.js';
+import { ReproService } from './services/repro-service.js';
 import { TelemetryService } from './services/telemetry-service.js';
 import { TranscriptService } from './services/transcript-service.js';
 
@@ -50,7 +51,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const assets = new AssetStore(database);
   const renders = new RenderStore(database);
   const chats = new ChatStore(database);
-  const registry = new ProviderRegistry(new SettingsStore(database));
+  const settings = new SettingsStore(database);
+  const registry = new ProviderRegistry(settings);
   const resolveProvider = async (): Promise<ToolProvider> => await registry.resolve();
   const agent = new AgentService(resolveProvider);
   const transcripts = new TranscriptService(new TranscriptStore(database));
@@ -59,7 +61,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const renderQueue = new RenderQueue(renders, projects, assets);
   renderQueue.recover();
   const dissections = new DissectService(database);
-  const telemetry = new TelemetryService(new ReportStore(database), resolveProvider);
+  const telemetry = new TelemetryService(
+    new ReportStore(database),
+    resolveProvider,
+    undefined,
+    new ReproService(projects, assets, chats, settings),
+  );
 
   // EDITIFY_NO_AUTH=1 disables auth for local agent testing; every request
   // lands in the shared (NULL userId) scope. Ignored on Fly/production.

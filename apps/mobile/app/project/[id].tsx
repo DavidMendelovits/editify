@@ -169,12 +169,12 @@ export default function EditorScreen() {
   // numbers describe the timeline the user is looking at, not the one that was
   // loaded when the effect ran. Refs feed the parts this screen deliberately
   // does not re-render for, like the playhead.
-  const snapshot = useRef({ project, selectedId, openPanel, wide, playing });
-  snapshot.current = { project, selectedId, openPanel, wide, playing };
+  const snapshot = useRef({ project, selectedId, openPanel, wide, playing, layout });
+  snapshot.current = { project, selectedId, openPanel, wide, playing, layout };
   // Focus-scoped for the same reason as the overscroll guard below: export is
   // pushed on top of this screen without unmounting it.
   useFocusEffect(useCallback(() => setReportContext(() => {
-    const { project: doc, selectedId: selected, openPanel: panel, wide: isWide, playing: isPlaying } = snapshot.current;
+    const { project: doc, selectedId: selected, openPanel: panel, wide: isWide, playing: isPlaying, layout: panels } = snapshot.current;
     const clips = (doc?.tracks ?? []).flatMap((track) => track.clips);
     return {
       screen: 'editor',
@@ -191,6 +191,9 @@ export default function EditorScreen() {
       } : { projectLoaded: false }),
       selectedClip: selected ?? 'none',
       openPanel: panel ?? 'none',
+      // Panel sizes are persisted per project and have already caused one
+      // layout bug, so a report from a dragged-about editor has to say so.
+      panelSizes: Object.entries(panels).map(([key, value]) => `${key}:${Math.round(Number(value))}`).join(' '),
       playhead: Math.round(clock.get() * 10) / 10,
       playing: isPlaying,
     };

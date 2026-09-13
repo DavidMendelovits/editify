@@ -176,6 +176,14 @@ function migrate(database: EditifyDatabase): void {
 
   // One agent turn is one run: every row it logs shares a run_id, so the whole
   // turn can be reverted as a unit. Client edits leave it NULL.
+  // The state a report was sent from: project doc, recent ops, asset probes.
+  // Stored beside the report so `npm run repro` works even when the bundle was
+  // too large to inline on the issue.
+  const reportColumns = database.prepare('PRAGMA table_info(reports)').all() as Array<{ name: string }>;
+  if (!reportColumns.some((column) => column.name === 'repro_json')) {
+    database.exec('ALTER TABLE reports ADD COLUMN repro_json TEXT');
+  }
+
   const operationLogColumns = database.prepare('PRAGMA table_info(operation_log)').all() as Array<{ name: string }>;
   if (!operationLogColumns.some((column) => column.name === 'run_id')) {
     database.exec('ALTER TABLE operation_log ADD COLUMN run_id TEXT');

@@ -1,4 +1,5 @@
 import type { AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project } from '@editify/shared';
+import { track } from './event-log';
 import type { AgentTraceStep } from './agent';
 import type { EditPreset } from './presets';
 
@@ -31,9 +32,34 @@ export function mediaUrl(path: string): string {
   return `${API_URL}${path}${path.includes('?') ? '&' : '?'}k=${encodeURIComponent(accessToken)}`;
 }
 
+/** Anything slower than this is worth a line in the log even when it succeeded. */
+const SLOW_REQUEST_MS = 2500;
+
+/**
+ * Every API call the app makes, timed and logged when it goes wrong. A report
+ * filed after "it just spins" is unreadable without this: the event log now
+ * carries the endpoint, the status, and how long it took.
+ */
+async function timedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const method = init?.method ?? 'GET';
+  const started = Date.now();
+  try {
+    const response = await fetch(`${API_URL}${path}`, init);
+    const elapsed = Date.now() - started;
+    if (!response.ok) track('api_error', `${method} ${path} → ${response.status} in ${elapsed}ms`);
+    else if (elapsed > SLOW_REQUEST_MS) track('api_slow', `${method} ${path} → ${response.status} in ${elapsed}ms`);
+    return response;
+  } catch (error) {
+    // A transport failure never reaches a status code, and it is exactly the
+    // case a user describes as the app hanging.
+    track('api_offline', `${method} ${path} failed after ${Date.now() - started}ms: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
+}
+
 /** Plain `fetch` against the API for callers outside `api` — same credentials. */
 export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${API_URL}${path}`, { ...init, headers: { ...authHeaders(), ...init?.headers } });
+  return timedFetch(path, { ...init, headers: { ...authHeaders(), ...init?.headers } });
 }
 
 export interface ChatMessage {
@@ -195,7 +221,7 @@ function describeFailure(status: number, body: string): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await timedFetch(path, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...init?.headers },
   });
@@ -211,7 +237,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * routes before the server ships them.
  */
 async function requestOptional<T>(path: string): Promise<T | null> {
-  const response = await fetch(`${API_URL}${path}`, { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
+  const response = await timedFetch(path, { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
   if (response.status === 404) return null;
   if (!response.ok) {
     const body = await response.text();
@@ -230,7 +256,7 @@ export const api = {
   getProject: (id: string) => request<Project>(`/projects/${id}`),
   /** Answers 204 with no body, so it cannot go through `request`'s JSON parse. */
   deleteProject: async (id: string): Promise<void> => {
-    const response = await fetch(`${API_URL}/projects/${id}`, { method: 'DELETE', headers: authHeaders() });
+    const response = await timedFetch(`/projects/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
   },
   applyOps: (id: string, ops: Operation[], baseVersion: number) => request<Project>(`/projects/${id}/ops`, {
@@ -278,7 +304,7 @@ export const api = {
   getWaveform: (assetId: string) => request<WaveformEnvelope>(`/assets/${assetId}/waveform`),
   /** 404 is an ordinary answer — no profile yet — and both codes carry the run state. */
   getStyle: async (): Promise<StyleState> => {
-    const response = await fetch(`${API_URL}/style-profile`, { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
+    const response = await timedFetch('/style-profile', { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
     if (!response.ok && response.status !== 404) throw new Error(describeFailure(response.status, await response.text()));
     const body = await response.json() as StyleProfile & { status: StyleRunStatus; error?: string };
     return {
@@ -319,7 +345,7 @@ export async function uploadAsset(asset: { uri: string; name: string; mimeType?:
     } as unknown as Blob);
   }
   const query = asset.projectId ? `?projectId=${encodeURIComponent(asset.projectId)}` : '';
-  const response = await fetch(`${API_URL}/assets${query}`, { method: 'POST', body: form, headers: authHeaders() });
+  const response = await timedFetch(`/assets${query}`, { method: 'POST', body: form, headers: authHeaders() });
   if (!response.ok) throw new Error(await response.text());
   return await response.json() as AssetMetadata;
 }

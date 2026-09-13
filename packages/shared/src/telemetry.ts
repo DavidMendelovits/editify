@@ -56,7 +56,12 @@ export const telemetryReportSchema = z.object({
   sessionId: z.string().min(1).max(64),
   kind: z.enum(['session', 'error', 'feedback']),
   events: z.array(telemetryEventSchema).max(200).default([]),
-  error: z.object({ message: z.string().min(1).max(2000), stack: z.string().max(8000).optional() }).optional(),
+  error: z.object({
+    message: z.string().min(1).max(2000),
+    stack: z.string().max(8000).optional(),
+    /** React's own trace: which components were mounted around the failure. */
+    componentStack: z.string().max(4000).optional(),
+  }).optional(),
   feedback: z.string().max(4000).optional(),
   platform: z.string().min(1).max(40),
   appVersion: z.string().max(40).optional(),

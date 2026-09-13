@@ -5,11 +5,18 @@ import type { TelemetryEnvironment, TelemetryEvent, TelemetryReceipt, TelemetryR
 import type { ToolProvider } from '../agent/providers.js';
 import { dataRoot } from '../config.js';
 import type { ReportStore, StoredIssue } from '../db/report-store.js';
+import type { ReproBundle, ReproService } from './repro-service.js';
 import { NO_DASHES_RULE } from '../agent/prose-style.js';
 
 const GITHUB_REPO = 'DavidMendelovits/editify';
 /** How many log lines the issue prints in full before it falls back to the counts. */
 const TIMELINE_LINES = 30;
+/**
+ * GitHub rejects an issue body over 65536 characters, and the repro bundle is
+ * the only part that can grow without bound. Over this it is summarised on the
+ * issue and left whole on the report row for `npm run repro`.
+ */
+const REPRO_BUDGET = 40_000;
 
 /** Title plus the feasibility paragraph that goes at the top of the issue. */
 interface Assessment { title: string; feasibility: string; area?: string }
@@ -109,6 +116,30 @@ function describeEnvironment(environment: TelemetryEnvironment | undefined): str
   return [['**Environment.**', ...listed.map(([label, value]) => `- ${label}: ${value}`)].join('\n')];
 }
 
+/**
+ * The repro bundle, as a headline a human reads and a JSON block the bot feeds
+ * to `npm run repro`. Over the budget the JSON is left out rather than truncated
+ * into something that will not parse: the report row still has it whole.
+ */
+function describeRepro(bundle: ReproBundle | undefined, reportId: string): string[] {
+  if (!bundle) return [];
+  const clips = bundle.project.tracks.flatMap((track) => track.clips).length;
+  const headline = [
+    `**Reproduce it.** \`npm run repro -- --report ${reportId}\` seeds this exact project:`,
+    `${bundle.project.format} at ${bundle.project.fps}fps, ${clips} ${clips === 1 ? 'clip' : 'clips'}`,
+    `over ${bundle.project.duration.toFixed(1)}s, v${bundle.project.version},`,
+    `${bundle.assets.length} ${bundle.assets.length === 1 ? 'asset' : 'assets'}.`,
+    bundle.server.commit ? `Server at ${bundle.server.commit}.` : '',
+    bundle.server.provider ? `Provider: ${bundle.server.provider}.` : '',
+  ].filter(Boolean).join(' ');
+
+  const json = JSON.stringify(bundle, null, 2);
+  if (json.length > REPRO_BUDGET) {
+    return [`${headline}\n\n_The bundle is ${Math.round(json.length / 1024)}KB, too large to inline. It is stored on report ${reportId}._`];
+  }
+  return [`${headline}\n\n<details><summary>repro.json</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`];
+}
+
 /** Whatever the current screen published about itself, in the order it sent it. */
 function describeContext(context: TelemetryReport['context']): string[] {
   const entries = Object.entries(context ?? {});
@@ -127,6 +158,8 @@ export class TelemetryService {
     /** Resolved per call, like the other services, so the provider picker applies live. */
     private readonly provider: () => Promise<ToolProvider>,
     private readonly insightsPath = join(dataRoot, 'user-insights.md'),
+    /** Optional so the telemetry tests, and a report with no project, still work. */
+    private readonly repro?: ReproService,
   ) {}
 
   async ingest(report: TelemetryReport, userId?: string): Promise<TelemetryReceipt> {
@@ -147,12 +180,20 @@ export class TelemetryService {
       return { reportId, ...known, note: 'Already tracked, added to the open issue.' };
     }
 
-    const assessment = await this.assess(report);
-    const issue = await this.file(report, assessment);
+    // Built from the server's own tables, keyed off the project the client said
+    // it had open, so the bundle costs the report nothing and cannot be spoofed
+    // into dumping someone else's project.
+    const projectId = typeof report.context?.projectId === 'string' ? report.context.projectId : undefined;
+    const bundle = projectId ? this.repro?.build(projectId) : undefined;
+    if (bundle) this.store.attachRepro(reportId, bundle);
+
+    const assessment = await this.assess(report, bundle);
+    const issue = await this.file(report, assessment, bundle, reportId);
     if (!issue) {
       this.appendInsight(`## ${assessment.title}`, [
         assessment.feasibility,
         ...this.details(report),
+        ...describeRepro(bundle, reportId),
         '_Not filed on GitHub: GITHUB_TOKEN is unset or the API call failed._',
       ]);
       return { reportId, issueNumber: null, issueUrl: null, note: 'Logged for review. We could not open a tracker issue.' };
@@ -165,7 +206,7 @@ export class TelemetryService {
    * A short title and a feasibility read from the LLM, with a template fallback
    * so a missing or broken provider never blocks the report.
    */
-  private async assess(report: TelemetryReport): Promise<Assessment> {
+  private async assess(report: TelemetryReport, bundle?: ReproBundle): Promise<Assessment> {
     const subject = report.error?.message ?? report.feedback ?? 'Unspecified report';
     const system = [
       'You triage bug reports and feature requests for a video-editing app.',
@@ -182,11 +223,23 @@ export class TelemetryService {
         kind: report.kind,
         platform: report.platform,
         ...(report.appVersion ? { appVersion: report.appVersion } : {}),
-        ...(report.error ? { error: report.error } : {}),
+        ...(report.error ? { error: { message: report.error.message, ...(report.error.stack ? { stack: report.error.stack.slice(0, 2000) } : {}) } } : {}),
+        ...(report.error?.componentStack ? { componentStack: report.error.componentStack.slice(0, 1000) } : {}),
         ...(report.feedback ? { feedback: report.feedback } : {}),
         ...(report.environment ? { environment: report.environment } : {}),
         ...(report.context ? { appState: report.context } : {}),
         recentEvents: report.events.slice(-30),
+        // The shape of the timeline, not the timeline itself: enough for the
+        // model to reason about scale without spending the context on clip ids.
+        ...(bundle ? {
+          timeline: {
+            format: bundle.project.format,
+            fps: bundle.project.fps,
+            duration: bundle.project.duration,
+            tracks: bundle.project.tracks.map((track) => ({ kind: track.kind, clips: track.clips.length })),
+          },
+          recentOps: bundle.recentOps.slice(-8).map((entry) => entry.operation.type),
+        } : {}),
       }));
       const parsed = JSON.parse(raw.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1] ?? raw.trim()) as Partial<Assessment>;
       if (typeof parsed.title === 'string' && typeof parsed.feasibility === 'string' && parsed.title.trim()) {
@@ -224,7 +277,12 @@ export class TelemetryService {
   }
 
   /** `null` whenever nothing reached GitHub; the caller falls back to the file. */
-  private async file(report: TelemetryReport, assessment: Assessment): Promise<StoredIssue | undefined> {
+  private async file(
+    report: TelemetryReport,
+    assessment: Assessment,
+    bundle: ReproBundle | undefined,
+    reportId: string,
+  ): Promise<StoredIssue | undefined> {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
       console.warn('[telemetry] GITHUB_TOKEN is unset, storing the report locally instead of filing an issue.');
@@ -240,7 +298,11 @@ export class TelemetryService {
         },
         body: JSON.stringify({
           title: assessment.title,
-          body: [`**Feasibility.** ${assessment.feasibility}`, ...this.details(report)].join('\n\n'),
+          body: [
+            `**Feasibility.** ${assessment.feasibility}`,
+            ...this.details(report),
+            ...describeRepro(bundle, reportId),
+          ].join('\n\n'),
           // `area:*` is what a triager filters on, so the model's read of which
           // part of the app is involved is worth carrying onto the issue.
           labels: [
@@ -263,6 +325,9 @@ export class TelemetryService {
     return [
       ...(report.error ? [`**Error.** \`${report.error.message}\``] : []),
       ...(report.error?.stack ? ['```\n' + report.error.stack.slice(0, 4000) + '\n```'] : []),
+      ...(report.error?.componentStack
+        ? ['<details><summary><b>Component stack</b></summary>\n\n```\n' + report.error.componentStack.trim() + '\n```\n</details>']
+        : []),
       ...(report.feedback ? [`**What the user said.** ${report.feedback}`] : []),
       ...describeContext(report.context),
       ...describeEnvironment(report.environment),
