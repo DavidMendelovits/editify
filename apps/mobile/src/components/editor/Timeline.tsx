@@ -11,8 +11,9 @@ import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayb
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 import {
   CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
-  beatTargets, captionRows, clampStart, clipEnd, closeGapUpdates, findClip, formatTimecode, patchClip, patchStarts,
-  removeClip, snapTargets, snapTime, sortClips, tickStep, trackOfClip, trimInPreview, trimOutPreview,
+  beatTargets, bulkMoveUpdates, captionRows, clampStart, clipEnd, clipRangeBetween, closeGapUpdates, findClip,
+  formatTimecode, patchClip, patchStarts, removeClip, snapTargets, snapTime, sortClips, tickStep, trackOfClip,
+  trimInPreview, trimOutPreview,
 } from '../../lib/timeline';
 
 const RULER_HEIGHT = 24;
@@ -71,6 +72,11 @@ export function Timeline({
   const [pxPerSec, setPxPerSec] = useState(40);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [drag, setDrag] = useState<DragState>();
+  // Multi-select lives here, not in the route: `selectedId` stays the anchor —
+  // what the Inspector edits — and `anchor` pins these ids to it, so any
+  // selection made elsewhere (agent, inspector, a plain click) collapses the
+  // extra ids instead of leaving a stale selection behind.
+  const [multi, setMulti] = useState<{ anchor: string | undefined; ids: string[] }>({ anchor: undefined, ids: [] });
   const scrollRef = useRef<ScrollView>(null);
   const scrollX = useRef(0);
   const scrubStart = useRef(0);
@@ -81,6 +87,23 @@ export function Timeline({
   const [cullStart, setCullStart] = useState(0);
   const cullAnchor = useRef(0);
 
+  const selectedIds = multi.anchor === selectedId && multi.ids.length > 0
+    ? multi.ids
+    : selectedId ? [selectedId] : [];
+  const isSelected = (clipId: string): boolean => selectedIds.includes(clipId);
+
+  // react-native-web's synthetic touch events drop the modifier keys, so the
+  // real DOM mousedown is where a cmd/shift click has to be recognised.
+  const modifiers = useRef({ meta: false, shift: false });
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const onMouseDown = (event: MouseEvent): void => {
+      modifiers.current = { meta: event.metaKey || event.ctrlKey, shift: event.shiftKey };
+    };
+    window.addEventListener('mousedown', onMouseDown, true);
+    return () => window.removeEventListener('mousedown', onMouseDown, true);
+  }, []);
+
   // Viewport culling: a long, zoomed-in project renders only what intersects
   // the visible window plus one screen of buffer on each side. Selected and
   // dragged clips always render — unmounting a chip mid-gesture kills it.
@@ -90,7 +113,7 @@ export function Timeline({
   const inWindow = (left: number, width: number): boolean => left + width >= cullFrom && left <= cullTo;
   const chipVisible = (clip: Clip): boolean =>
     inWindow(clip.start * pxPerSec, Math.max(6, clipTimelineDuration(clip) * pxPerSec))
-    || clip.id === selectedId || clip.id === drag?.clipId;
+    || isSelected(clip.id) || clip.id === drag?.clipId;
 
   const lanes = useMemo<Lane[]>(() => project.tracks.flatMap((track) => {
     // Support lanes appear once they have content; the video lane always shows.
@@ -185,9 +208,26 @@ export function Timeline({
     return clip.assetId ? assets[clip.assetId]?.duration : Number.POSITIVE_INFINITY;
   }
 
+  /**
+   * Travel of the dragged clip once snapped, in seconds — the shift the rest of
+   * the selection follows during a bulk move.
+   */
+  function moveShift(track: Track): number {
+    const dragged = drag ? findClip(project, drag.clipId) : undefined;
+    if (!dragged || !drag) return 0;
+    return moveTarget(track, dragged, drag.dx / pxPerSec) - dragged.start;
+  }
+
   /** The clip as it should be drawn right now — drag preview applied. */
   function previewClip(clip: Clip, track: Track): Clip {
-    if (!drag || drag.clipId !== clip.id) return clip;
+    if (!drag) return clip;
+    if (drag.clipId !== clip.id) {
+      // The other selected clips on this track travel with the dragged one, so
+      // the preview shows the whole selection moving together.
+      if (drag.mode !== 'move' || !isSelected(clip.id) || !isSelected(drag.clipId)) return clip;
+      if (!track.clips.some((candidate) => candidate.id === drag.clipId)) return clip;
+      return { ...clip, start: Math.max(0, clip.start + moveShift(track)) };
+    }
     const delta = drag.dx / pxPerSec;
     if (drag.mode === 'move') return { ...clip, start: moveTarget(track, clip, delta) };
     const trim = drag.mode === 'in'
@@ -213,17 +253,30 @@ export function Timeline({
 
   function commit(clip: Clip, track: Track, mode: DragMode, dx: number): void {
     setDrag(undefined);
-    onSelect(clip.id);
-    if (Math.abs(dx) < CLICK_SLOP) return;
+    // Selection is settled on grab, except for the one case grab has to defer:
+    // a plain click on a clip that is already part of a multi-selection, which
+    // can only collapse once it is known the gesture was not a bulk drag.
+    if (Math.abs(dx) < CLICK_SLOP) {
+      const modified = Platform.OS === 'web' && (modifiers.current.meta || modifiers.current.shift);
+      if (!modified && selectedIds.length > 1) selectChip(clip.id);
+      return;
+    }
     const delta = dx / pxPerSec;
 
     if (mode === 'move') {
       const start = round6(moveTarget(track, clip, delta));
       if (Math.abs(start - clip.start) < 1e-4) return;
-      const operation: Operation = track.kind === 'caption'
-        ? { type: 'update_caption', params: { clipId: clip.id, start } }
-        : { type: 'set_clip_properties', params: { updates: [{ clipId: clip.id, start }] } };
-      onApply([operation], (current) => patchClip(current, clip.id, { start }));
+      const followers = isSelected(clip.id) ? selectedIds.filter((id) => id !== clip.id) : [];
+      const updates = [
+        { clipId: clip.id, start },
+        ...bulkMoveUpdates(track.clips, followers, start - clip.start),
+      ];
+      // ponytail: captions have no batch operation, so a multi-caption move
+      // goes out as one `update_caption` per clip in a single batch.
+      const ops: Operation[] = track.kind === 'caption'
+        ? updates.map((update) => ({ type: 'update_caption', params: update }))
+        : [{ type: 'set_clip_properties', params: { updates } }];
+      onApply(ops, (current) => patchStarts(current, updates));
       return;
     }
 
@@ -241,15 +294,89 @@ export function Timeline({
     onApply(ops, (current) => patchClip(current, clip.id, { in: trim.in, out: trim.out, start: trim.start }));
   }
 
+  /**
+   * A chip click. On web cmd/ctrl toggles the clip in and out of the selection
+   * and shift takes the inclusive run from the anchor, both within one track;
+   * anything else — and every native tap — selects just that clip.
+   */
+  function selectChip(clipId: string): void {
+    const { meta, shift } = modifiers.current;
+    const modified = Platform.OS === 'web' && (meta || shift) && selectedId !== undefined;
+    if (!modified) {
+      setMulti({ anchor: clipId, ids: [clipId] });
+      onSelect(clipId);
+      return;
+    }
+    if (meta) {
+      const next = selectedIds.includes(clipId)
+        ? selectedIds.filter((id) => id !== clipId)
+        : [...selectedIds, clipId];
+      const anchor = next.includes(clipId) ? clipId : next.at(-1);
+      setMulti({ anchor, ids: next });
+      onSelect(anchor);
+      return;
+    }
+    const track = trackOfClip(project, clipId);
+    if (!track?.clips.some((clip) => clip.id === selectedId)) {
+      setMulti({ anchor: clipId, ids: [clipId] });
+      onSelect(clipId);
+      return;
+    }
+    // The anchor stays put, so repeated shift-clicks re-span from the same clip.
+    setMulti({ anchor: selectedId, ids: clipRangeBetween(track.clips, selectedId, clipId) });
+  }
+
+  /** Grabbing a clip that is already selected keeps the selection — that is what makes a bulk drag possible. */
+  function grabChip(clipId: string): void {
+    const modified = Platform.OS === 'web' && (modifiers.current.meta || modifiers.current.shift);
+    if (modified || !isSelected(clipId)) selectChip(clipId);
+  }
+
+  function selectAllInTrack(): void {
+    const track = (selectedId ? trackOfClip(project, selectedId) : undefined) ?? videoTrack;
+    const ids = sortClips(track?.clips ?? []).map((clip) => clip.id);
+    const anchor = selectedId && ids.includes(selectedId) ? selectedId : ids[0];
+    if (anchor === undefined) return;
+    setMulti({ anchor, ids });
+    onSelect(anchor);
+  }
+
+  /** Escape: a multi-selection collapses to its anchor, a single one clears. */
+  function collapseSelection(): void {
+    setMulti({ anchor: undefined, ids: [] });
+    if (selectedIds.length <= 1) onSelect(undefined);
+  }
+
   // Stable chip callbacks: the chips are memoized, so these must keep one
   // identity for the life of the timeline. They read the live implementations
   // through a ref and resolve the clip and track by id at event time.
-  const chipImpl = { project, onSelect, setDrag, feelSnap, commit };
+  const chipImpl = { project, onSelect, setDrag, feelSnap, commit, selectChip, grabChip, selectAllInTrack, collapseSelection };
   const chipImplRef = useRef(chipImpl);
   chipImplRef.current = chipImpl;
-  const chipSelect = useCallback((clipId: string) => chipImplRef.current.onSelect(clipId), []);
+
+  // Web keyboard: cmd/ctrl+A takes the whole track, Escape steps back out.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null;
+      const typing = Boolean(target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable));
+      if (typing) return;
+      if (event.key === 'Escape') {
+        chipImplRef.current.collapseSelection();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        chipImplRef.current.selectAllInTrack();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const chipSelect = useCallback((clipId: string) => chipImplRef.current.selectChip(clipId), []);
   const chipDragStart = useCallback((clipId: string, mode: DragMode) => {
-    chipImplRef.current.onSelect(clipId);
+    chipImplRef.current.grabChip(clipId);
     chipImplRef.current.setDrag({ clipId, mode, dx: 0 });
   }, []);
   const chipDragMove = useCallback((clipId: string, mode: DragMode, dx: number) => {
@@ -284,11 +411,17 @@ export function Timeline({
     onApply([{ type: 'split_clip', params: { clipId: selected.id, at: round6(at), newClipId: `${selected.id}-s${Date.now()}` } }]);
   }
   function remove(): void {
-    if (!selected || !selectedTrack) return;
-    const operation: Operation = selectedTrack.kind === 'caption'
-      ? { type: 'remove_caption', params: { clipId: selected.id } }
-      : { type: 'remove_clip', params: { clipId: selected.id } };
-    onApply([operation], (current) => removeClip(current, selected.id));
+    if (selectedIds.length === 0) return;
+    const ops = selectedIds.flatMap((clipId): Operation[] => {
+      const kind = trackOfClip(project, clipId)?.kind;
+      if (!kind) return [];
+      return [kind === 'caption'
+        ? { type: 'remove_caption', params: { clipId } }
+        : { type: 'remove_clip', params: { clipId } }];
+    });
+    if (ops.length === 0) return;
+    onApply(ops, (current) => selectedIds.reduce((next, clipId) => removeClip(next, clipId), current));
+    setMulti({ anchor: undefined, ids: [] });
     onSelect(undefined);
   }
   function closeGaps(): void {
@@ -315,7 +448,7 @@ export function Timeline({
         <Text style={styles.zoneLabel}>TIMELINE</Text>
         <View style={styles.toolGroup}>
           <Tool label="split" hint="at playhead" onPress={split} disabled={!splittable || pending} />
-          <Tool label="delete" hint="selected" onPress={remove} disabled={!selected || pending} danger />
+          <Tool label="delete" hint={selectedIds.length > 1 ? `${selectedIds.length} clips` : 'selected'} onPress={remove} disabled={selectedIds.length === 0 || pending} danger />
           <Tool label="close gaps" hint={gapUpdates.length ? `${gapUpdates.length} moves` : 'none'} onPress={closeGaps} disabled={gapUpdates.length === 0 || pending} />
           {/* `undo` is an operation, not a route — POST /projects/:id/ops carries it. */}
           <Tool label="undo" hint="last batch" onPress={() => onApply([{ type: 'undo', params: {} }])} disabled={pending} />
@@ -387,7 +520,7 @@ export function Timeline({
                       row={row}
                       height={CAPTION_ROW_HEIGHT}
                       overlapping={overlapping}
-                      selected={clip.id === selectedId}
+                      selected={isSelected(clip.id)}
                       onSelect={chipSelect}
                       onDragStart={chipDragStart}
                       onDragMove={chipDragMove}
@@ -402,7 +535,7 @@ export function Timeline({
                       pxPerSec={pxPerSec}
                       row={row}
                       height={CAPTION_ROW_HEIGHT}
-                      selected={clip.id === selectedId}
+                      selected={isSelected(clip.id)}
                       onSelect={chipSelect}
                       onDragStart={chipDragStart}
                       onDragMove={chipDragMove}
@@ -420,7 +553,7 @@ export function Timeline({
                       index={index}
                       pxPerSec={pxPerSec}
                       height={lane.height}
-                      selected={clip.id === selectedId}
+                      selected={isSelected(clip.id)}
                       dragging={drag?.clipId === clip.id}
                       onSelect={chipSelect}
                       onDragStart={chipDragStart}
