@@ -40,8 +40,6 @@ interface Props {
   kind: 'video' | 'audio' | 'caption' | 'overlay' | undefined;
   pending: boolean;
   onApply: (ops: Operation[], patch: Partial<Clip>) => void;
-  /** Removes the selected clip and clears the selection. */
-  onDelete: () => void;
 }
 
 /**
@@ -49,7 +47,7 @@ interface Props {
  * worth nudging by hand — speed/volume/zoom for media clips, size/rotation
  * for stickers. Every control commits one operation with an optimistic patch.
  */
-export function Inspector({ clip, asset, kind, pending, onApply, onDelete }: Props) {
+export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
   if (!clip) {
     return (
       <View style={styles.bar}>
@@ -176,17 +174,6 @@ export function Inspector({ clip, asset, kind, pending, onApply, onDelete }: Pro
         </>
       )}
       {asset && !isSticker && <Field label="SOURCE" value={`${asset.width}×${asset.height} · ${asset.duration.toFixed(1)}s`} />}
-      {/* Removal lives next to the properties it removes: selecting a sticker
-          or caption and hunting for the timeline toolbar was the long way. */}
-      <Pressable
-        testID="inspector-delete"
-        accessibilityRole="button"
-        accessibilityLabel={`delete selected ${isCaption ? 'caption' : isSticker ? 'sticker' : 'clip'}`}
-        onPress={onDelete}
-        style={({ pressed }) => [styles.delete, pressed && styles.pressed]}
-      >
-        <Text style={styles.deleteText}>delete</Text>
-      </Pressable>
     </View>
   );
 }
@@ -271,11 +258,6 @@ const styles = StyleSheet.create({
   chipActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   chipTextActive: { color: colors.text },
-  delete: {
-    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
-    paddingHorizontal: space.lg, minHeight: 26, justifyContent: 'center', marginLeft: 'auto',
-  },
-  deleteText: { color: colors.danger, fontFamily: fonts.semibold, fontSize: type.sm },
   zoomCustom: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   pressed: { opacity: 0.6 },
