@@ -55,6 +55,7 @@ export default function EditorScreen() {
   const dragBase = useRef(layout);
 
   const [selectedId, setSelectedId] = useState<string>();
+  const [openPanel, setOpenPanel] = useState<'summary' | 'insights' | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
   const [soundOpen, setSoundOpen] = useState(false);
@@ -396,6 +397,24 @@ export default function EditorScreen() {
     />
   );
 
+  // Accordion: one panel at a time, so an expanded panel always has room in the
+  // dock column instead of squeezing its neighbour's header out of view (#50).
+  const summary = (
+    <EditSummaryPanel
+      messages={chatQuery.data}
+      open={openPanel === 'summary'}
+      onToggle={() => setOpenPanel((current) => (current === 'summary' ? null : 'summary'))}
+    />
+  );
+  const insights = (
+    <InsightsPanel
+      assetIds={assetIds}
+      project={project}
+      open={openPanel === 'insights'}
+      onToggle={() => setOpenPanel((current) => (current === 'insights' ? null : 'insights'))}
+    />
+  );
+
   const dock = (
     <ChatDock
       projectId={id}
@@ -455,8 +474,8 @@ export default function EditorScreen() {
             />
           )}
           {wide ? <View style={styles.timelineWide}>{timeline}</View> : timeline}
-          {!wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {!wide && <InsightsPanel assetIds={assetIds} project={project} />}
+          {!wide && summary}
+          {!wide && insights}
         </View>
         {wide && (
           <PanelDivider
@@ -471,8 +490,8 @@ export default function EditorScreen() {
         <View style={[styles.dockColumn, !wide && styles.dockColumnStacked, wide && { width: layout.dockWidth }]}>
           {wide && library}
           {dock}
-          {wide && <EditSummaryPanel messages={chatQuery.data} />}
-          {wide && <InsightsPanel assetIds={assetIds} project={project} />}
+          {wide && summary}
+          {wide && insights}
         </View>
       </View>
       <ImportSheet

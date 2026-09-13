@@ -24,28 +24,25 @@ function insightsQueryOptions(assetId: string) {
  * every asset on the video track. Assets without a transcript 404 and are
  * skipped without comment.
  */
-export function InsightsPanel({ assetIds, project }: { assetIds: string[]; project: Project }) {
-  const [open, setOpen] = useState(false);
+export function InsightsPanel({ assetIds, project, open, onToggle }: { assetIds: string[]; project: Project; open: boolean; onToggle: () => void }) {
   if (assetIds.length === 0) return null;
 
   return (
-    <View style={styles.zone}>
+    <View style={[styles.zone, open && styles.zoneOpen]}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
+        onPress={onToggle}
         style={({ pressed }) => [styles.header, pressed && styles.pressed]}
       >
         <Text style={styles.label}>INSIGHTS · {assetIds.length} {assetIds.length === 1 ? 'ASSET' : 'ASSETS'}</Text>
         <Text style={styles.chevron}>{open ? '▾' : '▸'}</Text>
       </Pressable>
       {open && (
-        <>
+        <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={styles.listContent} nestedScrollEnabled>
           <ChecklistSection assetIds={assetIds} project={project} />
-          <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
-            {assetIds.map((assetId, index) => <AssetInsightCard key={assetId} assetId={assetId} index={index} />)}
-          </ScrollView>
-        </>
+          {assetIds.map((assetId, index) => <AssetInsightCard key={assetId} assetId={assetId} index={index} />)}
+        </ScrollView>
       )}
     </View>
   );
@@ -159,11 +156,14 @@ function stamp(value: number): string {
 }
 
 const styles = StyleSheet.create({
-  zone: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg, gap: space.md },
+  // minHeight 0 + hidden overflow let the expanded panel shrink inside the wide dock
+  // column instead of spilling over its neighbours; collapsed zones keep flexShrink 0
+  // so their header is never squeezed.
+  zone: { minHeight: 0, overflow: 'hidden', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg, gap: space.md },
+  zoneOpen: { flexShrink: 1, minHeight: 40 },
   header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
   label: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
   chevron: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.md },
-  list: { maxHeight: 210 },
   listContent: { gap: space.md, paddingBottom: space.xs },
   card: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.lg, gap: space.md },
   cardHeader: { flexDirection: 'row', alignItems: 'baseline', gap: space.lg },
