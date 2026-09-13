@@ -1000,11 +1000,13 @@ function CornerHandle({ label, glyph, testID, left, top, danger, onPress, handle
   const style = [styles.handle, { left: left - HANDLE / 2, top: top - HANDLE / 2 }, danger && styles.handleDanger];
   const face = <Text style={styles.handleGlyph}>{glyph}</Text>;
   // A drag grip is a plain View: Pressable would claim the gesture before the
-  // pan responder ever sees the move.
+  // pan responder ever sees the move. Neither carries accessibilityRole
+  // "button" — the stage is itself a Pressable, and react-native-web would
+  // then nest a real <button> inside one.
   return handlers
     ? <View {...handlers} testID={testID} accessibilityLabel={label} style={style}>{face}</View>
     : (
-      <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={style}>
+      <Pressable testID={testID} accessibilityLabel={label} onPress={onPress} style={style}>
         {face}
       </Pressable>
     );
