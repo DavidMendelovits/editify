@@ -291,6 +291,7 @@ const operationDescriptions: Record<(typeof OPERATION_CATALOG)[number], string> 
   set_clip_properties: 'Atomically batch-update 1-100 clips: the preferred way to trim or retime many clips at once. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, source-time in/out (out must stay greater than in), or duck (true ducks all other audio beneath this clip while it plays, the voiceover treatment). Any invalid update rejects the entire operation.',
   set_format: 'Set the project canvas format to 9:16, 1:1, or 16:9.',
   undo: 'Undo the latest non-undone project operation using project history. Input must be an empty object.',
+  redo: 'Redo the operation the most recent undo retracted, when nothing has been edited since. Input must be an empty object.',
 };
 
 async function executeOperation(ctx: ToolContext, type: Operation['type'], rawInput: unknown): Promise<unknown> {

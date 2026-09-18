@@ -190,6 +190,12 @@ function migrate(database: EditifyDatabase): void {
   }
   database.exec('CREATE INDEX IF NOT EXISTS operation_log_run_idx ON operation_log(run_id)');
 
+  // An undo row records the batch it retracted, so redo can put exactly that
+  // batch back even when several undos are stacked. NULL on every other row.
+  if (!operationLogColumns.some((column) => column.name === 'undo_target_batch_id')) {
+    database.exec('ALTER TABLE operation_log ADD COLUMN undo_target_batch_id TEXT');
+  }
+
   backfillProjectAssets(database);
 }
 

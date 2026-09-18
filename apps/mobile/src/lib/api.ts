@@ -272,6 +272,15 @@ export const api = {
   applyOps: (id: string, ops: Operation[], baseVersion: number) => request<Project>(`/projects/${id}/ops`, {
     method: 'POST', body: JSON.stringify({ ops, baseVersion }),
   }),
+  /** History steps go through the same /ops endpoint, so they queue behind ordinary edits. */
+  undo: (id: string, baseVersion: number) => request<Project>(`/projects/${id}/ops`, {
+    method: 'POST', body: JSON.stringify({ ops: [{ type: 'undo', params: {} }], baseVersion }),
+  }),
+  redo: (id: string, baseVersion: number) => request<Project>(`/projects/${id}/ops`, {
+    method: 'POST', body: JSON.stringify({ ops: [{ type: 'redo', params: {} }], baseVersion }),
+  }),
+  /** Whether the editor's undo/redo controls have anything to offer. */
+  getHistory: (id: string) => request<{ canUndo: boolean; canRedo: boolean }>(`/projects/${id}/history`),
   getAsset: (id: string) => request<AssetMetadata>(`/assets/${id}`),
   /** This project's media, or every asset on the server when `projectId` is omitted. Newest first. */
   listAssets: (projectId?: string) => request<AssetMetadata[]>(projectId ? `/assets?projectId=${encodeURIComponent(projectId)}` : '/assets'),

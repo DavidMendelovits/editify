@@ -31,6 +31,7 @@ const inputs: Record<(typeof OPERATION_CATALOG)[number], unknown> = {
   set_clip_properties: { updates: [{ clipId: 'clip-a', speed: 1.1, start: 0 }] },
   set_format: { format: '1:1' },
   undo: {},
+  redo: {},
 };
 
 describe('agent tool registry', () => {
@@ -119,8 +120,10 @@ describe('agent tool registry', () => {
         ] },
       ],
     });
-    if (type === 'undo') {
-      const changed = projects.applyOperations(project.id, [{ type: 'set_format', params: { format: '16:9' } }], 0);
+    if (type === 'undo' || type === 'redo') {
+      let changed = projects.applyOperations(project.id, [{ type: 'set_format', params: { format: '16:9' } }], 0);
+      // Redo needs an undo standing in front of it.
+      if (type === 'redo') changed = projects.applyOperations(project.id, [{ type: 'undo', params: {} }], changed.version);
       return { projectId: project.id, projects, assets, transcripts, insights, dissections, styleDoc: null, currentVersion: changed.version };
     }
     return { projectId: project.id, projects, assets, transcripts, insights, dissections, styleDoc: null, currentVersion: project.version };

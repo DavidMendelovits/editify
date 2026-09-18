@@ -108,7 +108,7 @@ function rippleTrack(track: Track, ranges: TimeRange[], allClipIds: Set<string>)
 }
 
 export function applyOperation(input: Project, operation: Operation): Project {
-  if (operation.type === 'undo' || operation.type === 'revert_run') {
+  if (operation.type === 'undo' || operation.type === 'redo' || operation.type === 'revert_run') {
     throw new OperationError('Undo requires operation history and must be applied by ProjectStore');
   }
 

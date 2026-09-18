@@ -25,6 +25,31 @@ function sameDoc(left: Project, right: Project): boolean {
 }
 
 interface ProjectRow { doc_json: string }
+interface UndoRow { rowid: number; batch_id: string; undo_target_batch_id: string }
+
+/** History operations rewrite the log rather than editing the document, so they travel alone. */
+function isHistoryOperationType(type: Operation['type']): boolean {
+  return type === 'undo' || type === 'redo' || type === 'revert_run';
+}
+
+/**
+ * The undo a redo would reverse: the newest standing one that recorded a
+ * target. A redo row is logged already retracted (`undone = 1`), so redoing
+ * repeatedly walks back up a stack of undos.
+ */
+const REDOABLE_UNDO_SQL = `
+  SELECT rowid AS rowid, batch_id, undo_target_batch_id FROM operation_log
+  WHERE project_id = ? AND undone = 0 AND json_extract(op_json, '$.type') = 'undo'
+    AND undo_target_batch_id IS NOT NULL
+  ORDER BY rowid DESC LIMIT 1
+`;
+
+/** Any live row newer than the undo means a real edit landed, which clears redo. */
+function countLiveAfter(database: EditifyDatabase, projectId: string, rowid: number): number {
+  return (database.prepare(
+    'SELECT COUNT(*) AS count FROM operation_log WHERE project_id = ? AND rowid > ? AND undone = 0',
+  ).get(projectId, rowid) as { count: number }).count;
+}
 interface LogRow {
   id: string;
   batch_id: string;
@@ -127,11 +152,13 @@ export class ProjectStore {
 
       const operations = rawOperations.map((operation) => operationSchema.parse(operation));
       if (!operations.length) throw new OperationError('At least one operation is required');
-      if (operations.some((operation) => operation.type === 'undo' || operation.type === 'revert_run')
+      if (operations.some((operation) => isHistoryOperationType(operation.type))
         && operations.length !== 1) {
         throw new OperationError('Undo must be applied by itself');
       }
       const batchId = randomUUID();
+      /** Set by an undo: the batch it retracted, so a later redo can restore exactly it. */
+      let undoTargetBatchId: string | undefined;
       const pendingLogs: Array<{ operation: Operation; before: Project; after: Project; sequence: number }> = [];
       operations.forEach((operation, sequence) => {
         const before = project as Project;
@@ -152,6 +179,7 @@ export class ProjectStore {
           after = { ...snapshot, version: before.version + 1 };
           this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND batch_id = ?')
             .run(projectId, previous.batch_id);
+          undoTargetBatchId = previous.batch_id;
           // Undoing a revert is a redo: bring the reverted run's rows back into
           // history so a further undo walks into the run itself.
           const undoneOperation = operationSchema.parse(JSON.parse(firstInBatch.op_json));
@@ -159,6 +187,27 @@ export class ProjectStore {
             this.database.prepare('UPDATE operation_log SET undone = 0 WHERE project_id = ? AND run_id = ?')
               .run(projectId, undoneOperation.params.runId);
           }
+        } else if (operation.type === 'redo') {
+          const undoRow = this.database.prepare(REDOABLE_UNDO_SQL).get(projectId) as UndoRow | undefined;
+          if (!undoRow || countLiveAfter(this.database, projectId, undoRow.rowid) > 0) {
+            throw new OperationError('There is nothing to redo');
+          }
+          const target = this.database.prepare(`
+            SELECT op_json, after_doc_json FROM operation_log
+            WHERE project_id = ? AND batch_id = ? ORDER BY sequence DESC LIMIT 1
+          `).get(projectId, undoRow.undo_target_batch_id) as { op_json: string; after_doc_json: string };
+          const snapshot = projectSchema.parse(JSON.parse(target.after_doc_json));
+          after = { ...snapshot, version: before.version + 1 };
+          // Mirror of the undo above: redoing a revert re-retracts its run.
+          const redoneOperation = operationSchema.parse(JSON.parse(target.op_json));
+          if (redoneOperation.type === 'revert_run') {
+            this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND run_id = ?')
+              .run(projectId, redoneOperation.params.runId);
+          }
+          this.database.prepare('UPDATE operation_log SET undone = 0 WHERE project_id = ? AND batch_id = ?')
+            .run(projectId, undoRow.undo_target_batch_id);
+          this.database.prepare('UPDATE operation_log SET undone = 1 WHERE project_id = ? AND batch_id = ?')
+            .run(projectId, undoRow.batch_id);
         } else if (operation.type === 'revert_run') {
           const target = operation.params.runId;
           const earliest = this.database.prepare(`
@@ -191,7 +240,7 @@ export class ProjectStore {
         project = after;
       });
 
-      const isHistoryOperation = operations[0]?.type === 'undo' || operations[0]?.type === 'revert_run';
+      const isHistoryOperation = !!operations[0] && isHistoryOperationType(operations[0].type);
       // A write that changed nothing must not bump the version: it would create a
       // bogus revert checkpoint and make the client flash an identical document.
       if (!isHistoryOperation && sameDoc(original, project)) return original;
@@ -203,9 +252,9 @@ export class ProjectStore {
           : { ...entry.after, version: project.version };
         this.database.prepare(`
           INSERT INTO operation_log
-            (id, batch_id, project_id, sequence, op_json, before_doc_json, after_doc_json, undone, created_at, run_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        `).run(randomUUID(), batchId, projectId, entry.sequence, JSON.stringify(entry.operation), JSON.stringify(entry.before), JSON.stringify(loggedAfter), now, runId ?? null);
+            (id, batch_id, project_id, sequence, op_json, before_doc_json, after_doc_json, undone, created_at, run_id, undo_target_batch_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(randomUUID(), batchId, projectId, entry.sequence, JSON.stringify(entry.operation), JSON.stringify(entry.before), JSON.stringify(loggedAfter), entry.operation.type === 'redo' ? 1 : 0, now, runId ?? null, undoTargetBatchId ?? null);
       }
 
       this.database.prepare('UPDATE projects SET title = ?, doc_json = ?, updated_at = ? WHERE id = ?')
@@ -225,6 +274,20 @@ export class ProjectStore {
       WHERE project_id = ? AND undone = 0 AND run_id IN (${runIds.map(() => '?').join(', ')})
     `).all(projectId, ...runIds) as Array<{ run_id: string }>;
     return new Set(rows.map((row) => row.run_id));
+  }
+
+  /** What the editor's undo/redo buttons should offer right now. */
+  history(projectId: string): { canUndo: boolean; canRedo: boolean } {
+    const undoable = this.database.prepare(`
+      SELECT 1 FROM operation_log
+      WHERE project_id = ? AND undone = 0 AND json_extract(op_json, '$.type') NOT IN ('undo', 'redo')
+      LIMIT 1
+    `).get(projectId);
+    const undoRow = this.database.prepare(REDOABLE_UNDO_SQL).get(projectId) as UndoRow | undefined;
+    return {
+      canUndo: Boolean(undoable),
+      canRedo: Boolean(undoRow) && countLiveAfter(this.database, projectId, (undoRow as UndoRow).rowid) === 0,
+    };
   }
 
   operationLog(projectId: string): OperationLogEntry[] {
