@@ -198,6 +198,15 @@ const local = composeAnalyzer({
 registry.register(local);
 ```
 
+Before trusting a new analyzer or key in production, run the pipeline against a
+real clip from your machine; it prints every stage, the observations, the
+template, and the brief:
+
+```bash
+GEMINI_API_KEY=... npm run style:smoke -- path/to/clip.mp4
+npm run style:smoke -- --analyzer webhook --no-distill clip.mp4
+```
+
 Any object with the same shape works too, so a second model vendor is one class
 implementing `analyzeVideo`. The Gemini and webhook classes take an injectable
 `fetchImpl`, and `server/test/style-pipeline.test.ts` shows both exercised

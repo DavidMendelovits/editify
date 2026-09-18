@@ -82,6 +82,10 @@ export default function StyleScreen() {
   // The pluggable "watch" step: ffmpeg only keeps footage local, anything else uploads it.
   const analyzerStatus = useQuery({ queryKey: ['style-analyzer'], queryFn: api.getStyleAnalyzer, retry: false });
   const analyzer = analyzerStatus.data?.options.find((option) => option.id === analyzerStatus.data?.active);
+  const selectAnalyzer = useMutation({
+    mutationFn: api.selectStyleAnalyzer,
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['style-analyzer'] }); },
+  });
   const progress = profile.data?.progress;
   const failure = analyze.error?.message ?? (profile.data?.status === 'error' ? profile.data.error ?? 'Analysis failed' : undefined);
 
@@ -100,8 +104,27 @@ export default function StyleScreen() {
           {busy ? 'analyzing…' : current ? 'analyze new videos' : 'choose videos'}
         </Button>
         {busy && <View style={styles.progress}><View style={styles.progressFill} /></View>}
+        {analyzerStatus.data && (
+          <View style={styles.analyzerRow}>
+            <Text style={styles.analyzerLabel}>WATCHED BY</Text>
+            {analyzerStatus.data.options.map((option) => (
+              <Pressable
+                key={option.id}
+                accessibilityRole="button"
+                accessibilityLabel={`${option.label}: ${option.detail}`}
+                disabled={!option.available || busy || selectAnalyzer.isPending}
+                onPress={() => selectAnalyzer.mutate(option.id)}
+                style={[styles.analyzerChip, option.id === analyzerStatus.data?.active && styles.analyzerChipActive, !option.available && styles.analyzerChipOff]}
+              >
+                <Text style={[styles.analyzerChipText, option.id === analyzerStatus.data?.active && styles.analyzerChipTextActive]}>{option.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+        {analyzer && <Text style={styles.analyzerDetail}>{analyzer.detail}</Text>}
       </View>
       {failure && <Text style={styles.error}>{failure}</Text>}
+      {selectAnalyzer.error && <Text style={styles.error}>{selectAnalyzer.error.message}</Text>}
       {saved.length > 0 && (
         <>
           <View style={styles.sectionHeader}>
@@ -239,6 +262,14 @@ const styles = StyleSheet.create({
   uploadButton: { width: 210, marginTop: space.xl },
   progress: { height: 4, width: 210, marginTop: space.lg, borderRadius: radius.md, backgroundColor: colors.border, overflow: 'hidden' },
   progressFill: { width: '68%', height: '100%', backgroundColor: colors.accent },
+  analyzerRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: space.md, marginTop: space.lg },
+  analyzerLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5, marginRight: space.sm },
+  analyzerChip: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: space.lg, paddingVertical: space.sm, backgroundColor: colors.panel },
+  analyzerChipActive: { borderColor: colors.accent },
+  analyzerChipOff: { opacity: 0.4 },
+  analyzerChipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
+  analyzerChipTextActive: { color: colors.text },
+  analyzerDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm, textAlign: 'center' },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: space.xl },
   sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
   sectionNote: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, marginTop: space.sm, maxWidth: 520 },

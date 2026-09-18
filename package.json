@@ -15,7 +15,8 @@
     "dev:mobile:ios": "npm run ios -w @editify/mobile",
     "dev:mobile:android": "npm run android -w @editify/mobile",
     "seed": "npm run seed -w @editify/server",
-    "repro": "npm run repro -w @editify/server --"
+    "repro": "npm run repro -w @editify/server --",
+    "style:smoke": "npm run style:smoke -w @editify/server --"
   },
   "engines": {
     "node": ">=20"

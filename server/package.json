@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "seed": "tsx src/seed.ts",
-    "repro": "tsx src/repro.ts"
+    "repro": "tsx src/repro.ts",
+    "style:smoke": "tsx src/style-smoke.ts"
   },
   "dependencies": {
     "@editify/shared": "1.0.0",
