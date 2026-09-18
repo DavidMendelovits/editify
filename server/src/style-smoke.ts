@@ -46,9 +46,12 @@ const availability = await analyzer.availability();
 if (!availability.available) { console.error(`${analyzer.id} is not available: ${availability.detail}`); process.exit(1); }
 console.error(`using ${analyzer.id} (${availability.detail})`);
 
+// npm runs workspace scripts from server/, so relative paths are resolved
+// against the directory the user actually typed the command in.
+const from = process.env.INIT_CWD ?? process.cwd();
 const videos: StoredAsset[] = [];
 for (const file of files) {
-  const path = resolve(file);
+  const path = resolve(from, file);
   if (!existsSync(path)) { console.error(`No such file: ${path}`); process.exit(1); }
   const probe = await probeMedia(path);
   videos.push({
@@ -68,9 +71,13 @@ const result = await runStylePipeline({
     template, observations, template.watchedCount > 0,
   ) } : {}),
   onProgress: ({ stage, done, total }) => console.error(`${stage} ${done}/${total}`),
+  onWarning: (message) => console.error(`warning: ${message}`),
 });
 console.error(`done in ${((Date.now() - started) / 1000).toFixed(1)}s`);
-console.log(JSON.stringify({ analyzer: result.analyzer, observations: result.observations, template: result.template, styleDoc: result.styleDoc }, null, 2));
+console.log(JSON.stringify({
+  analyzer: result.analyzer, observations: result.observations, template: result.template,
+  styleDoc: result.styleDoc, distilled: result.distilled, ...(result.distillError ? { distillError: result.distillError } : {}),
+}, null, 2));
 database.close();
 
 function mimeFor(path: string): string {

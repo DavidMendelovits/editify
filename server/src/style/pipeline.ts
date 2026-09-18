@@ -18,6 +18,8 @@ export interface StylePipelineOptions {
   /** Turns the template plus observations into the brief; null means use the local fallback. */
   distill?: (template: StyleTemplate, observations: VideoObservation[]) => Promise<string>;
   onProgress?: (progress: PipelineProgress) => void;
+  /** Called when a stage degraded without failing the run — today, a failed distillation. */
+  onWarning?: (message: string) => void;
   signal?: AbortSignal;
 }
 
@@ -27,6 +29,10 @@ export interface StylePipelineResult {
   observations: VideoObservation[];
   template: StyleTemplate;
   styleDoc: string;
+  /** False when the chat provider failed or was absent and styleDoc is the local template summary. */
+  distilled: boolean;
+  /** Why distillation fell back, when it did. */
+  distillError?: string;
 }
 
 /**
@@ -93,15 +99,26 @@ export async function runStylePipeline(options: StylePipelineOptions): Promise<S
   report('distilling', total);
   const fallback = describeTemplate(template);
   let styleDoc = fallback;
+  let distilled = false;
+  let distillError: string | undefined;
   if (options.distill) {
     try {
-      styleDoc = (await options.distill(template, observations)).trim() || fallback;
-    } catch {
-      styleDoc = fallback;
+      const written = (await options.distill(template, observations)).trim();
+      styleDoc = written || fallback;
+      distilled = written.length > 0;
+      if (!written) distillError = 'The chat provider returned nothing';
+    } catch (error) {
+      distillError = error instanceof Error ? error.message : String(error);
     }
+  } else {
+    distillError = 'No chat provider was given';
   }
+  if (distillError) options.onWarning?.(`Style brief fell back to the template summary: ${distillError}`);
 
-  return { analyzer: analyzer.id, metrics: inputs.map((input) => input.metrics), observations, template, styleDoc };
+  return {
+    analyzer: analyzer.id, metrics: inputs.map((input) => input.metrics), observations, template, styleDoc,
+    distilled, ...(distillError ? { distillError } : {}),
+  };
 }
 
 async function measure(asset: StoredAsset): Promise<VideoAnalysisInput> {

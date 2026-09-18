@@ -6,6 +6,9 @@ import { AssetStore } from '../src/db/asset-store.js';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
 import { registerStyleRoutes } from '../src/routes/style.js';
 import { StyleService } from '../src/services/style-service.js';
+import { SettingsStore } from '../src/db/settings-store.js';
+import { ffmpegAnalyzer } from '../src/style/analyzers/ffmpeg.js';
+import { StyleAnalyzerRegistry } from '../src/style/registry.js';
 
 // Holds the ffmpeg scan open so the 'processing' window is observable.
 const scan = vi.hoisted(() => {
@@ -28,6 +31,13 @@ vi.mock('../src/media/process.js', () => ({
 
 const agent = { distillStyle: async () => 'fast-punch pacing' } as unknown as AgentService;
 
+// ffmpeg only, and an empty env: otherwise a real GEMINI_API_KEY on the machine
+// (or in .env.local) makes these tests upload the fake asset paths to Gemini.
+function styleService(database: EditifyDatabase, assets: AssetStore): StyleService {
+  const analyzers = new StyleAnalyzerRegistry(new SettingsStore(database), [ffmpegAnalyzer], {});
+  return new StyleService(database, assets, agent, analyzers);
+}
+
 function buildStyleApp(database: EditifyDatabase, originalPath = '/fine.mp4') {
   const assets = new AssetStore(database);
   assets.insert({
@@ -37,7 +47,7 @@ function buildStyleApp(database: EditifyDatabase, originalPath = '/fine.mp4') {
     originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: new Date(0).toISOString(),
   });
   const app = Fastify();
-  registerStyleRoutes(app, new StyleService(database, assets, agent));
+  registerStyleRoutes(app, styleService(database, assets));
   return app;
 }
 
@@ -92,7 +102,7 @@ describe('style profile analysis', () => {
 
   it('lists, selects, renames, duplicates, and repoints on delete', async () => {
     const app = buildStyleApp(database);
-    const styles = new StyleService(database, new AssetStore(database), agent);
+    const styles = styleService(database, new AssetStore(database));
     const first = await styles.analyze(['a1'], { name: 'Punchy' });
     const second = await styles.analyze(['a1']);
 

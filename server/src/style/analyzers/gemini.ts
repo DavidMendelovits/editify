@@ -70,7 +70,7 @@ export class GeminiVideoAnalyzer implements VideoAnalyzer {
   private readonly pollIntervalMs: number;
 
   constructor(private readonly options: GeminiAnalyzerOptions) {
-    this.model = options.model ?? 'gemini-2.5-flash';
+    this.model = options.model ?? 'gemini-3.6-flash';
     this.version = `2:${this.model}`;
     this.baseUrl = (options.baseUrl ?? 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;

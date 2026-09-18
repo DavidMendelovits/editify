@@ -120,6 +120,7 @@ export class StyleService {
       ...(refresh ? { refresh } : {}),
       distill: async (template, observations) => await this.agent.distillStyle(emptyProject, template, observations, template.watchedCount > 0),
       onProgress: (progress) => { if (this.run.status === 'processing') this.run = { status: 'processing', progress }; },
+      onWarning: (message) => console.warn('[style]', message),
     });
     const profile: StyleProfile = {
       id: randomUUID(), name: name ?? this.nextName(), assetIds, metrics: result.metrics, styleDoc: result.styleDoc,

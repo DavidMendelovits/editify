@@ -162,7 +162,7 @@ pipeline is indifferent to what is behind it. Built-in analyzers:
 
 | id | What it does | Enabled by |
 |---|---|---|
-| `gemini` | Uploads each video to the Gemini Files API, waits for processing, asks for structured JSON, deletes the upload | `GEMINI_API_KEY` (model via `GEMINI_MODEL`, default `gemini-2.5-flash`) |
+| `gemini` | Uploads each video to the Gemini Files API, waits for processing, asks for structured JSON, deletes the upload | `GEMINI_API_KEY` (model via `GEMINI_MODEL`, default `gemini-3.6-flash`) |
 | `webhook` | Posts each video as multipart (`video` file + `input` JSON with the metrics) to your own service and reads the observation from its JSON reply | `EDITIFY_STYLE_ANALYZER_URL` (optional bearer `EDITIFY_STYLE_ANALYZER_TOKEN`) |
 | `ffmpeg` | No model at all; the metrics become the observation and the brief says nothing was watched | always |
 
