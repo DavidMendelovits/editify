@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
-import { useVideoPlayer } from 'expo-video';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import type { LibrarySound, SoundCategory } from '@editify/shared';
 import { api, mediaUrl } from '../../lib/api';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
@@ -28,6 +28,13 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
   const soundsQuery = useQuery({ queryKey: ['sounds'], queryFn: api.listSounds, enabled: visible, staleTime: Infinity });
   // One shared player: tapping a row swaps its source. Audio-only playback.
   const player = useVideoPlayer(null, (instance) => { instance.loop = false; });
+
+  // The row toggle must revert to ▶ when the clip runs out, otherwise the next
+  // tap is read as "stop" and silently does nothing.
+  useEffect(() => {
+    const subscription = player.addListener('playToEnd', () => setPlayingId(undefined));
+    return () => subscription.remove();
+  }, [player]);
 
   const sounds = useMemo(() => (soundsQuery.data ?? [])
     .filter((sound) => category === 'all' || sound.category === category), [category, soundsQuery.data]);
@@ -58,6 +65,10 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
+          {/* Audio-only, but expo-video on web only has a media element to play
+              through while a view is mounted for the player — without this the
+              preview is a silent no-op. */}
+          <VideoView player={player} style={styles.audioElement} nativeControls={false} />
           <View style={styles.header}>
             <Text style={styles.title}>SOUND LIBRARY</Text>
             <Pressable
@@ -125,6 +136,7 @@ const styles = StyleSheet.create({
     maxHeight: '72%', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
     borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl, gap: space.lg,
   },
+  audioElement: { position: 'absolute', width: 1, height: 1, opacity: 0 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
   close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
