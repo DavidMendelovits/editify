@@ -232,6 +232,38 @@ export function closeGapUpdates(track: Track | undefined): Array<{ clipId: strin
   return updates;
 }
 
+/**
+ * Ids of the inclusive run between two clips on one track, in start order —
+ * what a shift-click on the timeline selects.
+ */
+export function clipRangeBetween(clips: readonly Clip[], anchorId: string, targetId: string): string[] {
+  const ordered = sortClips(clips);
+  const from = ordered.findIndex((clip) => clip.id === anchorId);
+  const to = ordered.findIndex((clip) => clip.id === targetId);
+  if (from === -1 || to === -1) return [targetId];
+  return ordered.slice(Math.min(from, to), Math.max(from, to) + 1).map((clip) => clip.id);
+}
+
+/**
+ * Bulk move: the snapped travel of the dragged clip applied to the rest of the
+ * selection on the same track, clamped at t=0.
+ * ponytail: no neighbour clamping for the followers — only the dragged clip is
+ * held inside its gap, so a wide selection can still be pushed into an overlap.
+ */
+export function bulkMoveUpdates(
+  clips: readonly Clip[],
+  movingIds: readonly string[],
+  shiftSeconds: number,
+): Array<{ clipId: string; start: number }> {
+  const updates: Array<{ clipId: string; start: number }> = [];
+  for (const clip of sortClips(clips)) {
+    if (!movingIds.includes(clip.id)) continue;
+    const start = Number(Math.max(0, clip.start + shiftSeconds).toFixed(6));
+    if (Math.abs(start - clip.start) > 1e-9) updates.push({ clipId: clip.id, start });
+  }
+  return updates;
+}
+
 export interface CaptionRow { clip: Clip; row: number; overlapping: boolean }
 
 /**

@@ -7,8 +7,9 @@ import type { VideoPlayer } from 'expo-video';
 import type { AssetMetadata, Callout, Clip, ClipTransform, Operation, OverlayPlacement, Project } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { assetFilmstripUrl, assetOriginalUrl, assetProxyUrl, assetThumbUrl } from '../../lib/api';
+import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
-import { FILMSTRIP_TILES, anchorIndexAtSorted, clipIndexAtSorted, formatTimecode, sortClips, visibleIdsAt } from '../../lib/timeline';
+import { FILMSTRIP_TILES, anchorIndexAtSorted, clipEnd, clipIndexAtSorted, formatTimecode, removeClip, sortClips, visibleIdsAt } from '../../lib/timeline';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 
 const ASPECT: Record<Project['format'], number> = { '9:16': 9 / 16, '1:1': 1, '16:9': 16 / 9 };
@@ -807,11 +808,12 @@ function Sticker({ clip, asset, stage, selected, onSelect, onApply }: {
   asset: AssetMetadata | undefined;
   stage: { width: number; height: number };
   selected: boolean;
-  onSelect: (clipId: string) => void;
+  onSelect: Props['onSelect'];
   onApply: Props['onApply'];
 }) {
   const placement = clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
   const [drag, setDrag] = useState<{ dx: number; dy: number }>();
+  const [shape, setShape] = useState<{ width: number; rotation: number }>();
   const latest = useRef({ clip, placement, stage });
   latest.current = { clip, placement, stage };
   const snapped = useRef({ x: false, y: false });
@@ -856,7 +858,47 @@ function Sticker({ clip, asset, stage, selected, onSelect, onApply }: {
     onPanResponderTerminate: () => setDrag(undefined),
   })).current;
 
-  const shown = drag ? dragPlacement(placement, drag.dx, drag.dy, stage) : placement;
+  /**
+   * The bottom-right corner handle: one gesture for both size and rotation,
+   * read off the vector from the sticker's centre to the finger (CapCut's
+   * corner grip). Previews locally, commits one `set_overlay` on release.
+   */
+  const grip = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderMove: (_event, gesture) => setShape(gripShape(latest.current.placement, gesture.dx, gesture.dy, latest.current.stage)),
+    onPanResponderRelease: (_event, gesture) => {
+      setShape(undefined);
+      const current = latest.current;
+      const next = { ...current.placement, ...gripShape(current.placement, gesture.dx, gesture.dy, current.stage) };
+      if (next.width === current.placement.width && next.rotation === current.placement.rotation) return;
+      onApplyRef.current(
+        [{ type: 'set_overlay', params: { clipId: current.clip.id, overlay: next } }],
+        (project) => ({
+          ...project,
+          tracks: project.tracks.map((track) => ({
+            ...track,
+            clips: track.clips.map((candidate) => (candidate.id === current.clip.id ? { ...candidate, overlay: next } : candidate)),
+          })),
+        }),
+      );
+    },
+    onPanResponderTerminate: () => setShape(undefined),
+  })).current;
+
+  function removeSelf(): void {
+    onApply([{ type: 'remove_clip', params: { clipId: clip.id } }], (current) => removeClip(current, clip.id));
+    onSelect(undefined);
+  }
+
+  /** A copy of the sticker, landing right after it so both are reachable. */
+  function duplicateSelf(): void {
+    const copy: Clip = { ...clip, id: `${clip.id}-copy-${Date.now()}`, start: Math.round(clipEnd(clip) * 1000) / 1000 };
+    onApply([{ type: 'add_clip', params: { trackId: 'overlays', clip: copy } }]);
+    onSelect(copy.id);
+  }
+
+  const shown = { ...(drag ? dragPlacement(placement, drag.dx, drag.dy, stage) : placement), ...shape };
   const width = shown.width * stage.width;
   const aspect = asset && asset.width > 0 && asset.height > 0 ? asset.height / asset.width : 1;
   const callout = clip.callout;
@@ -916,8 +958,73 @@ function Sticker({ clip, asset, stage, selected, onSelect, onApply }: {
             ? <Image source={{ uri: stickerUri }} style={styles.stickerImage} contentFit="contain" />
             : <Text style={[styles.stickerEmoji, { fontSize: width * 0.82, lineHeight: height }]}>{clip.text}</Text>}
       </View>
+      {/* Corner controls, siblings of the box rather than children: the box owns
+          a pan responder that would swallow every tap landing on it.
+          ponytail: they sit on the unrotated corners, so a rotated sticker's
+          grips stay square to the frame — fine at sticker sizes. */}
+      {selected && stage.width > 0 && (
+        <>
+          <CornerHandle
+            label="delete sticker" glyph="✕" testID="sticker-delete" danger
+            left={shown.x * stage.width - width / 2} top={shown.y * stage.height - height / 2}
+            onPress={removeSelf}
+          />
+          <CornerHandle
+            label="duplicate sticker" glyph="⧉" testID="sticker-duplicate"
+            left={shown.x * stage.width - width / 2} top={shown.y * stage.height + height / 2}
+            onPress={duplicateSelf}
+          />
+          <CornerHandle
+            label="resize and rotate sticker" glyph="⤡" testID="sticker-grip"
+            left={shown.x * stage.width + width / 2} top={shown.y * stage.height + height / 2}
+            handlers={grip.panHandlers}
+          />
+        </>
+      )}
     </>
   );
+}
+
+const HANDLE = 28;
+
+/** One round grip centred on a corner of the selected sticker's box. */
+function CornerHandle({ label, glyph, testID, left, top, danger, onPress, handlers }: {
+  label: string;
+  glyph: string;
+  testID: string;
+  left: number;
+  top: number;
+  danger?: boolean;
+  onPress?: () => void;
+  handlers?: ReturnType<typeof PanResponder.create>['panHandlers'];
+}) {
+  const style = [styles.handle, { left: left - HANDLE / 2, top: top - HANDLE / 2 }, danger && styles.handleDanger];
+  const face = <Text style={styles.handleGlyph}>{glyph}</Text>;
+  // A drag grip is a plain View: Pressable would claim the gesture before the
+  // pan responder ever sees the move. Neither carries accessibilityRole
+  // "button" — the stage is itself a Pressable, and react-native-web would
+  // then nest a real <button> inside one.
+  return handlers
+    ? <View {...handlers} testID={testID} accessibilityLabel={label} style={style}>{face}</View>
+    : (
+      <Pressable testID={testID} accessibilityLabel={label} onPress={onPress} style={style}>
+        {face}
+      </Pressable>
+    );
+}
+
+/** Size and rotation from the corner grip's travel, relative to the centre. */
+function gripShape(placement: OverlayPlacement, dx: number, dy: number, stage: { width: number; height: number }): { width: number; rotation: number } {
+  if (stage.width <= 0) return { width: placement.width, rotation: placement.rotation };
+  // The grip starts on the box corner, so the start vector is half the box.
+  const x0 = placement.width * stage.width / 2;
+  const y0 = x0;
+  const from = Math.hypot(x0, y0);
+  const to = Math.hypot(x0 + dx, y0 + dy);
+  const turn = (Math.atan2(y0 + dy, x0 + dx) - Math.atan2(y0, x0)) * 180 / Math.PI;
+  const width = Math.max(0.06, Math.min(0.9, placement.width * (from > 0 ? to / from : 1)));
+  const rotation = ((Math.round(placement.rotation + turn) % 360) + 360) % 360;
+  return { width: Math.round(width * 1000) / 1000, rotation: rotation > 180 ? rotation - 360 : rotation };
 }
 
 /** Placement after a drag, clamped to the stage with a centre magnet. */
@@ -975,7 +1082,7 @@ function CaptionOverlay({ clip, clock, stage }: { clip: Clip; clock: PlayheadClo
     : style?.position === 'top' ? 12 : style?.position === 'center' ? 50 : 84;
   const sungColor = style?.emphasisColor ?? '#FACC15';
   return (
-    <View pointerEvents="none" style={[styles.captionLayer, { top: (anchor / 100) * stage.height - fontSize }]}>
+    <View pointerEvents="none" {...sensitive} style={[styles.captionLayer, { top: (anchor / 100) * stage.height - fontSize }]}>
       <Text
         numberOfLines={3}
         style={[styles.captionText, {
@@ -1036,6 +1143,13 @@ const styles = StyleSheet.create({
   callout: { maxWidth: '100%', flexDirection: 'row', alignItems: 'center' },
   calloutGlyph: { fontFamily: fonts.bold },
   calloutText: { flexShrink: 1, color: '#FFFFFF', fontFamily: fonts.bold },
+  handle: {
+    position: 'absolute', width: HANDLE, height: HANDLE, borderRadius: HANDLE / 2, zIndex: 6,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(17,17,19,0.92)', borderWidth: 1, borderColor: colors.accent,
+  },
+  handleDanger: { borderColor: colors.danger },
+  handleGlyph: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: type.base },
   guide: { position: 'absolute', backgroundColor: colors.accent, opacity: 0.8, zIndex: 5 },
   guideVertical: { top: 0, bottom: 0, width: 1 },
   guideHorizontal: { left: 0, right: 0, height: 1 },

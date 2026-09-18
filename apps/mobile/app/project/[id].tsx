@@ -18,14 +18,17 @@ import { CleanupSheet } from '../../src/components/editor/CleanupSheet';
 import { VoiceSheet } from '../../src/components/editor/VoiceSheet';
 import { StylePacketSheet } from '../../src/components/editor/StylePacketSheet';
 import { LayoutPresets, PanelDivider, useEditorLayout } from '../../src/components/editor/PanelLayout';
+import { ReportModal } from '../../src/components/ReportModal';
 import { Timeline } from '../../src/components/editor/Timeline';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
+import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
-import { track } from '../../src/lib/telemetry';
+import { setReportContext, track } from '../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../src/lib/nav';
+import { sensitive } from '../../src/lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../src/lib/theme';
 
 /** Above this width the editor lays out as preview + timeline | chat dock. */
@@ -63,6 +66,9 @@ export default function EditorScreen() {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [styleOpen, setStyleOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  /** Captured when feedback is opened, before the sheet covers the timeline. */
+  const [shot, setShot] = useState<Screenshot>();
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
   /** Only set while a multi-file import is running. */
@@ -188,6 +194,40 @@ export default function EditorScreen() {
   // so agent edits appear while the turn is still running, not only at the end.
   useEffect(() => { if (id) track('project_open', id); }, [id]);
 
+  // What a report sent from this screen should carry. Read at send time, so the
+  // numbers describe the timeline the user is looking at, not the one that was
+  // loaded when the effect ran. Refs feed the parts this screen deliberately
+  // does not re-render for, like the playhead.
+  const snapshot = useRef({ project, selectedId, openPanel, wide, playing, layout });
+  snapshot.current = { project, selectedId, openPanel, wide, playing, layout };
+  // Focus-scoped for the same reason as the overscroll guard below: export is
+  // pushed on top of this screen without unmounting it.
+  useFocusEffect(useCallback(() => setReportContext(() => {
+    const { project: doc, selectedId: selected, openPanel: panel, wide: isWide, playing: isPlaying, layout: panels } = snapshot.current;
+    const clips = (doc?.tracks ?? []).flatMap((track) => track.clips);
+    return {
+      screen: 'editor',
+      layout: isWide ? 'wide' : 'stacked',
+      ...(doc ? {
+        projectId: doc.id,
+        projectFormat: doc.format,
+        projectFps: doc.fps,
+        projectVersion: doc.version,
+        trackCount: doc.tracks.length,
+        clipCount: clips.length,
+        captionCount: doc.tracks.filter((track) => track.kind === 'caption').flatMap((track) => track.clips).length,
+        timelineSeconds: Math.round(doc.duration),
+      } : { projectLoaded: false }),
+      selectedClip: selected ?? 'none',
+      openPanel: panel ?? 'none',
+      // Panel sizes are persisted per project and have already caused one
+      // layout bug, so a report from a dragged-about editor has to say so.
+      panelSizes: Object.entries(panels).map(([key, value]) => `${key}:${Math.round(Number(value))}`).join(' '),
+      playhead: Math.round(clock.get() * 10) / 10,
+      playing: isPlaying,
+    };
+  }), [clock]));
+
   const liveSteps = sendChat.isPending ? liveQuery.data?.steps : undefined;
   const seenLiveSteps = useRef(0);
   useEffect(() => {
@@ -267,6 +307,9 @@ export default function EditorScreen() {
   }, [canRedo, canUndo, runHistory]);
 
   function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): void {
+    // One line per edit batch, so a report can show what the user did by hand
+    // right before they hit a wall (or a crash).
+    track('edit', ops.map((op) => op.type).join(','));
     apply.mutate(optimistic ? { ops, optimistic } : { ops });
   }
 
@@ -390,7 +433,7 @@ export default function EditorScreen() {
           </>
         )}
         <View style={styles.headingText}>
-          <Text style={styles.projectTitle} numberOfLines={1}>{project.title}</Text>
+          <Text style={styles.projectTitle} {...sensitive} numberOfLines={1}>{project.title}</Text>
           <Text style={styles.projectMeta} numberOfLines={1}>
             {project.format} · {project.fps} FPS · V{project.version} · {project.tracks.reduce((total, track) => total + track.clips.length, 0)} CLIPS
           </Text>
@@ -401,6 +444,17 @@ export default function EditorScreen() {
         <HistoryButton label="↷" accessibilityLabel="Redo" testID="redo-button" enabled={canRedo} onPress={() => runHistory('redo')} />
         {/* Adding media lives in the library (+ photos / + files / + folder), which also
             reports import progress. The header keeps only the global action. */}
+        {/* Feedback belongs here and not just on the home screen: sent from the
+            editor it carries the open project, the timeline, and the last edits
+            the user made, which is most of what triage needs. */}
+        <Button
+          accessibilityLabel="send feedback"
+          secondary
+          style={styles.feedbackButton}
+          onPress={() => { track('feedback_open', 'editor'); void captureScreen().then(setShot); setFeedbackOpen(true); }}
+        >
+          feedback
+        </Button>
         <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
           export ↗
         </Button>
@@ -488,6 +542,13 @@ export default function EditorScreen() {
     <Screen scroll={!wide} bleed header={header}>
       {/* Native counterpart of the overscroll guard above: no edge-swipe back. */}
       <Stack.Screen options={{ gestureEnabled: false }} />
+      {feedbackOpen && (
+        <ReportModal
+          mode="feedback"
+          {...(shot ? { screenshot: shot } : {})}
+          onClose={() => { setFeedbackOpen(false); setShot(undefined); }}
+        />
+      )}
       {wide && <View style={styles.layoutBar}><LayoutPresets onPreset={preset} onReset={reset} /></View>}
       <View
         style={[styles.workspace, !wide && styles.workspaceStacked]}
@@ -586,7 +647,7 @@ export default function EditorScreen() {
         busy={sendChat.isPending}
         onClose={() => setStyleOpen(false)}
         onApply={(packet) => {
-          setStyleOpen(false);
+          // The sheet stays open so the row can show applying/applied — it closes itself.
           // The agent runs apply_style_packet, then judges the creative parts.
           sendChat.mutate(packetPrompt(packet));
         }}
@@ -623,6 +684,7 @@ const styles = StyleSheet.create({
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  feedbackButton: { paddingHorizontal: space.xl, minHeight: 30 },
   exportButton: { width: 96, minHeight: 30 },
   historyButton: {
     minWidth: 30, minHeight: 30, alignItems: 'center', justifyContent: 'center',
