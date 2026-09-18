@@ -1,10 +1,9 @@
-import { Component, useEffect, useState, type PropsWithChildren } from 'react';
+import { Component, useEffect, useState, type ErrorInfo, type PropsWithChildren } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { captureError, startTelemetry } from '../lib/telemetry';
+import { captureScreen, type Screenshot } from '../lib/capture';
+import { captureError, startTelemetry, type CapturedError } from '../lib/telemetry';
 import { ReportModal } from './ReportModal';
 import { colors, radius, space, type, fonts } from '../lib/theme';
-
-interface CapturedError { message: string; stack?: string }
 
 /**
  * A render error takes its whole subtree with it, so the boundary swaps in a
@@ -18,8 +17,10 @@ class ErrorBoundary extends Component<PropsWithChildren, { crashed: boolean }> {
     return { crashed: true };
   }
 
-  override componentDidCatch(error: Error): void {
-    captureError(error);
+  override componentDidCatch(error: Error, info: ErrorInfo): void {
+    // The component stack is the one thing a bare stack trace cannot give us:
+    // which screen and which subtree the failure happened inside.
+    captureError(error, info.componentStack ?? undefined);
   }
 
   override render() {
@@ -42,13 +43,26 @@ class ErrorBoundary extends Component<PropsWithChildren, { crashed: boolean }> {
  */
 export function ErrorReporter({ children }: PropsWithChildren) {
   const [error, setError] = useState<CapturedError>();
+  const [shot, setShot] = useState<Screenshot>();
 
-  useEffect(() => startTelemetry(setError), []);
+  useEffect(() => startTelemetry((captured) => {
+    // Grab the screen as it broke, before the prompt covers it. Best effort:
+    // whatever failed may well be what makes the capture fail too.
+    void captureScreen().then(setShot).catch(() => undefined);
+    setError(captured);
+  }), []);
 
   return (
     <>
       <ErrorBoundary>{children}</ErrorBoundary>
-      {error && <ReportModal mode="error" error={error} onClose={() => setError(undefined)} />}
+      {error && (
+        <ReportModal
+          mode="error"
+          error={error}
+          {...(shot ? { screenshot: shot } : {})}
+          onClose={() => { setError(undefined); setShot(undefined); }}
+        />
+      )}
     </>
   );
 }

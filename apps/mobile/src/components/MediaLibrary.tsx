@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
 import { api, assetThumbUrl } from '../lib/api';
 import { formatTimecode } from '../lib/timeline';
+import { sensitive } from '../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../lib/theme';
 
 interface Props {
@@ -156,7 +157,7 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
               />
             ) : (
               <Pressable onPress={() => startEdit(asset)} accessibilityRole="button" accessibilityLabel={`rename ${asset.originalName}`}>
-                <Text style={[styles.name, !asset.label && styles.nameUnlabelled]} numberOfLines={1}>
+                <Text style={[styles.name, !asset.label && styles.nameUnlabelled]} {...sensitive} numberOfLines={1}>
                   {asset.label ?? asset.originalName}
                 </Text>
               </Pressable>

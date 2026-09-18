@@ -32,6 +32,7 @@ import { RenderQueue } from './services/render-queue.js';
 import { DissectService } from './services/dissect-service.js';
 import { InsightService } from './services/insight-service.js';
 import { StyleService } from './services/style-service.js';
+import { ReproService } from './services/repro-service.js';
 import { TelemetryService } from './services/telemetry-service.js';
 import { TranscriptService } from './services/transcript-service.js';
 
@@ -50,7 +51,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const assets = new AssetStore(database);
   const renders = new RenderStore(database);
   const chats = new ChatStore(database);
-  const registry = new ProviderRegistry(new SettingsStore(database));
+  const settings = new SettingsStore(database);
+  const registry = new ProviderRegistry(settings);
   const resolveProvider = async (): Promise<ToolProvider> => await registry.resolve();
   const agent = new AgentService(resolveProvider);
   const transcripts = new TranscriptService(new TranscriptStore(database));
@@ -59,7 +61,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const renderQueue = new RenderQueue(renders, projects, assets);
   renderQueue.recover();
   const dissections = new DissectService(database);
-  const telemetry = new TelemetryService(new ReportStore(database), resolveProvider);
+  const telemetry = new TelemetryService(
+    new ReportStore(database),
+    resolveProvider,
+    undefined,
+    new ReproService(projects, assets, chats, settings),
+  );
 
   // EDITIFY_NO_AUTH=1 disables auth for local agent testing; every request
   // lands in the shared (NULL userId) scope. Ignored on Fly/production.
@@ -71,15 +78,17 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     supabaseUrl,
     // The exported web client is public — the sign-in screen IS the gate, so the
     // static wildcard route (and the index.html 404 fallback for deep links)
-    // skip auth. POST /telemetry joins them because a crash on the sign-in
-    // screen has no credentials to send, and a report that only works once you
-    // are logged in cannot report a broken login. Every other API route still
-    // demands credentials.
+    // skip auth. Every other API route still demands credentials.
     isPublic: (request) =>
-      (request.method === 'POST' && request.routeOptions.url === '/telemetry') ||
-      ((request.method === 'GET' || request.method === 'HEAD') &&
-        (request.routeOptions.url === '/*' ||
-          (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html')))),
+      (request.method === 'GET' || request.method === 'HEAD') &&
+      (request.routeOptions.url === '/*' ||
+        (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html'))),
+    // POST /telemetry takes credentials when there are any and proceeds without
+    // them when there are not: a crash on the sign-in screen has none to send,
+    // and a report that only works once you are logged in cannot report a
+    // broken login. Signed in, the token still resolves the user, which is what
+    // scopes the project state the server attaches to the report.
+    isOptional: (request) => request.method === 'POST' && request.routeOptions.url === '/telemetry',
   });
   await app.register(cors, { origin: true });
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });

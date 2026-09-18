@@ -7,6 +7,7 @@ import type { VideoPlayer } from 'expo-video';
 import type { AssetMetadata, Callout, Clip, ClipTransform, Operation, OverlayPlacement, Project } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { assetFilmstripUrl, assetOriginalUrl, assetProxyUrl, assetThumbUrl } from '../../lib/api';
+import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 import { FILMSTRIP_TILES, anchorIndexAtSorted, clipIndexAtSorted, formatTimecode, sortClips, visibleIdsAt } from '../../lib/timeline';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
@@ -975,7 +976,7 @@ function CaptionOverlay({ clip, clock, stage }: { clip: Clip; clock: PlayheadClo
     : style?.position === 'top' ? 12 : style?.position === 'center' ? 50 : 84;
   const sungColor = style?.emphasisColor ?? '#FACC15';
   return (
-    <View pointerEvents="none" style={[styles.captionLayer, { top: (anchor / 100) * stage.height - fontSize }]}>
+    <View pointerEvents="none" {...sensitive} style={[styles.captionLayer, { top: (anchor / 100) * stage.height - fontSize }]}>
       <Text
         numberOfLines={3}
         style={[styles.captionText, {

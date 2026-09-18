@@ -10,6 +10,7 @@ import { ProviderPicker } from './ProviderPicker';
 import { api, rebaseServerUrl, type ChatMessage, type RenderRecord } from '../../lib/api';
 import { receiptItems, type AgentTraceStep } from '../../lib/agent';
 import { presetPrompt } from '../../lib/presets';
+import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 const QUICK_PROMPTS = ['add bold captions', 'remove the silence', 'punch in on the hook', 'tighten the ending'];
@@ -291,7 +292,9 @@ function Message({ message, trace, onRevert, reverting, onSeek }: {
     <View style={user ? styles.userMessage : styles.agentMessage}>
       <Text style={user ? styles.userLabel : styles.agentLabel}>{user ? 'YOU' : 'EDITIFY'}</Text>
       {!user && trace && trace.length > 0 && <AgentTrace steps={trace} />}
-      {user ? <Text style={styles.messageText}>{message.content}</Text> : <Markdown text={message.content} />}
+      <View {...sensitive}>
+        {user ? <Text style={styles.messageText}>{message.content}</Text> : <Markdown text={message.content} />}
+      </View>
       {receipt.length > 0 && (
         <View style={styles.opChips}>
           {receipt.map((item) => (
