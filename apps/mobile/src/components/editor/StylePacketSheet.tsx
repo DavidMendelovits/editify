@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { STYLE_PACKETS, type StylePacket } from '@editify/shared';
@@ -13,6 +14,9 @@ interface Props {
   busy: boolean;
 }
 
+/** How long "APPLIED ✓" stays on screen before the sheet gets out of the way. */
+const APPLIED_MS = 900;
+
 /**
  * The style packet picker: each packet is a creator's repeatable look —
  * typography, music bed, transition habit, callout/b-roll density — applied
@@ -21,6 +25,36 @@ interface Props {
  * from a dissected clip. One at a time — applying is a sweep, not a blend.
  */
 export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
+  /** Only the packet you actually tapped reports progress; the rest just dim. */
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+  const [appliedId, setAppliedId] = useState<string | null>(null);
+  const wasBusy = useRef(busy);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    const finished = wasBusy.current && !busy && applyingId !== null;
+    wasBusy.current = busy;
+    if (!finished) return;
+    setAppliedId(applyingId);
+    setApplyingId(null);
+  }, [busy, applyingId]);
+
+  // Separate from the effect above: that one re-runs the moment applyingId
+  // clears, and its cleanup would cancel a timer started in the same pass.
+  useEffect(() => {
+    if (appliedId === null) return;
+    const timer = setTimeout(() => closeRef.current(), APPLIED_MS);
+    return () => clearTimeout(timer);
+  }, [appliedId]);
+
+  useEffect(() => {
+    if (!visible) {
+      setApplyingId(null);
+      setAppliedId(null);
+    }
+  }, [visible]);
+
   const profile = useQuery({ queryKey: ['style-profile'], queryFn: api.getStyle, retry: false, enabled: visible });
   const drafts = useQuery({
     queryKey: PACKET_DRAFTS_KEY,
@@ -50,7 +84,10 @@ export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
             {sections.map((section) => (
               <View key={section.label}>
                 <Text style={styles.sectionLabel}>{section.label}</Text>
-                {section.packets.map((packet) => (
+                {section.packets.map((packet) => {
+                  const status =
+                    packet.id === applyingId ? 'applying' : packet.id === appliedId ? 'applied' : 'idle';
+                  return (
                   <View key={packet.id} style={styles.row}>
                     <View style={styles.swatches}>
                       <View style={[styles.swatch, { backgroundColor: packet.colors.accent }]} />
@@ -65,15 +102,28 @@ export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`apply ${packet.name}`}
+                      aria-valuetext={status}
+                      testID={`apply-${packet.id}`}
                       hitSlop={8}
-                      disabled={busy}
-                      onPress={() => onApply(packet)}
-                      style={({ pressed }) => [styles.apply, pressed && styles.pressed, busy && styles.disabled]}
+                      disabled={busy || status === 'applied'}
+                      onPress={() => {
+                        setApplyingId(packet.id);
+                        onApply(packet);
+                      }}
+                      style={({ pressed }) => [
+                        styles.apply,
+                        status === 'applied' && styles.applyDone,
+                        pressed && styles.pressed,
+                        busy && status === 'idle' && styles.disabled,
+                      ]}
                     >
-                      <Text style={styles.applyText}>{busy ? '…' : 'apply'}</Text>
+                      <Text style={[styles.applyText, status === 'applied' && styles.applyDoneText]}>
+                        {status === 'applying' ? 'APPLYING…' : status === 'applied' ? 'APPLIED ✓' : 'APPLY'}
+                      </Text>
                     </Pressable>
                   </View>
-                ))}
+                  );
+                })}
               </View>
             ))}
           </ScrollView>
@@ -103,11 +153,14 @@ const styles = StyleSheet.create({
   rowSource: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   rowMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, lineHeight: 15 },
   apply: {
-    alignSelf: 'center', minHeight: 44, minWidth: 64, borderRadius: radius.lg, borderWidth: 1,
-    borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center',
+    alignSelf: 'center', minHeight: 44, minWidth: 88, borderRadius: radius.lg,
+    backgroundColor: colors.accentStrong, alignItems: 'center', justifyContent: 'center',
     paddingHorizontal: space.xl,
   },
-  applyText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base },
+  /** Success green needs dark text on it — white would fall under AA. */
+  applyDone: { backgroundColor: colors.success },
+  applyDoneText: { color: colors.background },
+  applyText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: type.base, letterSpacing: 0.8 },
   pressed: { opacity: 0.65 },
   disabled: { opacity: 0.5 },
 });

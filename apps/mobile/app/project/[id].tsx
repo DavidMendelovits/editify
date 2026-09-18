@@ -595,7 +595,7 @@ export default function EditorScreen() {
         busy={sendChat.isPending}
         onClose={() => setStyleOpen(false)}
         onApply={(packet) => {
-          setStyleOpen(false);
+          // The sheet stays open so the row can show applying/applied — it closes itself.
           // The agent runs apply_style_packet, then judges the creative parts.
           sendChat.mutate(packetPrompt(packet));
         }}
