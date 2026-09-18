@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Linking, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation } from '@tanstack/react-query';
 import { Button } from './Button';
 import { sendReport } from '../lib/telemetry';
@@ -14,8 +14,8 @@ interface Props {
 
 /**
  * The one place a report leaves the client: a crash we caught, or feedback the
- * user opened themselves. Both send the same payload, and both end by showing
- * the issue the server filed — or the note explaining where it went instead.
+ * user opened themselves. Both send the same payload, and both end with a
+ * reference number to quote back to us, or the note explaining where it went instead.
  */
 export function ReportModal({ mode, error, onClose }: Props) {
   const [comment, setComment] = useState('');
@@ -42,10 +42,8 @@ export function ReportModal({ mode, error, onClose }: Props) {
           {receipt ? (
             <>
               <Text style={styles.subtitle}>{receipt.note}</Text>
-              {receipt.issueNumber !== null && receipt.issueUrl && (
-                <Pressable accessibilityRole="link" onPress={() => { Linking.openURL(receipt.issueUrl as string).catch(() => undefined); }}>
-                  <Text style={styles.issue}>issue #{receipt.issueNumber} ↗</Text>
-                </Pressable>
+              {receipt.issueNumber !== null && (
+                <Text style={styles.issue}>reference #{receipt.issueNumber}</Text>
               )}
               <Button onPress={onClose}>done</Button>
             </>
