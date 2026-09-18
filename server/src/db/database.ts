@@ -111,6 +111,15 @@ function migrate(database: EditifyDatabase): void {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS video_observations (
+      asset_id TEXT NOT NULL,
+      analyzer TEXT NOT NULL,
+      analyzer_version TEXT NOT NULL,
+      observation_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (asset_id, analyzer, analyzer_version)
+    );
+
     CREATE TABLE IF NOT EXISTS dissections (
       asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
       dissection_json TEXT NOT NULL,
@@ -172,6 +181,13 @@ function migrate(database: EditifyDatabase): void {
   const styleColumns = database.prepare('PRAGMA table_info(style_profiles)').all() as Array<{ name: string }>;
   if (!styleColumns.some((column) => column.name === 'name')) {
     database.exec('ALTER TABLE style_profiles ADD COLUMN name TEXT');
+  }
+  // Pluggable video analysis: which analyzer watched, its per-video rows, and
+  // the folded template. Older profiles have none and read back as ffmpeg-only.
+  for (const column of ['analyzer', 'observations_json', 'template_json']) {
+    if (!styleColumns.some((existing) => existing.name === column)) {
+      database.exec(`ALTER TABLE style_profiles ADD COLUMN ${column} TEXT`);
+    }
   }
 
   // One agent turn is one run: every row it logs shares a run_id, so the whole

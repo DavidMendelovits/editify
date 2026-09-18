@@ -66,18 +66,26 @@ describe('style profile analysis', () => {
     await vi.waitFor(async () => {
       const done = await app.inject({ method: 'GET', url: '/style-profile' });
       expect(done.statusCode).toBe(200);
-      expect(done.json()).toMatchObject({ assetIds: ['a1'], styleDoc: 'fast-punch pacing', status: 'idle' });
+      expect(done.json()).toMatchObject({
+        assetIds: ['a1'], styleDoc: 'fast-punch pacing', status: 'idle', analyzer: 'ffmpeg',
+        template: { videoCount: 1, watchedCount: 0, pacing: { averageShotSeconds: 2, rhythm: 'balanced' } },
+      });
+      expect(done.json().observations).toHaveLength(1);
+      expect(done.json().observations[0]).toMatchObject({ assetId: 'a1', analyzer: 'ffmpeg', watched: false, format: '9:16' });
     });
     const rows = database.prepare('SELECT COUNT(*) AS count FROM style_profiles').get() as { count: number };
     expect(rows.count).toBe(1);
     await app.close();
   });
 
-  it('rejects unknown asset ids before starting any work', async () => {
+  it('rejects unknown asset ids and analyzers before starting any work', async () => {
     const app = buildStyleApp(database);
     const response = await app.inject({ method: 'POST', url: '/style-profile/analyze', payload: { assetIds: ['a1', 'nope'] } });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ error: 'Asset nope was not found' });
+    const unknownAnalyzer = await app.inject({ method: 'POST', url: '/style-profile/analyze', payload: { assetIds: ['a1'], analyzer: 'sora' } });
+    expect(unknownAnalyzer.statusCode).toBe(404);
+    expect(unknownAnalyzer.json()).toMatchObject({ error: 'Analyzer sora was not found' });
     expect((await app.inject({ method: 'GET', url: '/style-profile' })).json()).toMatchObject({ status: 'idle' });
     await app.close();
   });
@@ -85,7 +93,7 @@ describe('style profile analysis', () => {
   it('lists, selects, renames, duplicates, and repoints on delete', async () => {
     const app = buildStyleApp(database);
     const styles = new StyleService(database, new AssetStore(database), agent);
-    const first = await styles.analyze(['a1'], 'Punchy');
+    const first = await styles.analyze(['a1'], { name: 'Punchy' });
     const second = await styles.analyze(['a1']);
 
     // Newest first, and the freshest analysis is the selected one.

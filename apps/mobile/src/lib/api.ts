@@ -136,6 +136,37 @@ export interface StyleMetric {
   format: string;
 }
 
+/**
+ * The analyzers' per-video row and the folded template, mirrored loosely from
+ * `server/src/style/observation.ts`: the screen only reads a few fields, so the
+ * sections stay open-ended here.
+ */
+export interface VideoObservation {
+  assetId: string;
+  analyzer: string;
+  watched: boolean;
+  durationSeconds: number;
+  format: '9:16' | '16:9' | '1:1';
+  summary: string;
+  tags: string[];
+  [section: string]: unknown;
+}
+
+export interface StyleTemplate {
+  videoCount: number;
+  watchedCount: number;
+  analyzers: string[];
+  format: '9:16' | '16:9' | '1:1';
+  pacing: { averageShotSeconds: number | null; cutDensity: number | null; rhythm: string | null };
+  hook: { durationSeconds: number | null; technique: string | null };
+  captions: { presentRatio: number | null; position: string | null; style: string | null; animation: string | null };
+  transitions: { dominant: string | null; frequency: string | null };
+  audio: { loudnessLufs: number | null; music: string | null; soundEffects: string | null; voice: string | null };
+  visuals: { colorGrade: string | null; framing: string | null; punchIns: boolean | null; bRoll: string | null };
+  text: { overlays: string | null; emoji: boolean | null };
+  tags: Array<{ tag: string; count: number }>;
+}
+
 export interface StyleProfile {
   id: string;
   /** Every style is named; older profiles predating names fall back on the server. */
@@ -144,16 +175,25 @@ export interface StyleProfile {
   metrics: StyleMetric[];
   styleDoc: string;
   createdAt: string;
+  /** Which analyzer watched the clips; 'ffmpeg' means measured only. */
+  analyzer: string;
+  observations: VideoObservation[];
+  /** Null on profiles saved before analyzers existed. */
+  template: StyleTemplate | null;
 }
 
 export type StyleRunStatus = 'idle' | 'processing' | 'error';
+
+export interface StyleAnalyzerOption { id: string; label: string; available: boolean; detail: string; watches: boolean }
+export interface StyleAnalyzerStatus { active: string; requested?: string; options: StyleAnalyzerOption[] }
 
 /**
  * `GET /style-profile` flattened: the server answers 200 with the profile (plus
  * the run state) or 404 with just the run state, and analysis runs in the
  * background, so the screen polls this while `status` is 'processing'.
  */
-export interface StyleState { status: StyleRunStatus; error?: string; profile: StyleProfile | null }
+export interface StyleProgress { stage: 'measuring' | 'watching' | 'aggregating' | 'distilling'; done: number; total: number }
+export interface StyleState { status: StyleRunStatus; error?: string; progress?: StyleProgress; profile: StyleProfile | null }
 
 /**
  * Local mirror of `assetInsightsSchema` (SPEC-TRANSCRIPT.md §B1) — kept here so
@@ -325,16 +365,23 @@ export const api = {
   getStyle: async (): Promise<StyleState> => {
     const response = await timedFetch('/style-profile', { headers: { 'Content-Type': 'application/json', ...authHeaders() } });
     if (!response.ok && response.status !== 404) throw new Error(describeFailure(response.status, await response.text()));
-    const body = await response.json() as StyleProfile & { status: StyleRunStatus; error?: string };
+    const body = await response.json() as StyleProfile & { status: StyleRunStatus; error?: string; progress?: StyleProgress };
     return {
       status: body.status,
       ...(body.status === 'error' && body.error ? { error: body.error } : {}),
+      ...(body.status === 'processing' && body.progress ? { progress: body.progress } : {}),
       profile: response.status === 404 ? null : body,
     };
   },
   /** 202 — the scan runs in the background; poll `getStyle` for the result. */
-  analyzeStyle: (assetIds: string[], name?: string) => request<{ status: StyleRunStatus }>('/style-profile/analyze', {
-    method: 'POST', body: JSON.stringify({ assetIds, ...(name ? { name } : {}) }),
+  analyzeStyle: (assetIds: string[], options: { name?: string; analyzer?: string; refresh?: boolean } = {}) =>
+    request<{ status: StyleRunStatus }>('/style-profile/analyze', {
+      method: 'POST', body: JSON.stringify({ assetIds, ...options }),
+    }),
+  /** Which video analyzer the next "learn my style" run uses, and what else is available. */
+  getStyleAnalyzer: () => request<StyleAnalyzerStatus>('/style/analyzer'),
+  selectStyleAnalyzer: (analyzer: string) => request<StyleAnalyzerStatus>('/style/analyzer', {
+    method: 'PUT', body: JSON.stringify({ analyzer }),
   }),
   /** Every saved style, newest first, plus which one briefs the agent. */
   listStyles: () => request<{ profiles: StyleProfile[]; selectedId: string | null }>('/style-profiles'),

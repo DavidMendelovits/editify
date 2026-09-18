@@ -4,19 +4,12 @@ import type { AgentService } from '../agent/service.js';
 import type { AssetStore } from '../db/asset-store.js';
 import type { EditifyDatabase } from '../db/database.js';
 import { SettingsStore } from '../db/settings-store.js';
-import { analyzeLoudness, analyzeScenes } from '../media/process.js';
+import type { StyleMetric, StyleTemplate, VideoObservation } from '../style/observation.js';
+import { ObservationCache } from '../style/observation-cache.js';
+import { runStylePipeline, type PipelineProgress } from '../style/pipeline.js';
+import { StyleAnalyzerRegistry } from '../style/registry.js';
 
-export interface StyleMetric {
-  assetId: string;
-  duration: number;
-  cutCount: number;
-  cutDensity: number;
-  averageShotLength: number;
-  loudnessLufs: number | null;
-  width: number;
-  height: number;
-  format: string;
-}
+export type { StyleMetric } from '../style/observation.js';
 
 export interface StyleProfile {
   id: string;
@@ -25,17 +18,32 @@ export interface StyleProfile {
   metrics: StyleMetric[];
   styleDoc: string;
   createdAt: string;
+  /** Id of the analyzer that watched the videos; 'ffmpeg' for metric-only and legacy rows. */
+  analyzer: string;
+  /** One structured row per video, straight from the analyzer. */
+  observations: VideoObservation[];
+  /** The observations folded into one reusable template; null on legacy rows. */
+  template: StyleTemplate | null;
 }
 
-/** Run state of the background analysis; `error` is set only when status is 'error'. */
-export interface StyleRunState { status: 'idle' | 'processing' | 'error'; error?: string }
+/**
+ * Run state of the background analysis; `error` is set only when status is
+ * 'error', `progress` only while processing.
+ */
+export interface StyleRunState { status: 'idle' | 'processing' | 'error'; error?: string; progress?: PipelineProgress }
+
+export interface StyleRunOptions { name?: string; analyzer?: string; refresh?: boolean }
 
 /** Settings key holding the id of the profile every edit conversation uses. */
 const SELECTED_KEY = 'selected_style_profile';
 
-const selectColumns = 'id, name, asset_ids_json, metrics_json, style_doc, created_at';
+const selectColumns = 'id, name, asset_ids_json, metrics_json, style_doc, created_at, analyzer, observations_json, template_json';
+const insertColumns = 'id, name, asset_ids_json, metrics_json, style_doc, created_at, analyzer, observations_json, template_json';
 
-interface StyleRow { id: string; name: string | null; asset_ids_json: string; metrics_json: string; style_doc: string; created_at: string }
+interface StyleRow {
+  id: string; name: string | null; asset_ids_json: string; metrics_json: string; style_doc: string; created_at: string;
+  analyzer: string | null; observations_json: string | null; template_json: string | null;
+}
 
 const emptyProject: Project = {
   id: 'style-analysis', title: 'Style analysis', format: '9:16', fps: 30,
@@ -47,12 +55,20 @@ export class StyleService {
   private run: StyleRunState = { status: 'idle' };
   private inFlight: Promise<void> | null = null;
   private readonly settings: SettingsStore;
+  private readonly cache: ObservationCache;
+  /** The pluggable "watch" step; the route exposes it so the UI can pick one. */
+  readonly analyzers: StyleAnalyzerRegistry;
 
   constructor(
     private readonly database: EditifyDatabase,
     private readonly assets: AssetStore,
     private readonly agent: AgentService,
-  ) { this.settings = new SettingsStore(database); }
+    analyzers?: StyleAnalyzerRegistry,
+  ) {
+    this.settings = new SettingsStore(database);
+    this.cache = new ObservationCache(database);
+    this.analyzers = analyzers ?? new StyleAnalyzerRegistry(this.settings);
+  }
 
   /** The first unknown id, so a route can 4xx before any ffmpeg work starts. */
   missingAsset(assetIds: string[]): string | undefined {
@@ -70,10 +86,10 @@ export class StyleService {
    * newly requested assetIds are ignored; re-trigger once the run settles).
    * Validate ids with `missingAsset` first: unknown ones fail the run, not the call.
    */
-  start(assetIds: string[], name?: string): StyleRunState {
+  start(assetIds: string[], options: StyleRunOptions = {}): StyleRunState {
     if (!this.inFlight) {
       this.run = { status: 'processing' };
-      this.inFlight = this.analyze(assetIds, name)
+      this.inFlight = this.analyze(assetIds, options)
         .then(() => { this.run = { status: 'idle' }; })
         .catch((error: unknown) => {
           this.run = { status: 'error', error: error instanceof Error ? error.message : String(error) };
@@ -83,41 +99,42 @@ export class StyleService {
     return this.run;
   }
 
-  /** The new profile becomes the selected one; an unnamed run gets `Style N`. */
-  async analyze(assetIds: string[], name?: string): Promise<StyleProfile> {
-    const metrics: StyleMetric[] = [];
-    for (const assetId of assetIds) {
+  /**
+   * The whole workflow for one profile: resolve the analyzer, run the pipeline
+   * (measure, watch, aggregate, distill), store the result. The new profile
+   * becomes the selected one; an unnamed run gets `Style N`.
+   */
+  async analyze(assetIds: string[], options: StyleRunOptions | string = {}): Promise<StyleProfile> {
+    const { name, refresh, analyzer: analyzerId } = typeof options === 'string' ? { name: options } : options;
+    const videos = assetIds.map((assetId) => {
       const asset = this.assets.get(assetId);
       if (!asset) throw new Error(`Asset ${assetId} was not found`);
-      const scenes = await analyzeScenes(asset.originalPath, asset.duration);
-      const loudnessLufs = asset.hasAudio ? await analyzeLoudness(asset.originalPath) : null;
-      metrics.push({
-        assetId,
-        duration: asset.duration,
-        ...scenes,
-        loudnessLufs,
-        width: asset.width,
-        height: asset.height,
-        format: asset.width === asset.height ? '1:1' : asset.height > asset.width ? '9:16' : '16:9',
-      });
-    }
-    const fallback = summarizeLocally(metrics);
-    let styleDoc = fallback;
-    try {
-      styleDoc = await this.agent.distillStyle(emptyProject, metrics) || fallback;
-    } catch {
-      styleDoc = fallback;
-    }
+      return asset;
+    });
+    const analyzer = analyzerId ? this.analyzers.get(analyzerId) : await this.analyzers.resolve();
+    if (!analyzer) throw new Error(`Analyzer ${analyzerId} was not found`);
+    const result = await runStylePipeline({
+      videos,
+      analyzer,
+      cache: this.cache,
+      ...(refresh ? { refresh } : {}),
+      distill: async (template, observations) => await this.agent.distillStyle(emptyProject, template, observations, template.watchedCount > 0),
+      onProgress: (progress) => { if (this.run.status === 'processing') this.run = { status: 'processing', progress }; },
+    });
     const profile: StyleProfile = {
-      id: randomUUID(), name: name ?? this.nextName(), assetIds, metrics, styleDoc,
-      createdAt: new Date().toISOString(),
+      id: randomUUID(), name: name ?? this.nextName(), assetIds, metrics: result.metrics, styleDoc: result.styleDoc,
+      createdAt: new Date().toISOString(), analyzer: result.analyzer, observations: result.observations, template: result.template,
     };
-    this.database.prepare(`
-      INSERT INTO style_profiles (id, name, asset_ids_json, metrics_json, style_doc, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(profile.id, profile.name, JSON.stringify(assetIds), JSON.stringify(metrics), styleDoc, profile.createdAt);
+    this.insert(profile);
     this.settings.set(SELECTED_KEY, profile.id);
     return profile;
+  }
+
+  private insert(profile: StyleProfile): void {
+    this.database.prepare(`INSERT INTO style_profiles (${insertColumns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      profile.id, profile.name, JSON.stringify(profile.assetIds), JSON.stringify(profile.metrics), profile.styleDoc,
+      profile.createdAt, profile.analyzer, JSON.stringify(profile.observations), profile.template ? JSON.stringify(profile.template) : null,
+    );
   }
 
   /** Every saved profile, newest first. */
@@ -163,10 +180,7 @@ export class StyleService {
     const source = this.get(id);
     if (!source) return undefined;
     const copy: StyleProfile = { ...source, id: randomUUID(), name: `${source.name} copy`, createdAt: new Date().toISOString() };
-    this.database.prepare(`
-      INSERT INTO style_profiles (id, name, asset_ids_json, metrics_json, style_doc, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(copy.id, copy.name, JSON.stringify(copy.assetIds), JSON.stringify(copy.metrics), copy.styleDoc, copy.createdAt);
+    this.insert(copy);
     return copy;
   }
 
@@ -197,13 +211,8 @@ function toProfile(row: StyleRow): StyleProfile {
     metrics: JSON.parse(row.metrics_json) as StyleMetric[],
     styleDoc: row.style_doc,
     createdAt: row.created_at,
+    analyzer: row.analyzer ?? 'ffmpeg',
+    observations: row.observations_json ? JSON.parse(row.observations_json) as VideoObservation[] : [],
+    template: row.template_json ? JSON.parse(row.template_json) as StyleTemplate : null,
   };
-}
-
-function summarizeLocally(metrics: StyleMetric[]): string {
-  const averageShot = metrics.reduce((sum, metric) => sum + metric.averageShotLength, 0) / metrics.length;
-  const loudness = metrics.filter((metric) => metric.loudnessLufs !== null).map((metric) => metric.loudnessLufs as number);
-  const averageLoudness = loudness.length ? loudness.reduce((sum, value) => sum + value, 0) / loudness.length : null;
-  const pacing = averageShot < 2 ? 'fast-punch' : averageShot < 4 ? 'balanced' : 'slow-burn';
-  return `${pacing} pacing, about ${averageShot.toFixed(1)}s per shot, ${averageLoudness !== null && averageLoudness > -16 ? 'loud, present audio' : 'controlled audio'}, and bold readable captions.`;
 }
