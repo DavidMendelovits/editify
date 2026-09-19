@@ -73,6 +73,27 @@ function jsonSchema(tool: ToolDef): Record<string, unknown> {
   return toDraft2020(schema) as Record<string, unknown>;
 }
 
+/**
+ * The chat route surfaces provider errors straight to the user's error banner, so
+ * a raw upstream body would leak JSON (and an `authentication_error` blob) into the
+ * UI. Turn the response into a short operator-readable line instead.
+ */
+export async function providerFailureMessage(
+  vendor: 'Anthropic' | 'OpenAI',
+  envVar: 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY',
+  response: { status: number; text(): Promise<string> },
+): Promise<string> {
+  const { status } = response;
+  if (status === 401 || status === 403) {
+    return `${vendor} rejected the API key (${status}). Check ${envVar} on the server, or pick a different provider in settings.`;
+  }
+  if (status === 429) return `${vendor} is rate limiting this server (429). Wait a moment and try again.`;
+  if (status >= 500) return `${vendor} is unavailable right now (${status}). Try again in a moment.`;
+  const body = (await response.text().catch(() => '')).trim().replace(/\s+/g, ' ');
+  const trimmed = body.length > 200 ? `${body.slice(0, 200)}…` : body;
+  return `${vendor} request failed (${status})${trimmed ? `: ${trimmed}` : ''}`;
+}
+
 type AnthropicBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
@@ -128,7 +149,7 @@ export class AnthropicToolProvider implements ToolProvider {
         } : {}),
       }),
     });
-    if (!response.ok) throw new Error(`Anthropic request failed (${response.status}): ${await response.text()}`);
+    if (!response.ok) throw new Error(await providerFailureMessage('Anthropic', 'ANTHROPIC_API_KEY', response));
     const json = await response.json() as { content?: AnthropicBlock[]; stop_reason?: string };
     // A truncated response can carry a half-written tool call or silently drop all of
     // them, turning into a false "I'm done" — fail loudly instead.
@@ -185,7 +206,7 @@ export class OpenAIToolProvider implements ToolProvider {
         } : {}),
       }),
     });
-    if (!response.ok) throw new Error(`OpenAI request failed (${response.status}): ${await response.text()}`);
+    if (!response.ok) throw new Error(await providerFailureMessage('OpenAI', 'OPENAI_API_KEY', response));
     const json = await response.json() as {
       choices?: Array<{ message?: {
         content?: string | null;
