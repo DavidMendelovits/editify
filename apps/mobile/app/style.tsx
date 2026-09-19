@@ -9,9 +9,27 @@ import { Markdown } from '../src/components/editor/Markdown';
 import { Brand } from '../src/components/Brand';
 import { Button } from '../src/components/Button';
 import { Screen } from '../src/components/Screen';
-import { api, uploadAsset } from '../src/lib/api';
+import { api, uploadAsset, type StyleProfile, type StyleProgress } from '../src/lib/api';
 import { backControlStyle, goBack } from '../src/lib/nav';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
+
+/** One line on where the brief came from: a watching analyzer, or ffmpeg numbers alone. */
+function watchedLine(profile: StyleProfile): string {
+  const template = profile.template;
+  if (!template || template.watchedCount === 0) return 'Measured with ffmpeg only. No video was watched.';
+  return `${template.watchedCount} of ${template.videoCount} videos watched by ${template.analyzers.join(', ')}.`;
+}
+
+function progressLine(progress: StyleProgress | undefined, analyzerLabel: string | undefined): string {
+  if (!progress) return 'Detecting scene changes and measuring loudness.';
+  const count = `${Math.min(progress.done, progress.total)} of ${progress.total}`;
+  switch (progress.stage) {
+    case 'measuring': return `Measuring scene changes and loudness, ${count} videos.`;
+    case 'watching': return `${analyzerLabel ?? 'The analyzer'} is watching video ${count}.`;
+    case 'aggregating': return 'Folding the observations into one template.';
+    case 'distilling': return 'Writing the style brief.';
+  }
+}
 
 export default function StyleScreen() {
   const router = useRouter();
@@ -61,23 +79,52 @@ export default function StyleScreen() {
   const selectedId = styleList.data?.selectedId ?? current?.id;
   // Uploading, or the server still scanning after the 202.
   const busy = analyze.isPending || profile.data?.status === 'processing';
+  // The pluggable "watch" step: ffmpeg only keeps footage local, anything else uploads it.
+  const analyzerStatus = useQuery({ queryKey: ['style-analyzer'], queryFn: api.getStyleAnalyzer, retry: false });
+  const analyzer = analyzerStatus.data?.options.find((option) => option.id === analyzerStatus.data?.active);
+  const selectAnalyzer = useMutation({
+    mutationFn: api.selectStyleAnalyzer,
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['style-analyzer'] }); },
+  });
+  const progress = profile.data?.progress;
   const failure = analyze.error?.message ?? (profile.data?.status === 'error' ? profile.data.error ?? 'Analysis failed' : undefined);
 
   return (
     <Screen header={<View style={styles.header}><Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  HOME</Text></Pressable><Brand compact /></View>}>
       <View style={styles.hero}>
         <Text style={styles.title}>Style memory</Text>
-        <Text style={styles.subtitle}>Cuts, loudness, framing, and pace are measured with ffmpeg. Your footage is never sent to an AI model.</Text>
+        <Text style={styles.subtitle}>{analyzer?.watches
+          ? `Cuts, loudness, framing, and pace are measured with ffmpeg, then each video is watched by ${analyzer.label}.`
+          : 'Cuts, loudness, framing, and pace are measured with ffmpeg. Your footage is never sent to an AI model.'}</Text>
       </View>
       <View style={styles.uploadCard}>
         <Text style={styles.uploadTitle}>{busy ? 'Analyzing…' : 'Add past cuts'}</Text>
-        <Text style={styles.uploadSubtitle}>{busy ? 'Detecting scene changes and measuring loudness.' : 'MP4, MOV, or WebM · up to 10 videos'}</Text>
+        <Text style={styles.uploadSubtitle}>{busy ? progressLine(progress, analyzer?.label) : 'MP4, MOV, or WebM · up to 10 videos'}</Text>
         <Button disabled={busy} onPress={() => analyze.mutate()} style={styles.uploadButton}>
           {busy ? 'analyzing…' : current ? 'analyze new videos' : 'choose videos'}
         </Button>
         {busy && <View style={styles.progress}><View style={styles.progressFill} /></View>}
+        {analyzerStatus.data && (
+          <View style={styles.analyzerRow}>
+            <Text style={styles.analyzerLabel}>WATCHED BY</Text>
+            {analyzerStatus.data.options.map((option) => (
+              <Pressable
+                key={option.id}
+                accessibilityRole="button"
+                accessibilityLabel={`${option.label}: ${option.detail}`}
+                disabled={!option.available || busy || selectAnalyzer.isPending}
+                onPress={() => selectAnalyzer.mutate(option.id)}
+                style={[styles.analyzerChip, option.id === analyzerStatus.data?.active && styles.analyzerChipActive, !option.available && styles.analyzerChipOff]}
+              >
+                <Text style={[styles.analyzerChipText, option.id === analyzerStatus.data?.active && styles.analyzerChipTextActive]}>{option.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+        {analyzer && <Text style={styles.analyzerDetail}>{analyzer.detail}</Text>}
       </View>
       {failure && <Text style={styles.error}>{failure}</Text>}
+      {selectAnalyzer.error && <Text style={styles.error}>{selectAnalyzer.error.message}</Text>}
       {saved.length > 0 && (
         <>
           <View style={styles.sectionHeader}>
@@ -143,6 +190,7 @@ export default function StyleScreen() {
           </View>
           <View style={styles.styleDoc}>
             <Text style={styles.styleDocEyebrow}>STYLE BRIEF</Text>
+            <Text style={styles.styleFoot}>{watchedLine(current)}</Text>
             <Markdown text={current.styleDoc} />
             <Text style={styles.styleFoot}>This brief is injected into every edit conversation.</Text>
           </View>
@@ -214,6 +262,14 @@ const styles = StyleSheet.create({
   uploadButton: { width: 210, marginTop: space.xl },
   progress: { height: 4, width: 210, marginTop: space.lg, borderRadius: radius.md, backgroundColor: colors.border, overflow: 'hidden' },
   progressFill: { width: '68%', height: '100%', backgroundColor: colors.accent },
+  analyzerRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: space.md, marginTop: space.lg },
+  analyzerLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5, marginRight: space.sm },
+  analyzerChip: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: space.lg, paddingVertical: space.sm, backgroundColor: colors.panel },
+  analyzerChipActive: { borderColor: colors.accent },
+  analyzerChipOff: { opacity: 0.4 },
+  analyzerChipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
+  analyzerChipTextActive: { color: colors.text },
+  analyzerDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm, textAlign: 'center' },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: space.xl },
   sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
   sectionNote: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, marginTop: space.sm, maxWidth: 520 },

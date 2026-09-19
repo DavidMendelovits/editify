@@ -358,7 +358,13 @@ export const renderRequestSchema = z.object({
 export const styleAnalyzeSchema = z.object({
   assetIds: z.array(z.string().min(1)).min(1).max(10),
   name: z.string().min(1).max(60).optional(),
+  /** Override the configured video analyzer for this run only. */
+  analyzer: z.string().min(1).max(60).optional(),
+  /** Watch every video again instead of reusing cached observations. */
+  refresh: z.boolean().optional(),
 });
+
+export const styleAnalyzerSelectSchema = z.object({ analyzer: z.string().min(1).max(60) }).strict();
 
 export const styleRenameSchema = z.object({ name: z.string().min(1).max(60) });
 

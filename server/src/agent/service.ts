@@ -12,9 +12,18 @@ export class AgentService {
     return await runAgentLoop(await this.resolveProvider(), ctx, message, onStep ? { onStep } : {});
   }
 
-  async distillStyle(project: Project, metrics: unknown): Promise<string> {
-    const system = `Distill these ffmpeg-only video metrics into one short editing style profile. Do not claim to have watched video. ${NO_DASHES_RULE}`;
+  /**
+   * "Gemini watches, Claude thinks": the watching analyzer already produced the
+   * structured template, this turns it into the one-paragraph brief every edit
+   * conversation is given. `watched` decides whether the prompt may speak of
+   * what the footage looks like or only of what ffmpeg measured.
+   */
+  async distillStyle(project: Project, template: unknown, observations: unknown, watched = false): Promise<string> {
+    const source = watched
+      ? 'The template and per-video observations below come from an analyzer that watched the videos; the ffmpeg numbers in them are measured.'
+      : 'These are ffmpeg-only video metrics. Do not claim to have watched video.';
+    const system = `Distill this into one short editing style profile a video editor could follow: pacing, hook, captions, transitions, audio, look. ${source} ${NO_DASHES_RULE}`;
     const provider = await this.resolveProvider();
-    return (await provider.completeText(system, JSON.stringify({ project, metrics }))).trim();
+    return (await provider.completeText(system, JSON.stringify({ project, template, observations }))).trim();
   }
 }

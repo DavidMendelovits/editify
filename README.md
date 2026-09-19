@@ -129,14 +129,88 @@ Chat model provider ─┘                                  │
                                                        ├── proxy playback assets
 Upload ─> ffprobe ─> ffmpeg proxy + thumbnail           └── ffmpeg full-resolution render queue
                            │
-Past-video selection ──────┴──> scene/loudness metrics ─> one text-only style distillation
+Past-video selection ──────┴──> ffmpeg metrics ─> video analyzer (pluggable) ─> template ─> style brief
 ```
 
 - `packages/shared` owns the Zod project document, clip/track schemas, operation union, request contracts, and duration helpers.
 - `server` validates all incoming data, persists SQLite rows through boot-time migrations, performs media work through argument-safe child processes, and exposes Fastify routes with CORS for Expo web.
 - `apps/mobile` contains four responsive Expo Router screens, TanStack Query server state, `expo-video` proxy playback, document upload, timeline tools, chat, and render polling.
 - Undo restores the saved pre-operation snapshot, increments the current version, records an `undo` entry, and marks the original entry undone. Version-mismatched batches return HTTP 409 without partial changes.
-- Style analysis sends no video to a model. ffmpeg/ffprobe extract duration, scene changes, average shot length, integrated loudness, dimensions, and orientation; only that JSON is distilled into the style brief.
+- Style analysis is a four-step pipeline (`server/src/style/pipeline.ts`): ffmpeg measures every video, a pluggable analyzer watches each one and returns a structured observation, the observations fold into one template, and the chat provider distills that into the brief. See [Learn my style](#learn-my-style).
+
+## Learn my style
+
+"Learn my style" turns a handful of a creator's videos into a reusable editing
+template plus a one-paragraph brief that every edit conversation is given. The
+workflow follows the pattern-recognition prototype: measure, watch, aggregate,
+distill. Sourcing videos (an upload today, a scraper later) and storing the
+result sit outside the pipeline, so it runs the same from a route, a test, or a
+script.
+
+```
+videos ─> measure (ffmpeg: cuts, shot length, loudness, format)
+       ─> watch   (VideoAnalyzer: one structured observation per video)   <- pluggable
+       ─> aggregate (medians, modes, tag counts -> StyleTemplate)
+       ─> distill (chat provider writes the brief; local fallback if none)
+```
+
+The watch step is a black box behind one interface, `VideoAnalyzer` in
+`server/src/style/analyzer.ts`: given a video path and its ffmpeg metrics,
+return whatever sections of the observation you can fill (pacing, hook,
+captions, transitions, audio, visuals, text, tags). Everything else in the
+pipeline is indifferent to what is behind it. Built-in analyzers:
+
+| id | What it does | Enabled by |
+|---|---|---|
+| `gemini` | Uploads each video to the Gemini Files API, waits for processing, asks for structured JSON, deletes the upload | `GEMINI_API_KEY` (model via `GEMINI_MODEL`, default `gemini-3.6-flash`) |
+| `webhook` | Posts each video as multipart (`video` file + `input` JSON with the metrics) to your own service and reads the observation from its JSON reply | `EDITIFY_STYLE_ANALYZER_URL` (optional bearer `EDITIFY_STYLE_ANALYZER_TOKEN`) |
+| `ffmpeg` | No model at all; the metrics become the observation and the brief says nothing was watched | always |
+
+The active analyzer is the stored UI choice when usable, else
+`EDITIFY_STYLE_ANALYZER`, else the first available one in the order above.
+
+```
+GET /style/analyzer   → { active, requested?, options: [{ id, label, available, detail, watches }] }
+PUT /style/analyzer   { "analyzer": "webhook" }
+POST /style-profile/analyze   { assetIds, name?, analyzer?, refresh? }
+```
+
+`analyzer` overrides the choice for one run; `refresh` ignores the cache.
+Observations are cached per asset and analyzer version in
+`video_observations`, so building a second profile from the same clips, or
+retrying after a crash, does not watch them again. Bump an analyzer's `version`
+whenever its prompt or model changes and the cache misses on purpose.
+
+To build your own analyzer out of local functions instead of a model, chain
+steps with `composeAnalyzer` and register it; each step sees the input and what
+the earlier steps produced, and its result is merged in:
+
+```ts
+import { composeAnalyzer, StyleAnalyzerRegistry } from './style/index.js';
+
+const local = composeAnalyzer({
+  id: 'local-chain', label: 'Local shot + caption pass', watches: true,
+  steps: [
+    async ({ path, metrics }) => ({ pacing: { rhythm: metrics.averageShotLength < 2 ? 'fast-punch' : 'balanced' } }),
+    async ({ path }) => ({ captions: { present: await hasBurnedInText(path), position: 'bottom' }, tags: ['ocr'] }),
+  ],
+});
+registry.register(local);
+```
+
+Before trusting a new analyzer or key in production, run the pipeline against a
+real clip from your machine; it prints every stage, the observations, the
+template, and the brief:
+
+```bash
+GEMINI_API_KEY=... npm run style:smoke -- path/to/clip.mp4
+npm run style:smoke -- --analyzer webhook --no-distill clip.mp4
+```
+
+Any object with the same shape works too, so a second model vendor is one class
+implementing `analyzeVideo`. The Gemini and webhook classes take an injectable
+`fetchImpl`, and `server/test/style-pipeline.test.ts` shows both exercised
+offline.
 
 ## Operation catalog
 
@@ -164,7 +238,7 @@ All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "
 - Projects: `POST /projects`, `GET /projects`, `GET /projects/:id`, `POST /projects/:id/ops`, `GET /projects/:id/oplog`
 - Assets: `POST /assets` (multipart), metadata/original/proxy/thumbnail under `GET /assets/:id/*`
 - Agent: `POST /projects/:id/chat`, `GET /projects/:id/chat`
-- Styles: `POST /style-profile/analyze`, `GET /style-profile`
+- Styles: `POST /style-profile/analyze`, `GET /style-profile`, `GET /style-profiles`, `GET`/`PUT /style/analyzer`
 - Rendering: `POST /projects/:id/render`, `GET /renders/:id`, `GET /renders/:id/file.mp4`
 
 The v1 server is intentionally single-user and local: no authentication, cloud storage, billing, or predictive analytics.

@@ -32,6 +32,7 @@ import { RenderQueue } from './services/render-queue.js';
 import { DissectService } from './services/dissect-service.js';
 import { InsightService } from './services/insight-service.js';
 import { StyleService } from './services/style-service.js';
+import { StyleAnalyzerRegistry } from './style/registry.js';
 import { ReproService } from './services/repro-service.js';
 import { TelemetryService } from './services/telemetry-service.js';
 import { TranscriptService } from './services/transcript-service.js';
@@ -57,7 +58,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const agent = new AgentService(resolveProvider);
   const transcripts = new TranscriptService(new TranscriptStore(database));
   const insights = new InsightService(new InsightStore(database), transcripts, resolveProvider);
-  const styles = new StyleService(database, assets, agent);
+  const styles = new StyleService(database, assets, agent, new StyleAnalyzerRegistry(settings));
   const renderQueue = new RenderQueue(renders, projects, assets);
   renderQueue.recover();
   const dissections = new DissectService(database);
