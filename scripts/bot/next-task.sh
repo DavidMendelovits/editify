@@ -40,10 +40,13 @@ for n in $(jq -r 'sort_by(.number) | .[].number' <<<"$prs"); do
   [[ -n "$hit" ]] && { echo "$hit"; exit 0; }
 done
 
-# 3. earliest open issue with no open PR, no bot/ branch, not labeled blocked
-# Any open PR claims its issue, not just bot/ ones — otherwise a human PR for issue N
+# 3. earliest open issue with no PR, no bot/ branch, not labeled blocked
+# Any PR claims its issue, not just bot/ ones — otherwise a human PR for issue N
 # leaves N looking unclaimed and every run re-implements it.
-taken=$(jq -r ".[] | $issue_of" <<<"$all_prs"; git ls-remote --heads origin '*issue-*' | sed -E 's#.*issue-([0-9]+).*#\1#')
+# CLOSED PRs claim it too: a closed-unmerged PR is a human saying "not this", and
+# counting only open ones makes the bot rebuild the rejected work every run.
+closed_prs=$(gh pr list --state closed --limit 100 --json number,headRefName,body)
+taken=$(jq -r ".[] | $issue_of" <<<"$all_prs"; jq -r ".[] | $issue_of" <<<"$closed_prs"; git ls-remote --heads origin '*issue-*' | sed -E 's#.*issue-([0-9]+).*#\1#')
 issue=$(gh issue list --state open --limit 200 --json number,labels \
   --jq '[.[] | select(all(.labels[]?.name; . != "blocked" and . != "wontfix"))] | sort_by(.number) | .[].number' \
   | grep -vxF -f <(printf '%s\n' $taken) | head -1 || true)
