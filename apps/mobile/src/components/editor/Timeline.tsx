@@ -166,12 +166,17 @@ export function Timeline({
   const contentWidth = Math.max(viewportWidth, duration * pxPerSec + 160);
   const lanesHeight = lanes.reduce((total, lane) => total + lane.height + LANE_PADDING * 2, 0);
 
+  // Zoom that shows the whole project at once; 0 until the viewport is measured.
+  const fitPxPerSec = viewportWidth > 0 && project.duration > 0
+    ? clampZoom((viewportWidth - 24) / project.duration)
+    : 0;
+
   // Default zoom fits the whole project into the viewport, once per project.
   useEffect(() => {
-    if (fitted.current || viewportWidth <= 0 || project.duration <= 0) return;
+    if (fitted.current || fitPxPerSec <= 0) return;
     fitted.current = true;
-    setPxPerSec(clampZoom((viewportWidth - 24) / project.duration));
-  }, [project.duration, viewportWidth]);
+    setPxPerSec(fitPxPerSec);
+  }, [fitPxPerSec]);
 
   const ruler = useHorizontalDrag({
     onStart: (localX) => { onScrub(true); scrubStart.current = localX / pxPerSec; onSeek(Math.max(0, scrubStart.current)); },
@@ -435,8 +440,10 @@ export function Timeline({
     setPxPerSec((current) => clampZoom(current * factor));
   }
   function fit(): void {
-    if (viewportWidth > 0 && project.duration > 0) setPxPerSec(clampZoom((viewportWidth - 24) / project.duration));
+    if (fitPxPerSec > 0) setPxPerSec(fitPxPerSec);
   }
+  // Nothing to do when the view is already at (or within a pixel of) the fit zoom.
+  const fitDisabled = fitPxPerSec <= 0 || Math.abs(pxPerSec - fitPxPerSec) <= 0.5;
 
   const step = tickStep(pxPerSec);
   const firstTick = Math.max(0, Math.floor(cullFrom / pxPerSec / step));
@@ -462,9 +469,9 @@ export function Timeline({
         </View>
         <View style={styles.toolGroup}>
           <Tool label="−" hint="zoom" compact onPress={() => zoom(1 / 1.6)} disabled={pxPerSec <= MIN_PX_PER_SEC} />
-          <Text style={styles.zoomValue}>{Math.round(pxPerSec)} px/s</Text>
+          <Text testID="timeline-zoom-value" style={styles.zoomValue}>{Math.round(pxPerSec)} px/s</Text>
           <Tool label="+" hint="zoom" compact onPress={() => zoom(1.6)} disabled={pxPerSec >= MAX_PX_PER_SEC} />
-          <Tool label="fit" hint="viewport" compact onPress={fit} />
+          <Tool label="fit all" hint="whole project" accessibilityLabel="fit all, whole project" testID="timeline-fit" compact onPress={fit} disabled={fitDisabled} />
           <Tool label="import" hint="media" compact onPress={onImport} />
         </View>
       </View>
@@ -657,13 +664,16 @@ function PlayheadCursor({ clock, pxPerSec, height, playing, viewportWidth, scrol
   );
 }
 
-function Tool({ label, hint, onPress, disabled, danger, compact }: {
+function Tool({ label, hint, onPress, disabled, danger, compact, accessibilityLabel, testID }: {
   label: string; hint: string; onPress: () => void; disabled?: boolean; danger?: boolean; compact?: boolean;
+  accessibilityLabel?: string; testID?: string;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${label} ${hint}`}
+      // Compact tools hide the hint text, so the a11y label must still carry it.
+      accessibilityLabel={accessibilityLabel ?? `${label} ${hint}`}
+      testID={testID}
       onPress={onPress}
       disabled={disabled}
       style={({ pressed }) => [
