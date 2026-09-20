@@ -39,11 +39,11 @@ export function EditSummaryPanel({ messages, open, onToggle }: { messages: ChatM
 }
 
 const styles = StyleSheet.create({
-  // minHeight 0 + hidden overflow let the expanded panel shrink inside the wide dock
-  // column instead of spilling over its neighbours; collapsed zones keep flexShrink 0
-  // so their header is never squeezed.
+  // Collapsed zones keep their natural header height (no flexShrink), and an open
+  // zone gets a real budget via maxHeight: tall enough to show several lines, capped
+  // so the inner ScrollView still scrolls and the dock column stays navigable.
   zone: { minHeight: 0, overflow: 'hidden', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg, gap: space.md },
-  zoneOpen: { flexShrink: 1, minHeight: 40 },
+  zoneOpen: { flexShrink: 0, maxHeight: 220 },
   header: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
   label: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm, letterSpacing: 1.5 },
   chevron: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.md },

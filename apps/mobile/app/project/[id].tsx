@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Animated, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
@@ -600,12 +600,23 @@ export default function EditorScreen() {
             onDragEnd={commit}
           />
         )}
-        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked, wide && { width: layout.dockWidth }]}>
-          {wide && library}
-          {dock}
-          {wide && summary}
-          {wide && insights}
-        </View>
+        {wide ? (
+          /* The dock column is taller than the viewport once the summary and
+             insights panels expand, so it scrolls on its own here (stacked mode
+             keeps the page-level scroll from <Screen scroll={!wide} />). */
+          <ScrollView
+            style={[styles.dockColumn, { width: layout.dockWidth }]}
+            contentContainerStyle={styles.dockScroll}
+            nestedScrollEnabled
+          >
+            {library}
+            {dock}
+            {summary}
+            {insights}
+          </ScrollView>
+        ) : (
+          <View style={[styles.dockColumn, styles.dockColumnStacked]}>{dock}</View>
+        )}
       </View>
       <ImportSheet
         projectId={id}
@@ -702,6 +713,9 @@ const styles = StyleSheet.create({
   timelineWide: { flex: 1, minHeight: 180 },
   editColumnStacked: {},
   dockColumn: { width: 372, minHeight: 0, gap: space.lg },
+  // flexGrow keeps the dock at full height when nothing is expanded; the ChatDock's
+  // own minHeight then pushes the content past the viewport once the panels open.
+  dockScroll: { flexGrow: 1, gap: space.lg },
   dockColumnStacked: { width: '100%', height: 560 },
   center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
