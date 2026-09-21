@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NewProject, Project, ProjectFormat } from '@editify/shared';
 import { Brand } from '../src/components/Brand';
 import { Button } from '../src/components/Button';
@@ -29,6 +29,7 @@ export default function HomeScreen() {
   // Taken before the sheet covers the screen. It stays in memory unless the
   // user attaches it.
   const [shot, setShot] = useState<Screenshot>();
+  const [accountError, setAccountError] = useState<string>();
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   const create = useMutation({
     mutationFn: (input: NewProject) => api.createProject(input),
@@ -41,6 +42,19 @@ export default function HomeScreen() {
     mutationFn: (id: string) => api.deleteProject(id),
     onSuccess: async () => { track('project_delete'); await client.invalidateQueries({ queryKey: ['projects'] }); },
   });
+
+  // App Store guideline 5.1.1(v). The server erases the rows, the media and the
+  // Supabase login; signing out is what sends the root layout to /sign-in.
+  const deleteAccount = async (): Promise<void> => {
+    try {
+      track('account_delete');
+      await api.deleteAccount();
+      await supabase.auth.signOut();
+      router.replace('/sign-in');
+    } catch (error) {
+      setAccountError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   // Feedback sent from here cannot name a project, so it says what this screen
   // does know: how many cuts the user has and whether the list even loaded.
@@ -68,6 +82,7 @@ export default function HomeScreen() {
           <Button secondary style={styles.styleButton} onPress={() => router.push('/style')}>learn my style</Button>
           <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); void captureScreen().then(setShot); setFeedbackOpen(true); }}>send feedback</Button>
           <Button accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</Button>
+          <Button accessibilityLabel="delete account" secondary style={styles.signOutButton} onPress={() => confirmDeleteAccount(() => { void deleteAccount(); })}>delete account</Button>
         </View>
       </View>
     }>
@@ -114,6 +129,7 @@ export default function HomeScreen() {
         ))}
       </View>
       {remove.error && <Text style={styles.error}>Could not delete: {remove.error.message}</Text>}
+      {accountError && <Text style={styles.error}>Could not delete your account: {accountError}</Text>}
       {feedbackOpen && (
         <ReportModal
           mode="feedback"
@@ -128,6 +144,22 @@ export default function HomeScreen() {
       />
     </Screen>
   );
+}
+
+/**
+ * Native gets the destructive Alert; react-native-web's `Alert.alert` is a
+ * no-op stub, so the browser build asks with the one confirm it does have.
+ */
+function confirmDeleteAccount(onConfirm: () => void): void {
+  const body = 'This erases your projects, media and login. It cannot be undone.';
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.confirm(`Delete your account?\n\n${body}`)) onConfirm();
+    return;
+  }
+  Alert.alert('Delete your account?', body, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Delete', style: 'destructive', onPress: onConfirm },
+  ]);
 }
 
 /** Recent-project tile: poster frame, title, format badge, duration, clip count. */

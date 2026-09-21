@@ -309,6 +309,14 @@ export const api = {
     const response = await timedFetch(`/projects/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
   },
+  /**
+   * App Store guideline 5.1.1(v). Erases the caller's rows, media and login;
+   * answers 204 with no body, so it cannot go through `request`'s JSON parse.
+   */
+  deleteAccount: async (): Promise<void> => {
+    const response = await timedFetch('/account', { method: 'DELETE', headers: authHeaders() });
+    if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
+  },
   applyOps: (id: string, ops: Operation[], baseVersion: number) => request<Project>(`/projects/${id}/ops`, {
     method: 'POST', body: JSON.stringify({ ops, baseVersion }),
   }),

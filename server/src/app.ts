@@ -20,6 +20,7 @@ import { ReportStore } from './db/report-store.js';
 import { SettingsStore } from './db/settings-store.js';
 import { TranscriptStore } from './db/transcript-store.js';
 import { OperationError } from './operations/apply.js';
+import { registerAccountRoutes } from './routes/account.js';
 import { registerAgentRoutes } from './routes/agent.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerChatRoutes } from './routes/chat.js';
@@ -99,6 +100,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   // Built-in SFX/music, synthesized on first request and registered as assets.
   app.get('/sounds', async () => await ensureSoundLibrary(assets));
+  registerAccountRoutes(app, database);
   registerAgentRoutes(app, registry);
   registerProjectRoutes(app, projects, renderQueue, assets, transcripts);
   registerAssetRoutes(app, assets, projects, transcripts, insights, dissections, database);
