@@ -21,6 +21,8 @@ Editify is a video editor. The app is a client; the editing engine, the media st
 
 Your footage is stored on a persistent disk attached to that server. It is not encrypted at rest beyond the disk encryption the hosting provider applies, and it is not backed up to a separate location.
 
+**One feature sends a video file off that server.** If you use "learn my style", the clips you submit to it are uploaded to Google's Gemini API so the model can watch them. This is the only case in which your footage leaves our own infrastructure. See section 5.
+
 ## 3. What we collect
 
 ### 3.1 Account data
@@ -72,11 +74,13 @@ These are the only third parties that receive your data, and they receive it bec
 | **Fly.io** (Fly.io, Inc., USA) | Everything stored server-side: your media files, transcripts, project documents, chat history, renders, diagnostic reports | Hosting for the Editify API, media store, database and renderer |
 | **Supabase** (Supabase, Inc., USA) | Email address, password hash, account id, and any profile fields your identity provider returns | Authentication and session management |
 | **Google** (Google LLC, USA) | Your Google account identity, if and only if you choose "continue with Google" | Sign-in |
-| **Anthropic** (Anthropic PBC, USA) or **OpenAI** (OpenAI, L.L.C., USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Whichever of the two is configured on the server handles the request. Video and audio files are never sent. | Running the editing assistant |
-| **Google (Gemini API)** | The **full video file** of each clip you submit to "learn my style", if the server is configured to use the Gemini analyzer. The upload is deleted from Google's Files API at the end of the run. The app's style screen tells you which analyzer is active and whether it uploads footage. | Analysing your reference videos |
+| **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. This is the provider configured on our production server; an OpenAI key can be configured instead, in which case the same text goes to **OpenAI** (OpenAI, L.L.C., USA) rather than to Anthropic. | Running the editing assistant |
+| **Google (Gemini API)** (Google LLC, USA) | The **full video file** of each clip you submit to "learn my style". This analyzer is configured and active on our production server. The upload is deleted from Google's Files API at the end of the run. The app's style screen tells you which analyzer is active and whether it uploads footage. | Analysing your reference videos |
 | **GitHub** (GitHub, Inc., USA) | Crash reports and feedback you send: the error text, the stack, the app-state summary, your session event log and anything you typed. On the web client, an attached screenshot is committed to a repository. | Filing bug reports into our issue tracker |
 
-VERIFY: confirm which of Anthropic, OpenAI and Gemini are actually configured as secrets on the production Fly machine, and whether the GitHub issue tracker that receives crash reports and feedback is a public repository. If it is public, this section must say so in plain words, and the in-app feedback sheet should say so before the user presses send.
+Our issue tracker is the **private** repository `DavidMendelovits/editify`. Reports filed there are readable by the people who maintain Editify and by GitHub as our processor. Nothing you send in a crash report or a feedback message is published publicly.
+
+Confirmed on the production server (Fly app `editify-dm`, September 2026): the Anthropic key, the Gemini key and the GitHub token are all set, so the editing assistant runs on Anthropic's model, the Gemini analyzer is the one that watches your reference videos, and reports are filed into the private repository named above. No OpenAI key is set.
 
 All of these providers are in the United States. Transfers out of the EEA and the UK rely on the providers' Standard Contractual Clauses.
 

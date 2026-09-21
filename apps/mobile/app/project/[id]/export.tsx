@@ -5,7 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Brand } from '../../../src/components/Brand';
 import { Button } from '../../../src/components/Button';
 import { Screen } from '../../../src/components/Screen';
-import { api, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
+import { api, IS_LOCAL_API, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
 import { track } from '../../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../../src/lib/nav';
 import { colors, radius, space, type, fonts } from '../../../src/lib/theme';
@@ -74,7 +74,11 @@ export default function ExportScreen() {
         </View>
       )}
       {(start.error || render.error) && <Text style={styles.error}>{start.error?.message ?? render.error?.message}</Text>}
-      <Text style={styles.note}>Rendering runs on your local Editify server. Keep it running.</Text>
+      <Text style={styles.note}>
+        {IS_LOCAL_API
+          ? 'Rendering runs on your local Editify server. Keep it running.'
+          : 'Rendering runs on the Editify servers. Keep this screen open until it finishes: the download link only appears here.'}
+      </Text>
     </Screen>
   );
 }

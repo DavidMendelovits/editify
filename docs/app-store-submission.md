@@ -148,7 +148,7 @@ Apple replaced the old questionnaire in 2025 with a set of yes/no questions plus
 
 Two things to watch:
 
-- **VERIFY:** Apple's current questionnaire has a question about apps whose core feature is a chatbot or generative AI. Editify's assistant is an AI chat interface that returns free text written by Anthropic's or OpenAI's model. Read that question in the live form and answer it honestly; a yes there can push the rating to 12+ or 13+. Do not guess from this table.
+- **VERIFY:** Apple's current questionnaire has a question about apps whose core feature is a chatbot or generative AI. Editify's assistant is an AI chat interface that returns free text written by Anthropic's model (the provider configured on the production server). Read that question in the live form and answer it honestly; a yes there can push the rating to 12+ or 13+. Do not guess from this table.
 - **VERIFY:** if the answer to the UGC question is read more broadly (the app does let a user put arbitrary imported footage and typed caption text on screen), the safe answer is still No, because nothing is published or shared. Confirm against the question's own help text in the form.
 
 ---
@@ -191,7 +191,7 @@ Device ID is genuinely not collected. The telemetry `sessionId` is regenerated f
 | **Customer Support** | Yes | Yes | No | App Functionality, Analytics |
 | **Other User Content** | Yes | Yes | No | App Functionality |
 
-- Photos or Videos: full original files, uploaded on import. See section 0.
+- Photos or Videos: full original files, uploaded on import. See section 0. Clips submitted to "learn my style" are additionally uploaded to Google's Gemini API, which is configured and active on the production server (`GEMINI_API_KEY` is set on `editify-dm`). That is third-party processing of user video, so it belongs in the policy (`docs/privacy-policy.md` §2 and §5) even though Apple's label has no separate item for it: the item stays **Photos or Videos, collected, linked, App Functionality**.
 - Audio Data: voiceover recordings from the microphone (`apps/mobile/src/components/editor/VoiceSheet.tsx` uploads the recording through the same `uploadAsset`), plus the audio track inside every imported video, plus speech transcripts derived from it by a local Whisper process on the server (`server/src/services/transcript-service.ts`).
 - Customer Support: the free-text feedback the user types in the report sheet, sent to `POST /telemetry` and, when a GitHub token is configured, filed as an issue (`server/src/services/telemetry-service.ts`).
 - Other User Content: project titles, caption text, sticker and callout text, clip labels, and the chat messages the user sends to the assistant.
@@ -233,8 +233,8 @@ Note on time zone: Editify sends the device time zone as a diagnostic field. App
 ### 2.8 Honest gaps to close before you tick the boxes
 
 1. There is no in-app disclosure that a session event log is transmitted automatically, and no way to turn it off. Apple does not require a toggle for first-party diagnostics, but the privacy policy must describe it, and it does (`docs/privacy-policy.md` §3.3).
-2. Crash reports and typed feedback can be filed into a GitHub issue tracker. **VERIFY: is `DavidMendelovits/editify` public?** If it is, user-typed feedback and app-state details become public documents, and that needs saying both in the policy and on the feedback sheet before the user presses send. If it is private, the policy text as written is accurate.
-3. The Gemini style analyser uploads whole video files to Google. It only runs if `GEMINI_API_KEY` is set on the server. **VERIFY which analyser is active on the production Fly machine.** If Gemini is on, the privacy policy row stays; if it is off, keep the row anyway but say "if enabled", which is how it is currently written.
+2. Crash reports and typed feedback are filed into the GitHub issue tracker. **`DavidMendelovits/editify` is private** (confirmed September 2026), so nothing a user types or attaches becomes a public document. No warning is needed on the feedback sheet, and `docs/privacy-policy.md` §5 now names the repository and says in plain words that reports are not published.
+3. The Gemini style analyser uploads whole video files to Google. **`GEMINI_API_KEY` is set on `editify-dm`, so it is live** (confirmed September 2026). The privacy policy row is now written as a statement rather than a conditional, section 2 of the policy says plainly that this is the one path by which footage leaves our own infrastructure, and the App Review notes below say the same.
 4. Media requests carry the session token in the URL query string (`mediaUrl` in `apps/mobile/src/lib/api.ts`), and the export screen hands such a URL to Safari. Disclosed in the policy §10. Worth fixing, not a blocker.
 
 ---
@@ -386,6 +386,12 @@ receives the video or audio files themselves. Output is text plus editing
 operations that are validated against a fixed schema before being applied; the
 model cannot execute anything outside that operation set.
 
+One separate feature, "learn my style", uploads the video files the user picks
+to Google's Gemini API so the model can watch them and describe the user's
+editing style. The upload is deleted at the end of the run. The style screen
+names the analyser in use before the user starts it, and the privacy policy
+discloses it.
+
 OVER-THE-AIR UPDATES
 The app uses Expo Updates to deliver JavaScript-only bug fixes. Updates never
 change the app's purpose, add features outside what is described here, or
@@ -394,7 +400,7 @@ introduce native code.
 
 VERIFY: create the demo account and pre-seed it with a project containing at least one clip with clear speech. Without that, a reviewer lands on an empty home screen and cannot evaluate the app's main feature.
 
-VERIFY: confirm a model API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is set as a Fly secret on `editify-dm`. Without one, `createProvider()` falls back to the deterministic mock director, which still applies real edits but answers a narrow set of prompts. A reviewer typing something the mock does not recognise would see the app do nothing, which reads as broken.
+Confirmed: `ANTHROPIC_API_KEY` is set as a Fly secret on `editify-dm`, so a reviewer gets the real Claude-backed agent, not the deterministic mock director. `GITHUB_TOKEN` and `EDITIFY_TOKEN` are set too.
 
 ---
 
@@ -409,8 +415,8 @@ Ordered. "David" means it needs a human decision, an account, or a credential. "
 | 1 | Fill in the registered address and privacy contact email in `docs/privacy-policy.md` and `docs/terms-of-service.md` (marked VERIFY) | David |
 | 2 | Create the public `editify-legal` repo, publish privacy / terms / support pages, confirm all three URLs load | David, then automatable |
 | 3 | Create and pre-seed the demo account; put the credentials in the App Review notes | David |
-| 4 | Confirm a model API key is set as a Fly secret, or accept that the reviewer meets the mock agent | David |
-| 5 | Confirm `SUPABASE_SERVICE_ROLE_KEY` is set on Fly, otherwise "delete account" answers 503 and fails guideline 5.1.1(v) | David |
+| 4 | ~~Confirm a model API key is set as a Fly secret~~ **Done.** `ANTHROPIC_API_KEY` is set on `editify-dm`; reviewers get the real agent | Done |
+| 5 | **Broken today: `SUPABASE_SERVICE_ROLE_KEY` is not set on `editify-dm`.** The deployed secret is misspelled `SUPABASE_SERVICE__ROLE_KEY` (two underscores), so the app reads nothing and "delete account" answers 503, which fails guideline 5.1.1(v). Fix, in this order, then redeploy: `fly secrets set SUPABASE_SERVICE_ROLE_KEY=<value> -a editify-dm` then `fly secrets unset SUPABASE_SERVICE__ROLE_KEY -a editify-dm` | David |
 | 6 | Answer the App Privacy questionnaire per section 2 | David |
 | 7 | Capture 6 iPhone 6.9" and 6 iPad 13" screenshots per section 4 | David, capture automatable |
 | 8 | Upload a 1024x1024 App Store icon with no alpha channel and no rounded corners | David |
@@ -420,10 +426,10 @@ Ordered. "David" means it needs a human decision, an account, or a credential. "
 
 | # | Item | Who |
 |---|---|---|
-| 10 | Resolve the GitHub-issue-tracker visibility question (section 2.8 item 2). If public, add a line to the feedback sheet saying where the report goes | David decides, automatable to implement |
-| 11 | Fix the stale line on the export screen: "Rendering runs on your local Editify server. Keep it running." (`apps/mobile/app/project/[id]/export.tsx`). It is wrong for a shipped app pointed at Fly and will confuse a reviewer | Automatable |
-| 12 | Decide whether the agent provider picker (`ProviderPicker`, which offers `claude-cli` and `codex-cli` options that can never be available on the deployed server) should be visible in a public release | David |
-| 13 | Decide whether the "or from the server media folder" section of the import sheet should ship. It lists files in `MEDIA_IMPORT_DIR` on the server, which will be empty in production, so a reviewer sees a dead section | David |
+| 10 | ~~Resolve the GitHub-issue-tracker visibility question~~ **Done.** The repo is private, so no feedback-sheet warning is needed; the policy now says so | Done |
+| 11 | ~~Fix the stale line on the export screen~~ **Done.** The note is now conditional on the API being localhost; a hosted build says rendering runs on the Editify servers (`apps/mobile/app/project/[id]/export.tsx`) | Done |
+| 12 | ~~Decide whether the agent provider picker should show `claude-cli` and `codex-cli`~~ **Done.** The picker now drops a CLI option when the server's own probe reports it unavailable (`GET /agent/provider`), so a reviewer sees only the providers the deployed server can actually run | Done |
+| 13 | ~~Decide whether the "or from the server media folder" section should ship~~ **Done.** The section, and the `GET /assets/importable` call behind it, are now skipped unless the API base URL is localhost | Done |
 | 14 | Add privacy policy and terms links to the sign-in screen. Not strictly required, but it is the cheapest possible answer to a 5.1.1 rejection | Automatable |
 | 15 | Confirm the Google sign-in flow works in a release (non-dev-client) build. `sign-in.tsx` gates the Google button on not being in Expo Go, which is right, but the release path has not been exercised in this repo's history | David |
 
