@@ -13,6 +13,7 @@ import { supabase } from '../src/lib/supabase';
 import { captureScreen, type Screenshot } from '../src/lib/capture';
 import { setReportContext, track } from '../src/lib/telemetry';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
+import { appVersion } from '../src/lib/version';
 
 const formats: Array<{ label: string; format: ProjectFormat; meta: string }> = [
   { label: 'Instagram Reel', format: '9:16', meta: '9:16 · UP TO 90S' },
@@ -62,6 +63,7 @@ export default function HomeScreen() {
       <View style={styles.header}>
         <Brand />
         <View style={styles.headerActions}>
+          <Text style={styles.version}>{appVersion}</Text>
           <Button secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>import media</Button>
           <Button secondary style={styles.styleButton} onPress={() => router.push('/style')}>learn my style</Button>
           <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); void captureScreen().then(setShot); setFeedbackOpen(true); }}>send feedback</Button>
@@ -225,6 +227,7 @@ const styles = StyleSheet.create({
   header: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
   styleButton: { minHeight: 32, paddingHorizontal: space.xl },
   signOutButton: { minHeight: 32, paddingHorizontal: space.xl },
+  version: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1 },
   hero: { paddingTop: space.section, paddingBottom: space.lg, gap: space.lg, maxWidth: 900, width: '100%', alignSelf: 'center' },
   kicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.6 },
   formatList: { gap: space.lg, maxWidth: 900, width: '100%', alignSelf: 'center' },

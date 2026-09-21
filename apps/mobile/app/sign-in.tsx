@@ -15,6 +15,7 @@ import { Button } from '../src/components/Button';
 import { Screen } from '../src/components/Screen';
 import { supabase } from '../src/lib/supabase';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
+import { appVersion } from '../src/lib/version';
 
 type AuthAction = 'sign-in' | 'sign-up' | 'google';
 
@@ -188,6 +189,8 @@ export default function SignInScreen() {
               </>
             )}
           </View>
+
+          <Text style={styles.version}>{appVersion}</Text>
         </View>
       </Screen>
     </KeyboardAvoidingView>
@@ -218,4 +221,5 @@ const styles = StyleSheet.create({
   googleText: { color: '#16151D', fontFamily: fonts.semibold, fontSize: type.lg },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
   disabled: { opacity: 0.5 },
+  version: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1, textAlign: 'center' },
 });
