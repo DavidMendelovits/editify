@@ -2,6 +2,8 @@
 
 Everything needed to fill in App Store Connect for Editify 1.0.0, in the order the forms ask for it. Every claim about the app is traceable to code in this repo; file references are given where it matters. Anything unresolved is marked **VERIFY:** with the exact question.
 
+**App Store Connect record:** app id `6814607865`, SKU `EDITIFY001`, primary locale `en-US`, app record name **`Editify - AI Video editor`** (this is the live name; the pack's earlier recommendation of `Editify: AI Video Editor` was not applied, see section 1.1). The iOS version record is `d3bb2e21-e253-4fe6-877b-f1b95eee544d`, state `PREPARE_FOR_SUBMISSION`. Its version string was created as `1.0` and has been corrected to **`1.0.0`** to match `apps/mobile/app.json`; App Store Connect requires the listing's version string to equal the uploaded build's `CFBundleShortVersionString`.
+
 Build facts this pack assumes (from `apps/mobile/app.json`, `apps/mobile/eas.json`):
 
 - Bundle id `com.editify.app`, version `1.0.0`, build number from EAS (`appVersionSource: remote`)
@@ -23,6 +25,8 @@ The second thing: the app sends a session event log to the server automatically 
 
 ## 1. Listing copy
 
+**Status (set in App Store Connect via the API, and read back to confirm):** subtitle, promotional text, description, keywords, primary and secondary category are all live on app `6814607865`. App name was left as-is. What's New is not settable on a first version. Support / marketing / privacy URLs are still blank. Per-field notes below.
+
 ### 1.1 App name (limit 30)
 
 ```text
@@ -31,6 +35,8 @@ Editify: AI Video Editor
 
 24 characters. Alternate if you want the name alone: `Editify` (7).
 
+**Not applied.** The live App Store Connect name is **`Editify - AI Video editor`** (25 characters), chosen by David. Nothing here renames it. Keep this in mind when editing the keyword field, which depends on whether the name carries the category signal (section 1.5).
+
 ### 1.2 Subtitle (limit 30)
 
 ```text
@@ -38,6 +44,8 @@ Cut, caption, export by chat
 ```
 
 28 characters.
+
+**Set.** `appInfoLocalizations` (en-US) `subtitle` now reads exactly `Cut, caption, export by chat`.
 
 ### 1.3 Promotional text (limit 170)
 
@@ -48,6 +56,8 @@ Import a clip, describe the edit, watch every cut happen on a real timeline. Tra
 ```
 
 158 characters.
+
+**Set.** Stored verbatim on the 1.0.0 `appStoreVersionLocalizations` (en-US) record.
 
 ### 1.4 Description (limit 4000)
 
@@ -85,6 +95,8 @@ Editify needs an account and an internet connection. Your projects, your importe
 
 2502 characters. Re-run the counter in section 7 after any edit.
 
+**Set.** Stored verbatim on the 1.0.0 `appStoreVersionLocalizations` (en-US) record; read back at 2502 characters.
+
 ### 1.5 Keywords (limit 100, comma separated, no spaces after commas)
 
 Words already in the app name and subtitle are indexed from there, so they are not repeated here.
@@ -97,6 +109,8 @@ subtitles,transcript,reels,shorts,tiktok,timeline,trim,voiceover,silence,4k,vlog
 
 If you drop the app name to plain `Editify`, replace `filler` with `video,editor` (99 characters), because the field is then carrying the whole category signal on its own.
 
+**Set, using the `filler` variant above (95 characters).** The live name `Editify - AI Video editor` already contains "AI", "Video" and "editor", so those terms are indexed from the name and the `video,editor` swap would spend 12 characters repeating them. The swap only applies if the name is ever shortened to plain `Editify`.
+
 ### 1.6 What's New in this version (1.0.0)
 
 ```text
@@ -107,10 +121,14 @@ Editify is a video editor with an assistant that drives the same timeline you do
 Tell us what breaks: there is a "send feedback" button on the home screen and in the editor.
 ```
 
+**Not set: the field does not exist yet.** The API rejects any write to `whatsNew` on this version with `409 STATE_ERROR — Attribute 'whatsNew' cannot be edited at this time`. "What's New in This Version" only opens up on an update to an already-released app, so 1.0.0 has no such field. Keep this copy here and use it for 1.0.1.
+
 ### 1.7 Support URL and Marketing URL
 
 - **Support URL is mandatory.** App Store Connect will not let you submit without one, and it must resolve to a real page with a way to contact you. A GitHub Pages page with a contact email and a short FAQ satisfies this.
 - **Marketing URL is optional.** Leave it blank for 1.0.0 rather than pointing it at a placeholder.
+
+**Outstanding. Nothing is set.** `supportUrl`, `marketingUrl` (on the version localization) and `privacyPolicyUrl` (on the app info localization) all read `null` in App Store Connect today, and were deliberately left alone because we have no hosted pages. Support URL and Privacy Policy URL are both mandatory before submission.
 
 **We do not appear to have either today.** There is no marketing site in this repo, and `editify-dm.fly.dev` serves the app itself behind auth, not a public page. See section 3 for the hosting recommendation, which covers the support page, the privacy policy and the terms in one move.
 
@@ -123,9 +141,13 @@ VERIFY: does Maja Ventures already own a domain that should host these? If yes, 
 | Primary | **Photo & Video** | The app is a video editor. This is where competitors rank and where the buying intent is. |
 | Secondary | **Productivity** | Defensible: the product is a tool for producing a deliverable, and the assistant framing reads as productivity. |
 
+**Set.** `appInfos` primary category is `PHOTO_AND_VIDEO`, secondary is `PRODUCTIVITY`, confirmed by reading the relationships back.
+
 Graphics & Design is the other plausible secondary, but it skews toward static design tools and would put Editify next to illustration apps. Productivity is the better second net.
 
 ### 1.9 Age rating questionnaire
+
+**Not answered, deliberately.** The `ageRatingDeclaration` on app info `b13395d6-a514-4ab4-909f-1eea62ca25b5` is untouched and `appStoreAgeRating` is still `null`. The two VERIFY items below need a human reading the live form.
 
 Apple replaced the old questionnaire in 2025 with a set of yes/no questions plus a separate set about in-app capabilities. Answers for Editify:
 
@@ -154,6 +176,8 @@ Two things to watch:
 ---
 
 ## 2. App Privacy ("nutrition label")
+
+**Not entered in App Store Connect.** No data-collection declaration has been submitted; this section is still a plan, not a record of what is filled in.
 
 Determined empirically. Sources for each line are named. No third-party analytics, crash-reporting or advertising SDK exists in this app: `apps/mobile/package.json` contains no Sentry, Amplitude, Mixpanel, PostHog, Firebase, Bugsnag, Crashlytics, Segment or Datadog dependency, and a grep for those names across `apps/mobile` and `server/src` returns nothing. The diagnostics described below are all first-party, to our own server.
 
@@ -408,6 +432,8 @@ Confirmed: `ANTHROPIC_API_KEY` is set as a Fly secret on `editify-dm`, so a revi
 
 Ordered. "David" means it needs a human decision, an account, or a credential. "Automatable" means an agent can do it in this repo.
 
+Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still in `PREPARE_FOR_SUBMISSION`): subtitle, promotional text, description, keywords, primary category, secondary category. Nothing below is affected by that except where noted.
+
 ### Blocking: cannot submit without these
 
 | # | Item | Who |
@@ -417,9 +443,11 @@ Ordered. "David" means it needs a human decision, an account, or a credential. "
 | 3 | Create and pre-seed the demo account; put the credentials in the App Review notes | David |
 | 4 | ~~Confirm a model API key is set as a Fly secret~~ **Done.** `ANTHROPIC_API_KEY` is set on `editify-dm`; reviewers get the real agent | Done |
 | 5 | **Broken today: `SUPABASE_SERVICE_ROLE_KEY` is not set on `editify-dm`.** The deployed secret is misspelled `SUPABASE_SERVICE__ROLE_KEY` (two underscores), so the app reads nothing and "delete account" answers 503, which fails guideline 5.1.1(v). Fix, in this order, then redeploy: `fly secrets set SUPABASE_SERVICE_ROLE_KEY=<value> -a editify-dm` then `fly secrets unset SUPABASE_SERVICE__ROLE_KEY -a editify-dm` | David |
-| 6 | Answer the App Privacy questionnaire per section 2 | David |
+| 6 | Answer the App Privacy questionnaire per section 2. Nothing is entered yet | David |
 | 7 | Capture 6 iPhone 6.9" and 6 iPad 13" screenshots per section 4 | David, capture automatable |
 | 8 | Upload a 1024x1024 App Store icon with no alpha channel and no rounded corners | David |
+| 8a | Answer the age rating questionnaire in the live form (section 1.9). Untouched today | David |
+| 8b | Set Support URL and Privacy Policy URL on the listing once item 2 produces them. Both still `null` | Automatable, after item 2 |
 | 9 | Run a production EAS build and submit it to App Store Connect | David (build commands are out of scope for this repo's agents) |
 
 ### Should fix before review
