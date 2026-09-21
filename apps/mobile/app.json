@@ -2,7 +2,7 @@
   "expo": {
     "name": "Editify",
     "slug": "editify",
-    "owner": "dfordavey",
+    "owner": "editify",
     "version": "1.0.0",
     "orientation": "default",
     "scheme": "editify",
@@ -14,7 +14,7 @@
       "backgroundColor": "#0E0E10"
     },
     "updates": {
-      "url": "https://u.expo.dev/05e74ce6-1ff5-426f-9988-98665619839d"
+      "url": "https://u.expo.dev/901bf170-2dbf-4ff7-ae24-68218ac5d18c"
     },
     "runtimeVersion": {
       "policy": "fingerprint"
@@ -71,7 +71,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "05e74ce6-1ff5-426f-9988-98665619839d"
+        "projectId": "901bf170-2dbf-4ff7-ae24-68218ac5d18c"
       }
     }
   }

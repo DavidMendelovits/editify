@@ -7,7 +7,9 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "android": { "buildType": "apk" },
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://editify-dm.fly.dev",
         "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "481295230846-p9b26huakkve0r2qft6uggtebgaut81t.apps.googleusercontent.com",
@@ -18,8 +20,12 @@
       "distribution": "internal",
       "channel": "preview",
       "environment": "preview",
-      "ios": { "simulator": false },
-      "android": { "buildType": "apk" },
+      "ios": {
+        "simulator": false
+      },
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://editify-dm.fly.dev",
         "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "481295230846-p9b26huakkve0r2qft6uggtebgaut81t.apps.googleusercontent.com",
@@ -38,6 +44,10 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "appleTeamId": "F9R8TK7W79"
+      }
+    }
   }
 }
