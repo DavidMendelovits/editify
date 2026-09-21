@@ -12,6 +12,9 @@ Build facts this pack assumes (from `apps/mobile/app.json`, `apps/mobile/eas.jso
 - Apple Team `F9R8TK7W79`, EAS project `901bf170-2dbf-4ff7-ae24-68218ac5d18c`
 - Permissions requested: photo library (import clips) and microphone (voiceover). Camera is explicitly disabled.
 - OTA JavaScript updates via `expo-updates` against `https://u.expo.dev/901bf170-...`
+- **In-app purchases: yes.** Two auto-renewing monthly subscriptions via RevenueCat/StoreKit (`react-native-purchases` 10.10.1 -> native `RevenueCat` 5.90.1). See sections 7 and 8.
+- **Third-party analytics: yes.** PostHog (`posthog-react-native` 4.75.0, JavaScript only). See section 2.
+- `contentRightsDeclaration` on the app record is still `null` and must be answered before submission (section 6).
 
 ---
 
@@ -20,6 +23,14 @@ Build facts this pack assumes (from `apps/mobile/app.json`, `apps/mobile/eas.jso
 The App Privacy answers in section 2 must say that **user video and audio content is collected**. Editify uploads the full original file the user picks to `https://editify-dm.fly.dev` (`apps/mobile/src/lib/pick.ts` -> `uploadAsset` in `apps/mobile/src/lib/api.ts` -> `POST /assets` in `server/src/routes/assets.ts`, which streams the part straight to `assetsRoot/<id>/original.<ext>`). Originals do **not** stay on the device. The "devices keep original footage local and upload proxies first" line in `SPEC-WAVE3.md` §D is a stated future direction, not shipped behaviour.
 
 The second thing: the app sends a session event log to the server automatically about once a minute, with no prompt and no opt-out (`apps/mobile/src/lib/telemetry.ts`, `FLUSH_INTERVAL = 60_000`). That is collected usage and diagnostic data and must be disclosed.
+
+**The third thing, and it now outranks both: this release ships with in-app subscriptions.** That changes the submission in three ways that have nothing to do with copy.
+
+1. **Nothing can be released until Maja Ventures SL completes the Paid Applications Agreement**, with banking and tax details, and Apple verifies them. That is days to weeks, outside our control, and it is the long pole for the whole launch. Start it before anything else. Section 8.1.
+2. **The paywall does not yet satisfy guideline 3.1.2.** There is no privacy policy link and no terms-of-use link anywhere in the app, and no feature is actually gated behind a subscription, so a reviewer who pays gets nothing. Section 7 lists every gap with a file and line.
+3. **The App Privacy answers in section 2 were written for an app with no analytics SDK and no purchases.** They have been rewritten. Purchase History and Device ID both flip from No to Yes.
+
+A fourth, smaller: **TestFlight builds 1 and 2 predate the RevenueCat native module**, so neither can be the submitted build. `react-native-purchases` is native code and no OTA update will add it. A fresh production build is required.
 
 ---
 
@@ -93,7 +104,7 @@ WHAT YOU SHOULD KNOW
 Editify needs an account and an internet connection. Your projects, your imported clips, your transcripts and your renders are stored on the Editify server, not only on your phone. You can delete everything, including your account, from the home screen in one step.
 ```
 
-2502 characters. Re-run the counter in section 7 after any edit.
+2502 characters. Re-run the counter in section 9 after any edit.
 
 **Set.** Stored verbatim on the 1.0.0 `appStoreVersionLocalizations` (en-US) record; read back at 2502 characters.
 
@@ -163,10 +174,11 @@ Apple replaced the old questionnaire in 2025 with a set of yes/no questions plus
 | Unrestricted web access | **No** | The app has no in-app browser. The one outbound link is `Linking.openURL` on a finished render, which opens that file in Safari (`apps/mobile/app/project/[id]/export.tsx`). |
 | **User-generated content** | **No** | Users create content, but no user can see another user's content. Every row is scoped to the Supabase user id (`server/src/db/*-store.ts`, `request.userId` in `server/src/auth.ts`), there is no feed, no sharing, no comments and no profiles. Apple's question is about content visible to other users. |
 | **In-app chat / messaging between users** | **No** | The only chat is with the editing assistant. |
-| In-app purchases or ads | **No** | No IAP, no ad SDK anywhere in `apps/mobile/package.json`. |
-| Tracking / advertising identifiers | **No** | No IDFA, no ATT prompt, no analytics SDK. |
+| **In-app purchases** | **Yes** (changed) | Two auto-renewing monthly subscriptions, `react-native-purchases` in `apps/mobile/package.json`, paywall at `apps/mobile/app/paywall.tsx`. Answering No here is a false declaration. |
+| Ads | **No** | No ad SDK anywhere in `apps/mobile/package.json`. |
+| Tracking / advertising identifiers | **No** (unchanged, but for new reasons) | No IDFA is read and no ATT prompt is shown. PostHog ships no native module and has no IDFA API; RevenueCat's IDFA path is never called and AdSupport is not linked. Full evidence in section 2.9. |
 
-**Expected rating: 4+.**
+**Expected rating: 4+.** In-app purchases do not raise the rating by themselves; they change the product's commercial declarations, not its content.
 
 Two things to watch:
 
@@ -179,10 +191,34 @@ Two things to watch:
 
 **Not entered in App Store Connect.** No data-collection declaration has been submitted; this section is still a plan, not a record of what is filled in.
 
-Determined empirically. Sources for each line are named. No third-party analytics, crash-reporting or advertising SDK exists in this app: `apps/mobile/package.json` contains no Sentry, Amplitude, Mixpanel, PostHog, Firebase, Bugsnag, Crashlytics, Segment or Datadog dependency, and a grep for those names across `apps/mobile` and `server/src` returns nothing. The diagnostics described below are all first-party, to our own server.
+**Rewritten for the 1.0.0 that ships with subscriptions and analytics.** An earlier version of this pack claimed Editify had "no third-party analytics, crash-reporting or advertising SDK" and "no in-app purchases". Both statements are now false and every table below has been re-derived from the code and from the SDKs' own privacy manifests. Two third-party SDKs are in the binary:
 
-**Answer "Yes, we collect data from this app."**
-**Answer "No" to tracking on every single item.** There is no ATT prompt and no advertising identifier is read anywhere.
+| SDK | Version | Native code? | Evidence |
+|---|---|---|---|
+| **PostHog** (`posthog-react-native`) | 4.75.0 | **No.** Pure JavaScript. There is no PostHog pod in `apps/mobile/ios/Podfile.lock`, so it ships no native module and no privacy manifest of its own | `apps/mobile/package.json`, `apps/mobile/src/lib/posthog.ts:1` |
+| **RevenueCat** (`react-native-purchases`) | 10.10.1, wrapping native `RevenueCat` 5.90.1 and `PurchasesHybridCommon` 19.2.0 | **Yes** | `apps/mobile/ios/Podfile.lock` |
+
+Over-declaring is safe; under-declaring is a rejection. Where the code left a question open, the table below takes the conservative answer and says so.
+
+### 2.0 What each SDK actually sends, established from the code
+
+**PostHog.** The client is constructed in `apps/mobile/src/lib/posthog.ts:18-23` with exactly two options: `captureAppLifecycleEvents: true` and `debug: __DEV__`. It is mounted at `apps/mobile/src/providers/AppProviders.tsx:18` as `<PostHogProvider client={posthog}>` with **no `autocapture` prop passed**. It is gated on two environment variables (`posthog.ts:3-4`); with either unset, `posthog` is `undefined` and the provider is skipped entirely, so a build without them sends PostHog nothing.
+
+Three findings that matter for the label:
+
+1. **Nothing in the app sends PostHog a custom event.** A grep across `apps/mobile/src` and `apps/mobile/app` finds no `posthog.capture(...)`, no `usePostHog()` and no `posthog.identify(...)`. The app's own `track(...)` — 18 call sites — is first-party telemetry that posts to our server (`apps/mobile/src/lib/event-log.ts`, `apps/mobile/src/lib/telemetry.ts`), not to PostHog. Whatever PostHog receives today is entirely SDK-automatic.
+2. **PostHog is never handed the account id.** Because `identify()` is never called, PostHog's `distinct_id` stays the anonymous per-install UUID the SDK generates. That is a vendor-generated persistent identifier, not an OS one.
+3. **The integration looks unfinished.** PostHog's own React Native documentation (vendored into this repo at `apps/mobile/.posthog/wizard-spellbook-R3HZaQ/skills/integration-react-native/references/react-native.md`) lists `expo-file-system`, `expo-device` and `expo-localization` as peer dependencies for Expo apps. **None of the three is in `apps/mobile/package.json`** (`expo-application` and `@react-native-async-storage/async-storage` are). Device model, OS locale and on-disk event persistence therefore may not be collected or may fall back to weaker paths. Declare as if they are collected anyway — if the missing packages are added later, the label does not have to change.
+
+**RevenueCat.** Configured in `apps/mobile/src/lib/purchases.ts:50` as `Purchases.configure({ apiKey, appUserID: userId })`, where `userId` is the **Supabase account id** of the signed-in user, re-synced on every session change from `apps/mobile/app/_layout.tsx:49-52` (`logIn` at `purchases.ts:54`, `logOut` at `:57`). Purchases go through StoreKit via `Purchases.purchasePackage` (`purchases.ts:81`); entitlements `pro` and `studio` are read back from `CustomerInfo` (`purchases.ts:14`, `:24-26`). Keys come from `EXPO_PUBLIC_REVENUECAT_IOS_KEY` / `..._ANDROID_KEY` (`purchases.ts:16-19`); without them `billingAvailable` is `false` (`:22`) and the SDK is never configured.
+
+RevenueCat ships its own Apple privacy manifest at `apps/mobile/ios/Pods/RevenueCat/Sources/PrivacyInfo.xcprivacy`, and it declares:
+
+- `NSPrivacyTracking` = **false**
+- one collected data type: **Purchase History**, `Linked` false, `Tracking` false, purpose **App Functionality**
+- one accessed API category: `NSPrivacyAccessedAPICategoryUserDefaults`, reason `CA92.1`
+
+We must declare Purchase History as **linked**, not as RevenueCat's manifest does, because we pass it the account id. The manifest describes the SDK in the general case; our configuration is the more revealing one, and Apple's label is about our app.
 
 ### 2.1 Contact Info
 
@@ -191,22 +227,40 @@ Determined empirically. Sources for each line are named. No third-party analytic
 | **Email Address** | Yes | Yes | No | App Functionality |
 | **Name** | Yes | Yes | No | App Functionality |
 
-Email: `supabase.auth.signUp` / `signInWithPassword` in `apps/mobile/app/sign-in.tsx`; Google sign-in returns it too. Name: only when the user chooses Google; Google's id token carries profile fields and Supabase stores them on the login record. Editify never reads or displays the name, but it is stored in our own Supabase project, so declare it. Mark it as such and do **not** claim it is optional, because it is unavoidable on the Google path.
+Email: `supabase.auth.signUp` / `signInWithPassword` in `apps/mobile/app/sign-in.tsx`; Google sign-in returns it too. Name: only when the user chooses Google; Google's id token carries profile fields and Supabase stores them on the login record. Editify never reads or displays the name, but it is stored in our own Supabase project, so declare it. Unchanged by the subscription work: neither RevenueCat nor PostHog is given an email address anywhere in the code.
 
-VERIFY: confirm in the Supabase dashboard which fields the Google provider actually persists into `auth.users.raw_user_meta_data` for this project (typically `name`, `picture`, `email`). If a picture URL is stored, no extra label item is needed, but the privacy policy should keep mentioning it.
+VERIFY: confirm in the Supabase dashboard which fields the Google provider actually persists into `auth.users.raw_user_meta_data` for this project (typically `name`, `picture`, `email`).
 
 ### 2.2 Identifiers
 
 | Item | Collected | Linked to user | Used for tracking | Purposes |
 |---|---|---|---|---|
 | **User ID** | Yes | Yes | No | App Functionality, Analytics |
-| Device ID | **No** | | | |
+| **Device ID** | **Yes** (changed) | **Yes** | No | Analytics, App Functionality |
 
-User ID is the Supabase `sub` claim, verified server-side in `server/src/auth.ts` and written to `projects.user_id`, `assets.user_id` and `reports.user_id`. It is also attached to diagnostic reports (`server/src/routes/telemetry.ts` passes `request.userId` into `TelemetryService.ingest`), which is why Analytics is listed as a second purpose.
+**User ID.** The Supabase `sub` claim, verified server-side in `server/src/auth.ts` and written to `projects.user_id`, `assets.user_id` and `reports.user_id`. It is also attached to diagnostic reports (`server/src/routes/telemetry.ts`). **It is now additionally sent to RevenueCat** as the RevenueCat app-user-id (`apps/mobile/src/lib/purchases.ts:50`, `:54`), which means a third party holds our account identifier alongside that account's purchase history.
 
-Device ID is genuinely not collected. The telemetry `sessionId` is regenerated from `Date.now()` plus randomness on every app launch (`apps/mobile/src/lib/telemetry.ts`) and never persisted, so it is not a device or user identifier.
+**Device ID: this answer flips from No to Yes.** PostHog generates and persists an anonymous per-install identifier and sends it with every event as `distinct_id` / `$device_id`. Apple's definition of Device ID is broad — "any identifier that relates to the device", not only the IDFA — and a persistent vendor-generated install id is the textbook case for it. Tick it.
 
-### 2.3 User Content
+Linked: **yes, conservatively.** PostHog's own id is anonymous today (no `identify()` call anywhere). But the same person's account id reaches RevenueCat, and RevenueCat and PostHog are commonly joined later by exactly that key. Declaring Device ID as linked costs nothing and survives the day someone adds `posthog.identify(session.user.id)` without re-reading this document. Do not declare it unlinked on the strength of a missing line of code.
+
+The first-party telemetry `sessionId` is still not a device identifier: it is regenerated from `Date.now()` plus randomness on every launch (`apps/mobile/src/lib/telemetry.ts:15`) and never persisted. It is not the reason this row changed; PostHog is.
+
+### 2.3 Purchases
+
+| Item | Collected | Linked to user | Used for tracking | Purposes |
+|---|---|---|---|---|
+| **Purchase History** | **Yes** (new) | **Yes** | No | App Functionality, Analytics |
+
+Three independent reasons, any one of which would be enough:
+
+- RevenueCat's own privacy manifest declares `NSPrivacyCollectedDataTypePurchaseHistory` (`apps/mobile/ios/Pods/RevenueCat/Sources/PrivacyInfo.xcprivacy`).
+- We set the RevenueCat app-user-id to the Supabase account id (`purchases.ts:50`), so RevenueCat's copy of that purchase history is linked to an identified account. This is why our answer is "linked" where RevenueCat's manifest says it is not.
+- Our own server receives it too: a completed purchase fires `track('subscribe', next)` at `apps/mobile/app/paywall.tsx:21`, which lands in the first-party event log that is flushed to `POST /telemetry` with `request.userId` attached.
+
+App Functionality is the primary purpose (entitlements decide what the app unlocks). Analytics is listed as a second purpose because of the third bullet.
+
+### 2.4 User Content
 
 | Item | Collected | Linked to user | Used for tracking | Purposes |
 |---|---|---|---|---|
@@ -215,22 +269,39 @@ Device ID is genuinely not collected. The telemetry `sessionId` is regenerated f
 | **Customer Support** | Yes | Yes | No | App Functionality, Analytics |
 | **Other User Content** | Yes | Yes | No | App Functionality |
 
-- Photos or Videos: full original files, uploaded on import. See section 0. Clips submitted to "learn my style" are additionally uploaded to Google's Gemini API, which is configured and active on the production server (`GEMINI_API_KEY` is set on `editify-dm`). That is third-party processing of user video, so it belongs in the policy (`docs/privacy-policy.md` §2 and §5) even though Apple's label has no separate item for it: the item stays **Photos or Videos, collected, linked, App Functionality**.
-- Audio Data: voiceover recordings from the microphone (`apps/mobile/src/components/editor/VoiceSheet.tsx` uploads the recording through the same `uploadAsset`), plus the audio track inside every imported video, plus speech transcripts derived from it by a local Whisper process on the server (`server/src/services/transcript-service.ts`).
-- Customer Support: the free-text feedback the user types in the report sheet, sent to `POST /telemetry` and, when a GitHub token is configured, filed as an issue (`server/src/services/telemetry-service.ts`).
+- Photos or Videos: full original files, uploaded on import. See section 0. Clips submitted to "learn my style" are additionally uploaded to Google's Gemini API, which is configured and active on the production server. That is third-party processing of user video, so it belongs in the policy (`docs/privacy-policy.md` sections 2 and 5) even though Apple's label has no separate item for it.
+- Audio Data: voiceover recordings from the microphone (`apps/mobile/src/components/editor/VoiceSheet.tsx`), plus the audio track inside every imported video, plus speech transcripts derived from it by a local Whisper process on the server (`server/src/services/transcript-service.ts`).
+- Customer Support: the free-text feedback the user types in the report sheet, sent to `POST /telemetry` and, when a GitHub token is configured, filed as an issue.
 - Other User Content: project titles, caption text, sticker and callout text, clip labels, and the chat messages the user sends to the assistant.
 
-### 2.4 Usage Data
+Neither PostHog nor RevenueCat receives any of this. Nothing in the code passes media, transcripts or chat text to either SDK.
+
+### 2.5 Usage Data
 
 | Item | Collected | Linked to user | Used for tracking | Purposes |
 |---|---|---|---|---|
 | **Product Interaction** | Yes | Yes | No | Analytics, App Functionality |
+| **Other Usage Data** | **Yes** (new) | Yes | No | Analytics |
 
-The event log flushed every 60 seconds. The tracked event types, enumerated from `track(...)` call sites: `app_open`, `project_create`, `project_open`, `project_delete`, `account_delete`, `import`, `edit`, `chat_message`, `render_started`, `render_done`, `render_error`, `feedback_open`, `error`, `console_error`, `api_error`, `api_slow`, `api_offline`. Several carry a detail string (the format chosen, the operation types applied, the endpoint and status code).
+**Product Interaction** now covers two separate pipelines:
 
-Linked: yes, because the report row records `user_id` whenever the request carries a valid session token.
+1. *First-party*, unchanged: the event log flushed every 60 seconds. Event types enumerated from the `track(...)` call sites: `app_open`, `project_create`, `project_open`, `project_delete`, `account_delete`, `import`, `edit`, `chat_message`, `render_started`, `render_done`, `render_error`, `feedback_open`, `subscribe`, `error`, `console_error`, `api_error`, `api_slow`, `api_offline`. Linked, because the report row records `user_id` whenever the request carries a valid session token.
+2. *PostHog*, new: application lifecycle events, enabled explicitly at `apps/mobile/src/lib/posthog.ts:21` (`captureAppLifecycleEvents: true`). That is at minimum "app installed", "app updated", "app opened" and "app backgrounded", each carrying the app version and build.
 
-### 2.5 Diagnostics
+**Other Usage Data** is the conservative catch-all for PostHog's autocapture — see 2.6 — and for the automatic event properties the SDK attaches (app version, OS version, device type, locale, screen dimensions, timezone offset).
+
+### 2.6 Autocapture, and the one thing this pack could not verify
+
+`AppProviders.tsx:18` mounts `<PostHogProvider client={posthog}>` **without an `autocapture` prop**. PostHog's React Native documentation says the provider "enables autocapture", and elsewhere shows `autocapture` being passed explicitly as a boolean or an object with `captureScreens` and `captureTouches`. Autocapture on React Native means screen views and **touch events, including the accessibility label or text of the element touched**.
+
+**Not determined:** whether `posthog-react-native@4.75.0` defaults `autocapture` to on when the prop is omitted. Reading the installed package would settle it in thirty seconds, but every read under `node_modules/` in this worktree is refused by the repo's `.ckignore` guard, and the built bundle in `apps/mobile/dist` predates the PostHog work, so it contains no PostHog code to inspect. This is a fact about the sandbox, not about the app.
+
+Two consequences, and both should be acted on:
+
+- **For the label:** declare as though autocapture is on. That is what "Other Usage Data" in 2.5 is for. If it turns out to be off, the declaration is merely conservative; if it is on and undeclared, that is a rejection.
+- **For the code (required change, owned by the other session):** make it explicit rather than inherited. `autocapture={{ captureTouches: false, captureScreens: true }}` is the honest minimum for an app whose touch targets include project titles and caption text — with touches on, PostHog receives the accessibility label of the control the user pressed, and `apps/mobile/app/paywall.tsx:63` alone builds labels like `subscribe to <product title>`. Whatever is chosen, it should be written down in the prop, not left to the library's default, precisely so that this section can stop saying "not determined".
+
+### 2.7 Diagnostics
 
 | Item | Collected | Linked to user | Used for tracking | Purposes |
 |---|---|---|---|---|
@@ -238,28 +309,54 @@ Linked: yes, because the report row records `user_id` whenever the request carri
 | **Performance Data** | Yes | Yes | No | Analytics |
 | **Other Diagnostic Data** | Yes | Yes | No | Analytics |
 
-- Crash Data: the global error handler captures uncaught errors and unhandled rejections and posts message, stack and React component stack.
-- Performance Data: request timings (`api_slow` fires above 2500ms), session length in seconds.
-- Other Diagnostic Data: platform, app version, window and screen size, pixel ratio, time zone. On the web client only, additionally the user agent, language, network type, CPU cores, device memory, colour scheme and reduced-motion preference. The app deliberately sends the route path without the query string.
+All three are first-party and unchanged by this release. Crash Data: the global error handler posts message, stack and React component stack. Performance Data: request timings (`api_slow` above 2500ms) and session length. Other Diagnostic Data: platform, app version, window and screen size, pixel ratio, time zone; on web additionally user agent, language, network type, CPU cores, device memory, colour scheme and reduced-motion preference, and the route path without the query string.
 
-### 2.6 Not collected
+PostHog is **not** wired to crash reporting — `captureError` in `apps/mobile/src/lib/telemetry.ts:152` does not touch it. If someone later adds PostHog exception capture, nothing in this table changes, but the privacy policy's processor row must then say PostHog receives stack traces.
 
-Do not tick: Location (precise or coarse), Contacts, Health & Fitness, Financial Info, Sensitive Info, Browsing History, Search History, Purchases, Advertising Data, Device ID, Emails or Text Messages, Gameplay Content.
+### 2.8 Still not collected
 
-Note on time zone: Editify sends the device time zone as a diagnostic field. Apple's Location categories mean latitude and longitude, not time zone, so this stays under Other Diagnostic Data. VERIFY only if legal wants a more conservative read.
+Do not tick: Location (precise or coarse), Contacts, Health & Fitness, Financial Info, Payment Info, Sensitive Info, Browsing History, Search History, Advertising Data, Emails or Text Messages, Gameplay Content, Credit Info.
 
-### 2.7 Privacy choices to declare
+**Payment Info specifically stays No.** The app never sees a card. StoreKit takes payment inside Apple's own sheet; RevenueCat receives a receipt, not an instrument. "Purchase History" in 2.3 is the correct item and the only one.
 
-- **Data is not used for tracking.** Answer No everywhere.
-- **Account deletion is offered in-app.** Declare it. It is real: `DELETE /account` in `server/src/routes/account.ts` erases projects, assets, media on disk, render outputs, diagnostic reports and the Supabase login itself.
-- **Privacy Policy URL is mandatory.** See section 3.
+Note on time zone: Apple's Location categories mean latitude and longitude, not time zone, so the device time zone stays under Other Diagnostic Data.
 
-### 2.8 Honest gaps to close before you tick the boxes
+### 2.9 Tracking, and whether ATT is now required
 
-1. There is no in-app disclosure that a session event log is transmitted automatically, and no way to turn it off. Apple does not require a toggle for first-party diagnostics, but the privacy policy must describe it, and it does (`docs/privacy-policy.md` §3.3).
-2. Crash reports and typed feedback are filed into the GitHub issue tracker. **`DavidMendelovits/editify` is private** (confirmed September 2026), so nothing a user types or attaches becomes a public document. No warning is needed on the feedback sheet, and `docs/privacy-policy.md` §5 now names the repository and says in plain words that reports are not published.
-3. The Gemini style analyser uploads whole video files to Google. **`GEMINI_API_KEY` is set on `editify-dm`, so it is live** (confirmed September 2026). The privacy policy row is now written as a statement rather than a conditional, section 2 of the policy says plainly that this is the one path by which footage leaves our own infrastructure, and the App Review notes below say the same.
-4. Media requests carry the session token in the URL query string (`mediaUrl` in `apps/mobile/src/lib/api.ts`), and the export screen hands such a URL to Safari. Disclosed in the policy §10. Worth fixing, not a blocker.
+**Verdict: App Tracking Transparency is not required, and every "Used for tracking" answer stays No.** This was checked against the compiled SDK sources in `apps/mobile/ios/Pods`, not assumed.
+
+Apple's definition of tracking is linking data from this app with data from other companies' apps, websites or offline properties **for targeted advertising or advertising measurement**, or sharing it with a data broker. Neither SDK does that here.
+
+Evidence, in the order it should be re-checked if anything changes:
+
+1. **RevenueCat's privacy manifest declares `NSPrivacyTracking` = false** and marks Purchase History `Tracking` false (`apps/mobile/ios/Pods/RevenueCat/Sources/PrivacyInfo.xcprivacy`). Its only accessed-API declaration is UserDefaults.
+2. **The IDFA is reachable in RevenueCat's code but is never reached.** `AttributionFetcher.identifierForAdvertisers` (`Pods/RevenueCat/Sources/Attribution/AttributionFetcher.swift:46-58`) has exactly two callers: `SubscriberAttributesManager.swift:221-224`, reached only from `Purchases.attribution.collectDeviceIdentifiers()` (`Pods/RevenueCat/Sources/Purchasing/Purchases/Attribution.swift:97-98`), and `AttributionPoster.swift:57-73`, reached only when the app posts attribution data. A grep across `apps/mobile/src` and `apps/mobile/app` finds **no call to either**. `purchases.ts` calls `configure`, `logIn`, `logOut`, `getCustomerInfo`, `getOfferings`, `purchasePackage`, `restorePurchases` and `addCustomerInfoUpdateListener`, and nothing else.
+3. **AdSupport.framework is not linked, so the IDFA would be unavailable even if it were requested.** RevenueCat reaches `ASIdentifierManager` only through `NSClassFromString` on a rot13-mangled name (`Pods/RevenueCat/Sources/Attribution/ASIdManagerProxy.swift:35-48`); with the framework absent the lookup returns nil and the SDK logs `adsupport_not_imported`. Nothing in `app.json` or the Podfile links AdSupport.
+4. **Apple Search Ads / AdServices attribution is off by default and not enabled.** `automaticAdServicesAttributionTokenCollection` is initialised to `false` (`Pods/RevenueCat/Sources/Purchasing/Purchases/Attribution.swift:29`) and is only flipped by `enableAdServicesAttributionTokenCollection()` (`:67-68`), which the app never calls.
+5. **PostHog cannot read the IDFA at all.** It ships no native module in this project — there is no PostHog entry in `apps/mobile/ios/Podfile.lock` — and the JavaScript SDK has no IDFA API. It is a first-party product-analytics tool reporting to a host we configure (`EXPO_PUBLIC_POSTHOG_HOST`), not an ad network, and we do not join its data with anyone else's.
+6. **The app could not show an ATT prompt today even if it wanted to.** There is no `NSUserTrackingUsageDescription` in `apps/mobile/app.json` (`ios.infoPlist` carries only `ITSAppUsesNonExemptEncryption`) and none in the generated `apps/mobile/ios/Editify`. Calling `ATTrackingManager.requestTrackingAuthorization` without that key terminates the app. Do not add the key: an ATT prompt with nothing behind it is itself a rejection under 5.1.2, and it depresses opt-in rates for no gain.
+
+**On the two specific questions asked:**
+
+- *Does PostHog's default autocapture count as tracking?* No. Autocapture governs how much of our own app's usage PostHog records; tracking is about combining that with other companies' data for advertising. Autocapture is a volume-and-sensitivity problem (see 2.6) and a data-minimisation problem, not an ATT trigger.
+- *Does the RevenueCat app-user-id count as tracking?* No. It is our own Supabase account id, used to make an entitlement follow an Editify account instead of a device (`purchases.ts:47-59`). It is not an advertising identifier, it is not shared with a data broker, and it is not joined to any other company's data. It **does** make Purchase History and User ID "linked to the user" in 2.2 and 2.3, which is a different question from tracking and is answered Yes there.
+
+**Re-open this verdict if any of these happen:** an ad-network or attribution SDK (AppsFlyer, Adjust, Branch, Meta, TikTok) is added; someone calls `collectDeviceIdentifiers()` or `enableAdServicesAttributionTokenCollection()` to make Apple Search Ads attribution work; or PostHog data is exported into an advertising platform for audience building. Any one of those makes ATT mandatory and flips the tracking answers.
+
+### 2.10 Privacy choices to declare
+
+- **Data is not used for tracking.** Answer No on every item. See 2.9.
+- **Account deletion is offered in-app.** Declare it. `DELETE /account` in `server/src/routes/account.ts` erases projects, assets, media on disk, render outputs, diagnostic reports and the Supabase login. Note that it does **not** cancel an App Store subscription — nothing can, except the user in their own account settings — so the deletion copy should not imply otherwise.
+- **Privacy Policy URL is mandatory**, and with subscriptions in the binary a **Terms of Use (EULA) URL is effectively mandatory too**. See sections 3 and 7.
+
+### 2.11 Honest gaps to close before you tick the boxes
+
+1. There is no in-app disclosure that a session event log is transmitted automatically, and no way to turn it off. Apple does not require a toggle for first-party diagnostics, but the privacy policy must describe it, and it does (`docs/privacy-policy.md` section 3.3).
+2. **There is no in-app disclosure of PostHog at all**, and no opt-out. The policy now names it (`docs/privacy-policy.md` sections 3.3 and 5). An in-app analytics toggle is not required by Apple but would be the cheapest answer to an EU complaint.
+3. Crash reports and typed feedback are filed into the GitHub issue tracker. `DavidMendelovits/editify` is private, so nothing a user types becomes a public document.
+4. The Gemini style analyser uploads whole video files to Google. `GEMINI_API_KEY` is set on `editify-dm`, so it is live.
+5. Media requests carry the session token in the URL query string (`mediaUrl` in `apps/mobile/src/lib/api.ts`). Disclosed in the policy section 10. Worth fixing, not a blocker.
+6. **VERIFY: which PostHog region hosts the data.** `EXPO_PUBLIC_POSTHOG_HOST` is a free-form URL and `apps/mobile/.env.example` only carries the placeholder `https://your-posthog-host`. The privacy policy has to name a controller and a transfer basis, and "PostHog Cloud EU" and "PostHog Cloud US" are different answers. Fill this in before publishing the policy.
 
 ---
 
@@ -397,10 +494,16 @@ PERMISSIONS
   requested at the moment the user presses record.
 - No camera use. No location. No contacts.
 
-NO TRACKING, NO PURCHASES, NO ADS
-There is no advertising SDK, no analytics SDK and no third-party
-crash-reporting SDK in the app. No IDFA is read and no ATT prompt is shown.
-There are no in-app purchases or subscriptions.
+ANALYTICS, TRACKING AND PURCHASES
+The app contains two third-party SDKs: PostHog, for first-party product
+analytics reported to our own PostHog instance, and RevenueCat, which wraps
+StoreKit for the subscriptions described below. There is no advertising SDK
+and no third-party crash-reporting SDK. No advertising identifier is read by
+anything in the app, no ATT prompt is shown, and no data is shared with any
+other company for advertising or advertising measurement.
+
+There ARE in-app purchases: two auto-renewing monthly subscriptions. See the
+SUBSCRIPTIONS section below.
 
 AI FEATURES
 The chat assistant is powered by a large language model API called from our
@@ -438,6 +541,7 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 
 | # | Item | Who |
 |---|---|---|
+| 0 | **Complete the Paid Applications Agreement for Maja Ventures SL** (Account Holder accepts it; banking details; US and EU tax forms; Apple verifies). Nothing with an in-app purchase can be released until this is active, and Apple's verification is days to weeks. **Start this before every other item on this list.** Section 8.1 | David |
 | 1 | Fill in the registered address and privacy contact email in `docs/privacy-policy.md` and `docs/terms-of-service.md` (marked VERIFY) | David |
 | 2 | Create the public `editify-legal` repo, publish privacy / terms / support pages, confirm all three URLs load | David, then automatable |
 | 3 | Create and pre-seed the demo account; put the credentials in the App Review notes | David |
@@ -448,7 +552,14 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 8 | Upload a 1024x1024 App Store icon with no alpha channel and no rounded corners | David |
 | 8a | Answer the age rating questionnaire in the live form (section 1.9). Untouched today | David |
 | 8b | Set Support URL and Privacy Policy URL on the listing once item 2 produces them. Both still `null` | Automatable, after item 2 |
-| 9 | Run a production EAS build and submit it to App Store Connect | David (build commands are out of scope for this repo's agents) |
+| 8c | **Answer `contentRightsDeclaration` on the app record. It is still `null`** and App Store Connect will not accept a submission without it. The question is whether the app contains, shows or accesses third-party content. Editify ships no third-party content of its own; users import their own footage and nothing is published or shared. The expected answer is that it does **not** use third-party content, but read the live question before answering: it was rewritten in 2025 and now also asks about rights to content the app generates | David |
+| 8d | **Create the subscription group and both products** (`editify.pro.monthly`, `editify.studio.monthly`), with localised display names and descriptions, prices, the 7-day introductory offer, and a review screenshot for each. Section 8.3 | David |
+| 8e | **Attach both products to the 1.0.0 version submission.** IAP products are reviewed alongside the first build that includes them; a product that is created but not attached does not exist for the reviewer, who then sees an empty paywall. Section 8.4 | David |
+| 8f | **Fix the guideline 3.1.2 gaps in the binary** before building: privacy policy and terms links on the paywall, a real gated feature, and a truthful free-trial claim. Section 7.1 items 1, 3 and 4 are rejection-grade | Owner of `apps/mobile/app/paywall.tsx` |
+| 8g | **Set up RevenueCat**: entitlements `pro` and `studio`, one current offering with both packages, the App Store Connect in-app purchase key uploaded, and the iOS SDK key in the build's environment. Without `EXPO_PUBLIC_REVENUECAT_IOS_KEY` the paywall is inert (`purchases.ts:22`) and a reviewer sees "Subscriptions are only available in the Editify app" | David |
+| 8h | Create a Sandbox Apple ID and test purchase, restore and upgrade end to end. Section 8.5 | David |
+| 8i | **Answer the App Privacy questionnaire including the new rows**: Purchase History (yes, linked) and Device ID (yes, linked). Section 2 | David |
+| 9 | Run a production EAS build and submit it to App Store Connect. **TestFlight builds 1 and 2 cannot be used: they predate the RevenueCat native module, and `react-native-purchases` is native code that no OTA update can deliver.** A fresh build is mandatory | David (build commands are out of scope for this repo's agents) |
 
 ### Should fix before review
 
@@ -458,7 +569,9 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 11 | ~~Fix the stale line on the export screen~~ **Done.** The note is now conditional on the API being localhost; a hosted build says rendering runs on the Editify servers (`apps/mobile/app/project/[id]/export.tsx`) | Done |
 | 12 | ~~Decide whether the agent provider picker should show `claude-cli` and `codex-cli`~~ **Done.** The picker now drops a CLI option when the server's own probe reports it unavailable (`GET /agent/provider`), so a reviewer sees only the providers the deployed server can actually run | Done |
 | 13 | ~~Decide whether the "or from the server media folder" section should ship~~ **Done.** The section, and the `GET /assets/importable` call behind it, are now skipped unless the API base URL is localhost | Done |
-| 14 | Add privacy policy and terms links to the sign-in screen. Not strictly required, but it is the cheapest possible answer to a 5.1.1 rejection | Automatable |
+| 14 | Add privacy policy and terms links to the sign-in screen. **Now upgraded from "nice" to necessary**: the same links are mandatory on the paywall under 3.1.2 (section 7, items 5 and 6), so the URLs have to exist regardless, and putting them on both screens costs nothing | Owner of the mobile app screens |
+| 14a | Pin down which PostHog region hosts the data (`EXPO_PUBLIC_POSTHOG_HOST`). The privacy policy has to name the processor and its transfer basis, and PostHog Cloud EU and PostHog Cloud US are different answers. Section 2.11 item 6 | David |
+| 14b | Set `autocapture` explicitly on `PostHogProvider` rather than relying on the library default, and turn touch capture off unless it is wanted. Section 2.6 | Owner of `apps/mobile/src/providers/AppProviders.tsx` |
 | 15 | Confirm the Google sign-in flow works in a release (non-dev-client) build. `sign-in.tsx` gates the Google button on not being in Expo Go, which is right, but the release path has not been exercised in this repo's history | David |
 
 ### Nice to have
@@ -471,7 +584,152 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 
 ---
 
-## 7. Verifying the character counts
+## 7. Guideline 3.1.2 audit of the paywall
+
+Guideline 3.1.2 governs auto-renewing subscriptions and is the single most common cause of a rejection for an app that adds one. Everything it asks for must be visible **in the binary, on the screen where the purchase happens** — a link out to a web page does not satisfy the disclosure requirements, only the two legal links.
+
+The paywall is `apps/mobile/app/paywall.tsx`, reached from the home-screen header button at `apps/mobile/app/index.tsx:83` (it reads `upgrade` on the free tier and the tier name otherwise).
+
+**These are required changes, not changes made by this pack.** `apps/mobile/app/paywall.tsx` and `apps/mobile/src/lib/purchases.ts` are owned by another session and were read only.
+
+| # | 3.1.2 requirement | Status | Evidence / what is missing |
+|---|---|---|---|
+| 1 | Subscription **title** visible at point of purchase | **Pass** | `paywall.tsx:58` renders `pkg.product.title` straight from the store. Depends on the App Store Connect localisation display name being filled in — see 8.3. |
+| 2 | Subscription **duration** visible | **Pass** | `priceLabel` in `purchases.ts:99-106` builds `"<price>/<period>"`, with the period derived from the store's ISO-8601 `subscriptionPeriod` (`periodName`, `:109-114`). Rendered at `paywall.tsx:59`. |
+| 3 | **Price per period** visible | **Pass** | Same string. The price is never hardcoded; it is `product.priceString`, so it is correct in every storefront currency. |
+| 4 | **Content or services the subscription provides** stated at point of purchase | **FAIL — the most likely rejection** | Two separate problems. (a) The only per-plan description is `pkg.product.description`, and it is rendered conditionally: `{!!pkg.product.description && ...}` at `paywall.tsx:60`. If a store localisation ships without a description, the binary offers a paid plan with no statement of what it buys. (b) More seriously, **nothing in the app is gated** — `docs/subscriptions.md` says so in as many words ("Nothing is gated yet"), and the only consumers of `useTier()` are the paywall itself and the home-screen button label (`index.tsx:34`, `:83`). A reviewer who subscribes and sees no change will reject under 3.1.2 and probably 2.1. |
+| 5 | Functional **privacy policy** link in the app | **FAIL** | A grep for `privacy`, `terms`, `eula` and `openURL` across `paywall.tsx`, `sign-in.tsx` and `index.tsx` returns nothing. There is no link to a privacy policy anywhere in the app. |
+| 6 | Functional **terms of use (EULA)** link in the app | **FAIL** | Same grep, same result. Apple requires both links on the purchase screen. |
+| 7 | Both links also present in **App Store Connect metadata** | **FAIL** | `privacyPolicyUrl` on the app info localisation and the EULA field are both `null` (section 1.7). With an auto-renewing subscription in the binary, the EULA field stops being the optional convenience described in section 3: either supply `docs/terms-of-service.md` at a public URL or accept Apple's standard EULA, but the privacy policy URL is non-negotiable and neither page is hosted yet. |
+| 8 | **Restore purchases** mechanism | **Pass** | `restore()` at `purchases.ts:87-91` calls `Purchases.restorePurchases()`; wired to a visible button at `paywall.tsx:76-78`, with an honest "No subscription found on this account." result at `:28`. It is disabled when `!billingAvailable`, which on a real device is never. |
+| 9 | **No non-Apple payment path** for digital content | **Pass** | The only purchase call in the codebase is `Purchases.purchasePackage` (`purchases.ts:81`), which goes through StoreKit via the native RevenueCat 5.90.1 pod. There is no external checkout, no Stripe, no "subscribe on our website" copy, and no outbound link of any kind on the paywall. The web build explicitly throws rather than offering an alternative (`purchases.web.ts:23-25`). |
+| 10 | **Auto-renew terms** disclosed | **Pass, with one caveat** | `paywall.tsx:79-82` states that the trial converts unless cancelled at least 24 hours before it ends and that payment is charged to the store account and renews until cancelled there. That is the substance Apple asks for. Caveat: it sits below the restore button at the bottom of a scrolling screen. Apple wants it legible at the point of purchase; consider moving it above the plan cards or repeating it in each card. |
+| 11 | Claims in the binary must be true | **FAIL** | `paywall.tsx:43` hardcodes "Every plan starts with a 7-day free trial." Nothing verifies that. The trial is an App Store Connect introductory offer (section 8.3), it applies only to users who have never subscribed in the group, and a returning subscriber will read a promise the store will not honour. `priceLabel` already computes the truthful string per package (`purchases.ts:99-106`, which renders "7 days free, then EUR 12.00/month" only when an intro offer actually exists); the hero should be derived from the packages or dropped. |
+
+### 7.1 The required app changes, shortest form
+
+For whoever owns `apps/mobile/app/paywall.tsx`:
+
+1. Add a **privacy policy link** and a **terms of use (EULA) link** to the paywall, both opening real URLs. Put them in the footer next to the auto-renew paragraph. Adding them to `sign-in.tsx` as well closes the separate 5.1.1 exposure noted in the old checklist item 14.
+2. Make each plan card state **what the plan gives you**, from the app's own copy rather than only from `pkg.product.description`, so an empty store localisation cannot produce a paid plan with no description.
+3. Decide and ship **at least one real entitlement difference**, or do not ship subscriptions in 1.0.0. A subscription that unlocks nothing cannot survive review.
+4. Derive the **free-trial claim** at `paywall.tsx:43` from the packages instead of hardcoding it, or remove it and let `priceLabel` carry it per plan.
+5. Move the **auto-renew disclosure** above the purchase buttons, or repeat it inside each card.
+6. Optional but cheap: the purchase button reads "start free trial" for every package (`paywall.tsx:66`), which is the same untrue-for-returning-subscribers claim as item 4. "subscribe" is safe.
+
+Items 1, 3 and 4 are rejection-grade. Items 2, 5 and 6 are the difference between one review round and two.
+
+---
+
+## 8. What subscriptions add to the App Store Connect workflow
+
+None of this existed in the pack before, because the pack assumed a free app. Everything here is new work, and the first item gates all of the others.
+
+### 8.1 The Paid Applications Agreement — the long pole
+
+**Nothing with an in-app purchase can be released until Maja Ventures SL completes the Paid Applications Agreement in App Store Connect, and that is the longest-lead item in this entire submission.** It is not a checkbox. Completing it means:
+
+- An Account Holder (not an Admin, not a developer) accepting the agreement in **Business > Agreements**.
+- **Banking details**: a bank account in the company's name, with the country, currency, IBAN/SWIFT and the account holder's legal name matching the Apple Developer entity exactly. A mismatch between "Maja Ventures SL" on the bank account and the developer account name is the usual cause of a multi-week stall.
+- **Tax forms**: at minimum the US tax form (W-8BEN-E for a Spanish company), plus Spanish/EU VAT details. Apple's tax questionnaire asks about US business activity and treaty benefits; answering it wrongly is easy to do and slow to correct.
+- Apple then verifies the banking information, which takes **days, sometimes weeks**, entirely outside our control.
+
+Practical consequences:
+
+- Start this **first**, before screenshots, before the age-rating form, before anything in section 6. It is the only item whose duration is set by a third party.
+- Until the agreement is active, subscription products cannot leave the **Missing Metadata** / **Waiting for Review** limbo, and the app cannot be released even if everything else is perfect.
+- If the agreement is going to take longer than the rest of the submission, the honest options are to wait, or to cut the paywall from 1.0.0 and ship subscriptions in 1.1. Cutting is a code change, not a metadata change: `billingAvailable` is false without the RevenueCat keys (`purchases.ts:22`), but the paywall route and the home-screen `upgrade` button would still need removing, or a reviewer will find a dead end.
+
+VERIFY: who is the Account Holder on Apple Developer Team `F9R8TK7W79`, and has the Paid Applications Agreement ever been accepted? Read it in Business > Agreements before assuming either way.
+
+### 8.2 Create the subscription group
+
+Subscriptions live in a group, and the group is what governs upgrade, downgrade and crossgrade behaviour and free-trial eligibility. Editify has two plans that are alternatives to each other, so **both go in one group**.
+
+- Group name (internal) and **Group Display Name** (user-visible, shown in the user's App Store subscription management): `Editify`.
+- Both products in the same group means a Pro subscriber moving to Studio is an **upgrade**, handled by Apple as a prorated switch, and it means the 7-day free trial is available **once per group per Apple ID**, not once per product. That second point is exactly why the hardcoded trial claim in 7/item 11 is wrong.
+- Set the **rank** within the group: Studio above Pro, so Apple treats Studio as the upgrade.
+
+### 8.3 Create the two products
+
+Per `docs/subscriptions.md`:
+
+| Plan | Product ID | Duration | Base price (EUR) | RevenueCat entitlement |
+|---|---|---|---|---|
+| Pro | `editify.pro.monthly` | 1 month | 12.00 | `pro` |
+| Studio | `editify.studio.monthly` | 1 month | 29.99 | `studio` |
+
+For each product, all of the following are required before it can be submitted:
+
+- **Reference name** (internal) and **Subscription Duration** (1 month).
+- **Price**: set EUR as the base and review the generated table, especially the US row — Apple converts from the VAT-exclusive amount, so the suggestion is not a 1:1 of the euro figure.
+- **Localised Display Name and Description** for en-US. These are not decoration: `paywall.tsx:58` and `:60` render them verbatim, so this is where requirement 4 of the 3.1.2 audit is half-satisfied. Write the description as a plain statement of what the plan unlocks.
+- **Introductory Offer**: type *Free*, duration *1 week*, all territories, no end date. This is the 7-day trial; it does not exist until it is created here.
+- **Review screenshot** (required per product): a screenshot of the paywall as the reviewer will see it. This is separate from the app's own screenshots in section 4.
+- **Review notes** per product, if the plan needs explaining.
+
+### 8.4 IAP products are reviewed with the first submission that contains them
+
+A subscription product is not approved on its own schedule. **The first time you submit a build that includes in-app purchases, the products are reviewed alongside the binary**, and both must be attached to the same version submission. Two consequences:
+
+- In the version's **In-App Purchases and Subscriptions** section, explicitly **add both products to the 1.0.0 submission**. Creating them is not the same as submitting them, and a product left unattached simply will not exist for the reviewer — who then sees an empty paywall (`paywall.tsx:52` renders "No plans are available on this account yet.") and rejects the build.
+- A rejection of either product is a rejection of the release. The most common product-level rejection is a display name or description that does not match what the app actually delivers, which loops straight back to 7/item 4.
+
+After 1.0.0, product changes are reviewed independently of the binary. Only the first one is coupled.
+
+### 8.5 Sandbox tester accounts
+
+App Review tests purchases in the sandbox, against Apple's own sandbox infrastructure, and never with a real card. Two things to prepare:
+
+- **For our own testing:** create Sandbox Apple IDs in **Users and Access > Sandbox > Testers**, then sign in to them on the device under **Settings > App Store > Sandbox Account**. Do not sign the device's main Apple ID into a sandbox account. `docs/subscriptions.md` already documents the accelerated clock: a 7-day trial renews every 3 minutes in sandbox and the subscription self-cancels after 6 renewals, so a sandbox subscription is gone within about 20 minutes.
+- **For the reviewer:** the reviewer uses their own sandbox account and does **not** need credentials from us for the purchase itself. What they do need is the Editify demo account (section 5) to reach the paywall at all, because the app requires sign-in. Say so in the review notes.
+
+Test at minimum, before submitting: purchase Pro, confirm the entitlement arrives; restore on a second install; purchase Studio from a Pro subscription and confirm the upgrade path; and confirm the app behaves when `getOfferings` returns nothing.
+
+### 8.6 Review-notes text for the paywall
+
+Append this to the App Review Information notes in section 5.
+
+```text
+SUBSCRIPTIONS (guideline 3.1.2)
+
+Editify offers two auto-renewing monthly subscriptions, Pro and Studio, sold
+through StoreKit. There is no other way to pay for them and no external
+purchase path anywhere in the app.
+
+HOW TO REACH THE PAYWALL
+1. Sign in with the demo account above.
+2. On the home screen, the button in the header reads "upgrade". Tap it.
+3. The paywall lists every plan returned by the store, each with its title,
+   its price per month in your storefront's currency, and the free-trial terms.
+   Prices are never hardcoded in the app; they come from App Store Connect.
+
+HOW TO TEST A PURCHASE
+Use your sandbox Apple ID (Settings > App Store > Sandbox Account). Tap the
+button on either plan and complete the StoreKit sheet. The app closes the
+paywall and the header button changes from "upgrade" to the name of the plan.
+
+RESTORE
+"restore purchases" is at the bottom of the same screen. On an account with no
+purchase it reports "No subscription found on this account."
+
+AUTO-RENEW TERMS
+The trial length, the price per period, and the auto-renewal and cancellation
+terms are all shown on the paywall before the purchase, along with links to our
+privacy policy and terms of use.
+
+SUBSCRIPTIONS AND ACCOUNT DELETION
+Entitlements follow the Editify account rather than the device, so a purchase
+restores on a new phone after signing in. "Delete account" erases the Editify
+account and its data; it does not cancel an App Store subscription, which the
+user cancels in their own Apple account settings, as the app states.
+```
+
+VERIFY before pasting: the "along with links to our privacy policy and terms of use" sentence is **not true yet** (7/items 5 and 6). Either the links ship in the binary or that sentence comes out — do not tell a reviewer something they can disprove in one tap.
+
+---
+
+## 9. Verifying the character counts
 
 Counts in section 1 were measured, not estimated. To re-measure after any edit:
 

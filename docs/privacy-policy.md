@@ -51,9 +51,40 @@ The app keeps a rolling log of what you did in the current session (for example:
 
 If the app crashes, or if you press "send feedback" and write a message, we also receive the error message, the JavaScript stack, the React component stack, whatever you typed, and a short description of the screen you were on (for example which project was open and how many clips it had). On the web client you may additionally choose to attach a screenshot; the app replaces frames, thumbnails, captions, chat turns and file names in that image with placeholders before it is sent. The iOS and Android apps do not capture screenshots at all.
 
-### 3.4 What we do not collect
+### 3.4 Product analytics
 
-We do not collect your precise or coarse location, contacts, health data, financial data, browsing or search history, or advertising identifiers. Editify contains no advertising SDK, no third-party analytics SDK and no third-party crash-reporting SDK. We do not track you across other companies' apps or websites, and we do not sell or share your data for advertising.
+Editify uses **PostHog**, a product-analytics service, to understand how the app is used. The PostHog software runs inside the app and reports to a PostHog instance we operate or subscribe to.
+
+What it receives:
+
+- An **anonymous installation identifier** that PostHog generates on your device the first time you open the app and keeps until you delete the app. It is not your Apple advertising identifier, and we do not read that identifier anywhere.
+- **Application lifecycle events**: when the app is installed, updated, opened and put into the background, with the app version and build number.
+- **Automatic technical properties** attached to those events, such as the app version, operating system version, device type, language and screen dimensions.
+- **Screen views and taps within the app**, where automatic capture is enabled. Where taps are captured, PostHog receives the label of the control that was pressed, not the contents of your projects.
+
+PostHog never receives your video, audio, transcripts, captions, chat messages, project titles or rendered exports. Nothing in the app sends PostHog your email address or your name.
+
+VERIFY: name the PostHog entity and the hosting region in use (PostHog Cloud EU, PostHog Cloud US, or a self-hosted instance) before publishing this policy, and update the processor table in section 5 to match.
+
+### 3.5 Subscription data
+
+If you buy an Editify subscription, the purchase is made through Apple's App Store or Google Play. **We never see your card, and no payment details are entered in the Editify app**; the payment sheet belongs to the store, and the store charges you.
+
+We use **RevenueCat** to record which subscription you hold and to keep it working across your devices. What RevenueCat receives:
+
+- Your **purchase history for Editify**: which plan was bought, when it started, whether a free trial was used, whether it renewed, expired or was refunded, and the store receipt behind it.
+- Your **Editify account identifier**, which we deliberately hand to RevenueCat so that a subscription follows your account rather than the phone you bought it on. This is why signing in on a new device restores your plan.
+- Technical details of the device and the store transaction.
+
+RevenueCat does not receive your email address, your name, your card, or any of your content. We also record the fact that a subscription started in our own diagnostic log (section 3.3), against your account identifier.
+
+Cancelling is done in your App Store or Google Play account settings. Deleting your Editify account (section 7) erases your Editify data but **does not cancel a store subscription** — only you can do that, in the store.
+
+### 3.6 What we do not collect
+
+We do not collect your precise or coarse location, contacts, health data, browsing or search history, or advertising identifiers. We never see or store your payment card details. Editify contains no advertising SDK and no third-party crash-reporting SDK.
+
+**We do not track you across other companies' apps or websites**, and we do not sell or share your data for advertising. Neither the analytics software nor the subscription software in the app reads your device's advertising identifier, and the app never asks for permission to track you, because it does not.
 
 ## 4. Why we use it
 
@@ -62,6 +93,8 @@ We do not collect your precise or coarse location, contacts, health data, financ
 | Email, password hash, account id, Google profile fields | Create and secure your account, keep your work separate from other users' | Performance of a contract |
 | Imported media, transcripts, project documents, chat, renders | Provide the editor: playback, editing, transcription, captioning, rendering | Performance of a contract |
 | Session event log, crash reports, feedback | Find and fix defects, understand which features are used | Legitimate interests in maintaining and improving the app |
+| Product-analytics events and the anonymous installation identifier | Understand which parts of the app are used, and how often, so we can improve them | Legitimate interests in maintaining and improving the app |
+| Subscription status, purchase history, account identifier held by our billing provider | Sell subscriptions, unlock paid features for the right account, handle renewals, restores and refunds | Performance of a contract |
 
 We do not use your data for advertising, profiling or automated decisions with legal effects.
 
@@ -76,25 +109,32 @@ These are the only third parties that receive your data, and they receive it bec
 | **Google** (Google LLC, USA) | Your Google account identity, if and only if you choose "continue with Google" | Sign-in |
 | **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. This is the provider configured on our production server; an OpenAI key can be configured instead, in which case the same text goes to **OpenAI** (OpenAI, L.L.C., USA) rather than to Anthropic. | Running the editing assistant |
 | **Google (Gemini API)** (Google LLC, USA) | The **full video file** of each clip you submit to "learn my style". This analyzer is configured and active on our production server. The upload is deleted from Google's Files API at the end of the run. The app's style screen tells you which analyzer is active and whether it uploads footage. | Analysing your reference videos |
+| **PostHog** | The anonymous installation identifier, application lifecycle events, screen views and taps, and the technical properties listed in section 3.4. No content, no email address, no name. VERIFY: the PostHog entity and hosting region in use, and its address | Product analytics: understanding how the app is used |
+| **RevenueCat** (RevenueCat, Inc., USA) | Your Editify account identifier, your Editify purchase history and store receipts, and technical details of the device and transaction. No card details, no email address, no content | Managing subscriptions and entitlements across your devices |
+| **Apple** (Apple Inc., USA) and **Google** (Google LLC, USA), as the app stores | Your payment and billing relationship for any subscription you buy, under their own privacy policies. We receive a subscription status from them, never a payment instrument | Taking payment for subscriptions |
 | **GitHub** (GitHub, Inc., USA) | Crash reports and feedback you send: the error text, the stack, the app-state summary, your session event log and anything you typed. On the web client, an attached screenshot is committed to a repository. | Filing bug reports into our issue tracker |
 
 Our issue tracker is the **private** repository `DavidMendelovits/editify`. Reports filed there are readable by the people who maintain Editify and by GitHub as our processor. Nothing you send in a crash report or a feedback message is published publicly.
 
 Confirmed on the production server (Fly app `editify-dm`, September 2026): the Anthropic key, the Gemini key and the GitHub token are all set, so the editing assistant runs on Anthropic's model, the Gemini analyzer is the one that watches your reference videos, and reports are filed into the private repository named above. No OpenAI key is set.
 
-All of these providers are in the United States. Transfers out of the EEA and the UK rely on the providers' Standard Contractual Clauses.
+Apart from PostHog, whose region is being confirmed, all of these providers are in the United States. Transfers out of the EEA and the UK rely on the providers' Standard Contractual Clauses.
 
 ## 6. How long we keep it
 
 - Account data, media, transcripts, projects, chat history and renders: until you delete them, or until you delete your account.
 - Deleting a project deletes its timeline, operation log, chat history and renders.
 - Diagnostic and feedback reports: retained indefinitely while the underlying defect is open. Reports linked to your account are deleted when you delete your account; anonymous reports and any issue already filed in the tracker are not.
+- Product-analytics events: retained according to our PostHog project's retention settings. They are tied to an anonymous installation identifier, not to your account.
+- Subscription records held by our billing provider: retained for as long as we need them to service the subscription and to meet accounting and tax obligations, which outlast the account itself.
 
 ## 7. Deleting your account
 
 "Delete account" on the Editify home screen erases, in one step: every project you own and everything attached to it, every clip you imported along with its files on disk, every render output, every diagnostic report stored against your account, and your login itself. It cannot be undone.
 
 If an issue was already filed in our tracker from one of your reports, the text of that issue is not removed automatically. Write to the privacy contact in section 1 and we will remove it.
+
+**Deleting your Editify account does not cancel a subscription you bought in the App Store or Google Play.** Only you can cancel it, in your store account settings, and you should do that first. Deleting the account also does not erase the billing records our payment providers must keep for accounting and tax purposes.
 
 ## 8. Your rights
 

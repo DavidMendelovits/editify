@@ -42,7 +42,15 @@ Editify is provided as is. We do not promise that the service will be uninterrup
 
 ## 7. Price
 
-Editify is free at the time of writing. There are no in-app purchases and no subscriptions. If that changes, we will say so before charging you.
+Editify has a free tier and two paid auto-renewing subscriptions, Pro and Studio, sold as in-app purchases.
+
+- **Where you pay.** Subscriptions are bought and billed through Apple's App Store or Google Play, under that store's own terms. We never see or store your payment card.
+- **Price and duration.** The price, the billing period and the length of any free trial are shown in the app before you buy, in your own currency. They come from the store, not from us, so the app always shows what you will actually be charged.
+- **Free trial.** Where a free trial is offered, it is available once per subscription group per store account. If you have subscribed before, you may not be eligible. If you do not cancel at least 24 hours before the trial ends, it converts to a paid subscription.
+- **Auto-renewal.** Subscriptions renew automatically at the end of each period until you cancel. Payment is charged to your store account at confirmation of purchase and at each renewal.
+- **Cancelling.** Cancel in your App Store or Google Play account settings at any time. Cancellation takes effect at the end of the current period; you keep access until then. **Deleting your Editify account does not cancel your subscription.**
+- **Refunds.** Refunds are handled by Apple or Google under their policies, not by us. We cannot issue a refund for a purchase made in a store.
+- **Changes.** We may change subscription prices or what each plan includes. Changes apply from your next renewal, and the store will tell you before any increased price is charged.
 
 ## 8. Liability
 
