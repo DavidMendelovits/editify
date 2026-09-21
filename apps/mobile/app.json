@@ -54,7 +54,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Editify adds clips from your photo library to the timeline."
+          "photosPermission": "Editify adds clips from your photo library to the timeline.",
+          "cameraPermission": false
         }
       ],
       [
