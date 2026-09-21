@@ -14,7 +14,7 @@ Build facts this pack assumes (from `apps/mobile/app.json`, `apps/mobile/eas.jso
 - OTA JavaScript updates via `expo-updates` against `https://u.expo.dev/901bf170-...`
 - **In-app purchases: yes.** Two auto-renewing monthly subscriptions via RevenueCat/StoreKit (`react-native-purchases` 10.10.1 -> native `RevenueCat` 5.90.1). See sections 7 and 8.
 - **Third-party analytics: yes.** PostHog (`posthog-react-native` 4.75.0, JavaScript only). See section 2.
-- `contentRightsDeclaration` on the app record is still `null` and must be answered before submission (section 6).
+- `contentRightsDeclaration` on the app record is `null` — confirmed against the App Store Connect API for app `6814607865` — and must be answered before submission (section 6).
 
 ---
 
@@ -30,7 +30,7 @@ The second thing: the app sends a session event log to the server automatically 
 2. **The paywall does not yet satisfy guideline 3.1.2.** There is no privacy policy link and no terms-of-use link anywhere in the app, and no feature is actually gated behind a subscription, so a reviewer who pays gets nothing. Section 7 lists every gap with a file and line.
 3. **The App Privacy answers in section 2 were written for an app with no analytics SDK and no purchases.** They have been rewritten. Purchase History and Device ID both flip from No to Yes.
 
-A fourth, smaller: **TestFlight builds 1 and 2 predate the RevenueCat native module**, so neither can be the submitted build. `react-native-purchases` is native code and no OTA update will add it. A fresh production build is required.
+A fourth, smaller: **TestFlight builds 1 and 2 predate both integrations**, so neither can be the submitted build. This was verified, not inferred: `strings` over build 2's downloaded IPA finds **zero** occurrences of `RevenueCat` or `RCPurchases` in the app binary, and zero occurrences of `posthog` in `main.jsbundle`. `react-native-purchases` is native code that no OTA update can deliver, so a fresh production build is required.
 
 ---
 
@@ -288,18 +288,32 @@ Neither PostHog nor RevenueCat receives any of this. Nothing in the code passes 
 1. *First-party*, unchanged: the event log flushed every 60 seconds. Event types enumerated from the `track(...)` call sites: `app_open`, `project_create`, `project_open`, `project_delete`, `account_delete`, `import`, `edit`, `chat_message`, `render_started`, `render_done`, `render_error`, `feedback_open`, `subscribe`, `error`, `console_error`, `api_error`, `api_slow`, `api_offline`. Linked, because the report row records `user_id` whenever the request carries a valid session token.
 2. *PostHog*, new: application lifecycle events, enabled explicitly at `apps/mobile/src/lib/posthog.ts:21` (`captureAppLifecycleEvents: true`). That is at minimum "app installed", "app updated", "app opened" and "app backgrounded", each carrying the app version and build.
 
-**Other Usage Data** is the conservative catch-all for PostHog's autocapture — see 2.6 — and for the automatic event properties the SDK attaches (app version, OS version, device type, locale, screen dimensions, timezone offset).
+**Other Usage Data** covers PostHog's **screen views**, which are autocaptured by default — see 2.6, where the default is established from the library's own bundle — and the automatic event properties the SDK attaches (app version, OS version, device type, locale, screen dimensions, timezone offset). Touch events are *not* autocaptured by default and are not declared on that basis.
 
-### 2.6 Autocapture, and the one thing this pack could not verify
+### 2.6 Autocapture: screens yes, touches no
 
-`AppProviders.tsx:18` mounts `<PostHogProvider client={posthog}>` **without an `autocapture` prop**. PostHog's React Native documentation says the provider "enables autocapture", and elsewhere shows `autocapture` being passed explicitly as a boolean or an object with `captureScreens` and `captureTouches`. Autocapture on React Native means screen views and **touch events, including the accessibility label or text of the element touched**.
+`AppProviders.tsx:18` mounts `<PostHogProvider client={posthog}>` **without an `autocapture` prop**. Autocapture on React Native covers two different things — screen views, and touch events carrying the accessibility label or text of the element touched — and the omitted prop resolves them differently.
 
-**Not determined:** whether `posthog-react-native@4.75.0` defaults `autocapture` to on when the prop is omitted. Reading the installed package would settle it in thirty seconds, but every read under `node_modules/` in this worktree is refused by the repo's `.ckignore` guard, and the built bundle in `apps/mobile/dist` predates the PostHog work, so it contains no PostHog code to inspect. This is a fact about the sandbox, not about the app.
+**Settled, from the published `posthog-react-native@4.75.0` bundle** (`dist/PostHogProvider.js`, read from the registry rather than from `node_modules/`, which this worktree's `.ckignore` guard refuses). The two gates are:
 
-Two consequences, and both should be acted on:
+```js
+var captureTouches = !captureNone && posthog && (captureAll || (autocaptureOptions?.captureTouches));
+var captureScreens = !captureNone && posthog && (captureAll || (autocaptureOptions?.captureScreens ?? true));
+```
 
-- **For the label:** declare as though autocapture is on. That is what "Other Usage Data" in 2.5 is for. If it turns out to be off, the declaration is merely conservative; if it is on and undeclared, that is a rejection.
-- **For the code (required change, owned by the other session):** make it explicit rather than inherited. `autocapture={{ captureTouches: false, captureScreens: true }}` is the honest minimum for an app whose touch targets include project titles and caption text — with touches on, PostHog receives the accessibility label of the control the user pressed, and `apps/mobile/app/paywall.tsx:63` alone builds labels like `subscribe to <product title>`. Whatever is chosen, it should be written down in the prop, not left to the library's default, precisely so that this section can stop saying "not determined".
+With the prop omitted, `captureAll` and `captureNone` are both false and `autocaptureOptions` is `{}`. So:
+
+| | Default with the prop omitted | Why |
+|---|---|---|
+| **Screen views** | **Captured** | `captureScreens` falls through to the `?? true` default |
+| **Touch events** | **Not captured** | `captureTouches` reads `undefined`, which is falsy, and there is no default |
+
+That is the good outcome: the sensitive half is off. PostHog receives screen names, not the labels of the controls a user pressed — so it is not receiving strings like `subscribe to <product title>` from `apps/mobile/app/paywall.tsx:63`, nor anything derived from project titles or caption text.
+
+Two consequences:
+
+- **For the label:** "Other Usage Data" in 2.5 stands, covering screen views and the SDK's automatic event properties. It is no longer a hedge against an unknown default; it is a description of what is captured.
+- **For the code (recommended change, owned by the other session):** set the prop explicitly anyway — `autocapture={{ captureTouches: false, captureScreens: true }}` states today's behaviour outright. The current behaviour is correct but incidental: it depends on a library default that a minor version bump could flip, and nothing in this repo would notice. Writing it down makes it intentional and makes the declaration in 2.5 verifiable against the app's own source rather than against a vendored bundle.
 
 ### 2.7 Diagnostics
 
@@ -338,7 +352,7 @@ Evidence, in the order it should be re-checked if anything changes:
 
 **On the two specific questions asked:**
 
-- *Does PostHog's default autocapture count as tracking?* No. Autocapture governs how much of our own app's usage PostHog records; tracking is about combining that with other companies' data for advertising. Autocapture is a volume-and-sensitivity problem (see 2.6) and a data-minimisation problem, not an ATT trigger.
+- *Does PostHog's default autocapture count as tracking?* No. Autocapture governs how much of our own app's usage PostHog records; tracking is about combining that with other companies' data for advertising. Autocapture is a data-minimisation question (see 2.6, where the default turns out to be screen views only), not an ATT trigger.
 - *Does the RevenueCat app-user-id count as tracking?* No. It is our own Supabase account id, used to make an entitlement follow an Editify account instead of a device (`purchases.ts:47-59`). It is not an advertising identifier, it is not shared with a data broker, and it is not joined to any other company's data. It **does** make Purchase History and User ID "linked to the user" in 2.2 and 2.3, which is a different question from tracking and is answered Yes there.
 
 **Re-open this verdict if any of these happen:** an ad-network or attribution SDK (AppsFlyer, Adjust, Branch, Meta, TikTok) is added; someone calls `collectDeviceIdentifiers()` or `enableAdServicesAttributionTokenCollection()` to make Apple Search Ads attribution work; or PostHog data is exported into an advertising platform for audience building. Any one of those makes ATT mandatory and flips the tracking answers.
@@ -552,14 +566,14 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 8 | Upload a 1024x1024 App Store icon with no alpha channel and no rounded corners | David |
 | 8a | Answer the age rating questionnaire in the live form (section 1.9). Untouched today | David |
 | 8b | Set Support URL and Privacy Policy URL on the listing once item 2 produces them. Both still `null` | Automatable, after item 2 |
-| 8c | **Answer `contentRightsDeclaration` on the app record. It is still `null`** and App Store Connect will not accept a submission without it. The question is whether the app contains, shows or accesses third-party content. Editify ships no third-party content of its own; users import their own footage and nothing is published or shared. The expected answer is that it does **not** use third-party content, but read the live question before answering: it was rewritten in 2025 and now also asks about rights to content the app generates | David |
+| 8c | **Answer `contentRightsDeclaration` on the app record. It is `null`, confirmed against the App Store Connect API for app `6814607865`,** and App Store Connect will not accept a submission without it. The question is whether the app contains, shows or accesses third-party content. Editify ships no third-party content of its own; users import their own footage and nothing is published or shared. The expected answer is that it does **not** use third-party content, but read the live question before answering: it was rewritten in 2025 and now also asks about rights to content the app generates | David |
 | 8d | **Create the subscription group and both products** (`editify.pro.monthly`, `editify.studio.monthly`), with localised display names and descriptions, prices, the 7-day introductory offer, and a review screenshot for each. Section 8.3 | David |
 | 8e | **Attach both products to the 1.0.0 version submission.** IAP products are reviewed alongside the first build that includes them; a product that is created but not attached does not exist for the reviewer, who then sees an empty paywall. Section 8.4 | David |
 | 8f | **Fix the guideline 3.1.2 gaps in the binary** before building: privacy policy and terms links on the paywall, a real gated feature, and a truthful free-trial claim. Section 7.1 items 1, 3 and 4 are rejection-grade | Owner of `apps/mobile/app/paywall.tsx` |
 | 8g | **Set up RevenueCat**: entitlements `pro` and `studio`, one current offering with both packages, the App Store Connect in-app purchase key uploaded, and the iOS SDK key in the build's environment. Without `EXPO_PUBLIC_REVENUECAT_IOS_KEY` the paywall is inert (`purchases.ts:22`) and a reviewer sees "Subscriptions are only available in the Editify app" | David |
 | 8h | Create a Sandbox Apple ID and test purchase, restore and upgrade end to end. Section 8.5 | David |
 | 8i | **Answer the App Privacy questionnaire including the new rows**: Purchase History (yes, linked) and Device ID (yes, linked). Section 2 | David |
-| 9 | Run a production EAS build and submit it to App Store Connect. **TestFlight builds 1 and 2 cannot be used: they predate the RevenueCat native module, and `react-native-purchases` is native code that no OTA update can deliver.** A fresh build is mandatory | David (build commands are out of scope for this repo's agents) |
+| 9 | Run a production EAS build and submit it to App Store Connect. **TestFlight builds 1 and 2 cannot be used.** Verified against build 2's IPA: no `RevenueCat`/`RCPurchases` strings in the app binary, no `posthog` strings in `main.jsbundle`. `react-native-purchases` is native code that no OTA update can deliver, so a fresh build is mandatory | David (build commands are out of scope for this repo's agents) |
 
 ### Should fix before review
 
@@ -571,7 +585,7 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 13 | ~~Decide whether the "or from the server media folder" section should ship~~ **Done.** The section, and the `GET /assets/importable` call behind it, are now skipped unless the API base URL is localhost | Done |
 | 14 | Add privacy policy and terms links to the sign-in screen. **Now upgraded from "nice" to necessary**: the same links are mandatory on the paywall under 3.1.2 (section 7, items 5 and 6), so the URLs have to exist regardless, and putting them on both screens costs nothing | Owner of the mobile app screens |
 | 14a | Pin down which PostHog region hosts the data (`EXPO_PUBLIC_POSTHOG_HOST`). The privacy policy has to name the processor and its transfer basis, and PostHog Cloud EU and PostHog Cloud US are different answers. Section 2.11 item 6 | David |
-| 14b | Set `autocapture` explicitly on `PostHogProvider` rather than relying on the library default, and turn touch capture off unless it is wanted. Section 2.6 | Owner of `apps/mobile/src/providers/AppProviders.tsx` |
+| 14b | Set `autocapture` explicitly on `PostHogProvider` rather than inheriting the library default. The default was checked and is already the right one (screens captured, touches not), so this is about making it intentional and bump-proof, not about fixing current behaviour. Section 2.6 | Owner of `apps/mobile/src/providers/AppProviders.tsx` |
 | 15 | Confirm the Google sign-in flow works in a release (non-dev-client) build. `sign-in.tsx` gates the Google button on not being in Expo Go, which is right, but the release path has not been exercised in this repo's history | David |
 
 ### Nice to have

@@ -60,7 +60,7 @@ What it receives:
 - An **anonymous installation identifier** that PostHog generates on your device the first time you open the app and keeps until you delete the app. It is not your Apple advertising identifier, and we do not read that identifier anywhere.
 - **Application lifecycle events**: when the app is installed, updated, opened and put into the background, with the app version and build number.
 - **Automatic technical properties** attached to those events, such as the app version, operating system version, device type, language and screen dimensions.
-- **Screen views and taps within the app**, where automatic capture is enabled. Where taps are captured, PostHog receives the label of the control that was pressed, not the contents of your projects.
+- **Which screens of the app you open.** Individual taps and button presses are not captured. PostHog never receives the contents of your projects.
 
 PostHog never receives your video, audio, transcripts, captions, chat messages, project titles or rendered exports. Nothing in the app sends PostHog your email address or your name.
 
