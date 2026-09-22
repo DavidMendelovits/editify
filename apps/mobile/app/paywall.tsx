@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { StyleSheet, Text, View } from 'react-native';
 import type { PurchasesPackage } from 'react-native-purchases';
 import { Button } from '../src/components/Button';
+import { LegalLinks } from '../src/components/LegalLinks';
 import { Screen } from '../src/components/Screen';
 import { billingAvailable, buy, getPackages, priceLabel, restore, useTier, userCancelled } from '../src/lib/purchases';
 import { track } from '../src/lib/telemetry';
@@ -80,6 +81,7 @@ export default function PaywallScreen() {
           The trial converts to a paid subscription unless you cancel at least 24 hours before it ends. Payment is charged to your store
           account and renews until you cancel it there.
         </Text>
+        <LegalLinks />
       </View>
     </Screen>
   );
