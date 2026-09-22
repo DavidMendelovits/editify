@@ -8,8 +8,8 @@
 Maja Ventures SL ("Maja Ventures", "we") is the data controller for the personal data described here.
 
 - Company: Maja Ventures SL
-- Registered address: VERIFY (registered address of Maja Ventures SL)
-- Privacy contact: VERIFY (the support/privacy email address you want published)
+- Registered address: {{FILL_REGISTERED_ADDRESS}}
+- Privacy contact: {{FILL_CONTACT_EMAIL}}
 
 If you are in the EEA or the UK, you can contact us at the address above to exercise the rights described in section 8.
 

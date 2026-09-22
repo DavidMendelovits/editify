@@ -139,11 +139,15 @@ Tell us what breaks: there is a "send feedback" button on the home screen and in
 - **Support URL is mandatory.** App Store Connect will not let you submit without one, and it must resolve to a real page with a way to contact you. A GitHub Pages page with a contact email and a short FAQ satisfies this.
 - **Marketing URL is optional.** Leave it blank for 1.0.0 rather than pointing it at a placeholder.
 
-**Outstanding. Nothing is set.** `supportUrl`, `marketingUrl` (on the version localization) and `privacyPolicyUrl` (on the app info localization) all read `null` in App Store Connect today, and were deliberately left alone because we have no hosted pages. Support URL and Privacy Policy URL are both mandatory before submission.
+**Still `null` in App Store Connect, but the pages now exist.** `supportUrl`, `marketingUrl` (on the version localization) and `privacyPolicyUrl` (on the app info localization) all read `null` today. The three pages are served by our own API (section 3), so the values to paste are:
 
-**We do not appear to have either today.** There is no marketing site in this repo, and `editify-dm.fly.dev` serves the app itself behind auth, not a public page. See section 3 for the hosting recommendation, which covers the support page, the privacy policy and the terms in one move.
+```text
+Privacy Policy URL:  https://editify-dm.fly.dev/privacy
+Terms of Use (EULA): https://editify-dm.fly.dev/terms
+Support URL:         https://editify-dm.fly.dev/support
+```
 
-VERIFY: does Maja Ventures already own a domain that should host these? If yes, use it and skip the GitHub Pages route.
+They are live only after the next deploy, and the deploy waits on the fill tokens in section 3. Marketing URL stays blank for 1.0.0.
 
 ### 1.8 Categories
 
@@ -383,12 +387,21 @@ Written and committed:
 
 - `docs/privacy-policy.md`
 - `docs/terms-of-service.md`
+- `docs/support.md`
 
 Both name Maja Ventures SL as data controller and list the processors actually in use, established by grepping every outbound HTTP call in `server/src`: `api.anthropic.com` (`server/src/agent/providers.ts`), `api.openai.com` (same file), `generativelanguage.googleapis.com` (`server/src/style/analyzers/gemini.ts`), `api.github.com` and `github.com` (`server/src/services/telemetry-service.ts`, `server/src/services/report-media.ts`), the Supabase project at `xvstucurpuwpliowadnh.supabase.co` (auth and JWKS), and Fly.io as the host. `raw.githubusercontent.com` is also called, but only to fetch the Montserrat font file, which carries no user data.
 
-Both files contain VERIFY markers for the registered address and contact email. Fill those in before publishing.
+Both files, and the support page, still carry fill tokens for the registered address and the contact email. Nothing is published until they are filled.
 
-### Cheapest ways to host them at a public URL
+### Where they are hosted
+
+**Done: the existing Fly server serves all three.** `GET /privacy`, `GET /terms` and `GET /support` render `docs/privacy-policy.md`, `docs/terms-of-service.md` and `docs/support.md` into styled HTML at request time (`server/src/routes/legal.ts`, `server/src/services/legal-pages.ts`), so the served text and the text in this repo cannot drift. The auth hook 401s everything it does not recognise, so the three routes are exempted explicitly through `isLegalRoute` in `server/src/app.ts`, and `server/test/legal.test.ts` holds that open: each page answers 200 as HTML with no credentials while `/projects` still answers 401.
+
+The URLs are `https://editify-dm.fly.dev/privacy`, `/terms` and `/support`. They go live on the next deploy, which must wait until the fill tokens above are replaced.
+
+The trade-off taken knowingly: the pages are only up while the Fly machine is (`min_machines_running = 1`, so it does not scale to zero). If Apple's post-launch re-check of the privacy URL ever becomes a worry, a static mirror is the fallback.
+
+### The options that were weighed
 
 | Option | Cost | Effort | Notes |
 |---|---|---|---|
@@ -397,17 +410,17 @@ Both files contain VERIFY markers for the registered address and contact email. 
 | Cloudflare Pages | Free | ~20 minutes | Same as GitHub Pages plus a custom domain for free, if Maja Ventures has one. |
 | Notion public page | Free | ~5 minutes | Fastest, but the URL is ugly, it is slow to load, and Apple reviewers occasionally flag pages that need JavaScript to render. Avoid. |
 
-**Recommendation: GitHub Pages from a new public repo `editify-legal`.** It is free forever, it is reachable even when the Fly machine is down (which matters, because Apple re-checks the privacy URL after launch), it needs no code in this repo, and it gives you the mandatory support page in the same move. If Maja Ventures owns a domain, point a CNAME at it later without changing the App Store Connect entry more than once.
+**GitHub Pages was the earlier recommendation** and is still the fallback if the Fly route ever proves fragile: free forever, up when the machine is not, no code in this repo. It lost on one point. The pages would have been a second copy of the wording, and a legal document that exists twice eventually says two different things. Serving them from `docs/` keeps one copy and makes an edit to the policy a deploy rather than a copy-paste.
 
-Three URLs to produce:
+The three URLs, once deployed:
 
 ```text
-Privacy Policy URL:  https://davidmendelovits.github.io/editify-legal/privacy
-Terms of Use (EULA): https://davidmendelovits.github.io/editify-legal/terms
-Support URL:         https://davidmendelovits.github.io/editify-legal/support
+Privacy Policy URL:  https://editify-dm.fly.dev/privacy
+Terms of Use (EULA): https://editify-dm.fly.dev/terms
+Support URL:         https://editify-dm.fly.dev/support
 ```
 
-VERIFY: exact account name and repo name once created, then paste the real URLs here.
+VERIFY: does Maja Ventures own a domain that should front these later? A CNAME now costs one change in App Store Connect instead of two.
 
 Note on the EULA field: if you leave "Terms of Use (EULA)" blank, Apple applies its standard licence agreement, which is acceptable. Supplying `docs/terms-of-service.md` is better because the app has accounts, user content and an AI feature that needs its own disclaimer.
 
@@ -559,8 +572,8 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | # | Item | Who |
 |---|---|---|
 | 0 | **Complete the Paid Applications Agreement for Maja Ventures SL** (Account Holder accepts it; banking details; US and EU tax forms; Apple verifies). Nothing with an in-app purchase can be released until this is active, and Apple's verification is days to weeks. **Start this before every other item on this list.** Section 8.1 | David |
-| 1 | Fill in the registered address and privacy contact email in `docs/privacy-policy.md` and `docs/terms-of-service.md` (marked VERIFY) | David |
-| 2 | Create the public `editify-legal` repo, publish privacy / terms / support pages, confirm all three URLs load | David, then automatable |
+| 1 | Fill in the registered address and privacy contact email in `docs/privacy-policy.md`, `docs/terms-of-service.md` and `docs/support.md` (the fill tokens), then deploy | David |
+| 2 | ~~Create the public `editify-legal` repo~~ **Done differently.** All three pages are served by the Fly app itself (section 3). Confirm the URLs load once item 1 is deployed | Deploy, then confirm |
 | 3 | Create and pre-seed the demo account; put the credentials in the App Review notes | David |
 | 4 | ~~Confirm a model API key is set as a Fly secret~~ **Done.** `ANTHROPIC_API_KEY` is set on `editify-dm`; reviewers get the real agent | Done |
 | 5 | **Broken today: `SUPABASE_SERVICE_ROLE_KEY` is not set on `editify-dm`.** The deployed secret is misspelled `SUPABASE_SERVICE__ROLE_KEY` (two underscores), so the app reads nothing and "delete account" answers 503, which fails guideline 5.1.1(v). Fix, in this order, then redeploy: `fly secrets set SUPABASE_SERVICE_ROLE_KEY=<value> -a editify-dm` then `fly secrets unset SUPABASE_SERVICE__ROLE_KEY -a editify-dm` | David |
@@ -568,11 +581,11 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 7 | Capture 6 iPhone 6.9" and 6 iPad 13" screenshots per section 4 | David, capture automatable |
 | 8 | Upload a 1024x1024 App Store icon with no alpha channel and no rounded corners | David |
 | 8a | Answer the age rating questionnaire in the live form (section 1.9). Untouched today | David |
-| 8b | Set Support URL and Privacy Policy URL on the listing once item 2 produces them. Both still `null` | Automatable, after item 2 |
+| 8b | Set Support URL, Privacy Policy URL and the EULA field to the three `editify-dm.fly.dev` URLs. All still `null` | Automatable, after item 1 deploys |
 | 8c | **Answer `contentRightsDeclaration` on the app record. It is `null`, confirmed against the App Store Connect API for app `6814607865`,** and App Store Connect will not accept a submission without it. The question is whether the app contains, shows or accesses third-party content. Editify ships no third-party content of its own; users import their own footage and nothing is published or shared. The expected answer is that it does **not** use third-party content, but read the live question before answering: it was rewritten in 2025 and now also asks about rights to content the app generates | David |
 | 8d | **Create the subscription group and both products** (`editify.pro.monthly`, `editify.studio.monthly`), with localised display names and descriptions, prices, the 7-day introductory offer, and a review screenshot for each. Section 8.3 | David |
 | 8e | **Attach both products to the 1.0.0 version submission.** IAP products are reviewed alongside the first build that includes them; a product that is created but not attached does not exist for the reviewer, who then sees an empty paywall. Section 8.4 | David |
-| 8f | **Fix the guideline 3.1.2 gaps in the binary** before building: privacy policy and terms links on the paywall, a real gated feature, and a truthful free-trial claim. Section 7.1 items 1, 3 and 4 are rejection-grade | Owner of `apps/mobile/app/paywall.tsx` |
+| 8f | **Fix the remaining guideline 3.1.2 gaps in the binary** before building: a real gated feature and a truthful free-trial claim. Section 7.1 items 3 and 4. The privacy policy and terms links (item 1) are done | Owner of `apps/mobile/app/paywall.tsx` |
 | 8g | **Set up RevenueCat**: entitlements `pro` and `studio`, one current offering with both packages, and the App Store Connect in-app purchase key uploaded | David |
 | 8h | **Add the SDK keys to the production build profile.** `apps/mobile/eas.json` currently carries **none** of the four keys the two SDKs need — all three profiles have only `EXPO_PUBLIC_API_URL` and the two Google client ids. Consequences if this ships as-is: without `EXPO_PUBLIC_REVENUECAT_IOS_KEY`, `billingAvailable` is false (`purchases.ts:22`) and the reviewer's paywall reads "Subscriptions are only available in the Editify app on iOS and Android" with no plans and a dead restore button — an automatic 3.1.2 rejection on a build that also declares in-app purchases. Without `EXPO_PUBLIC_POSTHOG_PROJECT_TOKEN` and `EXPO_PUBLIC_POSTHOG_HOST`, PostHog is never constructed and collects nothing (`posthog.ts:18`). Set them in the `production` profile's `env` block or as EAS environment variables, and do it **before** filing App Privacy (2.11 item 7) and before the production build | David |
 | 8i | Create a Sandbox Apple ID and test purchase, restore and upgrade end to end. Section 8.5 | David |
@@ -616,8 +629,8 @@ The paywall is `apps/mobile/app/paywall.tsx`, reached from the home-screen heade
 | 2 | Subscription **duration** visible | **Pass** | `priceLabel` in `purchases.ts:99-106` builds `"<price>/<period>"`, with the period derived from the store's ISO-8601 `subscriptionPeriod` (`periodName`, `:109-114`). Rendered at `paywall.tsx:59`. |
 | 3 | **Price per period** visible | **Pass** | Same string. The price is never hardcoded; it is `product.priceString`, so it is correct in every storefront currency. |
 | 4 | **Content or services the subscription provides** stated at point of purchase | **FAIL — the most likely rejection** | Two separate problems. (a) The only per-plan description is `pkg.product.description`, and it is rendered conditionally: `{!!pkg.product.description && ...}` at `paywall.tsx:60`. If a store localisation ships without a description, the binary offers a paid plan with no statement of what it buys. (b) More seriously, **nothing in the app is gated** — `docs/subscriptions.md` says so in as many words ("Nothing is gated yet"), and the only consumers of `useTier()` are the paywall itself and the home-screen button label (`index.tsx:34`, `:83`). A reviewer who subscribes and sees no change will reject under 3.1.2 and probably 2.1. |
-| 5 | Functional **privacy policy** link in the app | **FAIL** | A grep for `privacy`, `terms`, `eula` and `openURL` across `paywall.tsx`, `sign-in.tsx` and `index.tsx` returns nothing. There is no link to a privacy policy anywhere in the app. |
-| 6 | Functional **terms of use (EULA)** link in the app | **FAIL** | Same grep, same result. Apple requires both links on the purchase screen. |
+| 5 | Functional **privacy policy** link in the app | **Pass** | `LegalLinks` (`apps/mobile/src/components/LegalLinks.tsx`) opens `https://editify-dm.fly.dev/privacy` with `Linking.openURL`, and sits in the paywall footer next to the auto-renew paragraph and on the sign-in screen. The URLs come from `apps/mobile/src/lib/legal.ts`, which is also where the App Store Connect values come from. |
+| 6 | Functional **terms of use (EULA)** link in the app | **Pass** | Same component, `https://editify-dm.fly.dev/terms`. Both links are on the purchase screen, which is what Apple asks for. |
 | 7 | Both links also present in **App Store Connect metadata** | **FAIL** | `privacyPolicyUrl` on the app info localisation and the EULA field are both `null` (section 1.7). With an auto-renewing subscription in the binary, the EULA field stops being the optional convenience described in section 3: either supply `docs/terms-of-service.md` at a public URL or accept Apple's standard EULA, but the privacy policy URL is non-negotiable and neither page is hosted yet. |
 | 8 | **Restore purchases** mechanism | **Pass** | `restore()` at `purchases.ts:87-91` calls `Purchases.restorePurchases()`; wired to a visible button at `paywall.tsx:76-78`, with an honest "No subscription found on this account." result at `:28`. It is disabled when `!billingAvailable`, which on a real device is never. |
 | 9 | **No non-Apple payment path** for digital content | **Pass** | The only purchase call in the codebase is `Purchases.purchasePackage` (`purchases.ts:81`), which goes through StoreKit via the native RevenueCat 5.90.1 pod. There is no external checkout, no Stripe, no "subscribe on our website" copy, and no outbound link of any kind on the paywall. The web build explicitly throws rather than offering an alternative (`purchases.web.ts:23-25`). |
@@ -628,7 +641,7 @@ The paywall is `apps/mobile/app/paywall.tsx`, reached from the home-screen heade
 
 For whoever owns `apps/mobile/app/paywall.tsx`:
 
-1. Add a **privacy policy link** and a **terms of use (EULA) link** to the paywall, both opening real URLs. Put them in the footer next to the auto-renew paragraph. Adding them to `sign-in.tsx` as well closes the separate 5.1.1 exposure noted in the old checklist item 14.
+1. ~~Add a **privacy policy link** and a **terms of use (EULA) link** to the paywall~~ **Done.** `LegalLinks` is in the paywall footer next to the auto-renew paragraph and on `sign-in.tsx`, which also closes the 5.1.1 exposure noted in the old checklist item 14. The pages behind them are only live after the next deploy.
 2. Make each plan card state **what the plan gives you**, from the app's own copy rather than only from `pkg.product.description`, so an empty store localisation cannot produce a paid plan with no description.
 3. Decide and ship **at least one real entitlement difference**, or do not ship subscriptions in 1.0.0. A subscription that unlocks nothing cannot survive review.
 4. Derive the **free-trial claim** at `paywall.tsx:43` from the packages instead of hardcoding it, or remove it and let `priceLabel` carry it per plan.
@@ -743,7 +756,7 @@ account and its data; it does not cancel an App Store subscription, which the
 user cancels in their own Apple account settings, as the app states.
 ```
 
-VERIFY before pasting: the "along with links to our privacy policy and terms of use" sentence is **not true yet** (7/items 5 and 6). Either the links ship in the binary or that sentence comes out — do not tell a reviewer something they can disprove in one tap.
+The "along with links to our privacy policy and terms of use" sentence is true from the build that contains `LegalLinks` (7/items 5 and 6). VERIFY before pasting that the build you submit is that one, and that the server has been deployed with the legal routes: a link that 404s is worse than no link.
 
 ---
 
