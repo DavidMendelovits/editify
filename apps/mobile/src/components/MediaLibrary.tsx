@@ -112,7 +112,12 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
 
       {(error ?? library.error) && <Text style={styles.error}>{error ?? library.error?.message}</Text>}
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.strip}
+        keyboardShouldPersistTaps="handled"
+      >
         {!library.isLoading && assets.length === 0 && (
           <Text style={styles.empty}>
             {scope === 'project'
@@ -186,13 +191,13 @@ function Source({ label, hint, onPress, disabled }: { label: string; hint: strin
 const styles = StyleSheet.create({
   panel: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.lg, gap: space.lg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
-  headerText: { gap: space.xs, flexShrink: 1 },
+  headerText: { gap: space.xs, flexShrink: 1, minWidth: 0 },
   scopeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   scope: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.xs },
   scopeText: { color: colors.text, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6 },
   eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.5 },
   count: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
-  sources: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  sources: { flexShrink: 0, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: space.md },
   source: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.md },
   sourceDisabled: { opacity: 0.45 },
   sourceText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.sm },
@@ -208,7 +213,7 @@ const styles = StyleSheet.create({
   addCueText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base, lineHeight: 13 },
   name: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md },
   nameUnlabelled: { color: colors.muted, fontFamily: fonts.medium },
-  nameInput: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.accent, paddingHorizontal: space.md, paddingVertical: space.xs },
+  nameInput: { width: '100%', color: colors.text, fontFamily: fonts.semibold, fontSize: type.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.accent, paddingHorizontal: space.md, paddingVertical: space.xs },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
   pressed: { opacity: 0.7 },
 });

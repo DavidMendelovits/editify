@@ -1,4 +1,5 @@
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, StylePacket } from '@editify/shared';
 import { api } from '../lib/api';
@@ -17,6 +18,7 @@ interface Props {
  * preset, which is a decision made before the edit, not during it.
  */
 export function AssetActionSheet({ asset, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const name = (asset.label ?? asset.originalName).replace(/\.[^.]+$/, '');
   // Observes the cache the panel below fills — no second network trip.
@@ -47,7 +49,7 @@ export function AssetActionSheet({ asset, onClose }: Props) {
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="close clip actions">
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+        <Pressable style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }]} onPress={() => undefined}>
           <View style={styles.header}>
             <View style={styles.headerText}>
               <Text style={styles.eyebrow}>CLIP</Text>

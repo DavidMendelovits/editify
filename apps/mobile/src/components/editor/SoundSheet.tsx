@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import type { LibrarySound, SoundCategory } from '@editify/shared';
@@ -22,6 +23,7 @@ interface Props {
  * `+` to drop it on the audio track at the playhead without closing the sheet.
  */
 export function SoundSheet({ visible, onClose, onAdd }: Props) {
+  const insets = useSafeAreaInsets();
   const [category, setCategory] = useState<SoundCategory | 'all'>('all');
   const [playingId, setPlayingId] = useState<string>();
   const [addedId, setAddedId] = useState<string>();
@@ -64,7 +66,7 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }]}>
           {/* Audio-only, but expo-video on web only has a media element to play
               through while a view is mounted for the player — without this the
               preview is a silent no-op. */}

@@ -89,13 +89,13 @@ export default function PaywallScreen() {
 
 const styles = StyleSheet.create({
   header: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
-  close: { minHeight: 32, paddingHorizontal: space.xl },
-  kicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.6 },
+  close: { flexShrink: 0, minHeight: 32, paddingHorizontal: space.xl },
+  kicker: { flexShrink: 1, color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.6 },
   hero: { paddingTop: space.section, gap: space.lg, maxWidth: 900, width: '100%', alignSelf: 'center' },
   title: { color: colors.text, fontFamily: fonts.display, fontSize: type.display, letterSpacing: -1 },
   body: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.lg, lineHeight: 18 },
   plans: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xl, maxWidth: 900, width: '100%', alignSelf: 'center' },
-  card: { flexGrow: 1, flexBasis: 260, gap: space.xl, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.section },
+  card: { flexGrow: 1, flexBasis: 260, minWidth: 0, gap: space.xl, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.section },
   planName: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
   price: { color: colors.accent, fontFamily: fonts.semibold, fontSize: type.xl },
   footer: { gap: space.xl, maxWidth: 900, width: '100%', alignSelf: 'center' },

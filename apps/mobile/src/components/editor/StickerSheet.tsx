@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import type { AssetMetadata, Callout } from '@editify/shared';
 import { uploadAsset } from '../../lib/api';
@@ -37,6 +38,7 @@ interface Props {
  * lands at the playhead and is immediately draggable on the preview.
  */
 export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddImage, onAddCallout }: Props) {
+  const insets = useSafeAreaInsets();
   const [custom, setCustom] = useState('');
   const [line, setLine] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -86,8 +88,8 @@ export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddIma
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+      <KeyboardAvoidingView style={styles.backdrop} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }]}>
           <View style={styles.header}>
             <Text style={styles.title}>STICKERS</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={onClose}>
@@ -95,7 +97,7 @@ export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddIma
             </Pressable>
           </View>
           <Text style={styles.subtitle}>lands at the playhead · drag it on the preview to place it</Text>
-          <ScrollView style={styles.body} nestedScrollEnabled>
+          <ScrollView style={styles.body} nestedScrollEnabled keyboardShouldPersistTaps="handled">
             <View style={styles.grid}>
               {EMOJI.map((emoji) => (
                 <Pressable
@@ -161,7 +163,7 @@ export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddIma
             {error && <Text style={styles.error}>{error}</Text>}
           </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -182,19 +184,19 @@ const styles = StyleSheet.create({
   cellEmoji: { fontSize: type.title },
   customRow: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.lg },
   input: {
-    flex: 1, minHeight: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    flex: 1, minWidth: 0, minHeight: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
     backgroundColor: colors.panelRaised, color: colors.text, paddingHorizontal: space.xl,
     fontFamily: fonts.medium, fontSize: type.lg,
   },
   add: {
-    minWidth: 64, minHeight: 44, borderRadius: radius.lg, alignItems: 'center', justifyContent: 'center',
+    flexShrink: 0, minWidth: 64, minHeight: 44, borderRadius: radius.lg, alignItems: 'center', justifyContent: 'center',
     backgroundColor: colors.accentStrong,
   },
   addText: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: type.lg },
   section: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5, paddingTop: space.sm },
   calloutRow: { flexDirection: 'row', alignItems: 'center', gap: space.lg, paddingVertical: space.lg },
   calloutButton: {
-    width: 44, height: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    flexShrink: 0, width: 44, height: 44, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
     alignItems: 'center', justifyContent: 'center', backgroundColor: colors.panelRaised,
   },
   calloutGlyph: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },

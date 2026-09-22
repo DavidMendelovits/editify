@@ -676,16 +676,16 @@ function HistoryButton({ label, accessibilityLabel, testID, enabled, onPress }: 
 }
 
 const styles = StyleSheet.create({
-  header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
-  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
-  heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xl },
+  header: { minHeight: 52, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
+  back: { flexShrink: 0, color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
+  heading: { flexGrow: 1, flexShrink: 1, flexBasis: 180, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xl },
   headingText: { flexShrink: 1, minWidth: 0 },
   divider: { width: 1, height: 26, backgroundColor: colors.border },
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  headerActions: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: space.lg },
   feedbackButton: { paddingHorizontal: space.xl, minHeight: 30 },
-  exportButton: { width: 96, minHeight: 30 },
+  exportButton: { minWidth: 96, minHeight: 30 },
   historyButton: {
     minWidth: 30, minHeight: 30, alignItems: 'center', justifyContent: 'center',
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
@@ -702,7 +702,7 @@ const styles = StyleSheet.create({
   timelineWide: { flex: 1, minHeight: 180 },
   editColumnStacked: {},
   dockColumn: { width: 372, minHeight: 0, gap: space.lg },
-  dockColumnStacked: { width: '100%', height: 560 },
+  dockColumnStacked: { width: '100%', minHeight: 560 },
   center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
 });
