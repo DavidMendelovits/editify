@@ -53,7 +53,7 @@ If the app crashes, or if you press "send feedback" and write a message, we also
 
 ### 3.4 Product analytics
 
-Editify uses **PostHog**, a product-analytics service, to understand how the app is used. The PostHog software runs inside the app and reports to a PostHog instance we operate or subscribe to.
+Editify uses **PostHog**, a product-analytics service, to understand how the app is used. The PostHog software runs inside the app and reports to the PostHog instance named in section 5, which also gives the operating company and the region the data is hosted in.
 
 What it receives:
 
@@ -63,8 +63,6 @@ What it receives:
 - **Which screens of the app you open.** Individual taps and button presses are not captured. PostHog never receives the contents of your projects.
 
 PostHog never receives your video, audio, transcripts, captions, chat messages, project titles or rendered exports. Nothing in the app sends PostHog your email address or your name.
-
-VERIFY: name the PostHog entity and the hosting region in use (PostHog Cloud EU, PostHog Cloud US, or a self-hosted instance) before publishing this policy, and update the processor table in section 5 to match.
 
 ### 3.5 Subscription data
 
@@ -109,7 +107,7 @@ These are the only third parties that receive your data, and they receive it bec
 | **Google** (Google LLC, USA) | Your Google account identity, if and only if you choose "continue with Google" | Sign-in |
 | **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. This is the provider configured on our production server; an OpenAI key can be configured instead, in which case the same text goes to **OpenAI** (OpenAI, L.L.C., USA) rather than to Anthropic. | Running the editing assistant |
 | **Google (Gemini API)** (Google LLC, USA) | The **full video file** of each clip you submit to "learn my style". This analyzer is configured and active on our production server. The upload is deleted from Google's Files API at the end of the run. The app's style screen tells you which analyzer is active and whether it uploads footage. | Analysing your reference videos |
-| **PostHog** | The anonymous installation identifier, application lifecycle events, screen views and taps, and the technical properties listed in section 3.4. No content, no email address, no name. VERIFY: the PostHog entity and hosting region in use, and its address | Product analytics: understanding how the app is used |
+| **PostHog** ({{FILL_POSTHOG_ENTITY}}) | The anonymous installation identifier, application lifecycle events, screen views and taps, and the technical properties listed in section 3.4. No content, no email address, no name | Product analytics: understanding how the app is used |
 | **RevenueCat** (RevenueCat, Inc., USA) | Your Editify account identifier, your Editify purchase history and store receipts, and technical details of the device and transaction. No card details, no email address, no content | Managing subscriptions and entitlements across your devices |
 | **Apple** (Apple Inc., USA) and **Google** (Google LLC, USA), as the app stores | Your payment and billing relationship for any subscription you buy, under their own privacy policies. We receive a subscription status from them, never a payment instrument | Taking payment for subscriptions |
 | **GitHub** (GitHub, Inc., USA) | Crash reports and feedback you send: the error text, the stack, the app-state summary, your session event log and anything you typed. On the web client, an attached screenshot is committed to a repository. | Filing bug reports into our issue tracker |
@@ -151,8 +149,6 @@ Editify is not directed at children under 13, and we do not knowingly collect pe
 Requests to the Editify API are authenticated with a signed token issued by our authentication provider, and every row is scoped to the account that created it. Traffic is served over HTTPS.
 
 Two limitations are worth stating plainly. Media files are requested by players that cannot set HTTP headers, so the access token is placed in the URL query string for those requests; on iOS, opening a finished render hands such a URL to Safari. And your original footage is stored on the server in its original form. If either is a problem for the footage you work with, do not import it.
-
-VERIFY: if the token-in-URL behaviour is changed before launch (for example to short-lived signed media URLs), update this paragraph.
 
 ## 11. Changes
 

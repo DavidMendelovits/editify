@@ -376,7 +376,7 @@ Evidence, in the order it should be re-checked if anything changes:
 3. Crash reports and typed feedback are filed into the GitHub issue tracker. `DavidMendelovits/editify` is private, so nothing a user types becomes a public document.
 4. The Gemini style analyser uploads whole video files to Google. `GEMINI_API_KEY` is set on `editify-dm`, so it is live.
 5. Media requests carry the session token in the URL query string (`mediaUrl` in `apps/mobile/src/lib/api.ts`). Disclosed in the policy section 10. Worth fixing, not a blocker.
-6. **VERIFY: which PostHog region hosts the data.** `EXPO_PUBLIC_POSTHOG_HOST` is a free-form URL and `apps/mobile/.env.example:2` still carries the literal placeholder `https://your-posthog-host`. The privacy policy has to name a controller and a transfer basis, and "PostHog Cloud EU" and "PostHog Cloud US" are different answers. This stays open until the host is chosen. Fill it in before publishing the policy.
+6. **VERIFY: which PostHog region hosts the data.** `EXPO_PUBLIC_POSTHOG_HOST` is a free-form URL and `apps/mobile/.env.example:2` still carries the literal placeholder `https://your-posthog-host`. The privacy policy has to name a controller and a transfer basis, and "PostHog Cloud EU" and "PostHog Cloud US" are different answers. This stays open until the host is chosen. The policy carries the fill token `{{FILL_POSTHOG_ENTITY}}` for it in section 5, and the privacy page will not be served until that token is replaced. Tracked as open question L2 in section 3.
 7. **Set the PostHog variables in the production build profile before you file the App Privacy answers, not after.** The declaration is supposed to describe the behaviour of the binary being submitted. Right now `apps/mobile/eas.json` carries neither variable in any profile, so a production build collects nothing through PostHog — and filing section 2 as written would declare collection the shipped binary does not perform. Over-declaring is normally the safe direction, but declaring an SDK that is switched off is a different kind of wrong: it is an inaccurate description of the build, and it invites a reviewer question we cannot answer cleanly. Decide first, then file to match. If PostHog is not going to be configured for 1.0.0, the honest filing drops the PostHog-specific rows (Device ID in 2.2, Other Usage Data in 2.5) and section 5 of the privacy policy loses its PostHog row.
 
 ---
@@ -391,13 +391,35 @@ Written and committed:
 
 Both name Maja Ventures SL as data controller and list the processors actually in use, established by grepping every outbound HTTP call in `server/src`: `api.anthropic.com` (`server/src/agent/providers.ts`), `api.openai.com` (same file), `generativelanguage.googleapis.com` (`server/src/style/analyzers/gemini.ts`), `api.github.com` and `github.com` (`server/src/services/telemetry-service.ts`, `server/src/services/report-media.ts`), the Supabase project at `xvstucurpuwpliowadnh.supabase.co` (auth and JWKS), and Fly.io as the host. `raw.githubusercontent.com` is also called, but only to fetch the Montserrat font file, which carries no user data.
 
-Both files, and the support page, still carry fill tokens for the registered address and the contact email. Nothing is published until they are filled.
+Both files, and the support page, still carry fill tokens: the registered address, the contact email, and the PostHog entity and hosting region. Nothing is published until they are filled, and that is enforced in code rather than remembered: see "The publication gate" below.
+
+### Open questions in the legal documents
+
+These were `VERIFY:` notes written inline in the policy and the terms. They are internal text, the server now refuses to publish a document that still contains one (see the publication gate below), and this file is never served, so they live here instead. Each one says where its answer lands.
+
+| # | Question | Where the answer goes |
+|---|---|---|
+| L1 | Is Spain the correct forum for Maja Ventures SL? The clause as written says the laws and courts of Spain have exclusive jurisdiction, with the usual carve-out for mandatory consumer law in the user's own country | `docs/terms-of-service.md` section 10, "Governing law". No fill token: the text is already written and only needs confirming or rewriting |
+| L2 | Which PostHog entity operates the instance, and which region hosts the data: PostHog Cloud EU, PostHog Cloud US, or an instance we run ourselves? The policy has to name a controller and a transfer basis, and the three answers are not the same answer. Same question as 2.11 item 6 and checklist item 14a, which is where the decision is made | `docs/privacy-policy.md` section 5, the processor table, through the fill token `{{FILL_POSTHOG_ENTITY}}`. Fill it with the legal entity, its country and the region, in the shape the other rows use, for example `PostHog, Inc., USA, PostHog Cloud EU`. Section 3.4 points the reader at that row, so one edit covers both |
+| L3 | If the token-in-URL behaviour for media is replaced before launch (checklist item 16, short-lived signed URLs), the paragraph that discloses it has to be rewritten rather than left standing | `docs/privacy-policy.md` section 10, "Security", second paragraph. Only in play if item 16 lands before submission |
+
+### The publication gate
+
+`GET /privacy`, `GET /terms` and `GET /support` answer **503** with a short "Not published yet" page, and serve nothing else, for as long as the rendered document contains a `{{FILL_` token or a `VERIFY:` note. The check runs on the finished HTML inside `renderLegalPage`, the only function that produces it, and it returns a union the route cannot read the HTML out of without handling the refusal (`server/src/services/legal-pages.ts`, `server/src/routes/legal.ts`). No other route is touched, and the server still boots and serves the app normally: a documentation problem should not take the API down.
+
+One command lists everything the gate is still waiting on:
+
+```bash
+grep -rn 'VERIFY:\|{{FILL_' docs/privacy-policy.md docs/terms-of-service.md docs/support.md
+```
+
+While that prints anything, the three URLs answer 503. When it prints nothing, they serve. The open questions above are tracked separately and are listed by `grep -n 'VERIFY:' docs/app-store-submission.md`; they do not block the gate, because this file is not served.
 
 ### Where they are hosted
 
-**Done: the existing Fly server serves all three.** `GET /privacy`, `GET /terms` and `GET /support` render `docs/privacy-policy.md`, `docs/terms-of-service.md` and `docs/support.md` into styled HTML at request time (`server/src/routes/legal.ts`, `server/src/services/legal-pages.ts`), so the served text and the text in this repo cannot drift. The auth hook 401s everything it does not recognise, so the three routes are exempted explicitly through `isLegalRoute` in `server/src/app.ts`, and `server/test/legal.test.ts` holds that open: each page answers 200 as HTML with no credentials while `/projects` still answers 401.
+**Done: the existing Fly server serves all three.** `GET /privacy`, `GET /terms` and `GET /support` render `docs/privacy-policy.md`, `docs/terms-of-service.md` and `docs/support.md` into styled HTML at request time (`server/src/routes/legal.ts`, `server/src/services/legal-pages.ts`), so the served text and the text in this repo cannot drift. The auth hook 401s everything it does not recognise, so the three routes are exempted explicitly through `isLegalRoute` in `server/src/app.ts`, and `server/test/legal.test.ts` holds that open: each page answers 200 as HTML with no credentials while `/projects` still answers 401. The same file covers the publication gate below, using fixture documents so that a document carrying a fill token and one carrying a `VERIFY:` note are both refused, and a clean one is served.
 
-The URLs are `https://editify-dm.fly.dev/privacy`, `/terms` and `/support`. They go live on the next deploy, which must wait until the fill tokens above are replaced.
+The URLs are `https://editify-dm.fly.dev/privacy`, `/terms` and `/support`. Deploying does not publish them: after a deploy, all three answer **503** with a short "Not published yet" page until the grep above prints nothing. So the order is fill the tokens, run the grep until it is empty, then deploy, then load the three URLs and confirm 200 before pasting them into App Store Connect.
 
 The trade-off taken knowingly: the pages are only up while the Fly machine is (`min_machines_running = 1`, so it does not scale to zero). If Apple's post-launch re-check of the privacy URL ever becomes a worry, a static mirror is the fallback.
 
@@ -572,8 +594,8 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | # | Item | Who |
 |---|---|---|
 | 0 | **Complete the Paid Applications Agreement for Maja Ventures SL** (Account Holder accepts it; banking details; US and EU tax forms; Apple verifies). Nothing with an in-app purchase can be released until this is active, and Apple's verification is days to weeks. **Start this before every other item on this list.** Section 8.1 | David |
-| 1 | Fill in the registered address and privacy contact email in `docs/privacy-policy.md`, `docs/terms-of-service.md` and `docs/support.md` (the fill tokens), then deploy | David |
-| 2 | ~~Create the public `editify-legal` repo~~ **Done differently.** All three pages are served by the Fly app itself (section 3). Confirm the URLs load once item 1 is deployed | Deploy, then confirm |
+| 1 | Fill in the registered address, the privacy contact email and the PostHog entity and region in `docs/privacy-policy.md`, `docs/terms-of-service.md` and `docs/support.md` (6 fill tokens), then deploy. Until `grep -rn 'VERIFY:\|{{FILL_' docs/privacy-policy.md docs/terms-of-service.md docs/support.md` prints nothing, the three pages answer 503 by design. Section 3 | David |
+| 2 | ~~Create the public `editify-legal` repo~~ **Done differently.** All three pages are served by the Fly app itself (section 3). Confirm the URLs answer 200 and not 503 once item 1 is deployed | Deploy, then confirm |
 | 3 | Create and pre-seed the demo account; put the credentials in the App Review notes | David |
 | 4 | ~~Confirm a model API key is set as a Fly secret~~ **Done.** `ANTHROPIC_API_KEY` is set on `editify-dm`; reviewers get the real agent | Done |
 | 5 | **Broken today: `SUPABASE_SERVICE_ROLE_KEY` is not set on `editify-dm`.** The deployed secret is misspelled `SUPABASE_SERVICE__ROLE_KEY` (two underscores), so the app reads nothing and "delete account" answers 503, which fails guideline 5.1.1(v). Fix, in this order, then redeploy: `fly secrets set SUPABASE_SERVICE_ROLE_KEY=<value> -a editify-dm` then `fly secrets unset SUPABASE_SERVICE__ROLE_KEY -a editify-dm` | David |
@@ -601,7 +623,7 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 12 | ~~Decide whether the agent provider picker should show `claude-cli` and `codex-cli`~~ **Done.** The picker now drops a CLI option when the server's own probe reports it unavailable (`GET /agent/provider`), so a reviewer sees only the providers the deployed server can actually run | Done |
 | 13 | ~~Decide whether the "or from the server media folder" section should ship~~ **Done.** The section, and the `GET /assets/importable` call behind it, are now skipped unless the API base URL is localhost | Done |
 | 14 | Add privacy policy and terms links to the sign-in screen. **Now upgraded from "nice" to necessary**: the same links are mandatory on the paywall under 3.1.2 (section 7, items 5 and 6), so the URLs have to exist regardless, and putting them on both screens costs nothing | Owner of the mobile app screens |
-| 14a | Pin down which PostHog region hosts the data (`EXPO_PUBLIC_POSTHOG_HOST`). The privacy policy has to name the processor and its transfer basis, and PostHog Cloud EU and PostHog Cloud US are different answers. Section 2.11 item 6 | David |
+| 14a | Pin down which PostHog region hosts the data (`EXPO_PUBLIC_POSTHOG_HOST`). The privacy policy has to name the processor and its transfer basis, and PostHog Cloud EU and PostHog Cloud US are different answers. This is blocking, not "should fix", for as long as the privacy page is gated on it: it is fill token `{{FILL_POSTHOG_ENTITY}}` in item 1. Section 2.11 item 6, open question L2 | David |
 | 14b | Set `autocapture` explicitly on `PostHogProvider` rather than inheriting the library default. The default was checked and is already the right one (screens captured, touches not), so this is about making it intentional and bump-proof, not about fixing current behaviour. Section 2.6 | Owner of `apps/mobile/src/providers/AppProviders.tsx` |
 | 15 | Confirm the Google sign-in flow works in a release (non-dev-client) build. `sign-in.tsx` gates the Google button on not being in Expo Go, which is right, but the release path has not been exercised in this repo's history | David |
 
@@ -609,7 +631,7 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 
 | # | Item | Who |
 |---|---|---|
-| 16 | Replace token-in-query-string media URLs with short-lived signed URLs, then update `docs/privacy-policy.md` §10 | Automatable |
+| 16 | Replace token-in-query-string media URLs with short-lived signed URLs, then update `docs/privacy-policy.md` §10 (open question L3 in section 3) | Automatable |
 | 17 | Give the user a way to see and clear their diagnostic event log | Automatable |
 | 18 | Localise nothing for 1.0.0. English only is the right call; adding a locale multiplies the screenshot work by the number of locales | David |
 

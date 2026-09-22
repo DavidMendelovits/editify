@@ -66,8 +66,6 @@ We may update these terms. The current version is always at this URL, with the d
 
 These terms are governed by the laws of Spain, and the courts of Spain have exclusive jurisdiction, except where the mandatory consumer law of your own country of residence gives you the right to bring a claim there.
 
-VERIFY: confirm Spain is the correct forum for Maja Ventures SL. The registered address and the contact email are fill tokens in section 11; see the grep in `docs/app-store-submission.md` section 3.
-
 ## 11. Contact
 
 Maja Ventures SL, {{FILL_REGISTERED_ADDRESS}}, {{FILL_CONTACT_EMAIL}}.

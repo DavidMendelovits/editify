@@ -33,10 +33,62 @@ export const LEGAL_PAGES: readonly LegalPage[] = [
 // `serverRoot` is `server/` from both `src/` and the compiled `dist/`, so this
 // is the repo's `docs/` in development and `/app/docs` in the container, which
 // the Dockerfile copies in for exactly this reason.
-const docsRoot = resolve(serverRoot, '..', 'docs');
+export const DOCS_ROOT = resolve(serverRoot, '..', 'docs');
 
-export async function renderLegalPage(page: LegalPage): Promise<string> {
-  return layout(parseDocument(await readFile(join(docsRoot, page.source), 'utf8')), page);
+export interface LegalPageOptions {
+  /**
+   * Overrides `docs/`. Only the tests pass it; production reads `DOCS_ROOT`.
+   * It changes which file is read, never whether the guard below runs.
+   */
+  readonly docsRoot?: string;
+}
+
+/**
+ * The result of rendering one page. It is a union rather than a string so that
+ * the HTML is unreachable without first looking at `published`: a caller that
+ * forgets the check does not compile, which is the point. There is no second
+ * function that returns the HTML on its own.
+ */
+export type LegalPageRender =
+  | { readonly published: true; readonly html: string }
+  | { readonly published: false; readonly markers: readonly string[] };
+
+/**
+ * Two kinds of internal text live in these documents while they are being
+ * written: fill tokens for facts nobody has supplied yet, and `VERIFY:` notes
+ * addressed to whoever reviews the wording. Neither may ever be served. The
+ * notes are supposed to be kept in `docs/app-store-submission.md` instead, but
+ * that is a convention, and this is the enforcement.
+ */
+const UNRESOLVED = [
+  // `{{FILL_CONTACT_EMAIL}}`, and also a token whose braces were mangled.
+  /\{\{FILL_[A-Z0-9_]*\}*/g,
+  // An internal reviewer note.
+  /\bVERIFY:/g,
+];
+
+/** Every distinct piece of unresolved internal text in the rendered page. */
+export function unresolvedMarkers(html: string): readonly string[] {
+  const found = new Set<string>();
+  for (const pattern of UNRESOLVED) {
+    for (const match of html.matchAll(pattern)) found.add(match[0]);
+  }
+  return [...found];
+}
+
+/**
+ * The only place a legal page becomes HTML, and therefore the only place the
+ * guard has to live. The check runs on the finished page rather than on the
+ * markdown, so anything the renderer itself might introduce is covered too.
+ */
+export async function renderLegalPage(
+  page: LegalPage,
+  options: LegalPageOptions = {},
+): Promise<LegalPageRender> {
+  const source = await readFile(join(options.docsRoot ?? DOCS_ROOT, page.source), 'utf8');
+  const html = layout(parseDocument(source), page);
+  const markers = unresolvedMarkers(html);
+  return markers.length > 0 ? { published: false, markers } : { published: true, html };
 }
 
 interface ParsedDocument {
@@ -180,6 +232,29 @@ tbody tr:last-child td { border-bottom:0; }
 hr { border:0; border-top:1px solid var(--line); margin:2rem 0; }
 footer { margin-top:3rem; padding-top:1.2rem; border-top:1px solid var(--line); display:flex; flex-wrap:wrap; gap:1.2rem; font-size:.92rem; color:var(--muted); }
 `.trim();
+
+/**
+ * Served instead of a document that still carries unresolved internal text. It
+ * says nothing about why, because the reason is internal: a reviewer or a user
+ * who lands here early should see a page that is plainly not ready, not a
+ * half-finished legal document and not a stack trace.
+ */
+export const UNPUBLISHED_PAGE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not published yet</title>
+<style>${STYLES}</style>
+</head>
+<body>
+<main>
+<h1>Not published yet</h1>
+<p>This page is not published yet. Please check back shortly.</p>
+</main>
+</body>
+</html>
+`;
 
 function layout(parsed: ParsedDocument, page: LegalPage): string {
   const nav = LEGAL_PAGES
