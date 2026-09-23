@@ -368,6 +368,47 @@ export const styleAnalyzerSelectSchema = z.object({ analyzer: z.string().min(1).
 
 export const styleRenameSchema = z.object({ name: z.string().min(1).max(60) });
 
+/**
+ * Re-fit a caption's per-word karaoke timings onto edited text. Both the ASS
+ * export and the preview overlay build the VISIBLE string from `style.words`,
+ * so text edited without this would still render the old words.
+ *
+ * Same word count means a typo fix: every `s`/`e` is kept and only `w` swaps,
+ * so hand edits never lose the transcript's timing. A different count
+ * redistributes the original span across the new words by character length.
+ */
+export function refitCaptionWords(
+  words: CaptionStyle['words'],
+  text: string,
+): CaptionStyle['words'] {
+  if (!words?.length) return undefined;
+  const next = text.split(/\s+/).filter(Boolean);
+  if (next.length === 0) return undefined;
+  if (next.length === words.length) return words.map((word, index) => ({ ...word, w: next[index] as string }));
+  const start = words[0]!.s;
+  const end = words[words.length - 1]!.e;
+  const span = Math.max(end - start, next.length * MIN_WORD_SECONDS);
+  const totalChars = next.reduce((sum, word) => sum + word.length, 0);
+  let cursor = start;
+  return next.map((word, index) => {
+    const share = totalChars > 0 ? word.length / totalChars : 1 / next.length;
+    // The last word lands exactly on the original end so the caption never
+    // drifts past its own clip; every word keeps `e > s`, which the schema requires.
+    const rawEnd = index === next.length - 1 ? start + span : cursor + span * share;
+    const wordEnd = Math.max(rawEnd, cursor + MIN_WORD_SECONDS);
+    const fitted = { w: word, s: round6(cursor), e: round6(wordEnd) };
+    cursor = wordEnd;
+    return fitted;
+  });
+}
+
+/** Floor for a refitted word so `e > s` holds even for a one-character word. */
+const MIN_WORD_SECONDS = 0.01;
+
+function round6(value: number): number {
+  return Math.round(value * 1e6) / 1e6;
+}
+
 export function clipTimelineDuration(clip: Clip): number {
   return (clip.out - clip.in) / (clip.speed ?? 1);
 }

@@ -4,6 +4,7 @@ import {
   deriveProjectDuration,
   overlayPlacementSchema,
   projectSchema,
+  refitCaptionWords,
   type Clip,
   type Operation,
   type Project,
@@ -233,6 +234,13 @@ export function applyOperation(input: Project, operation: Operation): Project {
       if (track.kind !== 'caption') throw new OperationError('update_caption only accepts caption clips');
       const { clipId: _clipId, ...updates } = operation.params;
       Object.assign(clip, updates);
+      // The ASS export and the preview both draw `style.words`, not `text`, so
+      // new text without new words would render the old line. An explicit
+      // `style` wins — the agent hands over exact timings of its own.
+      if (updates.text !== undefined && updates.style === undefined && clip.style?.words?.length) {
+        const words = refitCaptionWords(clip.style.words, updates.text);
+        if (words) clip.style = { ...clip.style, words };
+      }
       validateTrim(clip);
       break;
     }
