@@ -138,3 +138,95 @@ describe('versioning and undo', () => {
     expect(undone.tracks[0]?.clips).toEqual([]);
   });
 });
+
+describe('video overlap invariant', () => {
+  let database: EditifyDatabase;
+  let store: ProjectStore;
+  beforeEach(() => {
+    database = createDatabase(':memory:');
+    store = new ProjectStore(database);
+  });
+
+  /** Two abutting 5s video clips plus an audio track, on the store. */
+  function twoClipProject(): Project {
+    return store.insert({
+      id: 'overlap-1', title: 'Overlap', format: '9:16', fps: 30, duration: 10, version: 0,
+      tracks: [
+        { id: 'video-main', kind: 'video', clips: [
+          { id: 'a', assetId: 'asset', start: 0, in: 0, out: 5 },
+          { id: 'b', assetId: 'asset', start: 5, in: 0, out: 5 },
+        ] },
+        { id: 'audio-main', kind: 'audio', clips: [] },
+      ],
+    });
+  }
+
+  it('accepts clips whose ends merely touch', () => {
+    const created = twoClipProject();
+    expect(created.tracks[0]?.clips).toHaveLength(2);
+    const moved = store.applyOperations(created.id, [
+      { type: 'move_clip', params: { clipId: 'b', start: 5 } },
+      { type: 'add_clip', params: { trackId: 'video-main', clip: { id: 'c', assetId: 'asset', start: 10, in: 0, out: 2 } } },
+    ], 0);
+    expect(moved.tracks[0]?.clips).toHaveLength(3);
+  });
+
+  it('rejects an add_clip onto an occupied video range', () => {
+    const created = twoClipProject();
+    expect(() => store.applyOperations(created.id, [
+      { type: 'add_clip', params: { trackId: 'video-main', clip: { id: 'c', assetId: 'asset', start: 2, in: 0, out: 2 } } },
+    ], 0)).toThrow(/overlap/);
+    expect(store.get(created.id)).toEqual(created);
+  });
+
+  it('rejects a trim that grows a clip into its neighbour', () => {
+    const created = twoClipProject();
+    expect(() => store.applyOperations(created.id, [
+      { type: 'trim_clip', params: { clipId: 'a', out: 7 } },
+    ], 0)).toThrow(/a and b/);
+    expect(store.get(created.id)?.version).toBe(0);
+  });
+
+  it('allows a batch that swaps two adjacent clips through an intermediate overlap', () => {
+    const created = store.insert({
+      id: 'swap-1', title: 'Swap', format: '9:16', fps: 30, duration: 7, version: 0,
+      tracks: [
+        { id: 'video-main', kind: 'video', clips: [
+          { id: 'a', assetId: 'asset', start: 0, in: 0, out: 3 },
+          { id: 'b', assetId: 'asset', start: 3, in: 0, out: 4 },
+        ] },
+      ],
+    });
+    const swapped = store.applyOperations(created.id, [{
+      type: 'set_clip_properties',
+      params: { updates: [{ clipId: 'a', start: 4 }, { clipId: 'b', start: 0 }] },
+    }], 0);
+    expect(swapped.tracks[0]?.clips).toMatchObject([{ id: 'a', start: 4 }, { id: 'b', start: 0 }]);
+  });
+
+  it('keeps a project that already overlaps editable, but refuses a second overlap', () => {
+    const created = store.insert({
+      id: 'bad-1', title: 'Already bad', format: '9:16', fps: 30, duration: 8, version: 0,
+      tracks: [
+        { id: 'video-main', kind: 'video', clips: [
+          { id: 'a', assetId: 'asset', start: 0, in: 0, out: 5 },
+          { id: 'b', assetId: 'asset', start: 3, in: 0, out: 5 },
+        ] },
+      ],
+    });
+    const edited = store.applyOperations(created.id, [{ type: 'set_volume', params: { clipId: 'a', volume: 0.5 } }], 0);
+    expect(edited.version).toBe(1);
+    expect(() => store.applyOperations(created.id, [
+      { type: 'add_clip', params: { trackId: 'video-main', clip: { id: 'c', assetId: 'asset', start: 1, in: 0, out: 1 } } },
+    ], 1)).toThrow(/overlap/);
+  });
+
+  it('still allows overlapping audio clips', () => {
+    const created = twoClipProject();
+    const mixed = store.applyOperations(created.id, [
+      { type: 'add_clip', params: { trackId: 'audio-main', clip: { id: 'bed', assetId: 'song', start: 0, in: 0, out: 10 } } },
+      { type: 'add_clip', params: { trackId: 'audio-main', clip: { id: 'sfx', assetId: 'whoosh', start: 2, in: 0, out: 1 } } },
+    ], 0);
+    expect(mixed.tracks[1]?.clips).toHaveLength(2);
+  });
+});

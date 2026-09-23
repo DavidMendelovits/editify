@@ -271,11 +271,12 @@ export function Timeline({
     if (mode === 'move') {
       const start = round6(moveTarget(track, clip, delta));
       if (Math.abs(start - clip.start) < 1e-4) return;
-      const followers = isSelected(clip.id) ? selectedIds.filter((id) => id !== clip.id) : [];
-      const updates = [
-        { clipId: clip.id, start },
-        ...bulkMoveUpdates(track.clips, followers, start - clip.start),
-      ];
+      // The dragged clip travels inside the selection, not beside it: one common
+      // shift for all of them, clamped off the clips that stay put.
+      const updates = isSelected(clip.id) && selectedIds.length > 1
+        ? bulkMoveUpdates(track.clips, selectedIds, start - clip.start)
+        : [{ clipId: clip.id, start }];
+      if (!updates.length) return;
       // ponytail: captions have no batch operation, so a multi-caption move
       // goes out as one `update_caption` per clip in a single batch.
       const ops: Operation[] = track.kind === 'caption'
