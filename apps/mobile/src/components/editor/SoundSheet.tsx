@@ -1,15 +1,41 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import type { LibrarySound, SoundCategory } from '@editify/shared';
+import type { AssetMetadata, LibrarySound, SoundCategory } from '@editify/shared';
 import { api, mediaUrl } from '../../lib/api';
+import { pickFromFiles } from '../../lib/pick';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 const CATEGORY_LABELS: Record<SoundCategory, string> = {
   whoosh: 'Whoosh', impact: 'Impact', pop: 'Pop', ui: 'UI', riser: 'Riser', music: 'Music',
 };
+
+/** Built-in library rows live in the same asset table; their ids carry this prefix. */
+const LIBRARY_ID_PREFIX = 'sound-';
+
+/**
+ * The creator's own uploads, shaped like a library sound so `onAdd` — and the
+ * `add_clip` it runs — stays exactly the same for both tabs. `url` is a path,
+ * not an absolute URL: the shared player runs it through `mediaUrl` itself.
+ */
+function asLibrarySound(asset: AssetMetadata): LibrarySound {
+  return {
+    id: asset.id,
+    name: asset.label ?? asset.originalName,
+    category: 'music',
+    duration: asset.duration,
+    assetId: asset.id,
+    url: `/assets/${asset.id}/original`,
+  };
+}
+
+/** An audio-only asset: an audio mime type, or a stream with sound and no picture. */
+function isTrack(asset: AssetMetadata): boolean {
+  if (asset.id.startsWith(LIBRARY_ID_PREFIX)) return false;
+  return asset.mimeType.startsWith('audio/') || (asset.hasAudio && asset.width === 0);
+}
 
 interface Props {
   visible: boolean;
@@ -24,10 +50,20 @@ interface Props {
  */
 export function SoundSheet({ visible, onClose, onAdd }: Props) {
   const insets = useSafeAreaInsets();
+  const [tab, setTab] = useState<'sfx' | 'music'>('sfx');
   const [category, setCategory] = useState<SoundCategory | 'all'>('all');
   const [playingId, setPlayingId] = useState<string>();
   const [addedId, setAddedId] = useState<string>();
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string>();
+  const queryClient = useQueryClient();
   const soundsQuery = useQuery({ queryKey: ['sounds'], queryFn: api.listSounds, enabled: visible, staleTime: Infinity });
+  // The creator's library-wide tracks: no projectId, so they follow them across projects.
+  const tracksQuery = useQuery({
+    queryKey: ['assets'],
+    queryFn: async () => await api.listAssets(),
+    enabled: visible && tab === 'music',
+  });
   // One shared player: tapping a row swaps its source. Audio-only playback.
   const player = useVideoPlayer(null, (instance) => { instance.loop = false; });
 
@@ -44,6 +80,10 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
     () => [...new Set((soundsQuery.data ?? []).map((sound) => sound.category))],
     [soundsQuery.data],
   );
+  const tracks = useMemo(
+    () => (tracksQuery.data ?? []).filter(isTrack).map(asLibrarySound),
+    [tracksQuery.data],
+  );
 
   function preview(sound: LibrarySound): void {
     if (playingId === sound.id) {
@@ -55,6 +95,20 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
     player.replaceAsync(mediaUrl(sound.url))
       .then(() => { player.play(); })
       .catch(() => setPlayingId((current) => (current === sound.id ? undefined : current)));
+  }
+
+  async function upload(): Promise<void> {
+    setUploading(true);
+    setUploadError(undefined);
+    try {
+      const result = await pickFromFiles(undefined);
+      if (result.failed.length > 0) setUploadError(`Could not upload ${result.failed.join(', ')}`);
+      if (result.assets.length > 0) await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUploading(false);
+    }
   }
 
   function add(sound: LibrarySound): void {
@@ -88,24 +142,58 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
               <Text style={styles.close}>×</Text>
             </Pressable>
           </View>
-          <Text style={styles.subtitle}>tap to preview · + drops it at the playhead</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsContent}>
-            {(['all', ...categories] as Array<SoundCategory | 'all'>).map((item) => (
+          <View style={styles.tabs}>
+            {([['sfx', 'SFX'], ['music', 'MY MUSIC']] as const).map(([key, label]) => (
               <Pressable
-                key={item}
-                onPress={() => setCategory(item)}
-                style={[styles.chip, category === item && styles.chipActive]}
+                key={key}
+                accessibilityRole="tab"
+                accessibilityLabel={`${label.toLowerCase()} tab`}
+                accessibilityState={{ selected: tab === key }}
+                onPress={() => setTab(key)}
+                style={[styles.tab, tab === key && styles.tabActive]}
               >
-                <Text style={[styles.chipText, category === item && styles.chipTextActive]}>
-                  {item === 'all' ? 'All' : CATEGORY_LABELS[item]}
-                </Text>
+                <Text style={[styles.tabText, tab === key && styles.tabTextActive]}>{label}</Text>
               </Pressable>
             ))}
-          </ScrollView>
+          </View>
+          <Text style={styles.subtitle}>tap to preview · + drops it at the playhead</Text>
+          {tab === 'sfx' ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips} contentContainerStyle={styles.chipsContent}>
+              {(['all', ...categories] as Array<SoundCategory | 'all'>).map((item) => (
+                <Pressable
+                  key={item}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item} category`}
+                  onPress={() => setCategory(item)}
+                  style={[styles.chip, category === item && styles.chipActive]}
+                >
+                  <Text style={[styles.chipText, category === item && styles.chipTextActive]}>
+                    {item === 'all' ? 'All' : CATEGORY_LABELS[item]}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="upload track"
+              disabled={uploading}
+              onPress={() => void upload()}
+              style={({ pressed }) => [styles.chip, styles.upload, pressed && styles.pressed]}
+            >
+              <Text style={styles.uploadText}>{uploading ? 'UPLOADING…' : '+ UPLOAD TRACK'}</Text>
+            </Pressable>
+          )}
           <ScrollView style={styles.list} nestedScrollEnabled>
-            {soundsQuery.isLoading && <Text style={styles.hint}>synthesizing the library…</Text>}
-            {soundsQuery.isError && <Text style={styles.error}>Could not load sounds: {soundsQuery.error.message}</Text>}
-            {sounds.map((sound) => (
+            {tab === 'sfx' && soundsQuery.isLoading && <Text style={styles.hint}>synthesizing the library…</Text>}
+            {tab === 'sfx' && soundsQuery.isError && <Text style={styles.error}>Could not load sounds: {soundsQuery.error.message}</Text>}
+            {tab === 'music' && uploadError !== undefined && <Text style={styles.error}>{uploadError}</Text>}
+            {tab === 'music' && tracksQuery.isLoading && <Text style={styles.hint}>loading your tracks…</Text>}
+            {tab === 'music' && tracksQuery.isError && <Text style={styles.error}>Could not load your tracks: {tracksQuery.error.message}</Text>}
+            {tab === 'music' && !tracksQuery.isLoading && !tracksQuery.isError && tracks.length === 0 && (
+              <Text style={styles.hint}>No tracks yet. Upload one and it stays in your library.</Text>
+            )}
+            {(tab === 'sfx' ? sounds : tracks).map((sound) => (
               <View key={sound.id} style={styles.row}>
                 <Pressable accessibilityRole="button" accessibilityLabel={`preview ${sound.name}`} style={styles.rowBody} onPress={() => preview(sound)}>
                   <Text style={styles.playIcon}>{playingId === sound.id ? '■' : '▶'}</Text>
@@ -143,6 +231,16 @@ const styles = StyleSheet.create({
   title: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
   close: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.xl, padding: space.sm },
   subtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm },
+  tabs: { flexDirection: 'row', gap: space.md },
+  tab: {
+    flex: 1, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.panelRaised, minHeight: 30, alignItems: 'center', justifyContent: 'center',
+  },
+  tabActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  tabText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
+  tabTextActive: { color: colors.text },
+  upload: { alignSelf: 'flex-start', alignItems: 'center', paddingHorizontal: space.xl },
+  uploadText: { color: colors.text, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
   chips: { flexGrow: 0 },
   chipsContent: { gap: space.md, paddingVertical: space.sm },
   chip: {

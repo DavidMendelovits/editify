@@ -201,6 +201,8 @@ function energyPct(db: number): number {
 /**
  * Slim caption block. Rows are pre-assigned by `captionRows`, so chips that
  * overlap in time stack visibly (and turn amber) instead of hiding the bug.
+ * Trim handles appear when selected — a caption's on-screen window is dragged
+ * at either edge, like a sticker's.
  */
 export const CaptionChip = memo(function CaptionChip({
   clip, pxPerSec, row, overlapping, selected, height, onSelect, onDragStart, onDragMove, onDragEnd,
@@ -219,6 +221,16 @@ export const CaptionChip = memo(function CaptionChip({
     onMove: (dx) => onDragMove(id, 'move', dx),
     onEnd: (dx) => onDragEnd(id, 'move', dx),
   }, { hold: selected });
+  const leftHandle = useHorizontalDrag({
+    onStart: () => onDragStart(id, 'in'),
+    onMove: (dx) => onDragMove(id, 'in', dx),
+    onEnd: (dx) => onDragEnd(id, 'in', dx),
+  });
+  const rightHandle = useHorizontalDrag({
+    onStart: () => onDragStart(id, 'out'),
+    onMove: (dx) => onDragMove(id, 'out', dx),
+    onEnd: (dx) => onDragEnd(id, 'out', dx),
+  });
   return (
     <View
       {...drag}
@@ -234,6 +246,12 @@ export const CaptionChip = memo(function CaptionChip({
       <Text numberOfLines={1} {...sensitive} style={[styles.captionText, overlapping && styles.captionTextOverlap]}>
         {clip.text ?? 'n/a'}
       </Text>
+      {selected && (
+        <>
+          <View {...leftHandle} hitSlop={{ top: 10, bottom: 10, left: 12, right: 4 }} style={[styles.handle, styles.handleLeft, styles.handleVisible]} />
+          <View {...rightHandle} hitSlop={{ top: 10, bottom: 10, left: 4, right: 12 }} style={[styles.handle, styles.handleRight, styles.handleVisible]} />
+        </>
+      )}
     </View>
   );
 });
