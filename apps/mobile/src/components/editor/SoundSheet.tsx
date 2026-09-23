@@ -189,7 +189,7 @@ export function SoundSheet({ visible, onClose, onAdd }: Props) {
             {tab === 'music' && tracksQuery.isLoading && <Text style={styles.hint}>loading your tracks…</Text>}
             {tab === 'music' && tracksQuery.isError && <Text style={styles.error}>Could not load your tracks: {tracksQuery.error.message}</Text>}
             {tab === 'music' && !tracksQuery.isLoading && !tracksQuery.isError && tracks.length === 0 && (
-              <Text style={styles.hint}>No tracks yet — upload one and it stays in your library.</Text>
+              <Text style={styles.hint}>No tracks yet. Upload one and it stays in your library.</Text>
             )}
             {(tab === 'sfx' ? sounds : tracks).map((sound) => (
               <View key={sound.id} style={styles.row}>
