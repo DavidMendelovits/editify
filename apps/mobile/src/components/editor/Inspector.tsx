@@ -35,6 +35,18 @@ const DEFAULT_TRANSITION_DURATION = 0.5;
 /** Where the caption draws in the frame — the same three the style schema allows. */
 const CAPTION_POSITIONS: Array<CaptionStyle['position']> = ['top', 'center', 'bottom'];
 
+/** Caption size as a share of frame height, stepped inside the schema's 1–25 range. */
+const CAPTION_SIZE_STEP = 0.5;
+const CAPTION_SIZE_MIN = 1;
+const CAPTION_SIZE_MAX = 25;
+/**
+ * A short palette, not a picker: white plus the fills the style packets reach
+ * for. No font row — Space Grotesk (preview) and Montserrat (export) are the
+ * only families bundled, so a family picker would change nothing.
+ */
+const CAPTION_COLORS = ['#FFFFFF', '#FACC15', '#4ADE80', '#F472B6', '#111111'];
+const CAPTION_EMPHASES: Array<CaptionStyle['emphasis']> = ['none', 'bold', 'highlight'];
+
 const STICKER_SIZE_STEP = 0.04;
 const STICKER_ROTATION_STEP = 15;
 
@@ -42,8 +54,11 @@ interface Props {
   clip: Clip | undefined;
   asset: AssetMetadata | undefined;
   kind: 'video' | 'audio' | 'caption' | 'overlay' | undefined;
+  /** Every caption clip in the project — what "apply to all" writes to. */
+  captionClips?: Clip[];
   pending: boolean;
-  onApply: (ops: Operation[], patch: Partial<Clip>) => void;
+  /** `extra` carries the optimistic patch for clips other than the selected one. */
+  onApply: (ops: Operation[], patch: Partial<Clip>, extra?: Array<{ clipId: string; patch: Partial<Clip> }>) => void;
 }
 
 /**
@@ -51,7 +66,7 @@ interface Props {
  * worth nudging by hand — speed/volume/zoom for media clips, size/rotation
  * for stickers. Every control commits one operation with an optimistic patch.
  */
-export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
+export function Inspector({ clip, asset, kind, captionClips, pending, onApply }: Props) {
   if (!clip) {
     return (
       <View style={styles.bar}>
@@ -113,6 +128,47 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
     const { anchorPct: _anchorPct, ...rest } = clip.style ?? {};
     const style = { ...rest, position } as CaptionStyle;
     onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }], { style });
+  };
+
+  // `update_caption` REPLACES the style object, so every edit merges onto the
+  // clip's own style — that is what carries `words`, the karaoke timings.
+  const applyCaptionStyle = (patch: Partial<CaptionStyle>): void => {
+    const style = { ...clip.style, ...patch } as CaptionStyle;
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }], { style });
+  };
+
+  // `size` is pixels at a 1080-wide frame while `sizePct` is a share of frame
+  // height, so converting needs the aspect the inspector does not have.
+  // ponytail: seed from 9:16, the project default; the first nudge pins an
+  // explicit `sizePct`, which the preview and the ASS export both prefer.
+  const captionSizePct = clip.style?.sizePct ?? round1(((clip.style?.size ?? 52) / 1080) * (9 / 16) * 100);
+  const stepCaptionSize = (direction: -1 | 1): void => {
+    const next = round1(Math.max(CAPTION_SIZE_MIN, Math.min(CAPTION_SIZE_MAX, captionSizePct + direction * CAPTION_SIZE_STEP)));
+    if (next === captionSizePct) return;
+    applyCaptionStyle({ sizePct: next });
+  };
+
+  /**
+   * One look across the whole track. `words` stays per caption (they are that
+   * line's timings), and `anchorPct` is dropped from every clip — including the
+   * selected one, so the source cannot sit somewhere the copies cannot reach —
+   * which is the same trade the POSITION chips make.
+   */
+  const captionSiblings = captionClips ?? [];
+  const applyCaptionStyleToAll = (): void => {
+    const { words: _words, anchorPct: _anchorPct, ...shared } = clip.style ?? {};
+    const ops: Operation[] = [];
+    const extra: Array<{ clipId: string; patch: Partial<Clip> }> = [];
+    let selectedPatch: Partial<Clip> = {};
+    for (const caption of captionSiblings) {
+      const words = caption.style?.words;
+      const style = { ...shared, ...(words ? { words } : {}) } as CaptionStyle;
+      ops.push({ type: 'update_caption', params: { clipId: caption.id, style } });
+      if (caption.id === clip.id) selectedPatch = { style };
+      else extra.push({ clipId: caption.id, patch: { style } });
+    }
+    if (ops.length === 0) return;
+    onApply(ops, selectedPatch, extra);
   };
 
   const placement = clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
@@ -205,6 +261,65 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
           </View>
         </View>
       )}
+      {isCaption && (
+        <Stepper
+          label="SIZE"
+          hint="caption size"
+          value={`${captionSizePct.toFixed(1)}%`}
+          onDown={() => stepCaptionSize(-1)}
+          onUp={() => stepCaptionSize(1)}
+        />
+      )}
+      {isCaption && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>COLOR</Text>
+          <View style={styles.chipRow}>
+            {CAPTION_COLORS.map((color) => (
+              <Pressable
+                key={color}
+                accessibilityRole="button"
+                accessibilityLabel={`caption color ${color}`}
+                onPress={() => applyCaptionStyle({ color })}
+                style={({ pressed }) => [
+                  styles.swatch,
+                  { backgroundColor: color },
+                  (clip.style?.color ?? '#FFFFFF').toUpperCase() === color && styles.swatchActive,
+                  pressed && styles.pressed,
+                ]}
+              />
+            ))}
+          </View>
+        </View>
+      )}
+      {isCaption && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>EMPHASIS</Text>
+          <View style={styles.chipRow}>
+            {CAPTION_EMPHASES.map((emphasis) => (
+              <Chip
+                key={emphasis}
+                label={emphasis}
+                hint={`caption emphasis ${emphasis}`}
+                active={(clip.style?.emphasis ?? 'bold') === emphasis}
+                onPress={() => applyCaptionStyle({ emphasis })}
+              />
+            ))}
+          </View>
+        </View>
+      )}
+      {isCaption && captionSiblings.length > 1 && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>STYLE</Text>
+          <View style={styles.chipRow}>
+            <Chip
+              label="apply to all"
+              hint="apply caption style to all"
+              active={false}
+              onPress={applyCaptionStyleToAll}
+            />
+          </View>
+        </View>
+      )}
       {isSticker && (
         <>
           <Stepper label="SIZE" value={`${Math.round(placement.width * 100)}%`} onDown={() => stepSticker('width', -1)} onUp={() => stepSticker('width', 1)} />
@@ -223,6 +338,10 @@ function sameTransform(left: ClipTransform | undefined, right: ClipTransform | u
 
 function clamp(value: number, min: number, max: number): number {
   return Math.round(Math.max(min, Math.min(max, value)) * 100) / 100;
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function clampRotation(value: number): number {
@@ -287,16 +406,17 @@ function Chip({ label, hint, active, onPress }: { label: string; hint: string; a
   );
 }
 
-function Stepper({ label, value, onDown, onUp }: { label: string; value: string; onDown: () => void; onUp: () => void }) {
+/** `hint` names the control when the bare label is ambiguous (two SIZE steppers). */
+function Stepper({ label, hint, value, onDown, onUp }: { label: string; hint?: string; value: string; onDown: () => void; onUp: () => void }) {
   return (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <View style={styles.stepper}>
-        <Pressable accessibilityRole="button" accessibilityLabel={`decrease ${label}`} hitSlop={8} onPress={onDown} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={hint ? `${hint} down` : `decrease ${label}`} hitSlop={8} onPress={onDown} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
           <Text style={styles.stepText}>−</Text>
         </Pressable>
         <Text style={styles.stepValue}>{value}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={`increase ${label}`} hitSlop={8} onPress={onUp} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={hint ? `${hint} up` : `increase ${label}`} hitSlop={8} onPress={onUp} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
           <Text style={styles.stepText}>+</Text>
         </Pressable>
       </View>
@@ -336,6 +456,8 @@ const styles = StyleSheet.create({
   chipActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   chipTextActive: { color: colors.text },
+  swatch: { width: 22, height: 22, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  swatchActive: { borderWidth: 2, borderColor: colors.accent },
   zoomCustom: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   pressed: { opacity: 0.6 },
