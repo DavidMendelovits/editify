@@ -12,7 +12,7 @@ import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
 import { captureScreen, type Screenshot } from '../src/lib/capture';
 import { setReportContext, track } from '../src/lib/telemetry';
-import { useTier } from '../src/lib/purchases';
+import { billingAvailable, useTier } from '../src/lib/purchases';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
 import { appVersion } from '../src/lib/version';
 
@@ -80,7 +80,9 @@ export default function HomeScreen() {
         <Brand />
         <View style={styles.headerActions}>
           <Text style={styles.version}>{appVersion}</Text>
-          <Button style={styles.styleButton} accessibilityLabel={tier === 'free' ? 'upgrade' : 'manage subscription'} onPress={() => router.push('/paywall')}>{tier === 'free' ? 'upgrade' : tier}</Button>
+          {billingAvailable && (
+            <Button style={styles.styleButton} accessibilityLabel={tier === 'free' ? 'upgrade' : 'manage subscription'} onPress={() => router.push('/paywall')}>{tier === 'free' ? 'upgrade' : tier}</Button>
+          )}
           <Button secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>import media</Button>
           <Button secondary style={styles.styleButton} onPress={() => router.push('/style')}>learn my style</Button>
           <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); void captureScreen().then(setShot); setFeedbackOpen(true); }}>send feedback</Button>
