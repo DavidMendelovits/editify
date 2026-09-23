@@ -1,5 +1,6 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { AssetMetadata, Clip, ClipTransform, ClipTransition, Operation } from '@editify/shared';
+import { useEffect, useState } from 'react';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import type { AssetMetadata, CaptionStyle, Clip, ClipTransform, ClipTransition, Operation } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 import { formatTimecode } from '../../lib/timeline';
@@ -30,6 +31,9 @@ const TRANSITIONS: Array<{ key: ClipTransition['type']; label: string }> = [
 ];
 const TRANSITION_DURATIONS = [0.3, 0.5, 1];
 const DEFAULT_TRANSITION_DURATION = 0.5;
+
+/** Where the caption draws in the frame — the same three the style schema allows. */
+const CAPTION_POSITIONS: Array<CaptionStyle['position']> = ['top', 'center', 'bottom'];
 
 const STICKER_SIZE_STEP = 0.04;
 const STICKER_ROTATION_STEP = 15;
@@ -97,6 +101,20 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
     onApply([{ type: 'set_transition', params: { clipId: clip.id, transition: next } }], patch);
   };
 
+  const applyText = (text: string): void => {
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, text } }], { text });
+  };
+
+  // `anchorPct` outranks `position` in both the preview overlay and the ASS
+  // export, so a styled caption would ignore these chips unless picking a
+  // position drops the explicit anchor.
+  const captionPosition = clip.style?.position ?? 'bottom';
+  const applyCaptionPosition = (position: CaptionStyle['position']): void => {
+    const { anchorPct: _anchorPct, ...rest } = clip.style ?? {};
+    const style = { ...rest, position } as CaptionStyle;
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }], { style });
+  };
+
   const placement = clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
   const stepSticker = (field: 'width' | 'rotation', direction: -1 | 1): void => {
     const next = field === 'width'
@@ -110,11 +128,15 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
     <View style={[styles.bar, pending && styles.barPending]} pointerEvents={pending ? 'none' : 'auto'}>
       <View style={styles.identity}>
         <Text style={styles.kind}>{isCaption ? 'CAPTION' : isSticker ? 'STICKER' : kind === 'audio' ? 'SOUND' : 'CLIP'}</Text>
-        <Text style={styles.name} numberOfLines={1}>
-          {isCaption || (isSticker && !clip.assetId)
-            ? clip.text ?? clip.id
-            : asset?.label ?? asset?.originalName ?? clip.assetId ?? clip.id}
-        </Text>
+        {isCaption ? (
+          <CaptionText clipId={clip.id} text={clip.text} onCommit={applyText} />
+        ) : (
+          <Text style={styles.name} numberOfLines={1}>
+            {isSticker && !clip.assetId
+              ? clip.text ?? clip.id
+              : asset?.label ?? asset?.originalName ?? clip.assetId ?? clip.id}
+          </Text>
+        )}
       </View>
       <Field label="START" value={formatTimecode(clip.start)} />
       <Field label="DURATION" value={`${clipTimelineDuration(clip).toFixed(2)}s`} />
@@ -167,6 +189,22 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
           </View>
         </View>
       )}
+      {isCaption && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>POSITION</Text>
+          <View style={styles.chipRow}>
+            {CAPTION_POSITIONS.map((position) => (
+              <Chip
+                key={position}
+                label={position}
+                hint={`caption ${position}`}
+                active={captionPosition === position}
+                onPress={() => applyCaptionPosition(position)}
+              />
+            ))}
+          </View>
+        </View>
+      )}
       {isSticker && (
         <>
           <Stepper label="SIZE" value={`${Math.round(placement.width * 100)}%`} onDown={() => stepSticker('width', -1)} onUp={() => stepSticker('width', 1)} />
@@ -189,6 +227,41 @@ function clamp(value: number, min: number, max: number): number {
 
 function clampRotation(value: number): number {
   return Math.max(-180, Math.min(180, value));
+}
+
+/**
+ * The caption's own words, edited in place. Kept as local draft state so every
+ * keystroke does not fire an operation; the edit commits on blur or submit,
+ * and an unchanged or empty draft commits nothing.
+ */
+function CaptionText({ clipId, text, onCommit }: { clipId: string; text: string | undefined; onCommit: (text: string) => void }) {
+  const [draft, setDraft] = useState(text ?? '');
+  // Re-seed on selection change only: re-seeding on every `text` change would
+  // fight the typist while an optimistic patch lands mid-edit.
+  useEffect(() => { setDraft(text ?? ''); }, [clipId]);
+  const commit = (): void => {
+    const next = draft.trim();
+    if (next.length === 0 || next === (text ?? '')) {
+      setDraft(text ?? '');
+      return;
+    }
+    onCommit(next);
+  };
+  return (
+    <TextInput
+      accessibilityLabel="caption text"
+      value={draft}
+      onChangeText={setDraft}
+      onBlur={commit}
+      onSubmitEditing={commit}
+      blurOnSubmit
+      multiline={false}
+      returnKeyType="done"
+      placeholder="caption text"
+      placeholderTextColor={colors.muted}
+      style={styles.captionInput}
+    />
+  );
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -240,6 +313,11 @@ const styles = StyleSheet.create({
   identity: { minWidth: 140, maxWidth: 240, gap: space.xs },
   kind: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
   name: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.base },
+  captionInput: {
+    color: colors.text, fontFamily: fonts.semibold, fontSize: type.base,
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
+    paddingHorizontal: space.md, minHeight: 26,
+  },
   field: { gap: space.xs },
   fieldLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
   fieldValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
