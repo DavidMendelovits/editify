@@ -145,7 +145,9 @@ as_quote() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 # ax <window prefix> <label substring> <press|look> <fwd|rev>
 #
 # Prints "<role>|<description>|<value>" for the first control whose label or
-# value contains the substring, case-sensitively (the app labels its email field
+# value contains the substring, case-sensitively. An empty text field reports
+# its placeholder as the value, so "reads 'you@example.com'" in a failure means
+# the field is empty, not that the wrong thing was typed (the app labels its email field
 # "email" while the caption above it reads "EMAIL", and matching loosely picks
 # the caption). `rev` walks children last-first, which matters in the editor:
 # the chat dock is the last subtree, and a forward walk crosses a couple of
@@ -209,6 +211,9 @@ tell application "System Events" to tell process "Simulator"
   repeat 30 times
     try
       set w to first window whose name starts with "$win"
+      -- Raising matters: keystrokes go to whichever device window is key, so
+      -- without this the second device in the run types into the first one's.
+      perform action "AXRaise" of w
       return my walk(w, "$target", $do_press, $reversed)
     on error
       delay 1
@@ -227,15 +232,18 @@ type_text() {
   sleep 0.6
 }
 
-# fill <window prefix> <label> <text>
+# fill <window prefix> <label> <text> [secure]
 #
 # Types into a field and then reads it back, because keystrokes into the
 # Simulator are not reliably atomic: a long string can arrive with its tail
 # missing, which on the sign-in screen means a run that looks fine until the
 # server rejects the address. Retries, then gives up loudly rather than
 # carrying on with a half-typed field.
+#
+# A secureTextEntry field publishes bullets rather than its contents, so there
+# the readback can only check the length.
 fill() {
-  local win="$1" label="$2" text="$3" attempt got i
+  local win="$1" label="$2" text="$3" secure="${4:-}" attempt got i
   got=""
   for attempt in 1 2 3; do
     press "$win" "$label" >/dev/null
@@ -245,7 +253,11 @@ fill() {
     type_text "${text:${#text}/2}"
     sleep 0.6
     got="$(ax_value "$win" "$label")"
-    [[ "$got" == "$text" ]] && return 0
+    if [[ "$secure" == secure ]]; then
+      [[ ${#got} -eq ${#text} ]] && return 0
+    else
+      [[ "$got" == "$text" ]] && return 0
+    fi
     # Wrong contents: clear the field a character at a time before another go.
     # There is no reliable select-all here, and the Simulator reads cmd-arrow as
     # a device rotation rather than a caret move.
@@ -253,6 +265,9 @@ fill() {
       osascript -e 'tell application "System Events" to key code 51' >/dev/null 2>&1
     done
   done
+  if [[ "$secure" == secure ]]; then
+    die "could not type '$label' on $win: field holds ${#got} characters, expected ${#text}"
+  fi
   die "could not type '$label' on $win: field reads '${got}'"
 }
 
@@ -307,7 +322,7 @@ for row in "${DEVICES[@]}"; do
 
   log "Signing in as $EMAIL"
   fill "$name" "email" "$EMAIL"
-  fill "$name" "password" "$PASSWORD"
+  fill "$name" "password" "$PASSWORD" secure
   press "$name" "sign in" >/dev/null
   sleep 8   # Supabase round trip, then the router swaps to the home screen
 
