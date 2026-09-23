@@ -5,6 +5,9 @@ import type { EditifyDatabase } from '../db/database.js';
 
 export interface AccountDeletion { projects: number; assets: number; reports: number }
 
+/** Well under SQLite's bound-parameter ceiling on every build we might run on. */
+const OBSERVATION_DELETE_CHUNK = 500;
+
 /** Thrown when the server has no service-role key, so the login cannot be removed. */
 export class AccountDeletionUnavailable extends Error {
   constructor(message: string) {
@@ -32,9 +35,12 @@ export async function deleteUserData(database: EditifyDatabase, userId: string):
   `).all(userId) as Array<{ output_path: string }>).map((row) => row.output_path);
 
   const counts = database.transaction((): AccountDeletion => {
-    if (assetIds.length) {
-      database.prepare(`DELETE FROM video_observations WHERE asset_id IN (${assetIds.map(() => '?').join(', ')})`)
-        .run(...assetIds);
+    // One placeholder per asset would blow SQLite's variable limit for a heavy
+    // user, and this is the one endpoint Apple requires to work, so chunk it.
+    for (let start = 0; start < assetIds.length; start += OBSERVATION_DELETE_CHUNK) {
+      const chunk = assetIds.slice(start, start + OBSERVATION_DELETE_CHUNK);
+      database.prepare(`DELETE FROM video_observations WHERE asset_id IN (${chunk.map(() => '?').join(', ')})`)
+        .run(...chunk);
     }
     return {
       projects: database.prepare('DELETE FROM projects WHERE user_id = ?').run(userId).changes,
