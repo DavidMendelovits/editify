@@ -13,11 +13,12 @@ import { TranscriptService } from '../src/services/transcript-service.js';
 
 // Keyed by the catalog: revert_run is client-only and has no tool.
 const inputs: Record<(typeof OPERATION_CATALOG)[number], unknown> = {
-  add_clip: { trackId: 'video-main', clip: { id: 'clip-new', assetId: 'asset-2', start: 4, in: 0, out: 2 } },
+  // Starts sit past clip-b's end (5s): a video track rejects overlapping clips.
+  add_clip: { trackId: 'video-main', clip: { id: 'clip-new', assetId: 'asset-2', start: 5, in: 0, out: 2 } },
   remove_clip: { clipId: 'clip-a' },
   split_clip: { clipId: 'clip-a', at: 2, newClipId: 'clip-split' },
   trim_clip: { clipId: 'clip-a', in: 0.5, out: 3.5 },
-  move_clip: { clipId: 'clip-a', start: 2 },
+  move_clip: { clipId: 'clip-a', start: 5 },
   reorder_clips: { trackId: 'video-main', clipIds: ['clip-b', 'clip-a'] },
   set_volume: { clipId: 'clip-a', volume: 0.5 },
   set_speed: { clipId: 'clip-a', speed: 1.25 },

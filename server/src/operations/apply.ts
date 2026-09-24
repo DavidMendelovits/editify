@@ -289,3 +289,47 @@ export function applyOperation(input: Project, operation: Operation): Project {
   project.duration = deriveProjectDuration(project);
   return projectSchema.parse(project);
 }
+
+/** Float ends that merely touch (clip A ends at 5, B starts at 5) are not an overlap. */
+const OVERLAP_EPSILON = 1e-6;
+
+export interface ClipOverlap {
+  trackId: string;
+  clipIds: [string, string];
+  start: number;
+  end: number;
+}
+
+/** Order-independent pair identity, for telling a new overlap from one already in the document. */
+export function overlapKey(overlap: ClipOverlap): string {
+  return [...overlap.clipIds].sort().join('|');
+}
+
+/**
+ * Every pair of clips sharing timeline time on a video track, earliest first.
+ * A video track shows one picture at a time, so an overlap there can only trim
+ * badly and glitch. Audio overlap is by design (the pool/amix mixes beds and
+ * SFX) and caption/overlay stacking is too, so those tracks are not checked.
+ */
+export function findVideoOverlaps(project: Project): ClipOverlap[] {
+  const overlaps: ClipOverlap[] = [];
+  for (const track of project.tracks) {
+    if (track.kind !== 'video') continue;
+    const ordered = [...track.clips].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+    for (let index = 0; index < ordered.length; index += 1) {
+      const left = ordered[index] as Clip;
+      const leftEnd = left.start + clipTimelineDuration(left);
+      for (let other = index + 1; other < ordered.length; other += 1) {
+        const right = ordered[other] as Clip;
+        if (right.start >= leftEnd - OVERLAP_EPSILON) break;
+        overlaps.push({
+          trackId: track.id,
+          clipIds: [left.id, right.id],
+          start: right.start,
+          end: Math.min(leftEnd, right.start + clipTimelineDuration(right)),
+        });
+      }
+    }
+  }
+  return overlaps;
+}
