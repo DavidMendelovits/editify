@@ -63,7 +63,7 @@ export default function HomeScreen() {
         <Brand />
         <View style={styles.headerActions}>
           <Button secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>import media</Button>
-          <Button secondary style={styles.styleButton} onPress={() => router.push('/style')}>learn my style</Button>
+          <Button accessibilityLabel="style memory" secondary style={styles.styleButton} onPress={() => router.push('/style')}>style memory</Button>
           <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); void captureScreen().then(setShot); setFeedbackOpen(true); }}>send feedback</Button>
           <Button accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</Button>
         </View>
@@ -222,7 +222,7 @@ function formatDuration(seconds: number): string {
 }
 
 const styles = StyleSheet.create({
-  header: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
+  header: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl, flexWrap: 'wrap' },
   styleButton: { minHeight: 32, paddingHorizontal: space.xl },
   signOutButton: { minHeight: 32, paddingHorizontal: space.xl },
   hero: { paddingTop: space.section, paddingBottom: space.lg, gap: space.lg, maxWidth: 900, width: '100%', alignSelf: 'center' },
@@ -265,7 +265,7 @@ const styles = StyleSheet.create({
   projectCopy: { padding: space.xl, gap: space.sm },
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xl },
   projectMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg, flexWrap: 'wrap', flexShrink: 1, justifyContent: 'flex-end' },
   emptyCard: { alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed', borderRadius: radius.md, padding: space.section, gap: space.md },
   empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.lg, textAlign: 'center' },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
