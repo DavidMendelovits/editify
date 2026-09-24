@@ -486,6 +486,7 @@ export default function EditorScreen() {
         onSelect={setSelectedId}
         onApply={applyOps}
         onImport={() => void addFrom(pickFromFiles)}
+        onImportPhotos={() => void addFrom(pickFromPhotos)}
         onImportFiles={(files) => void addFrom((projectId, onProgress) => uploadFiles(projectId, files, onProgress))}
         importing={uploading}
         importProgress={progress}
