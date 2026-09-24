@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { STYLE_PACKETS, type StylePacket } from '@editify/shared';
 import { api } from '../../lib/api';
@@ -25,6 +26,7 @@ const APPLIED_MS = 900;
  * from a dissected clip. One at a time — applying is a sweep, not a blend.
  */
 export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
+  const insets = useSafeAreaInsets();
   /** Only the packet you actually tapped reports progress; the rest just dim. */
   const [applyingId, setApplyingId] = useState<string | null>(null);
   const [appliedId, setAppliedId] = useState<string | null>(null);
@@ -72,7 +74,7 @@ export function StylePacketSheet({ visible, onClose, onApply, busy }: Props) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }]}>
           <View style={styles.header}>
             <Text style={styles.title}>STYLE PACKETS</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={onClose}>

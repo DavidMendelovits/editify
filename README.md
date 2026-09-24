@@ -93,6 +93,21 @@ own fetches, HTTP Basic so a browser prompts once and then carries the header
 itself on `<video>`/`<img>` loads, and `?k=` for the native media players that
 cannot set headers at all.
 
+### Account deletion
+
+`DELETE /account` erases the caller's projects, media, reports and Supabase
+login, which is App Store guideline 5.1.1(v), reached from "delete account" on
+the home screen. It needs the project's service-role key, which is read per request, so
+a server without one still boots and simply answers 503:
+
+```bash
+fly secrets set SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+The key is in the Supabase dashboard under Project Settings → API. It bypasses
+every row-level policy, so it belongs in `fly secrets` and nowhere else: never
+in the client, `fly.toml`, or this repository.
+
 `EDITIFY_NO_AUTH=1` disables auth entirely, for local agent testing, so
 scripted clients need no token even when `SUPABASE_URL` is set. It is ignored
 whenever `NODE_ENV=production` or `FLY_APP_NAME` is present, so it cannot open

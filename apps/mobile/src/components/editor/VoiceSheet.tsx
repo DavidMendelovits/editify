@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder,
 } from 'expo-audio';
@@ -27,6 +28,7 @@ function clock(seconds: number): string {
 
 /** Voiceover recorder: mic capture, upload, then a ducked clip at the playhead. */
 export function VoiceSheet({ projectId, visible, onClose, onRecorded }: Props) {
+  const insets = useSafeAreaInsets();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [stage, setStage] = useState<'idle' | 'recording' | 'uploading'>('idle');
   const [elapsed, setElapsed] = useState(0);
@@ -114,7 +116,7 @@ export function VoiceSheet({ projectId, visible, onClose, onRecorded }: Props) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
       <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }]}>
           <View style={styles.header}>
             <Text style={styles.title}>VOICEOVER</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={close}>

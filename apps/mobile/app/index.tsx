@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NewProject, Project, ProjectFormat } from '@editify/shared';
 import { Brand } from '../src/components/Brand';
 import { Button } from '../src/components/Button';
@@ -12,7 +12,9 @@ import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
 import { captureScreen, type Screenshot } from '../src/lib/capture';
 import { setReportContext, track } from '../src/lib/telemetry';
+import { billingAvailable, useTier } from '../src/lib/purchases';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
+import { appVersion } from '../src/lib/version';
 
 const formats: Array<{ label: string; format: ProjectFormat; meta: string }> = [
   { label: 'Instagram Reel', format: '9:16', meta: '9:16 · UP TO 90S' },
@@ -28,6 +30,8 @@ export default function HomeScreen() {
   // Taken before the sheet covers the screen. It stays in memory unless the
   // user attaches it.
   const [shot, setShot] = useState<Screenshot>();
+  const [accountError, setAccountError] = useState<string>();
+  const tier = useTier();
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   const create = useMutation({
     mutationFn: (input: NewProject) => api.createProject(input),
@@ -40,6 +44,19 @@ export default function HomeScreen() {
     mutationFn: (id: string) => api.deleteProject(id),
     onSuccess: async () => { track('project_delete'); await client.invalidateQueries({ queryKey: ['projects'] }); },
   });
+
+  // App Store guideline 5.1.1(v). The server erases the rows, the media and the
+  // Supabase login; signing out is what sends the root layout to /sign-in.
+  const deleteAccount = async (): Promise<void> => {
+    try {
+      track('account_delete');
+      await api.deleteAccount();
+      await supabase.auth.signOut();
+      router.replace('/sign-in');
+    } catch (error) {
+      setAccountError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   // Feedback sent from here cannot name a project, so it says what this screen
   // does know: how many cuts the user has and whether the list even loaded.
@@ -62,10 +79,15 @@ export default function HomeScreen() {
       <View style={styles.header}>
         <Brand />
         <View style={styles.headerActions}>
+          <Text style={styles.version}>{appVersion}</Text>
+          {billingAvailable && (
+            <Button style={styles.styleButton} accessibilityLabel={tier === 'free' ? 'upgrade' : 'manage subscription'} onPress={() => router.push('/paywall')}>{tier === 'free' ? 'upgrade' : tier}</Button>
+          )}
           <Button secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>import media</Button>
           <Button accessibilityLabel="style memory" secondary style={styles.styleButton} onPress={() => router.push('/style')}>style memory</Button>
           <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); void captureScreen().then(setShot); setFeedbackOpen(true); }}>send feedback</Button>
           <Button accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</Button>
+          <Button accessibilityLabel="delete account" secondary style={styles.signOutButton} onPress={() => confirmDeleteAccount(() => { void deleteAccount(); })}>delete account</Button>
         </View>
       </View>
     }>
@@ -112,6 +134,7 @@ export default function HomeScreen() {
         ))}
       </View>
       {remove.error && <Text style={styles.error}>Could not delete: {remove.error.message}</Text>}
+      {accountError && <Text style={styles.error}>Could not delete your account: {accountError}</Text>}
       {feedbackOpen && (
         <ReportModal
           mode="feedback"
@@ -126,6 +149,22 @@ export default function HomeScreen() {
       />
     </Screen>
   );
+}
+
+/**
+ * Native gets the destructive Alert; react-native-web's `Alert.alert` is a
+ * no-op stub, so the browser build asks with the one confirm it does have.
+ */
+function confirmDeleteAccount(onConfirm: () => void): void {
+  const body = 'This erases your projects, media and login. It cannot be undone.';
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.confirm(`Delete your account?\n\n${body}`)) onConfirm();
+    return;
+  }
+  Alert.alert('Delete your account?', body, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Delete', style: 'destructive', onPress: onConfirm },
+  ]);
 }
 
 /** Recent-project tile: poster frame, title, format badge, duration, clip count. */
@@ -157,27 +196,27 @@ function ProjectCard({ project, onPress, onExport, onDelete }: {
         >
           <Text style={styles.menuGlyph}>⋯</Text>
         </Pressable>
-        {menuOpen && (
-          <View style={styles.menu}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Export video"
-              onPress={(event) => swallow(event, () => { setMenuOpen(false); onExport(); })}
-              style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
-            >
-              <Text style={styles.menuItemText}>Export video</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Delete project"
-              onPress={(event) => swallow(event, () => { setMenuOpen(false); setConfirming(true); })}
-              style={({ pressed }) => [styles.menuItem, styles.menuItemLast, pressed && styles.pressed]}
-            >
-              <Text style={[styles.menuItemText, styles.menuItemDanger]}>Delete project</Text>
-            </Pressable>
-          </View>
-        )}
       </View>
+      {menuOpen && (
+        <View style={styles.menu}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Export video"
+            onPress={(event) => swallow(event, () => { setMenuOpen(false); onExport(); })}
+            style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+          >
+            <Text style={styles.menuItemText}>Export video</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Delete project"
+            onPress={(event) => swallow(event, () => { setMenuOpen(false); setConfirming(true); })}
+            style={({ pressed }) => [styles.menuItem, styles.menuItemLast, pressed && styles.pressed]}
+          >
+            <Text style={[styles.menuItemText, styles.menuItemDanger]}>Delete project</Text>
+          </Pressable>
+        </View>
+      )}
       <Modal visible={confirming} transparent animationType="fade" onRequestClose={() => setConfirming(false)}>
         <Pressable style={styles.dialogBackdrop} onPress={() => setConfirming(false)}>
           <Pressable style={styles.dialog} onPress={() => undefined}>
@@ -222,25 +261,26 @@ function formatDuration(seconds: number): string {
 }
 
 const styles = StyleSheet.create({
-  header: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl, flexWrap: 'wrap' },
+  header: { minHeight: 56, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
   styleButton: { minHeight: 32, paddingHorizontal: space.xl },
   signOutButton: { minHeight: 32, paddingHorizontal: space.xl },
+  version: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1 },
   hero: { paddingTop: space.section, paddingBottom: space.lg, gap: space.lg, maxWidth: 900, width: '100%', alignSelf: 'center' },
   kicker: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.6 },
   formatList: { gap: space.lg, maxWidth: 900, width: '100%', alignSelf: 'center' },
   formatRow: { flexDirection: 'row', alignItems: 'center', gap: space.xl, paddingVertical: space.xl, paddingHorizontal: space.xxl, borderRadius: radius.md, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
-  rowFormat: { width: 44, height: 44, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' },
+  rowFormat: { minWidth: 44, minHeight: 44, paddingHorizontal: space.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' },
   rowFormatText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.5 },
   rowCopy: { flex: 1, gap: space.xs },
   rowTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl },
   rowMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.4 },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
-  sectionHeader: { marginTop: space.xl, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.title, letterSpacing: -0.8 },
-  count: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.md, letterSpacing: 1.3 },
+  sectionHeader: { marginTop: space.xl, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', gap: space.lg },
+  sectionTitle: { flexShrink: 1, color: colors.text, fontFamily: fonts.bold, fontSize: type.title, letterSpacing: -0.8 },
+  count: { flexShrink: 0, color: colors.muted, fontFamily: fonts.mono, fontSize: type.md, letterSpacing: 1.3 },
   projectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xl },
-  projectCard: { flexGrow: 1, flexBasis: 250, maxWidth: 340, borderRadius: radius.md, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
-  poster: { height: 120, backgroundColor: colors.panelSunken, alignItems: 'center', justifyContent: 'center' },
+  projectCard: { flexGrow: 1, flexBasis: 250, maxWidth: 340, borderRadius: radius.md, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  poster: { height: 120, overflow: 'hidden', borderTopLeftRadius: radius.md, borderTopRightRadius: radius.md, backgroundColor: colors.panelSunken, alignItems: 'center', justifyContent: 'center' },
   posterImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
   posterText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.4 },
   formatBadge: { position: 'absolute', top: 8, left: 8, borderRadius: radius.md, backgroundColor: '#00000099', paddingHorizontal: space.md, paddingVertical: space.xs },
@@ -249,7 +289,7 @@ const styles = StyleSheet.create({
   durationBadgeText: { color: '#FFFFFF', fontFamily: fonts.semibold, fontSize: type.xs, fontVariant: ['tabular-nums'] },
   menuButton: { position: 'absolute', top: 6, right: 6, width: 30, height: 30, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000000AA' },
   menuGlyph: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: type.xxl, lineHeight: 16 },
-  menu: { position: 'absolute', top: 38, right: 6, minWidth: 152, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, overflow: 'hidden' },
+  menu: { position: 'absolute', top: 44, right: 6, zIndex: 2, minWidth: 152, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, overflow: 'hidden' },
   menuItem: { paddingHorizontal: space.xl, paddingVertical: space.xl, borderBottomWidth: 1, borderBottomColor: colors.border },
   menuItemLast: { borderBottomWidth: 0 },
   menuItemText: { color: colors.text, fontFamily: fonts.medium, fontSize: type.lg },
@@ -265,7 +305,7 @@ const styles = StyleSheet.create({
   projectCopy: { padding: space.xl, gap: space.sm },
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xl },
   projectMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg, flexWrap: 'wrap', flexShrink: 1, justifyContent: 'flex-end' },
+  headerActions: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: space.lg, flexWrap: 'wrap' },
   emptyCard: { alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed', borderRadius: radius.md, padding: space.section, gap: space.md },
   empty: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.lg, textAlign: 'center' },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },

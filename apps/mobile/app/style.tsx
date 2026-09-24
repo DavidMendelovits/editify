@@ -128,7 +128,7 @@ export default function StyleScreen() {
       {saved.length > 0 && (
         <>
           <View style={styles.sectionHeader}>
-            <View>
+            <View style={styles.sectionHeaderText}>
               <Text style={styles.sectionTitle}>Your styles</Text>
               <Text style={styles.sectionNote}>Tap a style to brief the agent with it.</Text>
             </View>
@@ -157,7 +157,9 @@ export default function StyleScreen() {
                     <Text style={styles.clipName} numberOfLines={1}>{item.name}</Text>
                   </Pressable>
                 )}
-                <Text style={styles.clipMeta}>{item.id === selectedId ? 'SELECTED' : `${item.metrics.length} VIDEOS`}</Text>
+                {menuId !== item.id && (
+                  <Text style={styles.clipMeta} numberOfLines={1}>{item.id === selectedId ? 'SELECTED' : `${item.metrics.length} VIDEOS`}</Text>
+                )}
                 <Pressable
                   onPress={() => setMenuId(menuId === item.id ? undefined : item.id)}
                   accessibilityRole="button"
@@ -199,7 +201,7 @@ export default function StyleScreen() {
       {references.length > 0 && (
         <>
           <View style={styles.sectionHeader}>
-            <View>
+            <View style={styles.sectionHeaderText}>
               <Text style={styles.sectionTitle}>Your clips</Text>
               <Text style={styles.sectionNote}>Long-press a clip to dissect it into a preset.</Text>
             </View>
@@ -259,7 +261,7 @@ const styles = StyleSheet.create({
   uploadCard: { borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.panel, minHeight: 200, alignItems: 'center', justifyContent: 'center', padding: space.section, gap: space.lg },
   uploadTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl, textAlign: 'center' },
   uploadSubtitle: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, textAlign: 'center' },
-  uploadButton: { width: 210, marginTop: space.xl },
+  uploadButton: { minWidth: 210, maxWidth: '100%', marginTop: space.xl },
   progress: { height: 4, width: 210, marginTop: space.lg, borderRadius: radius.md, backgroundColor: colors.border, overflow: 'hidden' },
   progressFill: { width: '68%', height: '100%', backgroundColor: colors.accent },
   analyzerRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: space.md, marginTop: space.lg },
@@ -270,7 +272,8 @@ const styles = StyleSheet.create({
   analyzerChipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   analyzerChipTextActive: { color: colors.text },
   analyzerDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.sm, textAlign: 'center' },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: space.xl },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg, marginTop: space.xl },
+  sectionHeaderText: { flexShrink: 1, minWidth: 0 },
   sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
   sectionNote: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, marginTop: space.sm, maxWidth: 520 },
   clipList: { gap: space.lg },
@@ -279,27 +282,27 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, paddingHorizontal: space.xl, paddingVertical: space.lg,
   },
   styleRowSelected: { borderColor: colors.accent },
-  styleNameTap: { flex: 1 },
+  styleNameTap: { flex: 1, minWidth: 0 },
   renameInput: {
-    flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg,
+    flex: 1, minWidth: 0, color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg,
     borderWidth: 1, borderColor: colors.accent, borderRadius: radius.md, paddingHorizontal: space.lg, paddingVertical: space.sm,
   },
   // Inline, not a popover: a floating menu on the last row opens below the fold
   // and RN Web gives each row its own stacking context, so it ended up
   // unreachable. Expanding inside the row is always on screen and always on top.
   styleMenu: {
-    flexDirection: 'row', alignItems: 'center',
+    flexShrink: 1, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap',
     borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.panel, overflow: 'hidden',
   },
   styleMenuItem: { paddingHorizontal: space.lg, paddingVertical: space.sm },
   styleMenuText: { color: colors.text, fontFamily: fonts.medium, fontSize: type.md },
   styleMenuDanger: { color: colors.danger },
   clipName: { flex: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
-  clipMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.md, fontVariant: ['tabular-nums'] },
-  clipMore: { width: 28, height: 28, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
+  clipMeta: { flexShrink: 0, color: colors.muted, fontFamily: fonts.medium, fontSize: type.md, fontVariant: ['tabular-nums'] },
+  clipMore: { flexShrink: 0, minWidth: 28, minHeight: 28, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
   clipMorePressed: { opacity: 0.6 },
   clipMoreText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl, lineHeight: 17 },
-  count: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.4 },
+  count: { flexShrink: 0, color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.4 },
   metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xl },
   metric: { flexGrow: 1, flexBasis: 180, borderRadius: radius.md, padding: space.xl, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },
   metricLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.3 },

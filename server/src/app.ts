@@ -20,9 +20,11 @@ import { ReportStore } from './db/report-store.js';
 import { SettingsStore } from './db/settings-store.js';
 import { TranscriptStore } from './db/transcript-store.js';
 import { OperationError } from './operations/apply.js';
+import { registerAccountRoutes } from './routes/account.js';
 import { registerAgentRoutes } from './routes/agent.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerChatRoutes } from './routes/chat.js';
+import { isLegalRoute, registerLegalRoutes } from './routes/legal.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerRenderRoutes } from './routes/renders.js';
 import { registerStyleRoutes } from './routes/style.js';
@@ -80,9 +82,13 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     // The exported web client is public — the sign-in screen IS the gate, so the
     // static wildcard route (and the index.html 404 fallback for deep links)
     // skip auth. Every other API route still demands credentials.
+    // The legal pages are in the same boat for a different reason: App Store
+    // Review fetches /privacy, /terms and /support with no credentials at all,
+    // and a 401 there is a rejection.
     isPublic: (request) =>
       (request.method === 'GET' || request.method === 'HEAD') &&
       (request.routeOptions.url === '/*' ||
+        isLegalRoute(request.routeOptions.url) ||
         (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html'))),
     // POST /telemetry takes credentials when there are any and proceeds without
     // them when there are not: a crash on the sign-in screen has none to send,
@@ -99,6 +105,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   // Built-in SFX/music, synthesized on first request and registered as assets.
   app.get('/sounds', async () => await ensureSoundLibrary(assets));
+  registerLegalRoutes(app);
+  registerAccountRoutes(app, database);
   registerAgentRoutes(app, registry);
   registerProjectRoutes(app, projects, renderQueue, assets, transcripts);
   registerAssetRoutes(app, assets, projects, transcripts, insights, dissections, database);
