@@ -208,7 +208,7 @@ describe('agent tool registry', () => {
   it('lists the built-in style packets', async () => {
     const tool = createToolRegistry().find((candidate) => candidate.name === 'get_style_packets');
     const result = await tool?.execute(context('set_format'), {}) as Array<{ id: string }>;
-    expect(result.map((packet) => packet.id)).toEqual(['daily-vlog', 'branded-explainer']);
+    expect(result.map((packet) => packet.id)).toEqual(['daily-vlog', 'branded-explainer', 'clean-talking-head', 'editorial-explainer']);
   });
 
   it('sweeps the branded-explainer packet over captions, cuts, sound, and zoom in one batch', async () => {
@@ -263,7 +263,9 @@ describe('agent tool registry', () => {
     expect(video.map((clip) => clip.transformEnd)).toEqual([{ scale: 1.06, x: 0, y: 0 }, undefined]);
     const captions = project?.tracks.find((track) => track.id === 'captions')?.clips ?? [];
     expect(captions.map((caption) => caption.text)).toEqual(['Original', 'lower case line']);
-    expect(captions[1]?.style).toMatchObject({ sizePct: 3.6, anchorPct: 78, emphasis: 'none' });
+    // The packet asks for 78%, but a 3.6% line centred there runs into Instagram's
+    // bottom UI band (the lowest 420 of 1920px), so placement lifts it to the band's edge.
+    expect(captions[1]?.style).toMatchObject({ sizePct: 3.6, anchorPct: 76, emphasis: 'none' });
     expect(captions[1]?.style?.emphasisColor).toBeUndefined();
     expect(result.guidance.some((line) => line.startsWith('B-roll (frequent'))).toBe(true);
   });

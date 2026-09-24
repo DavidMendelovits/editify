@@ -22,12 +22,18 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg ca-certificates python3 python3-pip \
   && rm -rf /var/lib/apt/lists/*
 # Debian marks its python as externally managed; this image has no other consumer.
-RUN pip3 install --no-cache-dir --break-system-packages faster-whisper==1.2.1
+# OpenCV (headless: no GUI libs) backs `scripts/face_track.py`, which keeps
+# captions off the speaker's face; without it captions only keep to the safe area.
+RUN pip3 install --no-cache-dir --break-system-packages faster-whisper==1.2.1 opencv-python-headless==4.12.0.88
 # Bake the weights in rather than fetching them on first use: the download would
 # otherwise happen inside a user's import, on a machine that may have no cache.
 ENV HF_HOME=/opt/whisper-cache \
     WHISPER_MODEL=base
 RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
+# Same for the face detector (YuNet, MIT): baked in, not fetched mid-import.
+ENV FACE_MODEL_PATH=/opt/models/face_detection_yunet_2023mar.onnx
+RUN mkdir -p /opt/models && python3 -c "import urllib.request; urllib.request.urlretrieve('https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx', '/opt/models/face_detection_yunet_2023mar.onnx')" \
+  && python3 -c "import cv2; cv2.FaceDetectorYN.create('/opt/models/face_detection_yunet_2023mar.onnx', '', (320, 320))"
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json

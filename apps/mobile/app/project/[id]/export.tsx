@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Brand } from '../../../src/components/Brand';
@@ -22,11 +22,18 @@ const hdrOptions: Array<{ value: 'sdr' | 'hdr'; label: string; detail: string }>
   { value: 'hdr', label: 'Keep HDR (BT.2020 PQ)', detail: '10-bit master · preview shown is the SDR proof' },
 ];
 
+/** Platforms play everything at about -16 LUFS; a quiet phone recording otherwise exports quiet. */
+const loudnessOptions: Array<{ value: 'normalize' | 'off'; label: string; detail: string }> = [
+  { value: 'normalize', label: 'Normalize to -16 LUFS', detail: 'Default · one gain stage and a limiter, balance kept' },
+  { value: 'off', label: 'Keep mix levels', detail: 'Exports the mix exactly as it plays in the editor' },
+];
+
 export default function ExportScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [resolution, setResolution] = useState<RenderRecord['resolution']>('1080p');
   const [hdr, setHdr] = useState<'sdr' | 'hdr'>('sdr');
+  const [loudness, setLoudness] = useState<'normalize' | 'off'>('normalize');
   const [renderId, setRenderId] = useState<string>();
   const project = useQuery({ queryKey: ['project', id], queryFn: () => api.getProject(id) });
   const render = useQuery({
@@ -36,7 +43,7 @@ export default function ExportScreen() {
     refetchInterval: (query) => query.state.data?.status === 'done' || query.state.data?.status === 'error' ? false : 1200,
   });
   const start = useMutation({
-    mutationFn: () => api.render(id, resolution, hdr),
+    mutationFn: () => api.render(id, resolution, hdr, loudness),
     onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
   });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
@@ -64,12 +71,19 @@ export default function ExportScreen() {
           {hdrOptions.map((item) => <Pressable key={item.value} testID={`hdr-${item.value}`} disabled={Boolean(renderId)} onPress={() => setHdr(item.value)} style={[styles.resolution, hdr === item.value && styles.resolutionSelected]}><View style={[styles.radio, hdr === item.value && styles.radioSelected]}>{hdr === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
         </View>
       </View>
+      <View testID="loudness-section" style={styles.colorSection}>
+        <View><Text style={styles.sectionKicker}>AUDIO</Text><Text style={styles.sectionTitle}>Loudness</Text></View>
+        <View style={styles.resolutions}>
+          {loudnessOptions.map((item) => <Pressable key={item.value} testID={`loudness-${item.value}`} disabled={Boolean(renderId)} onPress={() => setLoudness(item.value)} style={[styles.resolution, loudness === item.value && styles.resolutionSelected]}><View style={[styles.radio, loudness === item.value && styles.radioSelected]}>{loudness === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
+        </View>
+      </View>
       {!renderId && <Button onPress={() => start.mutate()} disabled={start.isPending || !project.data} style={styles.renderButton}>{start.isPending ? 'joining the queue…' : `render ${resolution} master`}</Button>}
       {status && (
         <View style={[styles.statusCard, status === 'done' && styles.doneCard, status === 'error' && styles.errorCard]}>
           <View style={styles.statusTop}><Text style={styles.statusValue}>{status.toUpperCase()}</Text></View>
           {status !== 'done' && status !== 'error' && <View style={styles.progress}><View style={[styles.progressFill, status === 'processing' && styles.progressProcessing]} /></View>}
           {status === 'done' && render.data?.outputUrl && <Button style={styles.downloadButton} onPress={() => void Linking.openURL(rebaseServerUrl(render.data.outputUrl) as string)}>download / share master ↗</Button>}
+          {status === 'done' && render.data?.qa && <QaReport qa={render.data.qa} contactSheetUrl={render.data.contactSheetUrl} format={project.data?.format ?? '9:16'} />}
           {status === 'error' && <Text style={styles.error}>{render.data?.error}</Text>}
         </View>
       )}
@@ -80,6 +94,24 @@ export default function ExportScreen() {
           : 'Rendering runs on the Editify servers. Keep this screen open until it finishes: the download link only appears here.'}
       </Text>
     </Screen>
+  );
+}
+
+/** The server tiles 6x3 frames of 180x320, 240x240 or 320x180. */
+const CONTACT_SHEET_ASPECT: Record<string, number> = { '9:16': 1080 / 960, '1:1': 2, '16:9': 1920 / 540 };
+
+function QaReport({ qa, contactSheetUrl, format }: { qa: NonNullable<RenderRecord['qa']>; contactSheetUrl: string | undefined; format: string }) {
+  const loudness = qa.loudnessLufs === null ? 'SILENT' : `${qa.loudnessLufs.toFixed(1)} LUFS`;
+  const peak = qa.truePeakDb === null ? '' : ` · PEAK ${qa.truePeakDb.toFixed(1)} dBFS`;
+  return (
+    <View testID="render-qa" style={styles.qa}>
+      <Text style={styles.qaLine}>{`${loudness}${peak}`}</Text>
+      {qa.normalized && <Text style={styles.qaDetail}>{`Raised ${qa.normalized.gainDb.toFixed(1)} dB from ${qa.normalized.fromLufs.toFixed(1)} LUFS`}</Text>}
+      {qa.warnings.length === 0
+        ? <Text style={styles.qaDetail}>No problems found: levels on target, no dead air.</Text>
+        : qa.warnings.map((warning) => <Text key={warning} style={styles.qaWarning}>{`• ${warning}`}</Text>)}
+      {contactSheetUrl && <Image accessibilityLabel="frames from the master" source={{ uri: rebaseServerUrl(contactSheetUrl) as string }} style={[styles.contactSheet, { aspectRatio: CONTACT_SHEET_ASPECT[format] ?? 2 }]} resizeMode="contain" />}
+    </View>
   );
 }
 
@@ -120,6 +152,11 @@ const styles = StyleSheet.create({
   progressFill: { width: '18%', height: '100%', backgroundColor: colors.accent },
   progressProcessing: { width: '72%' },
   downloadButton: { minHeight: 40 },
+  qa: { gap: space.md },
+  qaLine: { color: colors.text, fontFamily: fonts.mono, fontSize: type.md, letterSpacing: 1.2 },
+  qaDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
+  qaWarning: { color: colors.text, fontFamily: fonts.regular, fontSize: type.md },
+  contactSheet: { width: '100%', borderRadius: radius.sm, backgroundColor: colors.panelSunken },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.base },
   note: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, textAlign: 'center' },
 });

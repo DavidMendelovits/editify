@@ -14,6 +14,7 @@ import { COLOR_PIPELINE_VERSION } from '../media/color.js';
 import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbnail, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
 import type { DissectService } from '../services/dissect-service.js';
+import type { FaceService } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
 import { withMediaSlot } from '../services/media-slots.js';
 import type { TranscriptService } from '../services/transcript-service.js';
@@ -92,6 +93,7 @@ function queueAssetWork(
   transcripts: TranscriptService,
   asset: StoredAsset,
   probe: ProbeResult,
+  faces?: FaceService,
 ): void {
   const pending = (async () => {
     await withMediaSlot(`import ${asset.id}`, async () => {
@@ -104,6 +106,14 @@ function queueAssetWork(
         return;
       }
       await transcribeQuietly(app, transcripts, asset);
+      // Tracked now so the first caption placement doesn't wait on OpenCV.
+      if (faces && probe.hasVideo) {
+        try {
+          await faces.getOrCreate(asset);
+        } catch (error) {
+          app.log.warn({ err: error, assetId: asset.id }, 'Face tracking failed; captions will only keep to the safe area');
+        }
+      }
     });
   })().finally(() => pendingAssetWork.delete(asset.id));
   pendingAssetWork.set(asset.id, pending);
@@ -120,6 +130,7 @@ async function processAsset(
   input: { originalName: string; mimeType: string; originalPath: string },
   id = randomUUID(),
   userId?: string,
+  faces?: FaceService,
 ): Promise<StoredAsset> {
   const directory = join(assetsRoot, id);
   await mkdir(directory, { recursive: true });
@@ -169,7 +180,7 @@ async function processAsset(
       filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
     }, userId);
-    queueAssetWork(app, assets, transcripts, asset, probe);
+    queueAssetWork(app, assets, transcripts, asset, probe, faces);
     return asset;
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
@@ -198,6 +209,7 @@ export function registerAssetRoutes(
   insights: InsightService,
   dissections: DissectService,
   database: EditifyDatabase,
+  faces?: FaceService,
 ): void {
   // ponytail: built here rather than in `buildApp` so wiring stays one line —
   // hoist it up if anything outside these routes ever needs an envelope.
@@ -235,7 +247,7 @@ export function registerAssetRoutes(
         originalName: part.filename,
         mimeType: part.mimetype,
         originalPath,
-      }, id, request.userId);
+      }, id, request.userId, faces);
       if (projectId) assets.link(projectId, asset.id);
       return await reply.code(201).send(publicAsset(asset));
     } catch (error) {
@@ -330,7 +342,7 @@ export function registerAssetRoutes(
       originalName: name,
       mimeType: videoMimeTypes[extension] ?? 'video/mp4',
       originalPath: sourcePath,
-    }, undefined, request.userId);
+    }, undefined, request.userId, faces);
     if (projectId) assets.link(projectId, asset.id);
     return await reply.code(201).send(publicAsset(asset));
   });

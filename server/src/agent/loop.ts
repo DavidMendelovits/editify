@@ -47,6 +47,14 @@ function summarizeResult(tool: string, result: unknown, ok: boolean): string {
   if (tool === 'get_timeline_transcript' && isRecord(result)) return `Loaded ${Array.isArray(result.words) ? result.words.length : 0} timeline words.`;
   if (tool === 'list_presets' && Array.isArray(result)) return `Found ${result.length} editing presets.`;
   if (tool === 'get_preset' && isRecord(result)) return `Loaded the ${String(result.name)} preset.`;
+  if (tool === 'get_take_map' && isRecord(result)) {
+    return `Mapped ${Array.isArray(result.sentences) ? result.sentences.length : 0} sentences; ${Array.isArray(result.groups) ? result.groups.length : 0} lines have retakes.`;
+  }
+  if (tool === 'get_render_qa' && isRecord(result)) return 'Loaded the latest export\'s quality check.';
+  if (tool === 'check_mix' && isRecord(result) && result.readOnly === true) {
+    const warnings = Array.isArray(result.warnings) ? result.warnings.length : 0;
+    return warnings ? `Checked the mix: ${warnings} issue${warnings === 1 ? '' : 's'}.` : 'Checked the mix: every sound sits on its level target.';
+  }
   if (tool === 'caption_clip_from_transcript' && isRecord(result) && result.changed !== false) {
     return `Added ${String(result.captionsAdded)} transcript captions; project is now version ${String(result.version)}.`;
   }
@@ -85,6 +93,11 @@ function buildSystem(project: Project, styleDoc: string | null): string {
     'Never use emoji in anything you write; the interface is a professional editing tool.',
     'set_speed and trim_clip change a clip duration but never move its neighbors, so after duration-changing edits, call close_gaps (or place clips deliberately). Gaps render as black frames and must always be intentional.',
     'When the user names a style or content type, fetch the matching preset and follow its parameters. Presets are guidance, not law.',
+    'A raw talking-head recording often holds several takes of each line. Before cutting one, call get_take_map, check its picks against what the speaker meant to say, then assemble_takes. Cut on word times, never on segment times or guesses.',
+    'Between two takes of the same sentence, hide the jump with a snap punch-in (a static set_transform scale of 1.08 to 1.12 on the second clip), not a crossfade.',
+    'On-screen text only says what the speaker said. Keep one callout card on screen at a time, and leave some lines bare so the next card lands.',
+    'Sound levels are measured, not guessed: after adding music or sound effects, call check_mix with fix: true. Keep whoosh and impact hits for structural moments (well under 14 a minute), and put reaction sounds in a pause rather than on top of a word.',
+    'Captions stay off the face and inside the posting app\'s safe area. The caption tools place them as they write; after reframing, zooming, or restyling captions by hand, call place_captions. When the user names TikTok or Shorts, pass that platform.',
     NO_DASHES_RULE,
     styleDoc ? `Editing style profile: ${styleDoc}` : 'No editing style profile is available.',
     `Initial project summary: ${projectSummary(project)}`,
