@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import type { Operation, Project } from '@editify/shared';
 import { apiFetch } from '../../lib/api';
@@ -47,6 +48,7 @@ function capRanges(ranges: CleanupRange[]): CleanupRange[] {
 
 /** One-tap cleanup: filler words and dead air, measured server-side. */
 export function CleanupSheet({ projectId, project, visible, onClose, onApply }: Props) {
+  const insets = useSafeAreaInsets();
   const [appliedRow, setAppliedRow] = useState<'fillers' | 'silences'>();
   // Keyed on the version so an apply — which bumps it — re-measures what is left.
   const planQuery = useQuery({
@@ -71,7 +73,7 @@ export function CleanupSheet({ projectId, project, visible, onClose, onApply }: 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }]}>
           <View style={styles.header}>
             <Text style={styles.title}>CLEANUP</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="close" hitSlop={10} onPress={onClose}>

@@ -421,44 +421,53 @@ export default function EditorScreen() {
     return <Screen><Text style={styles.error}>Could not open this project: {projectQuery.error?.message}</Text></Screen>;
   }
 
+  // Below this width the back control and the four actions already fill the row,
+  // so the title gets a row of its own rather than being squeezed to nothing.
+  const narrowHeader = width < 560;
+  const heading = (
+    <View style={[styles.heading, narrowHeader && styles.headingNarrow]}>
+      {/* The wordmark is decoration; on a phone the title needs the room. */}
+      {width >= 560 && (
+        <>
+          <Brand compact />
+          <View style={styles.divider} />
+        </>
+      )}
+      <View style={styles.headingText}>
+        <Text style={styles.projectTitle} {...sensitive} numberOfLines={1}>{project.title}</Text>
+        <Text style={styles.projectMeta} numberOfLines={1}>
+          {project.format} · {project.fps} FPS · V{project.version} · {project.tracks.reduce((total, track) => total + track.clips.length, 0)} CLIPS
+        </Text>
+      </View>
+    </View>
+  );
   const header = (
-    <View style={styles.header}>
-      <Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
-      <View style={styles.heading}>
-        {/* The wordmark is decoration; on a phone the title needs the room. */}
-        {width >= 560 && (
-          <>
-            <Brand compact />
-            <View style={styles.divider} />
-          </>
-        )}
-        <View style={styles.headingText}>
-          <Text style={styles.projectTitle} {...sensitive} numberOfLines={1}>{project.title}</Text>
-          <Text style={styles.projectMeta} numberOfLines={1}>
-            {project.format} · {project.fps} FPS · V{project.version} · {project.tracks.reduce((total, track) => total + track.clips.length, 0)} CLIPS
-          </Text>
+    <View style={[styles.header, narrowHeader && styles.headerNarrow]}>
+      <View style={styles.headerTop}>
+        <Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
+        {!narrowHeader && heading}
+        <View style={styles.headerActions}>
+          <HistoryButton label="↶" accessibilityLabel="Undo" testID="undo-button" enabled={canUndo} onPress={() => runHistory('undo')} />
+          <HistoryButton label="↷" accessibilityLabel="Redo" testID="redo-button" enabled={canRedo} onPress={() => runHistory('redo')} />
+          {/* Adding media lives in the library (+ photos / + files / + folder), which also
+              reports import progress. The header keeps only the global action. */}
+          {/* Feedback belongs here and not just on the home screen: sent from the
+              editor it carries the open project, the timeline, and the last edits
+              the user made, which is most of what triage needs. */}
+          <Button
+            accessibilityLabel="send feedback"
+            secondary
+            style={styles.feedbackButton}
+            onPress={() => { track('feedback_open', 'editor'); void captureScreen().then(setShot); setFeedbackOpen(true); }}
+          >
+            feedback
+          </Button>
+          <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
+            export ↗
+          </Button>
         </View>
       </View>
-      <View style={styles.headerActions}>
-        <HistoryButton label="↶" accessibilityLabel="Undo" testID="undo-button" enabled={canUndo} onPress={() => runHistory('undo')} />
-        <HistoryButton label="↷" accessibilityLabel="Redo" testID="redo-button" enabled={canRedo} onPress={() => runHistory('redo')} />
-        {/* Adding media lives in the library (+ photos / + files / + folder), which also
-            reports import progress. The header keeps only the global action. */}
-        {/* Feedback belongs here and not just on the home screen: sent from the
-            editor it carries the open project, the timeline, and the last edits
-            the user made, which is most of what triage needs. */}
-        <Button
-          accessibilityLabel="send feedback"
-          secondary
-          style={styles.feedbackButton}
-          onPress={() => { track('feedback_open', 'editor'); void captureScreen().then(setShot); setFeedbackOpen(true); }}
-        >
-          feedback
-        </Button>
-        <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
-          export ↗
-        </Button>
-      </View>
+      {narrowHeader && heading}
     </View>
   );
 
@@ -676,16 +685,19 @@ function HistoryButton({ label, accessibilityLabel, testID, enabled, onPress }: 
 }
 
 const styles = StyleSheet.create({
-  header: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
-  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
-  heading: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xl },
+  header: { minHeight: 52, gap: space.md },
+  headerNarrow: { paddingBottom: space.sm },
+  headerTop: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.xl },
+  back: { flexShrink: 0, color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.2 },
+  heading: { flexGrow: 1, flexShrink: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xl },
+  headingNarrow: { justifyContent: 'flex-start' },
   headingText: { flexShrink: 1, minWidth: 0 },
   divider: { width: 1, height: 26, backgroundColor: colors.border },
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  headerActions: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: space.lg },
   feedbackButton: { paddingHorizontal: space.xl, minHeight: 30 },
-  exportButton: { width: 96, minHeight: 30 },
+  exportButton: { minWidth: 96, minHeight: 30 },
   historyButton: {
     minWidth: 30, minHeight: 30, alignItems: 'center', justifyContent: 'center',
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
@@ -702,7 +714,7 @@ const styles = StyleSheet.create({
   timelineWide: { flex: 1, minHeight: 180 },
   editColumnStacked: {},
   dockColumn: { width: 372, minHeight: 0, gap: space.lg },
-  dockColumnStacked: { width: '100%', height: 560 },
+  dockColumnStacked: { width: '100%', minHeight: 560 },
   center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
 });

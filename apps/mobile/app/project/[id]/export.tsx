@@ -5,7 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Brand } from '../../../src/components/Brand';
 import { Button } from '../../../src/components/Button';
 import { Screen } from '../../../src/components/Screen';
-import { api, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
+import { api, IS_LOCAL_API, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
 import { track } from '../../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../../src/lib/nav';
 import { colors, radius, space, type, fonts } from '../../../src/lib/theme';
@@ -74,7 +74,11 @@ export default function ExportScreen() {
         </View>
       )}
       {(start.error || render.error) && <Text style={styles.error}>{start.error?.message ?? render.error?.message}</Text>}
-      <Text style={styles.note}>Rendering runs on your local Editify server. Keep it running.</Text>
+      <Text style={styles.note}>
+        {IS_LOCAL_API
+          ? 'Rendering runs on your local Editify server. Keep it running.'
+          : 'Rendering runs on the Editify servers. Keep this screen open until it finishes: the download link only appears here.'}
+      </Text>
     </Screen>
   );
 }
@@ -83,14 +87,14 @@ function Summary({ label, value }: { label: string; value: string }) { return <V
 function formatDuration(seconds: number): string { return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`; }
 
 const styles = StyleSheet.create({
-  header: { minHeight: 52, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  back: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.md, letterSpacing: 1.4 },
+  header: { minHeight: 52, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: space.xl },
+  back: { flexShrink: 1, color: colors.muted, fontFamily: fonts.mono, fontSize: type.md, letterSpacing: 1.4 },
   hero: { alignItems: 'center', paddingVertical: space.xl, gap: space.md },
   title: { color: colors.text, fontFamily: fonts.bold, fontSize: type.display, lineHeight: 34, letterSpacing: -0.8, textAlign: 'center' },
   previewCard: { maxWidth: 760, width: '100%', alignSelf: 'center', borderRadius: radius.md, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   previewFrame: { minHeight: 160, backgroundColor: colors.panelSunken, alignItems: 'center', justifyContent: 'center', gap: space.xl },
   previewTitle: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.md, letterSpacing: 1.5 },
-  summary: { flexDirection: 'row', justifyContent: 'space-around', padding: space.xxl },
+  summary: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-around', gap: space.xl, padding: space.xxl },
   summaryItem: { alignItems: 'center', gap: space.md },
   summaryLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
   summaryValue: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl },
@@ -98,13 +102,13 @@ const styles = StyleSheet.create({
   sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xxl },
   colorSection: { gap: space.lg },
   resolutions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.lg },
-  resolution: { flexGrow: 1, flexBasis: 200, minHeight: 60, flexDirection: 'row', alignItems: 'center', gap: space.xl, padding: space.xl, borderRadius: radius.md, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  resolution: { flexGrow: 1, flexBasis: 200, minWidth: 0, minHeight: 60, flexDirection: 'row', alignItems: 'center', gap: space.xl, padding: space.xl, borderRadius: radius.md, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   resolutionSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  radio: { width: 16, height: 16, borderRadius: radius.full, borderWidth: 2, borderColor: colors.muted, alignItems: 'center', justifyContent: 'center' },
+  radio: { flexShrink: 0, width: 16, height: 16, borderRadius: radius.full, borderWidth: 2, borderColor: colors.muted, alignItems: 'center', justifyContent: 'center' },
   radioSelected: { borderColor: colors.accent },
   radioDot: { width: 8, height: 8, borderRadius: radius.full, backgroundColor: colors.accent },
-  resolutionText: { flex: 1 },
-  resolutionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.xl },
+  resolutionText: { flex: 1, minWidth: 0 },
+  resolutionTitle: { flexShrink: 1, color: colors.text, fontFamily: fonts.bold, fontSize: type.xl },
   resolutionDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md, marginTop: space.sm },
   renderButton: { maxWidth: 520, width: '100%', alignSelf: 'center', minHeight: 40 },
   statusCard: { maxWidth: 760, width: '100%', alignSelf: 'center', borderRadius: radius.md, padding: space.xxl, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, gap: space.xl },

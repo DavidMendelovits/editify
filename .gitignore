@@ -27,3 +27,6 @@ docs/qa/
 *.webm
 *.mov
 *.m4v
+
+# App Store screenshots and their build, from scripts/screenshots.sh.
+.screenshots/

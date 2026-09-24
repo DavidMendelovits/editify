@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { AgentActivity } from '../AgentActivity';
@@ -94,6 +94,7 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
         // Without this, Android refuses to scroll a vertical list nested in the
         // stacked layout's outer ScrollView.
         nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
       >
         {(messages?.length ?? 0) === 0 && !optimisticMessage && (
@@ -138,8 +139,9 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
           </Pressable>
         ))}
       </View>
-      {/* Keeps the composer above the software keyboard on phones. */}
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80} style={styles.composerLayer}>
+      {/* The keyboard is handled by Screen: stacked, this dock sits in the
+          screen's scroll view, and wide it sits in its KeyboardAvoidingView. */}
+      <View style={styles.composerLayer}>
         {suggestion && (
           <ImprovedPrompt
             suggestion={suggestion}
@@ -171,7 +173,7 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             <Text style={styles.sendText}>↑</Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
+      </View>
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
@@ -248,7 +250,7 @@ function RenderStrip({ projectId }: { projectId: string }) {
   return (
     <View style={styles.render}>
       <View style={styles.renderRow}>
-        <Text style={styles.renderLabel}>
+        <Text style={styles.renderLabel} numberOfLines={1}>
           {status === undefined ? 'EXPORT' : status === 'done' ? 'MASTER READY' : `RENDERING · ${status.toUpperCase()}`}
         </Text>
         <Pressable
@@ -350,8 +352,8 @@ const styles = StyleSheet.create({
   revertText: { color: colors.muted, fontFamily: fonts.bold, fontSize: type.sm },
   render: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, padding: space.lg, gap: space.lg },
   renderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
-  renderLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
-  renderButton: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.borderStrong, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  renderLabel: { flexShrink: 1, color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
+  renderButton: { flexShrink: 0, borderRadius: radius.md, borderWidth: 1, borderColor: colors.borderStrong, paddingHorizontal: space.lg, paddingVertical: space.sm },
   renderButtonText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.sm },
   renderPreview: { gap: space.md },
   renderVideo: { width: '100%', height: 150, borderRadius: radius.md, backgroundColor: '#000000' },
