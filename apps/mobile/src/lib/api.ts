@@ -404,6 +404,9 @@ export const api = {
   renameStyle: (id: string, name: string) => request<StyleProfile>(`/style-profiles/${id}`, {
     method: 'PATCH', body: JSON.stringify({ name }),
   }),
+  updateStyleDoc: (id: string, styleDoc: string) => request<StyleProfile>(`/style-profiles/${id}`, {
+    method: 'PATCH', body: JSON.stringify({ styleDoc }),
+  }),
   duplicateStyle: (id: string) => request<StyleProfile>(`/style-profiles/${id}/duplicate`, { method: 'POST' }),
   deleteStyle: (id: string) => request<{ ok: true; selectedId: string | null }>(`/style-profiles/${id}`, { method: 'DELETE' }),
 };

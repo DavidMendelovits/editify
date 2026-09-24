@@ -42,8 +42,7 @@ export function registerStyleRoutes(app: FastifyInstance, styles: StyleService):
   });
 
   app.patch('/style-profiles/:id', async (request, reply) => {
-    const { name } = styleRenameSchema.parse(request.body);
-    const profile = styles.rename((request.params as { id: string }).id, name);
+    const profile = styles.rename((request.params as { id: string }).id, styleRenameSchema.parse(request.body));
     return profile ?? await reply.code(404).send({ error: 'Style profile was not found' });
   });
 

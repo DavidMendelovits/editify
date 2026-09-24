@@ -170,9 +170,11 @@ export class StyleService {
     return profile;
   }
 
-  rename(id: string, name: string): StyleProfile | undefined {
+  /** Re-analysis inserts a new profile, so a hand-edited styleDoc is never overwritten. */
+  rename(id: string, { name, styleDoc }: { name?: string | undefined; styleDoc?: string | undefined }): StyleProfile | undefined {
     if (!this.get(id)) return undefined;
-    this.database.prepare('UPDATE style_profiles SET name = ? WHERE id = ?').run(name, id);
+    if (name !== undefined) this.database.prepare('UPDATE style_profiles SET name = ? WHERE id = ?').run(name, id);
+    if (styleDoc !== undefined) this.database.prepare('UPDATE style_profiles SET style_doc = ? WHERE id = ?').run(styleDoc, id);
     return this.get(id);
   }
 

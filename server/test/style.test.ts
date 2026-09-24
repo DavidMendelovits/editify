@@ -133,6 +133,23 @@ describe('style profile analysis', () => {
     await app.close();
   });
 
+  it('hand-edits the style doc via PATCH and rejects an empty one', async () => {
+    const app = buildStyleApp(database);
+    const profile = await styleService(database, new AssetStore(database)).analyze(['a1'], { name: 'Punchy' });
+
+    const edited = await app.inject({ method: 'PATCH', url: `/style-profiles/${profile.id}`, payload: { styleDoc: '  - Never use jump cuts\n- Captions bottom third  ' } });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json()).toMatchObject({ id: profile.id, name: 'Punchy', styleDoc: '- Never use jump cuts\n- Captions bottom third' });
+    expect((await app.inject({ method: 'GET', url: '/style-profile' })).json()).toMatchObject({ styleDoc: '- Never use jump cuts\n- Captions bottom third' });
+
+    for (const payload of [{ styleDoc: '   ' }, {}]) {
+      const rejected = await app.inject({ method: 'PATCH', url: `/style-profiles/${profile.id}`, payload });
+      expect(rejected.statusCode).toBeGreaterThanOrEqual(400);
+    }
+    expect((await app.inject({ method: 'GET', url: '/style-profile' })).json()).toMatchObject({ styleDoc: '- Never use jump cuts\n- Captions bottom third' });
+    await app.close();
+  });
+
   it('404s every style-profile action on an unknown id', async () => {
     const app = buildStyleApp(database);
     for (const [method, url] of [
