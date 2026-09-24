@@ -163,7 +163,7 @@ export default function SignInScreen() {
           {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
           {notice && <Text accessibilityRole="alert" style={styles.notice}>{notice}</Text>}
 
-          <Button disabled={Boolean(busy)} onPress={signIn} style={styles.primaryButton}>
+          <Button accessibilityLabel="sign in" disabled={Boolean(busy)} onPress={signIn} style={styles.primaryButton}>
             {busy === 'sign-in' ? 'signing in…' : 'sign in'}
           </Button>
           <Pressable
