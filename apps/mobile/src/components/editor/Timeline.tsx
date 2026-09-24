@@ -625,8 +625,12 @@ export function Timeline({
         clip={selected}
         asset={selected?.assetId ? assets[selected.assetId] : undefined}
         kind={selectedTrack?.kind}
+        captionClips={selectedTrack?.kind === 'caption' ? selectedTrack.clips : []}
         pending={pending}
-        onApply={(ops, patch) => onApply(ops, (current) => (selected ? patchClip(current, selected.id, patch) : current))}
+        onApply={(ops, patch, extra) => onApply(ops, (current) => {
+          const patched = selected ? patchClip(current, selected.id, patch) : current;
+          return (extra ?? []).reduce((next, entry) => patchClip(next, entry.clipId, entry.patch), patched);
+        })}
       />
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
     </View>
