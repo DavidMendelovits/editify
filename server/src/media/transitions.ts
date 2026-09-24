@@ -9,6 +9,11 @@ import type { Clip } from '@editify/shared';
 export interface TransitionPlan {
   /** Extra SOURCE seconds appended to the clip's trim/atrim end. */
   extendSourceBy: number;
+  /**
+   * Timeline seconds the clip's last frame is held past its (extended) end,
+   * covering whatever part of a crossfade the source had no frames for.
+   */
+  holdLastFrameFor?: number;
   videoFadeIn?: { d: number; alpha: boolean };
   videoFadeOut?: { st: number; d: number };
   audioFadeIn?: number;
@@ -20,7 +25,8 @@ const clipSeconds = (clip: Clip): number => (clip.out - clip.in) / (clip.speed ?
 /**
  * Plans `clip.transition` for one video track's clips, in timeline order.
  * A `crossfade` into B borrows source frames past the previous clip's out
- * point so it keeps playing under B's alpha fade-in; a `dip` fades both sides
+ * point so it keeps playing under B's alpha fade-in (holding its last frame
+ * where the asset runs out); a `dip` fades both sides
  * through black around the cut and borrows nothing. Timeline positions never
  * move, and clips without an entry render exactly as they do without
  * transitions.
@@ -55,16 +61,24 @@ export function planTransitions(
       opening.audioFadeIn = duration;
       if (!adjacent) return;
       const speed = adjacent.speed ?? 1;
-      // Only frames the asset actually has past the out point can be borrowed.
-      // With none, the outgoing clip just cuts and the incoming one fades up
-      // from the base canvas instead — reads as a fade from black.
+      // Borrow real frames past the out point where the asset has them, and
+      // freeze the last frame for the rest — phone clips are usually placed
+      // whole, with no headroom at all, and without the hold the incoming clip
+      // would fade up from the black canvas instead of dissolving.
       const headroom = Math.max(0, (assetDurations.get(adjacent.assetId ?? '') ?? adjacent.out) - adjacent.out);
       const extend = Math.min(duration * speed, headroom);
-      if (extend <= 0) return;
+      const overlap = extend / speed;
       const closing = planFor(adjacent.id);
-      closing.extendSourceBy = extend;
-      // The borrowed tail fades out exactly where the clip used to end.
-      closing.audioFadeOut = { st: clipSeconds(adjacent), d: extend / speed };
+      if (extend > 0) {
+        closing.extendSourceBy = extend;
+        // The borrowed tail fades out exactly where the clip used to end.
+        closing.audioFadeOut = { st: clipSeconds(adjacent), d: overlap };
+      }
+      if (duration - overlap > 1e-6) closing.holdLastFrameFor = duration - overlap;
+      // Audio only crossfades over sound that was really borrowed; with none
+      // (a held frame is silent) the audio side is a plain cut.
+      if (overlap > 0) opening.audioFadeIn = overlap;
+      else delete opening.audioFadeIn;
       return;
     }
     const half = duration / 2;

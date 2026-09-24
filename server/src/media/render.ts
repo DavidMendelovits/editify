@@ -190,7 +190,9 @@ export async function renderProject(
     const trimEnd = plan?.extendSourceBy ? timeArg(clip.out + plan.extendSourceBy) : `${clip.out}`;
     if (input.kind === 'video' && asset.width > 0 && asset.height > 0) {
       const transform = clip.transform ?? { scale: 1, x: 0, y: 0 };
-      const formatted = `${normalize(asset.originalPath, Boolean(plan?.videoFadeIn?.alpha))}${videoFades(plan)}`;
+      // A crossfade the source has no frames left for holds its last one instead.
+      const hold = plan?.holdLastFrameFor ? `tpad=stop_mode=clone:stop_duration=${timeArg(plan.holdLastFrameFor)},` : '';
+      const formatted = `${hold}${normalize(asset.originalPath, Boolean(plan?.videoFadeIn?.alpha))}${videoFades(plan)}`;
       if (clip.transformEnd) {
         // Animated zoom: cover-scale to an oversized frame, then zoompan tweens
         // scale and pan per frame across the clip.
