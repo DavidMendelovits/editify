@@ -9,13 +9,31 @@ import {
   type Project,
 } from '@editify/shared';
 import type { EditifyDatabase } from './database.js';
-import { applyOperation, OperationError } from '../operations/apply.js';
+import { applyOperation, findVideoOverlaps, overlapKey, OperationError } from '../operations/apply.js';
 
 export class VersionConflictError extends Error {
   constructor(public readonly expected: number, public readonly actual: number) {
     super(`Version conflict: expected ${expected}, current version is ${actual}`);
     this.name = 'VersionConflictError';
   }
+}
+
+/**
+ * A video track shows one picture at a time, so two clips sharing timeline time
+ * there is corruption, not an edit. Only a *newly* introduced pair throws: a
+ * project that already overlaps has to stay editable so it can be repaired.
+ */
+function assertNoNewVideoOverlap(before: Project, after: Project): void {
+  const existing = new Set(findVideoOverlaps(before).map(overlapKey));
+  const introduced = findVideoOverlaps(after).find((overlap) => !existing.has(overlapKey(overlap)));
+  if (!introduced) return;
+  const [first, second] = introduced.clipIds;
+  // Rounded: float ends read as 2.5999999999999996s, which is noise to whoever
+  // (the user or the model) has to act on the message.
+  const second3 = (value: number): string => `${Number(value.toFixed(3))}s`;
+  throw new OperationError(
+    `Clips ${first} and ${second} would overlap on video track ${introduced.trackId} from ${second3(introduced.start)} to ${second3(introduced.end)}; video clips cannot share timeline time`,
+  );
 }
 
 /** Structural project comparison ignoring `version`, normalized through the schema so key order can't differ. */
@@ -241,6 +259,10 @@ export class ProjectStore {
       });
 
       const isHistoryOperation = !!operations[0] && isHistoryOperationType(operations[0].type);
+      // Checked once for the whole batch, not per operation: swapping two clips
+      // legitimately passes through an intermediate overlap. History operations
+      // restore an earlier document verbatim, so they are exempt.
+      if (!isHistoryOperation) assertNoNewVideoOverlap(original, project);
       // A write that changed nothing must not bump the version: it would create a
       // bogus revert checkpoint and make the client flash an identical document.
       if (!isHistoryOperation && sameDoc(original, project)) return original;

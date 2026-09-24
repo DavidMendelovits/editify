@@ -15,8 +15,11 @@ const SHORT: Record<AgentProviderId, string> = {
 
 /**
  * Chooses which model runs the agent. The server owns the list — it probes for
- * the CLIs and the API keys — so unavailable options stay visible but disabled
- * with the reason attached, rather than silently missing.
+ * the CLIs and the API keys — so an API option that is missing its key stays
+ * visible but disabled with the reason attached, rather than silently missing.
+ * The CLI options are the exception: a deployed server can never grow a `claude`
+ * or `codex` binary, so when its probe says they are absent they are dropped
+ * instead of offered as two permanently dead rows.
  */
 export function ProviderPicker() {
   const [open, setOpen] = useState(false);
@@ -32,6 +35,7 @@ export function ProviderPicker() {
 
   const status = statusQuery.data;
   const active = status?.active;
+  const options = (status?.options ?? []).filter((option) => option.available || !option.id.endsWith('-cli'));
 
   return (
     <View style={styles.wrap}>
@@ -52,7 +56,7 @@ export function ProviderPicker() {
 
       {open && (
         <View style={styles.list}>
-          {status?.options.map((option) => (
+          {options.map((option) => (
             <Pressable
               key={option.id}
               accessibilityRole="button"

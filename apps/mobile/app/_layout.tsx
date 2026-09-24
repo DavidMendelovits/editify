@@ -14,6 +14,7 @@ import { Unbounded_700Bold } from '@expo-google-fonts/unbounded';
 import { SpaceMono_700Bold } from '@expo-google-fonts/space-mono';
 import { AppProviders } from '../src/providers/AppProviders';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
+import { syncPurchaseUser } from '../src/lib/purchases';
 import { colors } from '../src/lib/theme';
 
 export default function RootLayout() {
@@ -42,6 +43,13 @@ export default function RootLayout() {
       unsubscribe();
     };
   }, []);
+
+  // Entitlements follow the Editify account, so the store user is re-pointed
+  // whenever the session changes rather than once at launch.
+  useEffect(() => {
+    if (session === undefined) return;
+    void syncPurchaseUser(session?.user.id);
+  }, [session]);
 
   useEffect(() => {
     if (session === undefined) return;

@@ -34,6 +34,9 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/tsconfig.base.json ./tsconfig.base.json
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/server ./server
+# The public /privacy, /terms and /support pages are rendered from these
+# markdown files at request time, so they have to exist in the image.
+COPY --from=build /app/docs ./docs
 COPY --from=build /app/apps/mobile/dist ./apps/mobile/dist
 ENV NODE_ENV=production \
     PORT=3001 \

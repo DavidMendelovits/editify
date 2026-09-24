@@ -245,20 +245,38 @@ export function clipRangeBetween(clips: readonly Clip[], anchorId: string, targe
 }
 
 /**
- * Bulk move: the snapped travel of the dragged clip applied to the rest of the
- * selection on the same track, clamped at t=0.
- * ponytail: no neighbour clamping for the followers — only the dragged clip is
- * held inside its gap, so a wide selection can still be pushed into an overlap.
+ * Bulk move: the snapped travel of the dragged clip applied to every selected
+ * clip on the same track, the dragged one included. The selection shifts by one
+ * common amount,
+ * clamped at t=0 and clamped so no moved clip can land on a clip that is not
+ * moving — the selection keeps its internal spacing and never lands in an
+ * overlap, which the server rejects outright on a video track.
  */
 export function bulkMoveUpdates(
   clips: readonly Clip[],
   movingIds: readonly string[],
   shiftSeconds: number,
 ): Array<{ clipId: string; start: number }> {
+  const ordered = sortClips(clips);
+  const moving = ordered.filter((clip) => movingIds.includes(clip.id));
+  if (!moving.length) return [];
+  const staying = ordered.filter((clip) => !movingIds.includes(clip.id));
+  let lower = -Math.min(...moving.map((clip) => clip.start));
+  let upper = Number.POSITIVE_INFINITY;
+  for (const clip of moving) {
+    const end = clipEnd(clip);
+    for (const other of staying) {
+      const otherEnd = clipEnd(other);
+      // A clip that already overlaps this one is pre-existing damage: neither
+      // bound can describe it, so it is left alone rather than freezing the drag.
+      if (otherEnd <= clip.start + 1e-6) lower = Math.max(lower, otherEnd - clip.start);
+      else if (other.start >= end - 1e-6) upper = Math.min(upper, other.start - end);
+    }
+  }
+  const shift = Math.max(lower, Math.min(shiftSeconds, Math.max(lower, upper)));
   const updates: Array<{ clipId: string; start: number }> = [];
-  for (const clip of sortClips(clips)) {
-    if (!movingIds.includes(clip.id)) continue;
-    const start = Number(Math.max(0, clip.start + shiftSeconds).toFixed(6));
+  for (const clip of moving) {
+    const start = Number(Math.max(0, clip.start + shift).toFixed(6));
     if (Math.abs(start - clip.start) > 1e-9) updates.push({ clipId: clip.id, start });
   }
   return updates;

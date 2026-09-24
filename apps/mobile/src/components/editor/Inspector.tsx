@@ -1,5 +1,6 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { AssetMetadata, Clip, ClipTransform, ClipTransition, Operation } from '@editify/shared';
+import { useEffect, useState } from 'react';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import type { AssetMetadata, CaptionStyle, Clip, ClipTransform, ClipTransition, Operation } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 import { formatTimecode } from '../../lib/timeline';
@@ -31,6 +32,21 @@ const TRANSITIONS: Array<{ key: ClipTransition['type']; label: string }> = [
 const TRANSITION_DURATIONS = [0.3, 0.5, 1];
 const DEFAULT_TRANSITION_DURATION = 0.5;
 
+/** Where the caption draws in the frame — the same three the style schema allows. */
+const CAPTION_POSITIONS: Array<CaptionStyle['position']> = ['top', 'center', 'bottom'];
+
+/** Caption size as a share of frame height, stepped inside the schema's 1–25 range. */
+const CAPTION_SIZE_STEP = 0.5;
+const CAPTION_SIZE_MIN = 1;
+const CAPTION_SIZE_MAX = 25;
+/**
+ * A short palette, not a picker: white plus the fills the style packets reach
+ * for. No font row — Space Grotesk (preview) and Montserrat (export) are the
+ * only families bundled, so a family picker would change nothing.
+ */
+const CAPTION_COLORS = ['#FFFFFF', '#FACC15', '#4ADE80', '#F472B6', '#111111'];
+const CAPTION_EMPHASES: Array<CaptionStyle['emphasis']> = ['none', 'bold', 'highlight'];
+
 const STICKER_SIZE_STEP = 0.04;
 const STICKER_ROTATION_STEP = 15;
 
@@ -38,8 +54,11 @@ interface Props {
   clip: Clip | undefined;
   asset: AssetMetadata | undefined;
   kind: 'video' | 'audio' | 'caption' | 'overlay' | undefined;
+  /** Every caption clip in the project — what "apply to all" writes to. */
+  captionClips?: Clip[];
   pending: boolean;
-  onApply: (ops: Operation[], patch: Partial<Clip>) => void;
+  /** `extra` carries the optimistic patch for clips other than the selected one. */
+  onApply: (ops: Operation[], patch: Partial<Clip>, extra?: Array<{ clipId: string; patch: Partial<Clip> }>) => void;
 }
 
 /**
@@ -47,7 +66,7 @@ interface Props {
  * worth nudging by hand — speed/volume/zoom for media clips, size/rotation
  * for stickers. Every control commits one operation with an optimistic patch.
  */
-export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
+export function Inspector({ clip, asset, kind, captionClips, pending, onApply }: Props) {
   if (!clip) {
     return (
       <View style={styles.bar}>
@@ -97,6 +116,61 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
     onApply([{ type: 'set_transition', params: { clipId: clip.id, transition: next } }], patch);
   };
 
+  const applyText = (text: string): void => {
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, text } }], { text });
+  };
+
+  // `anchorPct` outranks `position` in both the preview overlay and the ASS
+  // export, so a styled caption would ignore these chips unless picking a
+  // position drops the explicit anchor.
+  const captionPosition = clip.style?.position ?? 'bottom';
+  const applyCaptionPosition = (position: CaptionStyle['position']): void => {
+    const { anchorPct: _anchorPct, ...rest } = clip.style ?? {};
+    const style = { ...rest, position } as CaptionStyle;
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }], { style });
+  };
+
+  // `update_caption` REPLACES the style object, so every edit merges onto the
+  // clip's own style — that is what carries `words`, the karaoke timings.
+  const applyCaptionStyle = (patch: Partial<CaptionStyle>): void => {
+    const style = { ...clip.style, ...patch } as CaptionStyle;
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }], { style });
+  };
+
+  // `size` is pixels at a 1080-wide frame while `sizePct` is a share of frame
+  // height, so converting needs the aspect the inspector does not have.
+  // ponytail: seed from 9:16, the project default; the first nudge pins an
+  // explicit `sizePct`, which the preview and the ASS export both prefer.
+  const captionSizePct = clip.style?.sizePct ?? round1(((clip.style?.size ?? 52) / 1080) * (9 / 16) * 100);
+  const stepCaptionSize = (direction: -1 | 1): void => {
+    const next = round1(Math.max(CAPTION_SIZE_MIN, Math.min(CAPTION_SIZE_MAX, captionSizePct + direction * CAPTION_SIZE_STEP)));
+    if (next === captionSizePct) return;
+    applyCaptionStyle({ sizePct: next });
+  };
+
+  /**
+   * One look across the whole track. `words` stays per caption (they are that
+   * line's timings), and `anchorPct` is dropped from every clip — including the
+   * selected one, so the source cannot sit somewhere the copies cannot reach —
+   * which is the same trade the POSITION chips make.
+   */
+  const captionSiblings = captionClips ?? [];
+  const applyCaptionStyleToAll = (): void => {
+    const { words: _words, anchorPct: _anchorPct, ...shared } = clip.style ?? {};
+    const ops: Operation[] = [];
+    const extra: Array<{ clipId: string; patch: Partial<Clip> }> = [];
+    let selectedPatch: Partial<Clip> = {};
+    for (const caption of captionSiblings) {
+      const words = caption.style?.words;
+      const style = { ...shared, ...(words ? { words } : {}) } as CaptionStyle;
+      ops.push({ type: 'update_caption', params: { clipId: caption.id, style } });
+      if (caption.id === clip.id) selectedPatch = { style };
+      else extra.push({ clipId: caption.id, patch: { style } });
+    }
+    if (ops.length === 0) return;
+    onApply(ops, selectedPatch, extra);
+  };
+
   const placement = clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
   const stepSticker = (field: 'width' | 'rotation', direction: -1 | 1): void => {
     const next = field === 'width'
@@ -110,11 +184,15 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
     <View style={[styles.bar, pending && styles.barPending]} pointerEvents={pending ? 'none' : 'auto'}>
       <View style={styles.identity}>
         <Text style={styles.kind}>{isCaption ? 'CAPTION' : isSticker ? 'STICKER' : kind === 'audio' ? 'SOUND' : 'CLIP'}</Text>
-        <Text style={styles.name} numberOfLines={1}>
-          {isCaption || (isSticker && !clip.assetId)
-            ? clip.text ?? clip.id
-            : asset?.label ?? asset?.originalName ?? clip.assetId ?? clip.id}
-        </Text>
+        {isCaption ? (
+          <CaptionText clipId={clip.id} text={clip.text} onCommit={applyText} />
+        ) : (
+          <Text style={styles.name} numberOfLines={1}>
+            {isSticker && !clip.assetId
+              ? clip.text ?? clip.id
+              : asset?.label ?? asset?.originalName ?? clip.assetId ?? clip.id}
+          </Text>
+        )}
       </View>
       <Field label="START" value={formatTimecode(clip.start)} />
       <Field label="DURATION" value={`${clipTimelineDuration(clip).toFixed(2)}s`} />
@@ -167,6 +245,81 @@ export function Inspector({ clip, asset, kind, pending, onApply }: Props) {
           </View>
         </View>
       )}
+      {isCaption && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>POSITION</Text>
+          <View style={styles.chipRow}>
+            {CAPTION_POSITIONS.map((position) => (
+              <Chip
+                key={position}
+                label={position}
+                hint={`caption ${position}`}
+                active={captionPosition === position}
+                onPress={() => applyCaptionPosition(position)}
+              />
+            ))}
+          </View>
+        </View>
+      )}
+      {isCaption && (
+        <Stepper
+          label="SIZE"
+          hint="caption size"
+          value={`${captionSizePct.toFixed(1)}%`}
+          onDown={() => stepCaptionSize(-1)}
+          onUp={() => stepCaptionSize(1)}
+        />
+      )}
+      {isCaption && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>COLOR</Text>
+          <View style={styles.chipRow}>
+            {CAPTION_COLORS.map((color) => (
+              <Pressable
+                key={color}
+                accessibilityRole="button"
+                accessibilityLabel={`caption color ${color}`}
+                onPress={() => applyCaptionStyle({ color })}
+                style={({ pressed }) => [
+                  styles.swatch,
+                  { backgroundColor: color },
+                  (clip.style?.color ?? '#FFFFFF').toUpperCase() === color && styles.swatchActive,
+                  pressed && styles.pressed,
+                ]}
+              />
+            ))}
+          </View>
+        </View>
+      )}
+      {isCaption && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>EMPHASIS</Text>
+          <View style={styles.chipRow}>
+            {CAPTION_EMPHASES.map((emphasis) => (
+              <Chip
+                key={emphasis}
+                label={emphasis}
+                hint={`caption emphasis ${emphasis}`}
+                active={(clip.style?.emphasis ?? 'bold') === emphasis}
+                onPress={() => applyCaptionStyle({ emphasis })}
+              />
+            ))}
+          </View>
+        </View>
+      )}
+      {isCaption && captionSiblings.length > 1 && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>STYLE</Text>
+          <View style={styles.chipRow}>
+            <Chip
+              label="apply to all"
+              hint="apply caption style to all"
+              active={false}
+              onPress={applyCaptionStyleToAll}
+            />
+          </View>
+        </View>
+      )}
       {isSticker && (
         <>
           <Stepper label="SIZE" value={`${Math.round(placement.width * 100)}%`} onDown={() => stepSticker('width', -1)} onUp={() => stepSticker('width', 1)} />
@@ -187,8 +340,47 @@ function clamp(value: number, min: number, max: number): number {
   return Math.round(Math.max(min, Math.min(max, value)) * 100) / 100;
 }
 
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
 function clampRotation(value: number): number {
   return Math.max(-180, Math.min(180, value));
+}
+
+/**
+ * The caption's own words, edited in place. Kept as local draft state so every
+ * keystroke does not fire an operation; the edit commits on blur or submit,
+ * and an unchanged or empty draft commits nothing.
+ */
+function CaptionText({ clipId, text, onCommit }: { clipId: string; text: string | undefined; onCommit: (text: string) => void }) {
+  const [draft, setDraft] = useState(text ?? '');
+  // Re-seed on selection change only: re-seeding on every `text` change would
+  // fight the typist while an optimistic patch lands mid-edit.
+  useEffect(() => { setDraft(text ?? ''); }, [clipId]);
+  const commit = (): void => {
+    const next = draft.trim();
+    if (next.length === 0 || next === (text ?? '')) {
+      setDraft(text ?? '');
+      return;
+    }
+    onCommit(next);
+  };
+  return (
+    <TextInput
+      accessibilityLabel="caption text"
+      value={draft}
+      onChangeText={setDraft}
+      onBlur={commit}
+      onSubmitEditing={commit}
+      blurOnSubmit
+      multiline={false}
+      returnKeyType="done"
+      placeholder="caption text"
+      placeholderTextColor={colors.muted}
+      style={styles.captionInput}
+    />
+  );
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -214,16 +406,17 @@ function Chip({ label, hint, active, onPress }: { label: string; hint: string; a
   );
 }
 
-function Stepper({ label, value, onDown, onUp }: { label: string; value: string; onDown: () => void; onUp: () => void }) {
+/** `hint` names the control when the bare label is ambiguous (two SIZE steppers). */
+function Stepper({ label, hint, value, onDown, onUp }: { label: string; hint?: string; value: string; onDown: () => void; onUp: () => void }) {
   return (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <View style={styles.stepper}>
-        <Pressable accessibilityRole="button" accessibilityLabel={`decrease ${label}`} hitSlop={8} onPress={onDown} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={hint ? `${hint} down` : `decrease ${label}`} hitSlop={8} onPress={onDown} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
           <Text style={styles.stepText}>−</Text>
         </Pressable>
         <Text style={styles.stepValue}>{value}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={`increase ${label}`} hitSlop={8} onPress={onUp} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={hint ? `${hint} up` : `increase ${label}`} hitSlop={8} onPress={onUp} style={({ pressed }) => [styles.step, pressed && styles.pressed]}>
           <Text style={styles.stepText}>+</Text>
         </Pressable>
       </View>
@@ -240,6 +433,11 @@ const styles = StyleSheet.create({
   identity: { minWidth: 140, maxWidth: 240, gap: space.xs },
   kind: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.2 },
   name: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.base },
+  captionInput: {
+    color: colors.text, fontFamily: fonts.semibold, fontSize: type.base,
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
+    paddingHorizontal: space.md, minHeight: 26,
+  },
   field: { gap: space.xs },
   fieldLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
   fieldValue: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
@@ -258,6 +456,8 @@ const styles = StyleSheet.create({
   chipActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   chipText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   chipTextActive: { color: colors.text },
+  swatch: { width: 22, height: 22, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  swatchActive: { borderWidth: 2, borderColor: colors.accent },
   zoomCustom: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
   hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   pressed: { opacity: 0.6 },

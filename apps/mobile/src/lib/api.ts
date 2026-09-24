@@ -6,6 +6,13 @@ import type { EditPreset } from './presets';
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
 /**
+ * True when the API is the dev server on this machine. The server's drop folder
+ * and the CLI-backed agents only exist there, so the UI that exposes them is
+ * hidden against the hosted backend rather than showing a dead control.
+ */
+export const IS_LOCAL_API = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(API_URL);
+
+/**
  * The server's shared password (`EDITIFY_TOKEN`), when it has one. Left unset
  * for the web build: that client is served from the API's own origin, so the
  * browser's Basic prompt supplies credentials and nothing has to be baked into
@@ -307,6 +314,14 @@ export const api = {
   /** Answers 204 with no body, so it cannot go through `request`'s JSON parse. */
   deleteProject: async (id: string): Promise<void> => {
     const response = await timedFetch(`/projects/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
+  },
+  /**
+   * App Store guideline 5.1.1(v). Erases the caller's rows, media and login;
+   * answers 204 with no body, so it cannot go through `request`'s JSON parse.
+   */
+  deleteAccount: async (): Promise<void> => {
+    const response = await timedFetch('/account', { method: 'DELETE', headers: authHeaders() });
     if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
   },
   applyOps: (id: string, ops: Operation[], baseVersion: number) => request<Project>(`/projects/${id}/ops`, {

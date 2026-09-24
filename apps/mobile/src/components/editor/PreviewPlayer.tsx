@@ -215,6 +215,8 @@ export function PreviewPlayer({ project, assets, clock, playing, scrubbing, sele
   );
   const lastCorrection = useRef(0);
   const views = useRef<Array<VideoView | null>>([]);
+  /** Web only: the viewless audio pool still renders 1px <video> elements. */
+  const audioViews = useRef<Array<VideoView | null>>([]);
   // Per-slot visibility as Animated values, written imperatively: the steady
   // state is a hard 1/0 flip at the cut, and a crossfade ramps the incoming
   // slot per frame without a single React render.
@@ -253,7 +255,21 @@ export function PreviewPlayer({ project, assets, clock, playing, scrubbing, sele
       element.onplay = null;
       element.onpause = null;
     }
-    return () => { for (const element of elements) element?.pause(); };
+    // `replaceAsync` starts playback and its continuation immediately parks the
+    // player again, so every pooled element rejects its own play() promise with
+    // an unhandled AbortError at project open. Swallowing it on the element
+    // keeps the console honest without touching a single playback decision.
+    const audioElements = audioViews.current.map((view) => view?.nativeRef?.current as HTMLVideoElement | null | undefined);
+    const wrapped = [...elements, ...audioElements].filter((element): element is HTMLVideoElement => !!element)
+      .map((element) => {
+        const native = element.play.bind(element);
+        element.play = () => native().catch(() => undefined);
+        return { element, native };
+      });
+    return () => {
+      for (const { element, native } of wrapped) element.play = native;
+      for (const element of elements) element?.pause();
+    };
   }, []);
 
   // Keeps the window loaded. Only a slot whose clip actually changed is touched,
@@ -580,7 +596,13 @@ export function PreviewPlayer({ project, assets, clock, playing, scrubbing, sele
           </PoseLayer>
           {/* Viewless audio needs elements on web; 1px and transparent. */}
           {audioPool.map((player, slot) => (
-            <VideoView key={`audio-${slot}`} player={player} style={styles.audioElement} nativeControls={false} />
+            <VideoView
+              key={`audio-${slot}`}
+              ref={(node) => { audioViews.current[slot] = node; }}
+              player={player}
+              style={styles.audioElement}
+              nativeControls={false}
+            />
           ))}
           {!uri && (
             <View style={styles.gap}>

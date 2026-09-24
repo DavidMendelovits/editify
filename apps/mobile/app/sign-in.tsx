@@ -1,7 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   StyleSheet,
@@ -12,9 +11,11 @@ import {
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Brand } from '../src/components/Brand';
 import { Button } from '../src/components/Button';
+import { LegalLinks } from '../src/components/LegalLinks';
 import { Screen } from '../src/components/Screen';
 import { supabase } from '../src/lib/supabase';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
+import { appVersion } from '../src/lib/version';
 
 type AuthAction = 'sign-in' | 'sign-up' | 'google';
 
@@ -38,6 +39,7 @@ async function loadGoogleSignIn() {
 }
 
 export default function SignInScreen() {
+  const passwordField = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState<AuthAction>();
@@ -113,89 +115,94 @@ export default function SignInScreen() {
   const socialEnabled = googleEnabled;
 
   return (
-    <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <Screen>
-        <View style={styles.brand}><Brand /></View>
-        <View style={styles.shell}>
-          <View style={styles.intro}>
-            <Text style={styles.title}>Sign in</Text>
-          </View>
-
-          <View style={styles.card}>
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>EMAIL</Text>
-              <TextInput
-                accessibilityLabel="email"
-                autoCapitalize="none"
-                autoComplete="email"
-                keyboardType="email-address"
-                onChangeText={setEmail}
-                placeholder="you@example.com"
-                placeholderTextColor="#666474"
-                style={styles.input}
-                textContentType="emailAddress"
-                value={email}
-              />
-            </View>
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>PASSWORD</Text>
-              <TextInput
-                accessibilityLabel="password"
-                autoCapitalize="none"
-                autoComplete="password"
-                onChangeText={setPassword}
-                onSubmitEditing={signIn}
-                placeholder="At least 6 characters"
-                placeholderTextColor="#666474"
-                secureTextEntry
-                style={styles.input}
-                textContentType="password"
-                value={password}
-              />
-            </View>
-
-            {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-            {notice && <Text accessibilityRole="alert" style={styles.notice}>{notice}</Text>}
-
-            <Button disabled={Boolean(busy)} onPress={signIn} style={styles.primaryButton}>
-              {busy === 'sign-in' ? 'signing in…' : 'sign in'}
-            </Button>
-            <Pressable
-              accessibilityRole="button"
-              disabled={Boolean(busy)}
-              onPress={signUp}
-              style={({ pressed }) => [styles.createButton, pressed && styles.pressed, busy && styles.disabled]}
-            >
-              <Text style={styles.createText}>{busy === 'sign-up' ? 'creating account…' : 'create account'}</Text>
-            </Pressable>
-
-            {socialEnabled && (
-              <>
-                <View style={styles.divider}><View style={styles.line} /><Text style={styles.or}>OR</Text><View style={styles.line} /></View>
-                <View style={styles.socialStack}>
-                  {googleEnabled && (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={Boolean(busy)}
-                      onPress={signInWithGoogle}
-                      style={({ pressed }) => [styles.googleButton, pressed && styles.pressed, busy && styles.disabled]}
-                    >
-                      {busy === 'google' ? <ActivityIndicator color="#16151D" /> : <Text style={styles.googleMark}>G</Text>}
-                      <Text style={styles.googleText}>Sign in with Google</Text>
-                    </Pressable>
-                  )}
-                </View>
-              </>
-            )}
-          </View>
+    <Screen>
+      <View style={styles.brand}><Brand /></View>
+      <View style={styles.shell}>
+        <View style={styles.intro}>
+          <Text style={styles.title}>Sign in</Text>
         </View>
-      </Screen>
-    </KeyboardAvoidingView>
+
+        <View style={styles.card}>
+          <View style={styles.fieldGroup}>
+            <Text style={styles.label}>EMAIL</Text>
+            <TextInput
+              accessibilityLabel="email"
+              autoCapitalize="none"
+              autoComplete="email"
+              keyboardType="email-address"
+              onChangeText={setEmail}
+              onSubmitEditing={() => passwordField.current?.focus()}
+              placeholder="you@example.com"
+              placeholderTextColor="#666474"
+              returnKeyType="next"
+              style={styles.input}
+              submitBehavior="submit"
+              textContentType="emailAddress"
+              value={email}
+            />
+          </View>
+          <View style={styles.fieldGroup}>
+            <Text style={styles.label}>PASSWORD</Text>
+            <TextInput
+              accessibilityLabel="password"
+              autoCapitalize="none"
+              autoComplete="password"
+              onChangeText={setPassword}
+              onSubmitEditing={signIn}
+              placeholder="At least 6 characters"
+              placeholderTextColor="#666474"
+              ref={passwordField}
+              returnKeyType="go"
+              secureTextEntry
+              style={styles.input}
+              textContentType="password"
+              value={password}
+            />
+          </View>
+
+          {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+          {notice && <Text accessibilityRole="alert" style={styles.notice}>{notice}</Text>}
+
+          <Button accessibilityLabel="sign in" disabled={Boolean(busy)} onPress={signIn} style={styles.primaryButton}>
+            {busy === 'sign-in' ? 'signing in…' : 'sign in'}
+          </Button>
+          <Pressable
+            accessibilityRole="button"
+            disabled={Boolean(busy)}
+            onPress={signUp}
+            style={({ pressed }) => [styles.createButton, pressed && styles.pressed, busy && styles.disabled]}
+          >
+            <Text style={styles.createText}>{busy === 'sign-up' ? 'creating account…' : 'create account'}</Text>
+          </Pressable>
+
+          {socialEnabled && (
+            <>
+              <View style={styles.divider}><View style={styles.line} /><Text style={styles.or}>OR</Text><View style={styles.line} /></View>
+              <View style={styles.socialStack}>
+                {googleEnabled && (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={Boolean(busy)}
+                    onPress={signInWithGoogle}
+                    style={({ pressed }) => [styles.googleButton, pressed && styles.pressed, busy && styles.disabled]}
+                  >
+                    {busy === 'google' ? <ActivityIndicator color="#16151D" /> : <Text style={styles.googleMark}>G</Text>}
+                    <Text style={styles.googleText}>Sign in with Google</Text>
+                  </Pressable>
+                )}
+              </View>
+            </>
+          )}
+        </View>
+
+        <LegalLinks style={styles.legal} />
+        <Text style={styles.version}>{appVersion}</Text>
+      </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  keyboard: { flex: 1, backgroundColor: colors.background },
   brand: { minHeight: 58, justifyContent: 'center' },
   shell: { flex: 1, width: '100%', maxWidth: 460, alignSelf: 'center', justifyContent: 'center', gap: space.section, paddingVertical: space.section },
   intro: { alignItems: 'center', gap: space.lg },
@@ -203,7 +210,7 @@ const styles = StyleSheet.create({
   card: { gap: space.xl, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, padding: space.xxl },
   fieldGroup: { gap: space.md },
   label: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
-  input: { height: 40, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, color: colors.text, fontFamily: fonts.medium, fontSize: type.lg, paddingHorizontal: space.xl },
+  input: { minHeight: 40, paddingVertical: space.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, color: colors.text, fontFamily: fonts.medium, fontSize: type.lg, paddingHorizontal: space.xl },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg, lineHeight: 18 },
   notice: { color: colors.success, fontFamily: fonts.medium, fontSize: type.lg, lineHeight: 18 },
   primaryButton: { marginTop: space.sm },
@@ -218,4 +225,6 @@ const styles = StyleSheet.create({
   googleText: { color: '#16151D', fontFamily: fonts.semibold, fontSize: type.lg },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
   disabled: { opacity: 0.5 },
+  legal: { justifyContent: 'center' },
+  version: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1, textAlign: 'center' },
 });

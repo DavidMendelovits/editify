@@ -35,7 +35,10 @@ interface Props {
   onSelect: (clipId: string | undefined) => void;
   /** Applies ops on the server; `optimistic` paints the result before the round trip. */
   onApply: (ops: Operation[], optimistic?: (project: Project) => Project) => void;
+  /** Import from the Files app / file browser. */
   onImport: () => void;
+  /** Import from the Photos library (camera roll). */
+  onImportPhotos: () => void;
   /** Files dropped on the empty video lane (web only). */
   onImportFiles: (files: File[]) => void;
   importing: boolean;
@@ -67,11 +70,13 @@ const round6 = (value: number): number => Number(value.toFixed(6));
  * playback. Everything here reads the current time imperatively.
  */
 export function Timeline({
-  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onImportFiles, importing, importProgress, importError, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle,
+  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onImportPhotos, onImportFiles, importing, importProgress, importError, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle,
 }: Props) {
   const [pxPerSec, setPxPerSec] = useState(40);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [drag, setDrag] = useState<DragState>();
+  // "import" asks where from first: iOS's document picker can't see the camera roll.
+  const [sourceOpen, setSourceOpen] = useState(false);
   // Multi-select lives here, not in the route: `selectedId` stays the anchor —
   // what the Inspector edits — and `anchor` pins these ids to it, so any
   // selection made elsewhere (agent, inspector, a plain click) collapses the
@@ -271,11 +276,12 @@ export function Timeline({
     if (mode === 'move') {
       const start = round6(moveTarget(track, clip, delta));
       if (Math.abs(start - clip.start) < 1e-4) return;
-      const followers = isSelected(clip.id) ? selectedIds.filter((id) => id !== clip.id) : [];
-      const updates = [
-        { clipId: clip.id, start },
-        ...bulkMoveUpdates(track.clips, followers, start - clip.start),
-      ];
+      // The dragged clip travels inside the selection, not beside it: one common
+      // shift for all of them, clamped off the clips that stay put.
+      const updates = isSelected(clip.id) && selectedIds.length > 1
+        ? bulkMoveUpdates(track.clips, selectedIds, start - clip.start)
+        : [{ clipId: clip.id, start }];
+      if (!updates.length) return;
       // ponytail: captions have no batch operation, so a multi-caption move
       // goes out as one `update_caption` per clip in a single batch.
       const ops: Operation[] = track.kind === 'caption'
@@ -472,8 +478,14 @@ export function Timeline({
           <Text testID="timeline-zoom-value" style={styles.zoomValue}>{Math.round(pxPerSec)} px/s</Text>
           <Tool label="+" hint="zoom" compact onPress={() => zoom(1.6)} disabled={pxPerSec >= MAX_PX_PER_SEC} />
           <Tool label="fit all" hint="whole project" accessibilityLabel="fit all, whole project" testID="timeline-fit" compact onPress={fit} disabled={fitDisabled} />
-          <Tool label="import" hint="media" compact onPress={onImport} />
+          <Tool label="import" hint="media" compact onPress={() => setSourceOpen((open) => !open)} testID="timeline-import" />
         </View>
+        {sourceOpen && (
+          <View style={styles.toolGroup}>
+            <Tool label="photos" hint="camera roll" accessibilityLabel="import from photos" testID="import-from-photos" onPress={() => { setSourceOpen(false); onImportPhotos(); }} />
+            <Tool label="files" hint="browse files" accessibilityLabel="import from files" testID="import-from-files" onPress={() => { setSourceOpen(false); onImport(); }} />
+          </View>
+        )}
       </View>
 
       <View style={styles.body}>
@@ -572,7 +584,7 @@ export function Timeline({
                   {lane.track.kind === 'video' && beatTicks}
                   {lane.track.kind === 'video' && lane.track.clips.length === 0 && (
                     <EmptyLane
-                      onPress={onImport}
+                      onPress={() => setSourceOpen(true)}
                       onDropFiles={onImportFiles}
                       uploading={importing}
                       progress={importProgress}
@@ -624,8 +636,12 @@ export function Timeline({
         clip={selected}
         asset={selected?.assetId ? assets[selected.assetId] : undefined}
         kind={selectedTrack?.kind}
+        captionClips={selectedTrack?.kind === 'caption' ? selectedTrack.clips : []}
         pending={pending}
-        onApply={(ops, patch) => onApply(ops, (current) => (selected ? patchClip(current, selected.id, patch) : current))}
+        onApply={(ops, patch, extra) => onApply(ops, (current) => {
+          const patched = selected ? patchClip(current, selected.id, patch) : current;
+          return (extra ?? []).reduce((next, entry) => patchClip(next, entry.clipId, entry.patch), patched);
+        })}
       />
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
     </View>

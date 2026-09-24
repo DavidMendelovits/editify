@@ -3,10 +3,10 @@ import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, 
 import { useQuery } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
 import { colors, radius, space, type, fonts } from '../lib/theme';
-import { api } from '../lib/api';
+import { api, IS_LOCAL_API } from '../lib/api';
 import { track } from '../lib/telemetry';
 import { formatMegabytes } from '../lib/agent';
-import { pickFromFiles, uploadFiles, type PickResult } from '../lib/pick';
+import { pickFromFiles, pickFromPhotos, uploadFiles, type PickResult } from '../lib/pick';
 
 type ImportState = 'queued' | 'importing' | 'done' | 'error';
 
@@ -22,11 +22,13 @@ interface Props {
 /**
  * Media sheet: upload from this machine (picker or, on web, drag-and-drop), with
  * the server's own drop folder kept as a secondary section when it has anything.
+ * That folder is a dev-machine affordance, so the section is asked for only when
+ * the API is local; against the hosted backend it would always be empty.
  * Those folder imports run strictly one at a time (ffprobe + proxy + thumbnail is
  * slow on big files); extra taps queue up behind the running one.
  */
 export function ImportSheet({ projectId, visible, onClose, onImported }: Props) {
-  const files = useQuery({ queryKey: ['importable'], queryFn: () => api.listImportable(), enabled: visible });
+  const files = useQuery({ queryKey: ['importable'], queryFn: () => api.listImportable(), enabled: visible && IS_LOCAL_API });
   const [states, setStates] = useState<Record<string, ImportState>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Promise chain that serializes imports without blocking the UI thread.
@@ -150,9 +152,24 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
             {uploadError ? <Text style={styles.error} numberOfLines={3}>{uploadError}</Text> : null}
           </Pressable>
 
-          {list.length > 0 && <Text style={styles.section}>or from the server media folder</Text>}
+          <Pressable
+            onPress={() => void upload(async () => await pickFromPhotos(projectId, onProgress))}
+            disabled={uploading}
+            accessibilityRole="button"
+            accessibilityLabel="import from photo library"
+            testID="import-sheet-photos"
+            style={({ pressed }) => [styles.file, pressed && !uploading && styles.pressed, uploading && styles.disabled]}
+          >
+            <View style={styles.fileText}>
+              <Text style={styles.fileName}>photo library</Text>
+              <Text style={styles.fileMeta}>videos from your camera roll</Text>
+            </View>
+            <Text style={styles.importCue}>open ↗</Text>
+          </Pressable>
 
-          {(files.isLoading || files.error || list.length > 0) && (
+          {IS_LOCAL_API && list.length > 0 && <Text style={styles.section}>or from the server media folder</Text>}
+
+          {IS_LOCAL_API && (files.isLoading || files.error || list.length > 0) && (
           <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
             {files.isLoading && (
               <View style={styles.stateRow}><ActivityIndicator color={colors.accent} /><Text style={styles.stateText}>looking for clips…</Text></View>
@@ -222,4 +239,5 @@ const styles = StyleSheet.create({
   importCue: { color: colors.accent, fontFamily: fonts.bold, fontSize: type.md },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
   pressed: { opacity: 0.7 },
+  disabled: { opacity: 0.38 },
 });

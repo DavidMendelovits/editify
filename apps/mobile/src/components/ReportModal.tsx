@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation } from '@tanstack/react-query';
 import { Button } from './Button';
 import { ScreenshotField } from './ScreenshotField';
@@ -25,6 +26,7 @@ interface Props {
  * the issue the server filed — or the note explaining where it went instead.
  */
 export function ReportModal({ mode, error, screenshot, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const [comment, setComment] = useState('');
   const [attached, setAttached] = useState(false);
   const [highlight, setHighlight] = useState<HighlightRect>();
@@ -57,75 +59,87 @@ export function ReportModal({ mode, error, screenshot, onClose }: Props) {
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="close report">
-        <Pressable style={[styles.sheet, mode === 'error' && styles.sheetError]} onPress={() => undefined}>
-          <ScrollView contentContainerStyle={styles.sheetContent} showsVerticalScrollIndicator={false}>
-            <Text style={[styles.eyebrow, mode === 'error' && styles.eyebrowError]}>
-              {mode === 'error' ? 'SOMETHING BROKE' : 'SEND FEEDBACK'}
-            </Text>
-            <Text style={styles.title}>
-              {mode === 'error' ? 'Editify hit an error.' : 'What should we change?'}
-            </Text>
-            {mode === 'error' && error && <Text style={styles.message} numberOfLines={3}>{error.message}</Text>}
+      <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <Pressable
+          style={[styles.backdrop, { paddingTop: space.xxl + insets.top, paddingBottom: space.xxl + insets.bottom }]}
+          onPress={onClose}
+          accessibilityLabel="close report"
+        >
+          <Pressable style={[styles.sheet, mode === 'error' && styles.sheetError]} onPress={() => undefined}>
+            <ScrollView
+              contentContainerStyle={styles.sheetContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+            >
+              <Text style={[styles.eyebrow, mode === 'error' && styles.eyebrowError]}>
+                {mode === 'error' ? 'SOMETHING BROKE' : 'SEND FEEDBACK'}
+              </Text>
+              <Text style={styles.title}>
+                {mode === 'error' ? 'Editify hit an error.' : 'What should we change?'}
+              </Text>
+              {mode === 'error' && error && <Text style={styles.message} numberOfLines={3}>{error.message}</Text>}
 
-            {receipt ? (
-              <>
-                <Text style={styles.subtitle}>{receipt.note}</Text>
-                {receipt.issueNumber !== null && receipt.issueUrl && (
-                  <Pressable accessibilityRole="link" onPress={() => { Linking.openURL(receipt.issueUrl as string).catch(() => undefined); }}>
-                    <Text style={styles.issue}>issue #{receipt.issueNumber} ↗</Text>
-                  </Pressable>
-                )}
-                <Button onPress={onClose}>done</Button>
-              </>
-            ) : (
-              <>
-                <Text style={styles.subtitle}>
-                  {mode === 'error'
-                    ? 'Send it over and we will open a tracked issue. Add anything you were doing (optional).'
-                    : 'Tell us what is missing or wrong. We assess it and open a tracked issue.'}
-                </Text>
-                <TextInput
-                  value={comment}
-                  onChangeText={setComment}
-                  placeholder={mode === 'error' ? 'What were you doing? (optional)' : 'Describe the change…'}
-                  placeholderTextColor={colors.muted}
-                  multiline
-                  style={styles.input}
-                />
-                {screenshot && (
-                  <ScreenshotField
-                    shot={screenshot}
-                    attached={attached}
-                    onAttachedChange={setAttached}
-                    {...(highlight ? { highlight } : {})}
-                    onHighlight={setHighlight}
+              {receipt ? (
+                <>
+                  <Text style={styles.subtitle}>{receipt.note}</Text>
+                  {receipt.issueNumber !== null && receipt.issueUrl && (
+                    <Pressable accessibilityRole="link" onPress={() => { Linking.openURL(receipt.issueUrl as string).catch(() => undefined); }}>
+                      <Text style={styles.issue}>issue #{receipt.issueNumber} ↗</Text>
+                    </Pressable>
+                  )}
+                  <Button onPress={onClose}>done</Button>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.subtitle}>
+                    {mode === 'error'
+                      ? 'Send it over and we will open a tracked issue. Add anything you were doing (optional).'
+                      : 'Tell us what is missing or wrong. We assess it and open a tracked issue.'}
+                  </Text>
+                  <TextInput
+                    value={comment}
+                    onChangeText={setComment}
+                    placeholder={mode === 'error' ? 'What were you doing? (optional)' : 'Describe the change…'}
+                    placeholderTextColor={colors.muted}
+                    multiline
+                    style={styles.input}
                   />
-                )}
-                {/* Say what rides along, so nobody has to guess what they just sent. */}
-                <Text style={styles.attachments}>Attached: {describeAttachments(attached)}</Text>
-                {report.error && <Text style={styles.error}>{report.error.message}</Text>}
-                <View style={styles.actions}>
-                  <Button secondary style={styles.dismiss} onPress={onClose}>dismiss</Button>
-                  <Button
-                    style={styles.send}
-                    disabled={report.isPending || (mode === 'feedback' && !comment.trim())}
-                    onPress={() => report.mutate()}
-                  >
-                    {report.isPending ? 'sending…' : 'report'}
-                  </Button>
-                </View>
-              </>
-            )}
-          </ScrollView>
+                  {screenshot && (
+                    <ScreenshotField
+                      shot={screenshot}
+                      attached={attached}
+                      onAttachedChange={setAttached}
+                      {...(highlight ? { highlight } : {})}
+                      onHighlight={setHighlight}
+                    />
+                  )}
+                  {/* Say what rides along, so nobody has to guess what they just sent. */}
+                  <Text style={styles.attachments}>Attached: {describeAttachments(attached)}</Text>
+                  {report.error && <Text style={styles.error}>{report.error.message}</Text>}
+                  <View style={styles.actions}>
+                    <Button secondary style={styles.dismiss} onPress={onClose}>dismiss</Button>
+                    <Button
+                      style={styles.send}
+                      disabled={report.isPending || (mode === 'feedback' && !comment.trim())}
+                      onPress={() => report.mutate()}
+                    >
+                      {report.isPending ? 'sending…' : 'report'}
+                    </Button>
+                  </View>
+                </>
+              )}
+            </ScrollView>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: '#04040899', alignItems: 'center', justifyContent: 'center', padding: space.xxl },
+  fill: { flex: 1 },
+  backdrop: { flex: 1, backgroundColor: '#04040899', alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.xxl },
   sheet: { width: '100%', maxWidth: 460, maxHeight: '90%', borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel },
   sheetContent: { padding: space.xxl, gap: space.lg },
   sheetError: { borderColor: colors.danger, backgroundColor: colors.dangerSoft },
