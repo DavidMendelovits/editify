@@ -33,6 +33,11 @@ git fetch -q origin && git checkout -q -b bot/issue-<N>-<slug> origin/main   # (
 scripts/bot/setup-worktree.sh     # npm install, build shared, copy seeded DB + media
 ```
 
+**Auth emails bounce and Supabase throttles the project for it.** Never click "create account",
+password reset, or anything else that makes Supabase send mail, and never type a made-up address
+(`@example.com`, `test@…`) into an auth form. The only sign-in is `qa-login.sh` (password, no mail).
+If an issue is about sign-up itself, verify it with the API/unit tests, not a live sign-up.
+
 Blocked in unattended runs, don't retry them: `npm run seed`, the Supabase MCP (even SELECTs),
 the Browser-pane `preview_start`, auth-bypass env vars, reading the user's email, Codex CLI
 (too old for its default model). Bash-started dev servers and the Browser-pane `navigate` are fine.

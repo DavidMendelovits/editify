@@ -11,7 +11,7 @@ EMAIL=$(python3 -c "import json;print(json.load(open('$CREDS'))['email'])")
 python3 -c "import json;print(json.load(open('$CREDS'))['password'],end='')" | "$AB" auth save editify-qa \
   --url "$URL/sign-in" --username "$EMAIL" --password-stdin \
   --username-selector 'input[aria-label="email"]' --password-selector 'input[aria-label="password"]' \
-  --submit-selector '[role=button]' >/dev/null
+  --submit-selector '[aria-label="sign in"]' >/dev/null
 "$AB" auth login editify-qa
 "$AB" auth delete editify-qa >/dev/null 2>&1 || true
 
