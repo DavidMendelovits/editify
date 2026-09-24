@@ -6,7 +6,7 @@ import { colors, radius, space, type, fonts } from '../lib/theme';
 import { api, IS_LOCAL_API } from '../lib/api';
 import { track } from '../lib/telemetry';
 import { formatMegabytes } from '../lib/agent';
-import { pickFromFiles, uploadFiles, type PickResult } from '../lib/pick';
+import { pickFromFiles, pickFromPhotos, uploadFiles, type PickResult } from '../lib/pick';
 
 type ImportState = 'queued' | 'importing' | 'done' | 'error';
 
@@ -152,6 +152,21 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
             {uploadError ? <Text style={styles.error} numberOfLines={3}>{uploadError}</Text> : null}
           </Pressable>
 
+          <Pressable
+            onPress={() => void upload(async () => await pickFromPhotos(projectId, onProgress))}
+            disabled={uploading}
+            accessibilityRole="button"
+            accessibilityLabel="import from photo library"
+            testID="import-sheet-photos"
+            style={({ pressed }) => [styles.file, pressed && !uploading && styles.pressed, uploading && styles.disabled]}
+          >
+            <View style={styles.fileText}>
+              <Text style={styles.fileName}>photo library</Text>
+              <Text style={styles.fileMeta}>videos from your camera roll</Text>
+            </View>
+            <Text style={styles.importCue}>open ↗</Text>
+          </Pressable>
+
           {IS_LOCAL_API && list.length > 0 && <Text style={styles.section}>or from the server media folder</Text>}
 
           {IS_LOCAL_API && (files.isLoading || files.error || list.length > 0) && (
@@ -224,4 +239,5 @@ const styles = StyleSheet.create({
   importCue: { color: colors.accent, fontFamily: fonts.bold, fontSize: type.md },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
   pressed: { opacity: 0.7 },
+  disabled: { opacity: 0.38 },
 });
