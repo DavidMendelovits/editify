@@ -35,6 +35,25 @@ export class AssetStore {
     return this.get(asset.id) ?? { ...asset, status: asset.status ?? 'ready' };
   }
 
+  /**
+   * Insert, or re-point an existing row at a regenerated file. The built-in
+   * sound library needs this: its rows are keyed on a fixed `sound-<id>`, so a
+   * new recipe version has to replace the old paths instead of colliding.
+   */
+  upsert(asset: NewAsset, userId?: string): StoredAsset {
+    if (!this.get(asset.id)) return this.insert(asset, userId);
+    this.database.prepare(`
+      UPDATE assets
+         SET original_name = ?, mime_type = ?, duration = ?,
+             original_path = ?, proxy_path = ?, thumbnail_path = ?, status = ?
+       WHERE id = ?
+    `).run(
+      asset.originalName, asset.mimeType, asset.duration, asset.originalPath,
+      asset.proxyPath, asset.thumbnailPath, asset.status ?? 'ready', asset.id,
+    );
+    return this.get(asset.id) ?? { ...asset, status: asset.status ?? 'ready' };
+  }
+
   /** End of background processing: the generated media, or the failure, lands here. */
   setStatus(id: string, status: AssetMetadata['status'], paths?: { proxyPath: string; thumbnailPath: string }): void {
     if (paths) {

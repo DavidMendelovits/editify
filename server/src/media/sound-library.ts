@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LibrarySound, SoundCategory } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
@@ -90,18 +90,51 @@ const RECIPES: SoundRecipe[] = [
   },
 ];
 
+/** Every sound is normalized to this peak, so the library plays at one level. */
+const TARGET_PEAK_DB = -1;
+
+/**
+ * Peak level of `path` in dBFS, via ffmpeg's `volumedetect`. Returns null for
+ * digital silence (volumedetect reports `-inf`, or nothing at all).
+ */
+export async function measurePeakDb(path: string): Promise<number | null> {
+  const { stderr } = await runProcess('ffmpeg', [
+    '-hide_banner', '-i', path, '-af', 'volumedetect', '-f', 'null', '-',
+  ]);
+  const value = stderr.match(/max_volume:\s*(-?[0-9.]+|-inf)\s*dB/)?.[1];
+  return value === undefined || value === '-inf' ? null : Number(value);
+}
+
+/**
+ * Two passes, because the recipes have no gain staging of their own: render
+ * the filtergraph to a WAV, measure its peak, then apply the makeup gain on
+ * the encode. `loudnorm` is not an option here — pop-bubble (0.3s) and
+ * ui-click (0.1s) are shorter than its gating window. `alimiter` stays as the
+ * safety net for the rare intersample overshoot.
+ */
 async function synthesize(recipe: SoundRecipe, path: string): Promise<void> {
-  const args = ['-y'];
-  const sources = recipe.graph.length > 1 ? recipe.graph.slice(0, -1) : recipe.graph;
-  for (const source of sources) args.push('-f', 'lavfi', '-i', source);
-  if (recipe.graph.length > 1) {
-    const mixdown = recipe.graph.at(-1) as string;
-    args.push('-filter_complex', `${sources.map((_source, index) => `[${index}:a]`).join('')}${mixdown},alimiter=limit=0.9[out]`, '-map', '[out]');
-  } else {
-    args.push('-af', 'alimiter=limit=0.9');
+  const raw = `${path}.${process.pid}.raw.wav`;
+  try {
+    const args = ['-y'];
+    const sources = recipe.graph.length > 1 ? recipe.graph.slice(0, -1) : recipe.graph;
+    for (const source of sources) args.push('-f', 'lavfi', '-i', source);
+    if (recipe.graph.length > 1) {
+      const mixdown = recipe.graph.at(-1) as string;
+      args.push('-filter_complex', `${sources.map((_source, index) => `[${index}:a]`).join('')}${mixdown}[out]`, '-map', '[out]');
+    }
+    args.push('-ar', '48000', '-c:a', 'pcm_f32le', raw);
+    await runProcess('ffmpeg', args);
+
+    const peak = await measurePeakDb(raw);
+    const makeup = peak === null ? 0 : TARGET_PEAK_DB - peak;
+    await runProcess('ffmpeg', [
+      '-y', '-i', raw,
+      '-af', `volume=${makeup.toFixed(2)}dB,alimiter=limit=0.9`,
+      '-ar', '48000', '-c:a', 'aac', '-b:a', '160k', path,
+    ]);
+  } finally {
+    await rm(raw, { force: true });
   }
-  args.push('-ar', '48000', '-c:a', 'aac', '-b:a', '160k', path);
-  await runProcess('ffmpeg', args);
 }
 
 let generated: Promise<LibrarySound[]> | undefined;
@@ -114,18 +147,28 @@ let generated: Promise<LibrarySound[]> | undefined;
 /** Every built-in sound id, so callers (and tests) can name sounds without ffmpeg. */
 export const SOUND_LIBRARY_IDS = RECIPES.map((recipe) => recipe.id);
 
+/** Render one recipe by id to `path` — the unit test's way in, without the store. */
+export async function synthesizeSound(id: string, path: string): Promise<void> {
+  const recipe = RECIPES.find((entry) => entry.id === id);
+  if (!recipe) throw new Error(`unknown sound: ${id}`);
+  await synthesize(recipe, path);
+}
+
 export async function ensureSoundLibrary(assets: AssetStore): Promise<LibrarySound[]> {
   generated ??= (async () => {
     await mkdir(soundsRoot, { recursive: true });
     const sounds: LibrarySound[] = [];
     for (const recipe of RECIPES) {
-      const fileName = `sfx-${recipe.id}.m4a`;
+      // -v2: the original files were rendered without gain staging; two of
+      // them (the whooshes) were inaudible. Bumping the name forces a re-render.
+      const fileName = `sfx-${recipe.id}-v2.m4a`;
       const path = join(soundsRoot, fileName);
       if (!existsSync(path)) await synthesize(recipe, path);
       let asset = assets.getByOriginalName(fileName);
       if (!asset) {
         const probe = await probeMedia(path);
-        asset = assets.insert({
+        // upsert, not insert: a pre-v2 row already holds this `sound-<id>`.
+        asset = assets.upsert({
           id: `sound-${recipe.id}`,
           originalName: fileName,
           mimeType: 'audio/mp4',
