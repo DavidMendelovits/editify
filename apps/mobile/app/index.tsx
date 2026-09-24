@@ -84,7 +84,7 @@ export default function HomeScreen() {
             <Button style={styles.styleButton} accessibilityLabel={tier === 'free' ? 'upgrade' : 'manage subscription'} onPress={() => router.push('/paywall')}>{tier === 'free' ? 'upgrade' : tier}</Button>
           )}
           <Button secondary style={styles.styleButton} onPress={() => setImportOpen(true)}>import media</Button>
-          <Button secondary style={styles.styleButton} onPress={() => router.push('/style')}>learn my style</Button>
+          <Button accessibilityLabel="style memory" secondary style={styles.styleButton} onPress={() => router.push('/style')}>style memory</Button>
           <Button accessibilityLabel="send feedback" secondary style={styles.styleButton} onPress={() => { track('feedback_open', 'home'); void captureScreen().then(setShot); setFeedbackOpen(true); }}>send feedback</Button>
           <Button accessibilityLabel="sign out" secondary style={styles.signOutButton} onPress={() => { void supabase.auth.signOut(); }}>sign out</Button>
           <Button accessibilityLabel="delete account" secondary style={styles.signOutButton} onPress={() => confirmDeleteAccount(() => { void deleteAccount(); })}>delete account</Button>
