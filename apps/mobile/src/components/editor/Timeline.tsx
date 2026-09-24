@@ -482,7 +482,7 @@ export function Timeline({
         </View>
         {sourceOpen && (
           <View style={styles.toolGroup}>
-            <Tool label="photos" hint="camera roll" accessibilityLabel="import from photos" testID="import-from-photos" onPress={() => { setSourceOpen(false); onImportPhotos(); }} />
+            <Tool label="camera roll" hint="videos" accessibilityLabel="import from camera roll" testID="import-from-photos" onPress={() => { setSourceOpen(false); onImportPhotos(); }} />
             <Tool label="files" hint="browse files" accessibilityLabel="import from files" testID="import-from-files" onPress={() => { setSourceOpen(false); onImport(); }} />
           </View>
         )}
