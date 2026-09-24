@@ -132,11 +132,13 @@ const clipPropertyUpdateSchema = clipIdParams.extend({
   in: z.number().min(0).optional(),
   out: z.number().positive().optional(),
   duck: z.boolean().optional(),
+  /** Text of a text-only overlay sticker (callout/emoji); rejected for asset clips. */
+  text: z.string().min(1).optional(),
 }).refine(
   (update) => update.volume !== undefined || update.speed !== undefined
     || update.transform !== undefined || update.start !== undefined
     || update.in !== undefined || update.out !== undefined
-    || update.duck !== undefined,
+    || update.duck !== undefined || update.text !== undefined,
   { message: 'Each update must set at least one property' },
 );
 

@@ -119,6 +119,9 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onApply }:
   const applyText = (text: string): void => {
     onApply([{ type: 'update_caption', params: { clipId: clip.id, text } }], { text });
   };
+  const applyStickerText = (text: string): void => {
+    onApply([{ type: 'set_clip_properties', params: { updates: [{ clipId: clip.id, text }] } }], { text });
+  };
 
   // `anchorPct` outranks `position` in both the preview overlay and the ASS
   // export, so a styled caption would ignore these chips unless picking a
@@ -186,11 +189,11 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onApply }:
         <Text style={styles.kind}>{isCaption ? 'CAPTION' : isSticker ? 'STICKER' : kind === 'audio' ? 'SOUND' : 'CLIP'}</Text>
         {isCaption ? (
           <CaptionText clipId={clip.id} text={clip.text} onCommit={applyText} />
+        ) : isSticker && !clip.assetId ? (
+          <CaptionText clipId={clip.id} text={clip.text} onCommit={applyStickerText} label="sticker text" />
         ) : (
           <Text style={styles.name} numberOfLines={1}>
-            {isSticker && !clip.assetId
-              ? clip.text ?? clip.id
-              : asset?.label ?? asset?.originalName ?? clip.assetId ?? clip.id}
+            {asset?.label ?? asset?.originalName ?? clip.assetId ?? clip.id}
           </Text>
         )}
       </View>
@@ -349,11 +352,11 @@ function clampRotation(value: number): number {
 }
 
 /**
- * The caption's own words, edited in place. Kept as local draft state so every
+ * The caption's (or text sticker's) own words, edited in place. Kept as local draft state so every
  * keystroke does not fire an operation; the edit commits on blur or submit,
  * and an unchanged or empty draft commits nothing.
  */
-function CaptionText({ clipId, text, onCommit }: { clipId: string; text: string | undefined; onCommit: (text: string) => void }) {
+function CaptionText({ clipId, text, onCommit, label = 'caption text' }: { clipId: string; text: string | undefined; onCommit: (text: string) => void; label?: string }) {
   const [draft, setDraft] = useState(text ?? '');
   // Re-seed on selection change only: re-seeding on every `text` change would
   // fight the typist while an optimistic patch lands mid-edit.
@@ -368,7 +371,7 @@ function CaptionText({ clipId, text, onCommit }: { clipId: string; text: string 
   };
   return (
     <TextInput
-      accessibilityLabel="caption text"
+      accessibilityLabel={label}
       value={draft}
       onChangeText={setDraft}
       onBlur={commit}
@@ -376,7 +379,7 @@ function CaptionText({ clipId, text, onCommit }: { clipId: string; text: string 
       blurOnSubmit
       multiline={false}
       returnKeyType="done"
-      placeholder="caption text"
+      placeholder={label}
       placeholderTextColor={colors.muted}
       style={styles.captionInput}
     />

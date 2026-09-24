@@ -288,7 +288,7 @@ const operationDescriptions: Record<(typeof OPERATION_CATALOG)[number], string> 
   update_caption: 'Update an existing caption by clipId. start is an absolute timeline second; in/out are caption-local seconds and out must remain greater than in.',
   remove_caption: 'Remove an existing caption by its clipId.',
   ripple_delete_ranges: 'Atomically delete and close multiple absolute timeline ranges on one video/audio track. Overlaps are merged; intersecting clips are split or trimmed, later clips shift left, and captions are cut and shifted with the deleted time.',
-  set_clip_properties: 'Atomically batch-update 1-100 clips: the preferred way to trim or retime many clips at once. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, source-time in/out (out must stay greater than in), or duck (true ducks all other audio beneath this clip while it plays, the voiceover treatment). Any invalid update rejects the entire operation.',
+  set_clip_properties: 'Atomically batch-update 1-100 clips: the preferred way to trim or retime many clips at once. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, source-time in/out (out must stay greater than in), duck (true ducks all other audio beneath this clip while it plays, the voiceover treatment), or text (text-only overlay stickers such as callouts/emoji only). Any invalid update rejects the entire operation.',
   set_format: 'Set the project canvas format to 9:16, 1:1, or 16:9.',
   undo: 'Undo the latest non-undone project operation using project history. Input must be an empty object.',
   redo: 'Redo the operation the most recent undo retracted, when nothing has been edited since. Input must be an empty object.',
