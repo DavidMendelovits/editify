@@ -4,3 +4,5 @@
 
 expo-env.d.ts
 # @end expo-cli
+# Wizard scratch: the spellbook it writes when it hands work off to an agent.
+.posthog/
