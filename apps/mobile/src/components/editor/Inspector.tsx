@@ -50,6 +50,9 @@ const CAPTION_EMPHASES: Array<CaptionStyle['emphasis']> = ['none', 'bold', 'high
 const STICKER_SIZE_STEP = 0.04;
 const STICKER_ROTATION_STEP = 15;
 
+/** One sync attempt on an audio clip; the strip shows it while that clip is selected. */
+export interface SyncState { clipId: string; busy: boolean; message?: string; failed?: boolean }
+
 interface Props {
   clip: Clip | undefined;
   asset: AssetMetadata | undefined;
@@ -57,6 +60,9 @@ interface Props {
   /** Every caption clip in the project — what "apply to all" writes to. */
   captionClips?: Clip[];
   pending: boolean;
+  /** Present for audio clips: line this clip up under the video by its sound. */
+  onSync?: () => void;
+  sync?: SyncState;
   /** `extra` carries the optimistic patch for clips other than the selected one. */
   onApply: (ops: Operation[], patch: Partial<Clip>, extra?: Array<{ clipId: string; patch: Partial<Clip> }>) => void;
 }
@@ -66,7 +72,7 @@ interface Props {
  * worth nudging by hand — speed/volume/zoom for media clips, size/rotation
  * for stickers. Every control commits one operation with an optimistic patch.
  */
-export function Inspector({ clip, asset, kind, captionClips, pending, onApply }: Props) {
+export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sync, onApply }: Props) {
   if (!clip) {
     return (
       <View style={styles.bar}>
@@ -198,9 +204,26 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onApply }:
       <Field label="DURATION" value={`${clipTimelineDuration(clip).toFixed(2)}s`} />
       {!isCaption && !isSticker && (
         <>
-          <Stepper label="SPEED" value={`${speed}×`} onDown={() => stepSpeed(-1)} onUp={() => stepSpeed(1)} />
+          {/* A synced memo can carry a drift correction like 1.00006×: two places are plenty. */}
+          <Stepper label="SPEED" value={`${Number(speed.toFixed(2))}×`} onDown={() => stepSpeed(-1)} onUp={() => stepSpeed(1)} />
           <Stepper label="VOLUME" value={`${Math.round(volume * 100)}%`} onDown={() => stepVolume(-1)} onUp={() => stepVolume(1)} />
         </>
+      )}
+      {onSync && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>SYNC</Text>
+          <View style={styles.chipRow}>
+            <Chip
+              label={sync?.busy ? 'listening…' : 'sync to video'}
+              hint="sync to video"
+              active={false}
+              onPress={() => { if (!sync?.busy) onSync(); }}
+            />
+            {sync?.message !== undefined && (
+              <Text style={[styles.syncMessage, sync.failed && styles.syncFailed]} numberOfLines={2}>{sync.message}</Text>
+            )}
+          </View>
+        </View>
       )}
       {kind === 'video' && (
         <View style={styles.field}>
@@ -459,6 +482,8 @@ const styles = StyleSheet.create({
   swatch: { width: 22, height: 22, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
   swatchActive: { borderWidth: 2, borderColor: colors.accent },
   zoomCustom: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
+  syncMessage: { flexShrink: 1, maxWidth: 320, color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
+  syncFailed: { color: colors.danger },
   hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   pressed: { opacity: 0.6 },
 });

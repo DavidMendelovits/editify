@@ -227,6 +227,50 @@ implementing `analyzeVideo`. The Gemini and webhook classes take an injectable
 `fetchImpl`, and `server/test/style-pipeline.test.ts` shows both exercised
 offline.
 
+## Audio sync
+
+A second recording of the same moment (a voice memo from a phone in the
+performer's pocket, a lav, another camera) lines up under a video by matching
+it against the video's own sound. `server/src/media/sync.ts` does it in two
+stages: a 10ms onset-envelope cross-correlation over every possible offset, then
+GCC-PHAT on raw samples within 50ms of that answer, which stays sharp through
+room reverb. The fine match runs early and late in the overlap; when the two
+recorders' clocks drift more than a frame apart, the memo gets a tiny speed
+correction (for example 1.00006x). A match that does not clearly stand above the
+noise floor is refused rather than guessed.
+
+```
+GET /projects/:id/sync?audioClipId=…[&videoClipId=…]
+  → { ok: true, ops, offsetSec, speed, driftMs?, confidence, pieces, notes }
+  | { ok: false, error }
+```
+
+The route only measures; the editor applies `ops` through its own op chain, so
+one undo takes the sync back. The agent's `sync_audio` tool does both in one
+step ("sync the memo to the video" works on the offline mock too). Every clip
+cut from the same footage gets its own matching memo piece, trimmed to the shot.
+Levels are left alone: the camera's own audio keeps playing until you turn it
+down. Measuring reads the originals because that is what the render cuts from.
+
+In the app, an audio file imported into a project that has footage lands on the
+audio track and syncs on arrival; the Inspector's SYNC control re-runs it for a
+selected audio clip.
+
+### Share sheet
+
+The iOS share extension and Android intent filters come from
+[`expo-share-intent`](https://github.com/achorein/expo-share-intent), configured
+in `app.json` to accept video and audio. Its stock iOS extension has no audio
+branch, and a Voice Memos recording can arrive typed only as audio, so
+`plugins/with-share-audio.js` patches one in at prebuild. Shared media goes into
+the project whose editor is open, or a new project when none is.
+
+This is native code, so it needs a new build (`eas build`), not an OTA update,
+and it does not run in Expo Go. EAS provisions a second target,
+`com.editify.app.share-extension`, and both targets need the
+`group.com.editify.app` App Group; EAS syncs that capability when it manages the
+credentials.
+
 ## Operation catalog
 
 All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "baseVersion": number }`. A batch is transactional.
@@ -250,7 +294,7 @@ All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "
 
 ## API summary
 
-- Projects: `POST /projects`, `GET /projects`, `GET /projects/:id`, `POST /projects/:id/ops`, `GET /projects/:id/oplog`
+- Projects: `POST /projects`, `GET /projects`, `GET /projects/:id`, `POST /projects/:id/ops`, `GET /projects/:id/oplog`, `GET /projects/:id/sync`
 - Assets: `POST /assets` (multipart), metadata/original/proxy/thumbnail under `GET /assets/:id/*`
 - Agent: `POST /projects/:id/chat`, `GET /projects/:id/chat`
 - Styles: `POST /style-profile/analyze`, `GET /style-profile`, `GET /style-profiles`, `GET`/`PUT /style/analyzer`

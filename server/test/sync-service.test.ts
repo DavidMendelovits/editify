@@ -218,7 +218,7 @@ describe('audio sync', () => {
   it('measures over HTTP without touching the project', async () => {
     const project = setUp([{ id: 'shot', start: 0, in: 0, out: VIDEO_SECONDS }]);
     const app = await buildApp({ database });
-    const response = await app.inject({ method: 'GET', url: `/projects/${project.id}/sync?audioClipId=memo-clip` });
+    const response = await app.inject({ method: 'GET', url: `/projects/${project.id}/sync?audioClipId=memo-clip&k=query-token` });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ ok: true, videoClipId: 'shot', pieces: 1 });
     expect(projects.get(project.id)?.version).toBe(project.version);

@@ -105,7 +105,8 @@ export function registerProjectRoutes(
   app.get<{ Params: { id: string }; Querystring: Record<string, string> }>('/projects/:id/sync', async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
-    const input = syncAudioRequestSchema.parse(request.query);
+    // Not strict here: the query also carries `?k=` when a client authenticates that way.
+    const input = syncAudioRequestSchema.strip().parse(request.query);
     return await syncs.plan(project, input);
   });
 

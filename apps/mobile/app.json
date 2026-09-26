@@ -63,7 +63,16 @@
         {
           "microphonePermission": "Editify records voiceover takes straight onto the timeline."
         }
-      ]
+      ],
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": "SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO \"public.movie\" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO \"public.audio\").@count >= 1).@count >= 1",
+          "androidIntentFilters": ["video/*", "audio/*"],
+          "androidMultiIntentFilters": ["video/*", "audio/*"]
+        }
+      ],
+      "./plugins/with-share-audio"
     ],
     "experiments": {
       "typedRoutes": true
