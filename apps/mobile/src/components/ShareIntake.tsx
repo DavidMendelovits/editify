@@ -21,38 +21,37 @@ export function ShareIntake({ signedIn }: { signedIn: boolean }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
-  const busy = useRef(false);
+  // Shares are handled one after another: a second one arriving while the
+  // first is still creating its project waits its turn instead of being lost.
+  const chain = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     // A share that arrives before sign-in waits for it: the intent stays put.
-    if (!hasShareIntent || !signedIn || busy.current) return;
+    if (!hasShareIntent || !signedIn) return;
     const files: SharedFile[] = (shareIntent.files ?? [])
       .filter(isShareableMedia)
       .map((file) => ({ uri: file.path, name: file.fileName || 'shared', ...(file.mimeType ? { mimeType: file.mimeType } : {}) }));
+    // Taken now, before any await, so the context is free for the next share.
+    resetShareIntent();
     if (files.length === 0) {
-      resetShareIntent();
       Alert.alert('Nothing to import', 'Editify takes videos and audio recordings from the share sheet.');
       return;
     }
-    busy.current = true;
-    void (async () => {
+    chain.current = chain.current.then(async () => {
+      const open = getActiveProject();
+      if (open) {
+        queueShare(open, files);
+        return;
+      }
       try {
-        const open = getActiveProject();
-        if (open) {
-          queueShare(open, files);
-          return;
-        }
         const project = await api.createProject({ title: titleFrom(files[0]?.name ?? ''), format: '9:16', fps: 30 });
         queueShare(project.id, files);
         await queryClient.invalidateQueries({ queryKey: ['projects'] });
         router.push({ pathname: '/project/[id]', params: { id: project.id } });
-      } catch (error) {
-        Alert.alert('Could not start a project', error instanceof Error ? error.message : String(error));
-      } finally {
-        resetShareIntent();
-        busy.current = false;
+      } catch {
+        Alert.alert('Could not start a project', 'Check your connection, then share the recording to Editify again.');
       }
-    })();
+    });
   }, [hasShareIntent, queryClient, resetShareIntent, router, shareIntent.files, signedIn]);
 
   return null;

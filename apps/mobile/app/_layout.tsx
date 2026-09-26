@@ -22,8 +22,11 @@ import { posthog } from '../src/lib/posthog';
 import { colors } from '../src/lib/theme';
 
 // Web has no share sheet to receive from; Expo Go has no native module, and the
-// hook already treats a missing module as "nothing shared".
-const SHARE_OPTIONS = { disabled: Platform.OS === 'web' };
+// hook already treats a missing module as "nothing shared". ShareIntake clears
+// a share once it has taken it, so the library must not clear it on
+// backgrounding: a share waiting for sign-in would vanish while the user
+// switched away to find their password.
+const SHARE_OPTIONS = { disabled: Platform.OS === 'web', resetOnBackground: false };
 
 export default function RootLayout() {
   const router = useRouter();

@@ -241,16 +241,26 @@ noise floor is refused rather than guessed.
 
 ```
 GET /projects/:id/sync?audioClipId=…[&videoClipId=…]
-  → { ok: true, ops, offsetSec, speed, driftMs?, confidence, pieces, notes }
+  → { ok: true, ops, version, videoClipId, offsetSec, speed, driftMs?, confidence, pieces, notes }
   | { ok: false, error }
 ```
 
-The route only measures; the editor applies `ops` through its own op chain, so
-one undo takes the sync back. The agent's `sync_audio` tool does both in one
+The route only measures, and never edits. Domain failures (no match, no video
+with sound, too long) come back as HTTP 200 with `ok: false`; a bad query is a
+400 and an unknown project a 404. Apply `ops` with `version` as `baseVersion`:
+an edit that landed while measuring then fails with a 409 instead of the memo
+being placed against shots that have moved. The editor does exactly that, on
+its own op chain, so one undo takes the sync back. The agent's `sync_audio` tool does both in one
 step ("sync the memo to the video" works on the offline mock too). Every clip
 cut from the same footage gets its own matching memo piece, trimmed to the shot.
+Syncing again rebuilds that memo's pieces rather than adding another set.
 Levels are left alone: the camera's own audio keeps playing until you turn it
 down. Measuring reads the originals because that is what the render cuts from.
+
+Measuring decodes both recordings in memory, so it is bounded: recordings over
+three hours are refused, measurements run one at a time with at most four in
+hand (the rest are told the server is busy), a decode is abandoned after five
+minutes, and the correlation yields to the event loop between stages.
 
 In the app, an audio file imported into a project that has footage lands on the
 audio track and syncs on arrival; the Inspector's SYNC control re-runs it for a
@@ -258,12 +268,17 @@ selected audio clip.
 
 ### Share sheet
 
-The iOS share extension and Android intent filters come from
+The iOS share extension comes from
 [`expo-share-intent`](https://github.com/achorein/expo-share-intent), configured
-in `app.json` to accept video and audio. Its stock iOS extension has no audio
+in `app.json` to accept video and audio. Android sharing is switched off
+(`disableAndroid`): the library's Android handler writes each shared file under
+the name the sending app supplies, unsanitised, so a hostile app could use `../`
+to overwrite files in Editify's private storage. Turn it back on once that copy
+uses generated names. Its stock iOS extension has no audio
 branch, and a Voice Memos recording can arrive typed only as audio, so
 `plugins/with-share-audio.js` patches one in at prebuild. Shared media goes into
-the project whose editor is open, or a new project when none is.
+the project whose editor is open, or a new project when none is, and the app's
+copy of each file is deleted once it has uploaded.
 
 This is native code, so it needs a new build (`eas build`), not an OTA update,
 and it does not run in Expo Go. EAS provisions a second target,
