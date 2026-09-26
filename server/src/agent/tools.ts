@@ -615,12 +615,20 @@ async function syncAudio(ctx: ToolContext, rawInput: unknown): Promise<unknown> 
   try {
     const input = syncAudioRequestSchema.parse(rawInput);
     if (!ctx.syncs) return { ok: false, error: 'Audio sync is not available' };
-    const project = requireProject(ctx);
-    const plan = await ctx.syncs.plan(project, input);
+    let project = requireProject(ctx);
+    let plan = await ctx.syncs.plan(project, input);
+    // Measuring takes seconds; if the timeline moved meanwhile, plan again
+    // against what is there now (the measurement is cached, so this is cheap)
+    // rather than place the memo against shots that have since moved.
+    const latest = requireProject(ctx);
+    if (latest.version !== project.version) {
+      project = latest;
+      plan = await ctx.syncs.plan(project, input);
+    }
     if (!plan.ok) return plan;
-    const { ops, ...measurement } = plan;
+    const { ops, notes, version: _version, ...measurement } = plan;
     const after = applyMany(ctx, ops);
-    return { ...createMutationDelta(project, after, plan.notes), ...measurement };
+    return { ...measurement, ...createMutationDelta(project, after, notes) };
   } catch (error) {
     if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
     throw error;

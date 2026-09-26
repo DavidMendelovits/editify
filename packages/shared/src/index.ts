@@ -276,6 +276,12 @@ export const syncAudioResultSchema = z.discriminatedUnion('ok', [
     ok: z.literal(true),
     /** The edit, for the caller to apply: the measuring route never mutates the project. */
     ops: z.array(operationSchema),
+    /**
+     * The project version `ops` were planned against. Apply them with this as
+     * `baseVersion`: an edit that landed while measuring then fails with a 409
+     * instead of the memo being placed against a timeline that no longer exists.
+     */
+    version: z.number().int().min(0),
     videoClipId: z.string(),
     /** Video source seconds at which memo second 0 plays; negative when the memo started first. */
     offsetSec: z.number(),
@@ -283,7 +289,7 @@ export const syncAudioResultSchema = z.discriminatedUnion('ok', [
     speed: z.number(),
     /** Measured drift across the whole overlap, before correction. */
     driftMs: z.number().optional(),
-    /** Fine-stage peak over the noise floor, in standard deviations: a match needs this at 8 or the coarse peak at 2x its runner-up. */
+    /** Fine-stage peak over the noise floor, in standard deviations. The confidence gate itself lives in server/src/media/sync.ts. */
     confidence: z.number(),
     pieces: z.number().int().min(1),
     notes: z.array(z.string()),

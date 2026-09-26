@@ -29,6 +29,7 @@ export function registerChatRoutes(
   transcripts: TranscriptService,
   insights: InsightService,
   dissections: DissectService,
+  /** Optional only so tests that predate sync can build the routes without one; app.ts always passes it. */
   syncs?: SyncService,
 ): void {
   app.post<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
