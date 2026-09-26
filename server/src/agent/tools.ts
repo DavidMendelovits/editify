@@ -12,6 +12,7 @@ import {
   operationSchema,
   presetSchema,
   stylePacketSchema,
+  syncAudioRequestSchema,
   type Operation,
   type CaptionStyle,
   type Clip,
@@ -33,6 +34,7 @@ import {
 } from '../services/cleanup.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
+import type { SyncService } from '../services/sync-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 import { parseTranscriptInput } from './transcript-input.js';
 
@@ -48,6 +50,7 @@ export interface ToolContext {
   transcripts: TranscriptService;
   insights: InsightService;
   dissections?: DissectService;
+  syncs?: SyncService;
   appliedOperations?: Operation[];
   /** Checkpoint id for the whole turn — stamped on every operation it logs. */
   runId?: string;
@@ -608,6 +611,22 @@ async function resolveSound(ctx: ToolContext, soundId: string): Promise<StoredAs
   return ctx.assets.get(soundId);
 }
 
+async function syncAudio(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
+  try {
+    const input = syncAudioRequestSchema.parse(rawInput);
+    if (!ctx.syncs) return { ok: false, error: 'Audio sync is not available' };
+    const project = requireProject(ctx);
+    const plan = await ctx.syncs.plan(project, input);
+    if (!plan.ok) return plan;
+    const { ops, ...measurement } = plan;
+    const after = applyMany(ctx, ops);
+    return { ...createMutationDelta(project, after, plan.notes), ...measurement };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
 async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
   try {
     const input = applyPacketSchema.parse(rawInput);
@@ -940,6 +959,12 @@ export function createToolRegistry(): ToolDef[] {
       description: 'Apply one style packet, either `packetId` for a built-in from get_style_packets, or a whole `packet` object inline (the shape get_style_packets returns; that is how a look derived from the user\'s style profile or a dissected reference arrives, usually pasted into the message). Runs in one atomic batch: restyle every caption to its typography (karaoke word timings are preserved), tile its music bed under the video, set its transition and cut SFX at every adjacent cut, and set its punch-in cadence. Returns the timeline delta plus `guidance`: the creative half (callouts, b-roll, pacing) that you still have to author yourself.',
       schema: applyPacketSchema,
       execute: applyStylePacket,
+    },
+    {
+      name: 'sync_audio',
+      description: 'Line up an audio-track clip (a voice memo, lav, or second recorder of the same moment) with a video clip by matching it against the video\'s own sound, then place it: every clip cut from that footage gets a matching memo piece, trimmed to the shot, with a tiny speed correction when the two recorders\' clocks drift. Omit videoClipId to use the longest video clip with sound. Levels are left alone: if the user wants the memo to replace the camera audio, follow with set_volume 0 on the video clips. Sync before cutting when you can; later ripple cuts keep both tracks aligned. Fails without moving anything when no confident match exists.',
+      schema: syncAudioRequestSchema,
+      execute: syncAudio,
     },
     {
       name: 'remove_words',

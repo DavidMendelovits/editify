@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { newProjectSchema, operationBatchSchema, renderRequestSchema } from '@editify/shared';
+import { newProjectSchema, operationBatchSchema, renderRequestSchema, syncAudioRequestSchema } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import type { ProjectStore } from '../db/project-store.js';
 import { OperationError } from '../operations/apply.js';
@@ -12,6 +12,7 @@ import {
   type CleanupRange,
 } from '../services/cleanup.js';
 import type { RenderQueue } from '../services/render-queue.js';
+import type { SyncService } from '../services/sync-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 
 export function registerProjectRoutes(
@@ -20,6 +21,7 @@ export function registerProjectRoutes(
   renderQueue: RenderQueue,
   assets: AssetStore,
   transcripts: TranscriptService,
+  syncs: SyncService,
 ): void {
   app.post('/projects', async (request, reply) => {
     const input = newProjectSchema.parse(request.body ?? {});
@@ -96,6 +98,15 @@ export function registerProjectRoutes(
       silences: { ranges: silenceRanges, seconds: totalRangeSeconds(silenceRanges) },
       trackId: track.id,
     };
+  });
+
+  // Read-only like /cleanup: it measures and returns the edit, and the client
+  // applies it through its own op chain so undo and version checks stay theirs.
+  app.get<{ Params: { id: string }; Querystring: Record<string, string> }>('/projects/:id/sync', async (request, reply) => {
+    const project = projects.get(request.params.id, request.userId);
+    if (!project) return await reply.code(404).send({ error: 'Project not found' });
+    const input = syncAudioRequestSchema.parse(request.query);
+    return await syncs.plan(project, input);
   });
 
   app.post<{ Params: { id: string } }>('/projects/:id/render', async (request, reply) => {
