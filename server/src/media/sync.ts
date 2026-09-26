@@ -25,14 +25,29 @@ const FINE_SEARCH_SAMPLES = 400;
 const MAX_FINE_WINDOW = 1 << 17;
 const MIN_FINE_WINDOW = 1 << 12;
 /**
- * Below these the match is a guess, so sync refuses rather than moving the
- * clip. The fine score does the real gating: a wrong coarse lag leaves the
- * fine search nothing to lock onto (unrelated recordings score under 3.5, a
- * true match through four room echoes and hiss about 33), while the coarse
- * peak-to-runner-up sags toward 1.3 under noise even when its lag is right.
+ * A match is confident on either kind of evidence, and sync refuses rather
+ * than moving the clip when it has neither.
+ *
+ * Global: the coarse peak standing well clear of every other offset. Two
+ * phones at a real stand-up set scored 7-15 here, while unrelated audio from
+ * the same room and voice (the memo reversed, or a stretch it never overlaps)
+ * scored 1.03-1.05.
+ *
+ * Local: a sharp fine peak. Synthetic rooms with heavy hiss sag the coarse
+ * ratio toward 1.3 while the fine peak still scores ~20; unrelated audio
+ * scores under 3.5. A real room smears the fine peak (5-8 at that same set),
+ * which is why it cannot be the only gate.
  */
+export const STRONG_COARSE_RATIO = 2;
 export const MIN_COARSE_RATIO = 1.1;
 export const MIN_FINE_SCORE = 8;
+/**
+ * The fine lag replaces the 10ms coarse one only when its peak clears the
+ * noise floor and lands near the coarse answer. A real room's peak is broad
+ * (about ±3ms of wander), which is still far inside a frame.
+ */
+const FINE_LOCK_SCORE = 4;
+const FINE_LOCK_DISTANCE = 0.02;
 /** Real recorders drift tens of ppm; a "drift" past this is a bad match, not a clock. */
 const MAX_DRIFT_RATE = 500e-6;
 
@@ -128,21 +143,23 @@ export function measureSync(video: Float32Array, memo: Float32Array): SyncMeasur
 
   const coarseLagSec = coarseLagSamples / SYNC_SAMPLE_RATE;
   const fineScore = windows.length ? Math.min(...windows.map((match) => match.score)) : 0;
-  const fineConfident = windows.length > 0 && fineScore >= MIN_FINE_SCORE;
-  const confident = coarse.ratio >= MIN_COARSE_RATIO && fineConfident;
+  const confident = coarse.ratio >= STRONG_COARSE_RATIO
+    || (coarse.ratio >= MIN_COARSE_RATIO && windows.length > 0 && fineScore >= MIN_FINE_SCORE);
+  const fineLocked = windows.length > 0 && fineScore >= FINE_LOCK_SCORE
+    && windows.every((match) => Math.abs(match.lag - coarseLagSec) <= FINE_LOCK_DISTANCE);
   const first = windows[0];
   const last = windows.at(-1);
   let rate = 1;
   let driftSec: number | undefined;
-  if (fineConfident && first && last && last !== first) {
+  if (fineLocked && first && last && last !== first) {
     const slope = (last.lag - first.lag) / (last.at - first.at);
     driftSec = slope * (overlap / SYNC_SAMPLE_RATE);
     // Correct only what a viewer could see (a frame at 60fps) and only what a clock could cause.
     if (Math.abs(driftSec) > 1 / 60 && Math.abs(slope) <= MAX_DRIFT_RATE) rate = 1 - slope;
   }
   return {
-    lag: first && fineConfident ? first.lag : coarseLagSec,
-    anchor: first && fineConfident ? first.at : Math.max(0, coarseLagSec),
+    lag: first && fineLocked ? first.lag : coarseLagSec,
+    anchor: first && fineLocked ? first.at : Math.max(0, coarseLagSec),
     rate,
     coarseRatio: coarse.ratio,
     fineScore,

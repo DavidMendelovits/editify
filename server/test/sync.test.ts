@@ -71,6 +71,27 @@ function capture(source: Float32Array, options: Capture): Float32Array {
   return out;
 }
 
+/**
+ * A camera across a real room: a weak direct path buried in a diffuse reverb
+ * tail. Two phones at a real stand-up set looked like this, with a coarse ratio
+ * of 15 and a fine score of only 6, because the tail smears the fine peak while
+ * the loudness envelope survives it.
+ */
+function reverberant(source: Float32Array, options: { from: number; seconds: number; rt: number; direct: number; noise: number }): Float32Array {
+  const next = random(7);
+  const tail = Math.round(options.rt * RATE);
+  const response = Float64Array.from({ length: tail }, (_, index) => (index === 0
+    ? options.direct
+    : (next() * 2 - 1) * Math.exp((-6.9 * index) / tail) * 0.08));
+  const start = Math.round(options.from * RATE);
+  const dry = Float64Array.from(source.subarray(start - tail, start + Math.round(options.seconds * RATE)));
+  // Convolution is correlation with the reversed impulse response: lag L holds
+  // output sample L + tail - 1, so video sample i (dry sample tail + i) is at L = i + 1.
+  const wet = crossCorrelate(dry, Float64Array.from(response).reverse(), false);
+  return Float32Array.from({ length: Math.round(options.seconds * RATE) }, (_, index) =>
+    (wet[index + 1] ?? 0) + options.noise * (next() * 2 - 1));
+}
+
 describe('crossCorrelate', () => {
   it('puts Σ a[k+lag]·b[k] at index lag, negative lags wrapped', () => {
     const a = Float64Array.from([0, 0, 1, 2, 0]);
@@ -128,6 +149,26 @@ describe('measureSync', () => {
     const result = measureSync(video, memo);
     expect(result.confident).toBe(true);
     expect(result.lag).toBeCloseTo(-12, 3);
+  });
+
+  it('trusts a clear global match when room reverb smears the fine peak', () => {
+    const long = performance(90, 3);
+    const video = reverberant(long, { from: 12, seconds: 60, rt: 0.6, direct: 0.2, noise: 0.03 });
+    const result = measureSync(video, long.subarray(0, 90 * RATE));
+    // The regression: a fine peak this soft used to be refused outright.
+    expect(result.fineScore).toBeLessThan(8);
+    expect(result.coarseRatio).toBeGreaterThan(2);
+    expect(result.confident).toBe(true);
+    expect(result.lag).toBeCloseTo(-12, 3);
+  });
+
+  it('falls back to the coarse lag when the room leaves no fine peak at all', () => {
+    const long = performance(90, 3);
+    const video = reverberant(long, { from: 12, seconds: 60, rt: 0.8, direct: 0.05, noise: 0.05 });
+    const result = measureSync(video, long.subarray(0, 90 * RATE));
+    expect(result.confident).toBe(true);
+    // One 10ms envelope cell: a third of a frame at 30fps.
+    expect(Math.abs(result.lag + 12)).toBeLessThanOrEqual(0.0101);
   });
 
   it('refuses to guess between unrelated recordings', () => {

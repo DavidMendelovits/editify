@@ -283,7 +283,7 @@ export const syncAudioResultSchema = z.discriminatedUnion('ok', [
     speed: z.number(),
     /** Measured drift across the whole overlap, before correction. */
     driftMs: z.number().optional(),
-    /** Fine-stage peak over the noise floor, in standard deviations: 8 is the floor, unrelated audio scores under 4. */
+    /** Fine-stage peak over the noise floor, in standard deviations: a match needs this at 8 or the coarse peak at 2x its runner-up. */
     confidence: z.number(),
     pieces: z.number().int().min(1),
     notes: z.array(z.string()),
