@@ -38,9 +38,16 @@ const MIN_FINE_WINDOW = 1 << 12;
  * scores under 3.5. A real room smears the fine peak (5-8 at that same set),
  * which is why it cannot be the only gate.
  */
-export const STRONG_COARSE_RATIO = 2;
-export const MIN_COARSE_RATIO = 1.1;
-export const MIN_FINE_SCORE = 8;
+const STRONG_COARSE_RATIO = 2;
+/**
+ * Global evidence needs enough overlap to have meant something: over a second
+ * or two of audio there are only a handful of other offsets to beat, and one
+ * of them standing "clear" is chance. Shorter than this, only a sharp fine
+ * peak can make a match.
+ */
+const MIN_COARSE_OVERLAP_SECONDS = 5;
+const MIN_COARSE_RATIO = 1.1;
+const MIN_FINE_SCORE = 8;
 /**
  * The fine lag replaces the 10ms coarse one only when its peak clears the
  * noise floor and lands near the coarse answer. A real room's peak is broad
@@ -83,45 +90,98 @@ export interface SyncMeasurement {
   windows: FineMatch[];
 }
 
-/** Decode any media file's first audio stream to mono float PCM at `SYNC_SAMPLE_RATE`. */
-export async function decodeMono(path: string): Promise<Float32Array> {
+/**
+ * The longest stretch of either recording sync will read: a long set plus
+ * slack. Decoded at 8kHz float32 that is ~350MB, the ceiling one measurement
+ * can cost; an uploaded file is capped at 2GB, which a low-bitrate encode
+ * could turn into a day of audio and several GB of samples.
+ */
+export const MAX_SYNC_SECONDS = 3 * 60 * 60;
+/** A decode this slow is stuck (a network mount, a pathological file), not busy. */
+const DECODE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Decode a media file's first audio stream to mono float PCM at
+ * `SYNC_SAMPLE_RATE`, stopping at `maxSeconds`. Samples are written into one
+ * buffer as they arrive rather than collected and joined, so the peak is one
+ * copy of the audio, not three.
+ */
+export async function decodeMono(path: string, maxSeconds = MAX_SYNC_SECONDS): Promise<Float32Array> {
   return await new Promise((resolve, reject) => {
     const child = spawn('ffmpeg', [
-      '-v', 'error', '-nostdin', '-i', path, '-vn', '-map', '0:a:0',
+      '-v', 'error', '-nostdin', '-i', path, '-vn', '-map', '0:a:0', '-t', String(maxSeconds),
       '-ac', '1', '-ar', String(SYNC_SAMPLE_RATE), '-f', 'f32le', '-',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
-    const chunks: Buffer[] = [];
+    const limit = Math.ceil(maxSeconds * SYNC_SAMPLE_RATE) * 4;
+    let bytes = new Uint8Array(Math.min(limit, 1 << 22));
+    let length = 0;
     let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let settled = false;
+    const fail = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGKILL');
+      // The stderr names server paths; it stays out of what a client is told.
+      reject(new SyncError('Could not read the audio in one of these recordings'));
+    };
+    const timer = setTimeout(fail, DECODE_TIMEOUT_MS);
+    child.stdout.on('data', (chunk: Buffer) => {
+      const room = Math.min(chunk.byteLength, limit - length);
+      if (length + room > bytes.byteLength) {
+        const grown = new Uint8Array(Math.min(limit, Math.max(bytes.byteLength * 2, length + room)));
+        grown.set(bytes.subarray(0, length));
+        bytes = grown;
+      }
+      bytes.set(chunk.subarray(0, room), length);
+      length += room;
+    });
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-    child.once('error', reject);
+    child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
+    child.once('error', fail);
     child.once('close', (code) => {
+      if (settled) return;
       if (code !== 0) {
-        reject(new Error(`ffmpeg exited with ${code}: ${stderr.slice(-2000)}`));
+        fail();
         return;
       }
-      const joined = Buffer.concat(chunks);
-      // Copy into a fresh, aligned buffer: Buffer pool slices need not be 4-byte aligned.
-      const samples = new Float32Array(Math.floor(joined.byteLength / 4));
-      new Uint8Array(samples.buffer).set(joined.subarray(0, samples.length * 4));
-      resolve(samples);
+      settled = true;
+      clearTimeout(timer);
+      // A fresh Uint8Array starts at offset 0, so viewing it as floats needs no copy.
+      resolve(new Float32Array(bytes.buffer, 0, Math.floor(length / 4)));
     });
   });
 }
 
 export async function measureSyncFiles(videoPath: string, memoPath: string): Promise<SyncMeasurement> {
-  const [video, memo] = await Promise.all([decodeMono(videoPath), decodeMono(memoPath)]);
-  return measureSync(video, memo);
+  // One at a time: two decodes at once doubles the memory peak for no gain on a busy server.
+  const video = await decodeMono(videoPath);
+  const memo = await decodeMono(memoPath);
+  const steps = measureSteps(video, memo);
+  // Hand the event loop back between stages, so an hour-long measurement
+  // costs other requests a few short pauses instead of one long stall.
+  for (let step = steps.next(); ; step = steps.next()) {
+    if (step.done) return step.value;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }
 
 /** Align `memo` against `video`, both mono PCM at `SYNC_SAMPLE_RATE`. */
 export function measureSync(video: Float32Array, memo: Float32Array): SyncMeasurement {
+  const steps = measureSteps(video, memo);
+  for (let step = steps.next(); ; step = steps.next()) if (step.done) return step.value;
+}
+
+/** The measurement as stages; each `yield` is a point where a caller may pause. */
+function* measureSteps(video: Float32Array, memo: Float32Array): Generator<void, SyncMeasurement> {
   const videoEnvelope = onsetEnvelope(video);
+  yield;
   const memoEnvelope = onsetEnvelope(memo);
   if (!videoEnvelope || !memoEnvelope) throw new SyncError('One of the recordings is silent, so there is nothing to line up');
+  yield;
 
   const coarse = coarseLag(videoEnvelope, memoEnvelope);
+  yield;
   const coarseLagSamples = coarse.lagCells * HOP;
   const overlapStart = Math.max(0, coarseLagSamples);
   const overlapEnd = Math.min(video.length, coarseLagSamples + memo.length);
@@ -138,20 +198,27 @@ export function measureSync(video: Float32Array, memo: Float32Array): SyncMeasur
       const centre = overlapStart + FINE_SEARCH_SAMPLES + Math.round(fraction * usable);
       const start = Math.min(Math.max(centre - window / 2, overlapStart + FINE_SEARCH_SAMPLES), overlapEnd - FINE_SEARCH_SAMPLES - window);
       windows.push(fineLag(video, memo, start, window, coarseLagSamples));
+      yield;
     }
   }
 
   const coarseLagSec = coarseLagSamples / SYNC_SAMPLE_RATE;
   const fineScore = windows.length ? Math.min(...windows.map((match) => match.score)) : 0;
-  const confident = coarse.ratio >= STRONG_COARSE_RATIO
+  const confident = (coarse.ratio >= STRONG_COARSE_RATIO && overlap >= MIN_COARSE_OVERLAP_SECONDS * SYNC_SAMPLE_RATE)
     || (coarse.ratio >= MIN_COARSE_RATIO && windows.length > 0 && fineScore >= MIN_FINE_SCORE);
-  const fineLocked = windows.length > 0 && fineScore >= FINE_LOCK_SCORE
-    && windows.every((match) => Math.abs(match.lag - coarseLagSec) <= FINE_LOCK_DISTANCE);
+  // A window's lag is trusted when its peak is sharp, wherever it lands in the
+  // search (long sets drift tens of ms from the one coarse answer), or when a
+  // softer peak still agrees with the coarse lag (a reverberant room).
+  const locked = (match: FineMatch): boolean => match.score >= MIN_FINE_SCORE
+    || (match.score >= FINE_LOCK_SCORE && Math.abs(match.lag - coarseLagSec) <= FINE_LOCK_DISTANCE);
+  const fineLocked = windows.length > 0 && windows.every(locked);
   const first = windows[0];
   const last = windows.at(-1);
   let rate = 1;
   let driftSec: number | undefined;
-  if (fineLocked && first && last && last !== first) {
+  // A speed change is extrapolated across the whole set, so it needs two sharp
+  // peaks: two soft ones can disagree by a reflection's worth of milliseconds.
+  if (fineLocked && first && last && last !== first && first.score >= MIN_FINE_SCORE && last.score >= MIN_FINE_SCORE) {
     const slope = (last.lag - first.lag) / (last.at - first.at);
     driftSec = slope * (overlap / SYNC_SAMPLE_RATE);
     // Correct only what a viewer could see (a frame at 60fps) and only what a clock could cause.
@@ -225,10 +292,10 @@ function coarseLag(video: Float64Array, memo: Float64Array): { lagCells: number;
   return { lagCells: best, ratio: peakRatio(at(best), second) };
 }
 
-/** Refine `coarseLag` (samples) with GCC-PHAT over one window starting at video sample `start`. */
-function fineLag(video: Float32Array, memo: Float32Array, start: number, window: number, coarseLag: number): FineMatch {
+/** Refine `coarseLagSamples` with GCC-PHAT over one window starting at video sample `start`. */
+function fineLag(video: Float32Array, memo: Float32Array, start: number, window: number, coarseLagSamples: number): FineMatch {
   const videoWindow = Float64Array.from(video.subarray(start, start + window));
-  const memoWindow = Float64Array.from(memo.subarray(start - coarseLag, start - coarseLag + window));
+  const memoWindow = Float64Array.from(memo.subarray(start - coarseLagSamples, start - coarseLagSamples + window));
   const correlation = crossCorrelate(videoWindow, memoWindow, true);
   const size = correlation.length;
   const at = (lag: number): number => correlation[(lag + size) % size] as number;
@@ -254,13 +321,16 @@ function fineLag(video: Float32Array, memo: Float32Array, start: number, window:
   const deviation = Math.sqrt(Math.max(squares / count - mean * mean, 1e-24));
   return {
     at: (start + window / 2) / SYNC_SAMPLE_RATE,
-    lag: (coarseLag + best) / SYNC_SAMPLE_RATE,
+    lag: (coarseLagSamples + best) / SYNC_SAMPLE_RATE,
     score: (at(best) - mean) / deviation,
   };
 }
 
 function peakRatio(best: number, second: number): number {
   if (!(best > 0)) return 0;
+  // No rival at all means the recordings were too short to offer any other
+  // answer, not that this one is certain: nothing to compare it against.
+  if (second === Number.NEGATIVE_INFINITY) return 0;
   return second > 0 ? best / second : Number.POSITIVE_INFINITY;
 }
 

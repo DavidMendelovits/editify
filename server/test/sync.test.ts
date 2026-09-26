@@ -171,6 +171,26 @@ describe('measureSync', () => {
     expect(Math.abs(result.lag + 12)).toBeLessThanOrEqual(0.0101);
   });
 
+  it('still corrects drift when a long set carries it tens of ms past the coarse answer', () => {
+    // 20 minutes at 60ppm is 72ms of drift: the early and late windows sit
+    // ~35ms either side of the single coarse lag. That used to fail a fixed
+    // 20ms lock and come back "confident, rate 1", wrong by 72ms at the end.
+    const long = performance(1300, 4);
+    const video = capture(long, { from: 30, seconds: 1200, gain: 0.4, noise: 0.01 });
+    const memo = capture(long, { from: 0, seconds: 1260, drift: 60e-6, seed: 6 });
+    const result = measureSync(video, memo);
+    expect(result.confident).toBe(true);
+    expect(result.rate).toBeCloseTo(1 + 60e-6, 5);
+  }, 60000);
+
+  it('does not call short unrelated clips a match just because nothing competes', () => {
+    for (const seconds of [0.1, 0.3, 1]) {
+      const video = capture(performance(2, 21), { from: 0, seconds });
+      const memo = capture(performance(2, 22), { from: 0, seconds });
+      expect(measureSync(video, memo).confident).toBe(false);
+    }
+  });
+
   it('refuses to guess between unrelated recordings', () => {
     const video = capture(performance(60, 11), { from: 0, seconds: 60 });
     const memo = capture(performance(60, 12), { from: 0, seconds: 60 });
