@@ -49,8 +49,8 @@ interface Props {
   onCleanup: () => void;
   onRecordVoice: () => void;
   onStyle: () => void;
-  /** The latest sync attempt; the Inspector shows it while that clip is selected. */
-  sync?: SyncState | undefined;
+  /** The latest sync attempt per clip; the Inspector shows the selected clip's. */
+  syncs?: Record<string, SyncState>;
   onSyncAudio: (clipId: string) => void;
 }
 
@@ -73,7 +73,7 @@ const round6 = (value: number): number => Number(value.toFixed(6));
  * playback. Everything here reads the current time imperatively.
  */
 export function Timeline({
-  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onImportPhotos, onImportFiles, importing, importProgress, importError, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle, sync, onSyncAudio,
+  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onImportPhotos, onImportFiles, importing, importProgress, importError, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle, syncs, onSyncAudio,
 }: Props) {
   const [pxPerSec, setPxPerSec] = useState(40);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -641,7 +641,7 @@ export function Timeline({
         kind={selectedTrack?.kind}
         captionClips={selectedTrack?.kind === 'caption' ? selectedTrack.clips : []}
         pending={pending}
-        {...(selected && sync?.clipId === selected.id ? { sync } : {})}
+        {...(selected && syncs?.[selected.id] ? { sync: syncs[selected.id] } : {})}
         {...(selected && selectedTrack?.kind === 'audio' && selected.assetId ? { onSync: () => onSyncAudio(selected.id) } : {})}
         onApply={(ops, patch, extra) => onApply(ops, (current) => {
           const patched = selected ? patchClip(current, selected.id, patch) : current;

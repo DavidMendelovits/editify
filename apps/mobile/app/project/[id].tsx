@@ -27,6 +27,7 @@ import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
+import { isAudioOnly } from '../../src/lib/media';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { setReportContext, track } from '../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../src/lib/nav';
@@ -36,11 +37,6 @@ import { colors, radius, space, type, fonts } from '../../src/lib/theme';
 /** Above this width the editor lays out as preview + timeline | chat dock. */
 const WIDE_BREAKPOINT = 1024;
 const NATIVE_DRIVER = Platform.OS !== 'web';
-
-/** An audio-only asset: a memo or a track, not footage. Same rule as the sound sheet's MY MUSIC tab. */
-function isAudioOnly(asset: AssetMetadata): boolean {
-  return asset.mimeType.startsWith('audio/') || (asset.hasAudio && asset.width === 0);
-}
 
 function describeSync(result: Extract<SyncAudioResult, { ok: true }>): string {
   const offset = Math.abs(result.offsetSec).toFixed(2);
@@ -54,6 +50,12 @@ interface ApplyVariables {
   ops: Operation[];
   /** Paints the expected result before the round trip; rolled back by a refetch on error. */
   optimistic?: (project: Project) => Project;
+  /**
+   * Apply against this version instead of the freshest one. Set for edits
+   * planned elsewhere (a sync measurement), so a change that landed while they
+   * were being planned is a 409, not a silent overwrite.
+   */
+  baseVersion?: number;
 }
 
 export default function EditorScreen() {
@@ -88,7 +90,9 @@ export default function EditorScreen() {
   const [uploadError, setUploadError] = useState<string>();
   /** Only set while a multi-file import is running. */
   const [progress, setProgress] = useState<{ done: number; total: number }>();
-  const [sync, setSync] = useState<SyncState>();
+  /** Per clip, so one clip's result survives another clip being synced. */
+  const [syncs, setSyncs] = useState<Record<string, SyncState>>({});
+  const setSync = (state: SyncState): void => setSyncs((current) => ({ ...current, [state.clipId]: state }));
   const [optimisticMessage, setOptimisticMessage] = useState<string>();
   // Covers the gap between the chat mutation resolving and the history refetch.
   const [latestTrace, setLatestTrace] = useState<AgentTraceStep[]>();
@@ -133,11 +137,11 @@ export default function EditorScreen() {
   // (stepper taps, rapid imports) no longer races itself into 409s.
   const opChain = useRef<Promise<unknown>>(Promise.resolve());
   const apply = useMutation({
-    mutationFn: ({ ops }: ApplyVariables) => {
+    mutationFn: ({ ops, baseVersion }: ApplyVariables) => {
       const run = opChain.current.catch(() => undefined).then(async () => {
         const current = queryClient.getQueryData<Project>(['project', id]);
         if (!current) throw new Error('Project is still loading');
-        const updated = await api.applyOps(current.id, ops, current.version);
+        const updated = await api.applyOps(current.id, ops, baseVersion ?? current.version);
         // Written here, not just in onSuccess, so the next queued batch sees it.
         queryClient.setQueryData(['project', id], updated);
         return updated;
@@ -371,7 +375,9 @@ export default function EditorScreen() {
     if (!project || added.length === 0) return { audioClipIds: [], landed: Promise.resolve(false) };
     const videoTrack = project.tracks.find((track) => track.kind === 'video');
     const trackId = videoTrack?.id ?? 'video-main';
-    const audioTrackId = project.tracks.find((track) => track.kind === 'audio')?.id ?? 'audio-main';
+    // A project without an audio track keeps the old behaviour (everything on
+    // the video track): an add_clip to a missing track would fail the whole batch.
+    const audioTrackId = project.tracks.find((track) => track.kind === 'audio')?.id;
     const stamp = Date.now();
     // The end of the VIDEO track — project.duration can be stretched by a
     // caption or sticker, which would leave a silent gap before the new clip.
@@ -383,7 +389,7 @@ export default function EditorScreen() {
     const audioClipIds: string[] = [];
     let lastId = '';
     const ops = added.map((asset, index): Operation => {
-      if (isAudioOnly(asset)) {
+      if (audioTrackId && isAudioOnly(asset)) {
         lastId = `audio-${stamp}-${index}`;
         audioClipIds.push(lastId);
         return { type: 'add_clip', params: { trackId: audioTrackId, clip: { id: lastId, assetId: asset.id, start: playhead, in: 0, out: asset.duration, volume: 1, speed: 1 } } };
@@ -415,12 +421,14 @@ export default function EditorScreen() {
         return;
       }
       track('audio_sync', auto ? 'auto' : 'manual');
-      const applied = await applyOps(result.ops);
-      setSync(applied
-        ? { clipId, busy: false, message: describeSync(result) }
-        : { clipId, busy: false, failed: true, message: 'The timeline changed while syncing. Try again.' });
+      // Against the measured version: an edit made while measuring is a 409
+      // ("the project changed underneath this edit"), not a misplaced memo.
+      await apply.mutateAsync({ ops: result.ops, baseVersion: result.version });
+      setSync({ clipId, busy: false, message: describeSync(result) });
     } catch (error) {
-      setSync({ clipId, busy: false, failed: true, message: error instanceof Error ? error.message : 'Could not sync that clip' });
+      // An import-time attempt stays quiet: an older server without /sync, or
+      // a flaky connection, is not something the user asked about.
+      setSync({ clipId, busy: false, failed: !auto, message: error instanceof Error ? error.message : 'Could not sync that clip' });
     }
   }
 
@@ -594,7 +602,7 @@ export default function EditorScreen() {
         onCleanup={() => setCleanupOpen(true)}
         onRecordVoice={() => setVoiceOpen(true)}
         onStyle={() => setStyleOpen(true)}
-        sync={sync}
+        syncs={syncs}
         onSyncAudio={(clipId) => void syncAudio(clipId)}
       />
     </Animated.View>

@@ -215,12 +215,14 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sy
           <View style={styles.chipRow}>
             <Chip
               label={sync?.busy ? 'listening…' : 'sync to video'}
-              hint="sync to video"
+              hint={sync?.busy ? 'syncing to video' : 'sync to video'}
               active={false}
+              busy={sync?.busy === true}
               onPress={() => { if (!sync?.busy) onSync(); }}
             />
             {sync?.message !== undefined && (
-              <Text style={[styles.syncMessage, sync.failed && styles.syncFailed]} numberOfLines={2}>{sync.message}</Text>
+              // Announced when it changes: the result arrives seconds after the tap, off to the side.
+              <Text accessibilityLiveRegion="polite" style={[styles.syncMessage, sync.failed && styles.syncFailed]}>{sync.message}</Text>
             )}
           </View>
         </View>
@@ -416,13 +418,15 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 /** One preset chip — the shared language for the zoom and transition rows. */
-function Chip({ label, hint, active, onPress }: { label: string; hint: string; active: boolean; onPress: () => void }) {
+function Chip({ label, hint, active, busy = false, onPress }: { label: string; hint: string; active: boolean; busy?: boolean; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={hint}
+      accessibilityState={{ busy, disabled: busy }}
+      hitSlop={8}
       onPress={onPress}
-      style={({ pressed }) => [styles.chip, active && styles.chipActive, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.chip, active && styles.chipActive, (pressed || busy) && styles.pressed]}
     >
       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </Pressable>
@@ -482,7 +486,7 @@ const styles = StyleSheet.create({
   swatch: { width: 22, height: 22, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
   swatchActive: { borderWidth: 2, borderColor: colors.accent },
   zoomCustom: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm },
-  syncMessage: { flexShrink: 1, maxWidth: 320, color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
+  syncMessage: { flexShrink: 1, color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
   syncFailed: { color: colors.danger },
   hint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   pressed: { opacity: 0.6 },
