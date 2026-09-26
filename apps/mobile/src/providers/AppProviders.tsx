@@ -1,6 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PostHogProvider } from 'posthog-react-native';
 import { useState, type PropsWithChildren } from 'react';
 import { ErrorReporter } from '../components/ErrorReporter';
+import { posthog } from '../lib/posthog';
 
 export function AppProviders({ children }: PropsWithChildren) {
   const [client] = useState(() => new QueryClient({
@@ -10,5 +12,10 @@ export function AppProviders({ children }: PropsWithChildren) {
     },
   }));
   // Inside the query provider: the report modal posts through react-query.
-  return <QueryClientProvider client={client}><ErrorReporter>{children}</ErrorReporter></QueryClientProvider>;
+  const content = <ErrorReporter>{children}</ErrorReporter>;
+  return (
+    <QueryClientProvider client={client}>
+      {posthog ? <PostHogProvider client={posthog} autocapture={{ captureScreens: false }}>{content}</PostHogProvider> : content}
+    </QueryClientProvider>
+  );
 }
