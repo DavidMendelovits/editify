@@ -212,6 +212,13 @@ function migrate(database: EditifyDatabase): void {
     database.exec('ALTER TABLE operation_log ADD COLUMN undo_target_batch_id TEXT');
   }
 
+  // Which project version a render exported, so a file can be matched to the
+  // edit it shows. Written when the render starts; older rows stay NULL.
+  const renderColumns = database.prepare('PRAGMA table_info(renders)').all() as Array<{ name: string }>;
+  if (!renderColumns.some((column) => column.name === 'project_version')) {
+    database.exec('ALTER TABLE renders ADD COLUMN project_version INTEGER');
+  }
+
   backfillProjectAssets(database);
 }
 

@@ -101,7 +101,15 @@ export function registerProjectRoutes(
   app.post<{ Params: { id: string } }>('/projects/:id/render', async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
-    const { resolution, hdr } = renderRequestSchema.parse(request.body ?? {});
+    const { resolution: requested, hdr } = renderRequestSchema.parse(request.body ?? {});
+    // A 4K encode can run the single 4 GB server out of memory, but shipped app
+    // builds still offer 4K, so rejecting it would surface as an error. Export
+    // 1080p instead and record that on the render row, which is what the
+    // client reads back from GET /renders/:id.
+    const resolution = requested === '4k' ? '1080p' : requested;
+    if (resolution !== requested) {
+      request.log.info({ projectId: project.id, requested, resolution }, 'Clamped render resolution');
+    }
     return await reply.code(202).send(renderQueue.enqueue(project.id, resolution, hdr));
   });
 }

@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StoredAsset } from '../db/asset-store.js';
 import { analyzeEnergy } from '../media/audio-analysis.js';
+import { mediaSlots, type MediaSlots } from './media-slots.js';
 import {
   transcriptResultSchema,
   type StoredTranscript,
@@ -58,13 +59,25 @@ export function runWhisperTranscription(mediaPath: string): Promise<TranscriptRe
   });
 }
 
+/**
+ * A run in progress or waiting for a media slot. `started` flips once it holds
+ * a slot; `replacedBy` is set when a slot-holding caller took over the run
+ * before this one got a slot (see `transcribe`).
+ */
+interface InFlightRun {
+  promise: Promise<StoredTranscript>;
+  started: boolean;
+  replacedBy?: InFlightRun;
+}
+
 export class TranscriptService {
-  private readonly inFlight = new Map<string, Promise<StoredTranscript>>();
+  private readonly inFlight = new Map<string, InFlightRun>();
 
   constructor(
     readonly store: TranscriptStore,
     private readonly runner: TranscriptionRunner = runWhisperTranscription,
     private readonly energyAnalyzer: EnergyAnalyzer = analyzeEnergy,
+    private readonly slots: MediaSlots = mediaSlots,
   ) {}
 
   get(assetId: string): StoredTranscript | undefined {
@@ -80,10 +93,30 @@ export class TranscriptService {
     // ponytail: a force=true call that lands mid-run joins the in-flight run
     // instead of starting a second Whisper pass — it gets a transcript that is
     // at most one run stale, which beats paying for minutes of duplicate GPU.
-    const pending = this.inFlight.get(asset.id) ?? this.run(asset)
-      .finally(() => this.inFlight.delete(asset.id));
-    this.inFlight.set(asset.id, pending);
-    return await pending;
+    const current = this.inFlight.get(asset.id);
+    // Except when that run is still queued for a slot and this caller already
+    // holds one (an import transcribing its own clip): joining would park a
+    // slot on a job that may be waiting for that very slot. Run it here instead,
+    // and let the queued run hand its callers over when its turn comes.
+    if (current && (current.started || !this.slots.held())) return await current.promise;
+    const run = this.start(asset);
+    if (current) current.replacedBy = run;
+    return await run.promise;
+  }
+
+  private start(asset: StoredAsset): InFlightRun {
+    const run = { started: false } as InFlightRun;
+    this.inFlight.set(asset.id, run);
+    run.promise = this.slots.run(`transcribe ${asset.id}`, async () => {
+      if (run.replacedBy) return undefined;
+      run.started = true;
+      return await this.run(asset);
+    })
+      .then((result) => result ?? (run.replacedBy as InFlightRun).promise)
+      .finally(() => {
+        if (this.inFlight.get(asset.id) === run) this.inFlight.delete(asset.id);
+      });
+    return run;
   }
 
   private async run(asset: StoredAsset): Promise<StoredTranscript> {

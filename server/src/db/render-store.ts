@@ -8,6 +8,8 @@ export interface RenderRecord {
   projectId: string;
   resolution: '720p' | '1080p' | '4k';
   status: RenderStatus;
+  /** The project version the render read when it started. Absent on renders that predate the column. */
+  projectVersion?: number;
   outputUrl?: string;
   error?: string;
   createdAt: string;
@@ -17,6 +19,7 @@ export interface RenderRecord {
 interface RenderRow {
   id: string; project_id: string; resolution: '720p' | '1080p' | '4k'; status: RenderStatus;
   output_path: string | null; error: string | null; created_at: string; updated_at: string;
+  project_version: number | null;
 }
 
 export class RenderStore {
@@ -32,10 +35,13 @@ export class RenderStore {
     return this.get(id) as RenderRecord;
   }
 
-  update(id: string, status: RenderStatus, values: { outputPath?: string; error?: string } = {}): void {
+  /** `projectVersion` is only written when given, so later status changes keep it. */
+  update(id: string, status: RenderStatus, values: { outputPath?: string; error?: string; projectVersion?: number } = {}): void {
     this.database.prepare(`
-      UPDATE renders SET status = ?, output_path = ?, error = ?, updated_at = ? WHERE id = ?
-    `).run(status, values.outputPath ?? null, values.error ?? null, new Date().toISOString(), id);
+      UPDATE renders SET status = ?, output_path = ?, error = ?, updated_at = ?,
+        project_version = COALESCE(?, project_version)
+      WHERE id = ?
+    `).run(status, values.outputPath ?? null, values.error ?? null, new Date().toISOString(), values.projectVersion ?? null, id);
   }
 
   /** `userId` scopes through the owning project, matching ProjectStore's rules. */
@@ -64,6 +70,7 @@ export class RenderStore {
       projectId: row.project_id,
       resolution: row.resolution,
       status: row.status,
+      ...(row.project_version !== null ? { projectVersion: row.project_version } : {}),
       ...(row.output_path ? { outputUrl: `${publicBaseUrl}/renders/${row.id}/file.mp4` } : {}),
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.created_at,
