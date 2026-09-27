@@ -484,6 +484,25 @@ export default function EditorScreen() {
     setSelectedId(clipId);
   }
 
+  /**
+   * Put assets on the timeline, then sync any audio among them. A memo added to
+   * a project with footage is almost always meant to line up with it, however
+   * it arrived (picker, library strip, server folder, share sheet), so every
+   * path lands here. Syncs wait for the clips to exist server-side and run one
+   * at a time.
+   */
+  function landOnTimeline(added: AssetMetadata[]): void {
+    if (!project) return;
+    const { audioClipIds, landed } = appendAssets(added);
+    const hasFootage = added.some((asset) => !isAudioOnly(asset))
+      || project.tracks.some((track) => track.kind === 'video' && track.clips.length > 0);
+    if (!hasFootage || audioClipIds.length === 0) return;
+    void landed.then(async (ok) => {
+      if (!ok) return;
+      for (const clipId of audioClipIds) await syncAudio(clipId, true);
+    });
+  }
+
   /** Run a source picker, then land whatever it uploaded in the library and on the timeline. */
   async function addFrom(pick: (projectId: string, onProgress: PickProgress) => Promise<PickResult>): Promise<void> {
     if (!project) return;
@@ -493,18 +512,7 @@ export default function EditorScreen() {
     try {
       // One clip needs no counter; a batch does.
       const { assets: added, failed } = await pick(id, (done, total) => setProgress(total > 1 ? { done, total } : undefined));
-      const { audioClipIds, landed } = appendAssets(added);
-      // A memo dropped into a project with footage is almost always meant to
-      // line up with it; sync on arrival, once the clips exist server-side,
-      // one at a time.
-      const hasFootage = added.some((asset) => !isAudioOnly(asset))
-        || project.tracks.some((track) => track.kind === 'video' && track.clips.length > 0);
-      if (hasFootage && audioClipIds.length > 0) {
-        void landed.then(async (ok) => {
-          if (!ok) return;
-          for (const clipId of audioClipIds) await syncAudio(clipId, true);
-        });
-      }
+      landOnTimeline(added);
       if (added.length > 0) await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
       if (failed.length > 0) setUploadError(`Could not import ${failed.length} of ${added.length + failed.length}: ${failed.join(', ')}`);
     } catch (error) {
@@ -610,7 +618,7 @@ export default function EditorScreen() {
       onPickPhotos={() => void addFrom(pickFromPhotos)}
       onPickFiles={() => void addFrom(pickFromFiles)}
       onOpenFolder={() => setImportOpen(true)}
-      onAdd={(asset) => appendAssets([asset])}
+      onAdd={(asset) => landOnTimeline([asset])}
     />
   );
 
@@ -723,7 +731,7 @@ export default function EditorScreen() {
         visible={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={(asset) => {
-          appendAssets([asset]);
+          landOnTimeline([asset]);
           void queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
         }}
       />

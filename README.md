@@ -263,9 +263,11 @@ three hours are refused, measurements run one at a time with at most four in
 hand (the rest are told the server is busy), a decode is abandoned after five
 minutes, and the correlation yields to the event loop between stages.
 
-In the app, an audio file imported into a project that has footage lands on the
-audio track and syncs on arrival; the Inspector's SYNC control re-runs it for a
-selected audio clip.
+In the app, an audio file added to a project that has footage lands on the
+audio track and syncs on arrival, however it gets there: the file and photo
+pickers, the library strip's +, the server media folder, or the share sheet.
+The sound sheet is the exception (music and effects are not recordings of the
+set). The Inspector's SYNC control re-runs it for a selected audio clip.
 
 ### Share sheet
 
