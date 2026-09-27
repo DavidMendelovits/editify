@@ -15,6 +15,7 @@ import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbna
 import { sendMediaFile } from '../media/send-file.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { InsightService } from '../services/insight-service.js';
+import { withMediaSlot } from '../services/media-slots.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 import { WaveformService } from '../services/waveform-service.js';
 
@@ -77,31 +78,14 @@ export const pendingAssetWork = new Map<string, Promise<void>>();
 
 /**
  * ffmpeg and whisper each saturate the box on their own, so a 40-clip import
- * that spawns 40 of them leaves everything crawling. Two jobs at a time; the
- * rest wait their turn inside their own `pendingAssetWork` promise, so awaiting
- * an import still waits for the queue. One slot covers the encode *and* the
- * transcription — whisper is a local python process (`transcript-service.ts`),
- * so releasing between the two would just move the pile-up downstream.
- * ponytail: one counter for all CPU-heavy media work, split it if encode and
- * transcribe ever need different limits.
+ * that spawns 40 of them leaves everything crawling. Imports wait their turn in
+ * the shared media pool (`media-slots.ts`) inside their own `pendingAssetWork`
+ * promise, so awaiting an import still waits for the queue. One slot covers the
+ * encode *and* the transcription: the transcription runs inside the slot this
+ * chain already holds rather than taking a second one.
+ *
+ * Runs after the import responded, and moves the row to `ready` or `error`.
  */
-const MAX_CONCURRENT_MEDIA_JOBS = 2;
-let runningMediaJobs = 0;
-const waitingMediaJobs: Array<() => void> = [];
-
-async function acquireMediaSlot(): Promise<void> {
-  if (runningMediaJobs < MAX_CONCURRENT_MEDIA_JOBS) runningMediaJobs += 1;
-  else await new Promise<void>((resolve) => waitingMediaJobs.push(resolve));
-}
-
-function releaseMediaSlot(): void {
-  // Hand the slot straight to the next waiter rather than freeing and re-taking it.
-  const next = waitingMediaJobs.shift();
-  if (next) next();
-  else runningMediaJobs -= 1;
-}
-
-/** Runs after the import responded, and moves the row to `ready` or `error`. */
 function queueAssetWork(
   app: FastifyInstance,
   assets: AssetStore,
@@ -110,8 +94,7 @@ function queueAssetWork(
   probe: ProbeResult,
 ): void {
   const pending = (async () => {
-    await acquireMediaSlot();
-    try {
+    await withMediaSlot(`import ${asset.id}`, async () => {
       try {
         const generated = await createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe);
         assets.setStatus(asset.id, 'ready', generated);
@@ -121,9 +104,7 @@ function queueAssetWork(
         return;
       }
       await transcribeQuietly(app, transcripts, asset);
-    } finally {
-      releaseMediaSlot();
-    }
+    });
   })().finally(() => pendingAssetWork.delete(asset.id));
   pendingAssetWork.set(asset.id, pending);
 }

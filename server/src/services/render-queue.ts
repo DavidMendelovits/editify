@@ -3,6 +3,7 @@ import type { ProjectStore } from '../db/project-store.js';
 import type { RenderRecord, RenderStore } from '../db/render-store.js';
 import type { HdrHandling } from '../media/color.js';
 import { renderProject } from '../media/render.js';
+import { withMediaSlot } from './media-slots.js';
 
 export class RenderQueue {
   private readonly pending: string[] = [];
@@ -57,9 +58,13 @@ export class RenderQueue {
           this.renders.update(id, 'error', { error: 'Project was not found' });
           continue;
         }
-        this.renders.update(id, 'processing');
+        // The project is read here, not at enqueue, so this is the version the file shows.
+        this.renders.update(id, 'processing', { projectVersion: project.version });
         try {
-          const outputPath = await renderProject(project, record.resolution, id, this.assets, this.hdrById.get(id) ?? 'sdr');
+          // Queued renders stay serial here; the shared pool additionally keeps
+          // this one from stacking on top of two import encodes.
+          const outputPath = await withMediaSlot(`render ${id}`, () =>
+            renderProject(project, record.resolution, id, this.assets, this.hdrById.get(id) ?? 'sdr'));
           this.renders.update(id, 'done', { outputPath });
         } catch (error) {
           this.renders.update(id, 'error', { error: error instanceof Error ? error.message : String(error) });
