@@ -151,6 +151,25 @@ function seekArgs(input: InputClip): string[] {
   return [...(input.seek > 0 ? ['-ss', timeArg(input.seek)] : []), '-t', timeArg(span)];
 }
 
+/**
+ * Input options for a clip's audio in the final pass: seek, but leave the trim
+ * to the clip's own atrim. An accurate `-ss` or any `-t` makes the ffmpeg CLI
+ * splice its own trim filter onto the input, and that extra filter changes how
+ * the graph negotiates channel layouts: a mono clip gets upmixed to stereo
+ * before atempo and afade instead of at amix, as in the single graph. The
+ * samples then differ by float round-off (about 1e-8). That is inaudible, but
+ * once one AAC frame quantizes differently the encoder's state drifts and the
+ * export no longer decodes like the single graph's. Every ffmpeg version does
+ * this; whether a given input tips is luck, which is why the white noise test
+ * passed on 7.1 and failed on 5.1 and 6.1. `-noaccurate_seek` drops the
+ * spliced trim, and the timestamps stay exact because ffmpeg still offsets them
+ * by the requested seek: the clip's atrim cuts on the same sample, from a
+ * demuxer seek that lands at or before the seek point.
+ */
+function audioSeekArgs(input: InputClip): string[] {
+  return input.seek > 0 ? ['-noaccurate_seek', '-ss', timeArg(input.seek)] : [];
+}
+
 /** The clip's trim bounds on its seeked input. A crossfading clip keeps rolling past its out point. */
 function trimRange(input: InputClip): { start: string; end: string } {
   const { clip, plan, seek } = input;
@@ -476,7 +495,7 @@ export async function renderProject(
     const speed = clip.speed ?? 1;
     const trim = trimRange(input);
     // Audio only: the picture was drawn by the windows.
-    args.push(...seekArgs(input), '-vn', '-i', asset.originalPath);
+    args.push(...audioSeekArgs(input), '-vn', '-i', asset.originalPath);
     const inputIndex = nextInputIndex;
     nextInputIndex += 1;
     const audioIndex = audioLabels.length;
