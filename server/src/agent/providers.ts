@@ -350,6 +350,19 @@ export class MockToolProvider implements ToolProvider {
       }
     }
 
+    // "sync the memo": line the newest audio-track clip up against the video's own sound.
+    if (/\bsync/.test(prompt)) {
+      const memo = project?.tracks.filter((track) => track.kind === 'audio')
+        .flatMap((track) => track.clips).filter((clip) => clip.assetId).at(-1);
+      if (!memo) return { text: 'There is no audio clip on the timeline to sync yet. Add the voice memo first.', toolCalls: [] };
+      if (!called('sync_audio')) return calls('sync', [{ name: 'sync_audio', input: { audioClipId: memo.id } }]);
+      const result = latestToolResult<{ ok?: boolean; error?: string; offsetSec?: number; pieces?: number }>(messages, 'sync_audio');
+      if (result?.ok === false) return { text: `I could not sync it: ${result.error}`, toolCalls: [] };
+      const offset = result?.offsetSec ?? 0;
+      const when = offset < 0 ? `the memo started ${(-offset).toFixed(2)}s before the camera` : `the memo started ${offset.toFixed(2)}s after the camera`;
+      return { text: `Synced ${memo.id} to the video: ${when}. The camera audio is untouched; mute it if the memo should replace it.`, toolCalls: [] };
+    }
+
     const wantsBuild = /\b(build|style)\b/.test(prompt)
       || /\bmake\b.*\b(cut|video|edit)\b/.test(prompt) || Boolean(matchingPreset);
     const wantsPunch = /punch|chopp|fast/.test(prompt);

@@ -5,7 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { AssetDissection, AssetMetadata, Clip, Operation, Project, Track } from '@editify/shared';
 import { clipTimelineDuration } from '@editify/shared';
 import { CaptionChip, DragGhost, DragTooltip, EmptyLane, StickerChip, TimelineClip, type DragMode } from './TimelineClip';
-import { Inspector } from './Inspector';
+import { Inspector, type SyncState } from './Inspector';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
@@ -49,6 +49,9 @@ interface Props {
   onCleanup: () => void;
   onRecordVoice: () => void;
   onStyle: () => void;
+  /** The latest sync attempt per clip; the Inspector shows the selected clip's. */
+  syncs?: Record<string, SyncState>;
+  onSyncAudio: (clipId: string) => void;
 }
 
 interface DragState { clipId: string; mode: DragMode; dx: number }
@@ -70,7 +73,7 @@ const round6 = (value: number): number => Number(value.toFixed(6));
  * playback. Everything here reads the current time imperatively.
  */
 export function Timeline({
-  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onImportPhotos, onImportFiles, importing, importProgress, importError, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle,
+  project, assets, clock, playing, selectedId, pending, errorMessage, onSeek, onScrub, onSelect, onApply, onImport, onImportPhotos, onImportFiles, importing, importProgress, importError, onAddSound, onAddSticker, onCleanup, onRecordVoice, onStyle, syncs, onSyncAudio,
 }: Props) {
   const [pxPerSec, setPxPerSec] = useState(40);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -638,6 +641,8 @@ export function Timeline({
         kind={selectedTrack?.kind}
         captionClips={selectedTrack?.kind === 'caption' ? selectedTrack.clips : []}
         pending={pending}
+        {...(selected && syncs?.[selected.id] ? { sync: syncs[selected.id] } : {})}
+        {...(selected && selectedTrack?.kind === 'audio' && selected.assetId ? { onSync: () => onSyncAudio(selected.id) } : {})}
         onApply={(ops, patch, extra) => onApply(ops, (current) => {
           const patched = selected ? patchClip(current, selected.id, patch) : current;
           return (extra ?? []).reduce((next, entry) => patchClip(next, entry.clipId, entry.patch), patched);

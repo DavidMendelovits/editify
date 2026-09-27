@@ -1,4 +1,4 @@
-import type { AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project } from '@editify/shared';
+import type { AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project, SyncAudioResult } from '@editify/shared';
 import { track } from './event-log';
 import type { AgentTraceStep } from './agent';
 import type { EditPreset } from './presets';
@@ -366,6 +366,10 @@ export const api = {
     method: 'POST', body: JSON.stringify({ resolution, hdr }),
   }),
   getRender: (id: string) => request<RenderRecord>(`/renders/${id}`),
+  /** Measures where an audio clip lines up under the video; never edits. Apply `ops` to commit. */
+  syncAudio: (id: string, audioClipId: string, videoClipId?: string) => request<SyncAudioResult>(
+    `/projects/${id}/sync?audioClipId=${encodeURIComponent(audioClipId)}${videoClipId ? `&videoClipId=${encodeURIComponent(videoClipId)}` : ''}`,
+  ),
   /** `null` while the server-side preset routes are still landing (SPEC-WAVE2 §D). */
   listPresets: () => requestOptional<EditPreset[]>('/presets'),
   /** `null` when the asset has no transcript to analyse yet. */

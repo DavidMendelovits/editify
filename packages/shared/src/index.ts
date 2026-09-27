@@ -260,6 +260,44 @@ export const chatResponseSchema = z.object({
 });
 export type ChatResponse = z.infer<typeof chatResponseSchema>;
 
+/**
+ * Line an audio-track clip (a voice memo, a lav) up against a video clip's own
+ * soundtrack. `videoClipId` is optional: without it the longest video clip with
+ * sound is used. Every clip cut from that video's footage gets a matching piece.
+ */
+export const syncAudioRequestSchema = z.object({
+  audioClipId: z.string().min(1),
+  videoClipId: z.string().min(1).optional(),
+}).strict();
+export type SyncAudioRequest = z.infer<typeof syncAudioRequestSchema>;
+
+export const syncAudioResultSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    /** The edit, for the caller to apply: the measuring route never mutates the project. */
+    ops: z.array(operationSchema),
+    /**
+     * The project version `ops` were planned against. Apply them with this as
+     * `baseVersion`: an edit that landed while measuring then fails with a 409
+     * instead of the memo being placed against a timeline that no longer exists.
+     */
+    version: z.number().int().min(0),
+    videoClipId: z.string(),
+    /** Video source seconds at which memo second 0 plays; negative when the memo started first. */
+    offsetSec: z.number(),
+    /** Memo clip speed: 1 unless the two recorders' clocks drift. */
+    speed: z.number(),
+    /** Measured drift across the whole overlap, before correction. */
+    driftMs: z.number().optional(),
+    /** Fine-stage peak over the noise floor, in standard deviations. The confidence gate itself lives in server/src/media/sync.ts. */
+    confidence: z.number(),
+    pieces: z.number().int().min(1),
+    notes: z.array(z.string()),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+export type SyncAudioResult = z.infer<typeof syncAudioResultSchema>;
+
 export const assetMetadataSchema = z.object({
   id: z.string(),
   originalName: z.string(),

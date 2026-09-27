@@ -9,6 +9,7 @@ import type { ChatStore } from '../db/chat-store.js';
 import type { ProjectStore } from '../db/project-store.js';
 import type { StyleService } from '../services/style-service.js';
 import type { DissectService } from '../services/dissect-service.js';
+import type { SyncService } from '../services/sync-service.js';
 import type { InsightService } from '../services/insight-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 
@@ -28,6 +29,8 @@ export function registerChatRoutes(
   transcripts: TranscriptService,
   insights: InsightService,
   dissections: DissectService,
+  /** Optional only so tests that predate sync can build the routes without one; app.ts always passes it. */
+  syncs?: SyncService,
 ): void {
   app.post<{ Params: { id: string } }>('/projects/:id/chat', async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
@@ -60,6 +63,7 @@ export function registerChatRoutes(
       transcripts,
       insights,
       dissections,
+      ...(syncs ? { syncs } : {}),
       runId,
     };
     let response;

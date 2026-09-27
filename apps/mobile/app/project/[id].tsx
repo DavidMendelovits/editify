@@ -20,11 +20,15 @@ import { StylePacketSheet } from '../../src/components/editor/StylePacketSheet';
 import { LayoutPresets, PanelDivider, useEditorLayout } from '../../src/components/editor/PanelLayout';
 import { ReportModal } from '../../src/components/ReportModal';
 import { Timeline } from '../../src/components/editor/Timeline';
+import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
-import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type PickResult } from '../../src/lib/pick';
+import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
+import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
+import { isAudioOnly } from '../../src/lib/media';
+import { describeSync } from '../../src/lib/sync-messages';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { setReportContext, track } from '../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../src/lib/nav';
@@ -39,6 +43,12 @@ interface ApplyVariables {
   ops: Operation[];
   /** Paints the expected result before the round trip; rolled back by a refetch on error. */
   optimistic?: (project: Project) => Project;
+  /**
+   * Apply against this version instead of the freshest one. Set for edits
+   * planned elsewhere (a sync measurement), so a change that landed while they
+   * were being planned is a 409, not a silent overwrite.
+   */
+  baseVersion?: number;
 }
 
 export default function EditorScreen() {
@@ -73,6 +83,9 @@ export default function EditorScreen() {
   const [uploadError, setUploadError] = useState<string>();
   /** Only set while a multi-file import is running. */
   const [progress, setProgress] = useState<{ done: number; total: number }>();
+  /** Per clip, so one clip's result survives another clip being synced. */
+  const [syncs, setSyncs] = useState<Record<string, SyncState>>({});
+  const setSync = (state: SyncState): void => setSyncs((current) => ({ ...current, [state.clipId]: state }));
   const [optimisticMessage, setOptimisticMessage] = useState<string>();
   // Covers the gap between the chat mutation resolving and the history refetch.
   const [latestTrace, setLatestTrace] = useState<AgentTraceStep[]>();
@@ -117,11 +130,11 @@ export default function EditorScreen() {
   // (stepper taps, rapid imports) no longer races itself into 409s.
   const opChain = useRef<Promise<unknown>>(Promise.resolve());
   const apply = useMutation({
-    mutationFn: ({ ops }: ApplyVariables) => {
+    mutationFn: ({ ops, baseVersion }: ApplyVariables) => {
       const run = opChain.current.catch(() => undefined).then(async () => {
         const current = queryClient.getQueryData<Project>(['project', id]);
         if (!current) throw new Error('Project is still loading');
-        const updated = await api.applyOps(current.id, ops, current.version);
+        const updated = await api.applyOps(current.id, ops, baseVersion ?? current.version);
         // Written here, not just in onSuccess, so the next queued batch sees it.
         queryClient.setQueryData(['project', id], updated);
         return updated;
@@ -266,6 +279,29 @@ export default function EditorScreen() {
     return () => { root.style.overscrollBehaviorX = previous; };
   }, []));
 
+  // This is "the open project" for the share sheet from the moment it is on
+  // screen until it unmounts. Not cleared on blur: export and the paywall push
+  // on top of the editor, and a memo shared then still belongs here.
+  useFocusEffect(useCallback(() => { if (id) setActiveProject(id); }, [id]));
+  useEffect(() => () => { if (getActiveProject() === id) setActiveProject(undefined); }, [id]);
+
+  // Media shared from another app (a Voice Memos recording, a Photos video) is
+  // parked by ShareIntake until this project's doc has loaded, then imported
+  // like any other pick. The ref keeps the listener on this render's `addFrom`,
+  // not the one from when the doc first loaded.
+  const addFromRef = useRef(addFrom);
+  addFromRef.current = addFrom;
+  const projectLoaded = project !== undefined;
+  useEffect(() => {
+    if (!id || !projectLoaded) return undefined;
+    const pickUp = (): void => {
+      const files = takeShare(id);
+      if (files) void addFromRef.current((projectId, onProgress) => uploadShared(projectId, files, onProgress));
+    };
+    pickUp();
+    return subscribeShares(pickUp);
+  }, [id, projectLoaded]);
+
   // Space toggles playback on web, unless the composer has focus.
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -306,20 +342,35 @@ export default function EditorScreen() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [canRedo, canUndo, runHistory]);
 
-  function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): void {
+  /**
+   * Resolves once the batch is on the server (true) or has failed (false); it
+   * never rejects, so fire-and-forget callers can ignore it. The mutation's
+   * own onError already refetches and surfaces the failure.
+   */
+  function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): Promise<boolean> {
     // One line per edit batch, so a report can show what the user did by hand
     // right before they hit a wall (or a crash).
     track('edit', ops.map((op) => op.type).join(','));
-    apply.mutate(optimistic ? { ops, optimistic } : { ops });
+    return apply.mutateAsync(optimistic ? { ops, optimistic } : { ops }).then(() => true, () => false);
   }
 
-  /** Lays imported assets back-to-back at the end of the video track, in one batch. */
-  function appendAssets(assetList: AssetMetadata[]): void {
+  const round3 = (value: number): number => Math.round(value * 1000) / 1000;
+
+  /**
+   * Footage goes back-to-back at the end of the video track; audio-only files
+   * (a voice memo, a lav recording) go on the audio track at the playhead, all
+   * in one batch. Returns the new audio clips so the caller can sync them, and
+   * whether the batch landed: a clip cannot be measured before it exists.
+   */
+  function appendAssets(assetList: AssetMetadata[]): { audioClipIds: string[]; landed: Promise<boolean> } {
     // A probe that could not read a duration would make an invalid clip; skip those.
     const added = assetList.filter((asset) => asset.duration > 0);
-    if (!project || added.length === 0) return;
+    if (!project || added.length === 0) return { audioClipIds: [], landed: Promise.resolve(false) };
     const videoTrack = project.tracks.find((track) => track.kind === 'video');
     const trackId = videoTrack?.id ?? 'video-main';
+    // A project without an audio track keeps the old behaviour (everything on
+    // the video track): an add_clip to a missing track would fail the whole batch.
+    const audioTrackId = project.tracks.find((track) => track.kind === 'audio')?.id;
     const stamp = Date.now();
     // The end of the VIDEO track — project.duration can be stretched by a
     // caption or sticker, which would leave a silent gap before the new clip.
@@ -327,16 +378,53 @@ export default function EditorScreen() {
       (end, clip) => Math.max(end, clip.start + (clip.out - clip.in) / (clip.speed ?? 1)),
       0,
     );
+    const playhead = round3(clock.get());
+    const audioClipIds: string[] = [];
+    let lastId = '';
     const ops = added.map((asset, index): Operation => {
-      const clip = { id: `clip-${stamp}-${index}`, assetId: asset.id, start, in: 0, out: asset.duration, volume: 1, speed: 1 };
+      if (audioTrackId && isAudioOnly(asset)) {
+        lastId = `audio-${stamp}-${index}`;
+        audioClipIds.push(lastId);
+        return { type: 'add_clip', params: { trackId: audioTrackId, clip: { id: lastId, assetId: asset.id, start: playhead, in: 0, out: asset.duration, volume: 1, speed: 1 } } };
+      }
+      lastId = `clip-${stamp}-${index}`;
+      const clip = { id: lastId, assetId: asset.id, start, in: 0, out: asset.duration, volume: 1, speed: 1 };
       start += asset.duration;
       return { type: 'add_clip', params: { trackId, clip } };
     });
-    applyOps(ops);
-    setSelectedId(`clip-${stamp}-${added.length - 1}`);
+    const landed = applyOps(ops);
+    setSelectedId(audioClipIds[0] ?? lastId);
+    return { audioClipIds, landed };
   }
 
-  const round3 = (value: number): number => Math.round(value * 1000) / 1000;
+  /**
+   * Line an audio clip up under the video by its sound. The server measures and
+   * returns the edit; it rides the same op chain as every other edit, so undo
+   * takes it back in one step. `auto` is the import-time attempt: it only
+   * reports, since a music track that matches nothing is not a failure.
+   */
+  async function syncAudio(clipId: string, auto = false): Promise<void> {
+    setSync({ clipId, busy: true });
+    try {
+      // Measure what the server has once any edit already in flight lands.
+      await opChain.current.catch(() => undefined);
+      const result = await api.syncAudio(id, clipId);
+      if (!result.ok) {
+        setSync({ clipId, busy: false, failed: !auto, message: auto ? `Not synced: ${result.error}` : result.error });
+        return;
+      }
+      track('audio_sync', auto ? 'auto' : 'manual');
+      // Against the measured version: an edit made while measuring is a 409
+      // ("the project changed underneath this edit"), not a misplaced memo.
+      await apply.mutateAsync({ ops: result.ops, baseVersion: result.version });
+      setSync({ clipId, busy: false, message: describeSync(result) });
+    } catch (error) {
+      // An import-time attempt stays quiet: an older server without /sync, or
+      // a flaky connection, is not something the user asked about.
+      setSync({ clipId, busy: false, failed: !auto, message: error instanceof Error ? error.message : 'Could not sync that clip' });
+    }
+  }
+
 
   /** CapCut model: `+` on a sound row drops it on the audio track at the playhead. */
   async function addSound(sound: LibrarySound): Promise<void> {
@@ -405,7 +493,18 @@ export default function EditorScreen() {
     try {
       // One clip needs no counter; a batch does.
       const { assets: added, failed } = await pick(id, (done, total) => setProgress(total > 1 ? { done, total } : undefined));
-      appendAssets(added);
+      const { audioClipIds, landed } = appendAssets(added);
+      // A memo dropped into a project with footage is almost always meant to
+      // line up with it; sync on arrival, once the clips exist server-side,
+      // one at a time.
+      const hasFootage = added.some((asset) => !isAudioOnly(asset))
+        || project.tracks.some((track) => track.kind === 'video' && track.clips.length > 0);
+      if (hasFootage && audioClipIds.length > 0) {
+        void landed.then(async (ok) => {
+          if (!ok) return;
+          for (const clipId of audioClipIds) await syncAudio(clipId, true);
+        });
+      }
       if (added.length > 0) await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
       if (failed.length > 0) setUploadError(`Could not import ${failed.length} of ${added.length + failed.length}: ${failed.join(', ')}`);
     } catch (error) {
@@ -496,6 +595,8 @@ export default function EditorScreen() {
         onCleanup={() => setCleanupOpen(true)}
         onRecordVoice={() => setVoiceOpen(true)}
         onStyle={() => setStyleOpen(true)}
+        syncs={syncs}
+        onSyncAudio={(clipId) => void syncAudio(clipId)}
       />
     </Animated.View>
   );

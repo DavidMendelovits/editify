@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 import { Stack, usePathname, useRouter, useSegments, type Href } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { ShareIntentProvider } from 'expo-share-intent';
 import type { Session } from '@supabase/supabase-js';
 import {
   SpaceGrotesk_400Regular,
@@ -13,10 +15,18 @@ import {
 import { Unbounded_700Bold } from '@expo-google-fonts/unbounded';
 import { SpaceMono_700Bold } from '@expo-google-fonts/space-mono';
 import { AppProviders } from '../src/providers/AppProviders';
+import { ShareIntake } from '../src/components/ShareIntake';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { syncPurchaseUser } from '../src/lib/purchases';
 import { posthog } from '../src/lib/posthog';
 import { colors } from '../src/lib/theme';
+
+// Web has no share sheet to receive from; Expo Go has no native module, and the
+// hook already treats a missing module as "nothing shared". ShareIntake clears
+// a share once it has taken it, so the library must not clear it on
+// backgrounding: a share waiting for sign-in would vanish while the user
+// switched away to find their password.
+const SHARE_OPTIONS = { disabled: Platform.OS === 'web', resetOnBackground: false };
 
 export default function RootLayout() {
   const router = useRouter();
@@ -68,11 +78,14 @@ export default function RootLayout() {
 
   if (!loaded || session === undefined) return null;
   return (
-    <SafeAreaProvider>
-      <AppProviders>
-        <StatusBar style="light" />
-        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background }, animation: 'fade' }} />
-      </AppProviders>
-    </SafeAreaProvider>
+    <ShareIntentProvider options={SHARE_OPTIONS}>
+      <SafeAreaProvider>
+        <AppProviders>
+          <StatusBar style="light" />
+          <ShareIntake signedIn={Boolean(session)} />
+          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background }, animation: 'fade' }} />
+        </AppProviders>
+      </SafeAreaProvider>
+    </ShareIntentProvider>
   );
 }

@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import type { AssetMetadata, LibrarySound, SoundCategory } from '@editify/shared';
 import { api, mediaUrl } from '../../lib/api';
+import { isAudioOnly } from '../../lib/media';
 import { pickFromFiles } from '../../lib/pick';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 
@@ -31,10 +32,9 @@ function asLibrarySound(asset: AssetMetadata): LibrarySound {
   };
 }
 
-/** An audio-only asset: an audio mime type, or a stream with sound and no picture. */
+/** The creator's own audio: audio-only, and not one of the built-in library sounds. */
 function isTrack(asset: AssetMetadata): boolean {
-  if (asset.id.startsWith(LIBRARY_ID_PREFIX)) return false;
-  return asset.mimeType.startsWith('audio/') || (asset.hasAudio && asset.width === 0);
+  return !asset.id.startsWith(LIBRARY_ID_PREFIX) && isAudioOnly(asset);
 }
 
 interface Props {

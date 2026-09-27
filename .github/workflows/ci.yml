@@ -20,6 +20,7 @@ jobs:
       - run: npm run build -w @editify/shared
       - run: npm run typecheck
       - run: npm test -w @editify/server
+      - run: npm test -w @editify/mobile
   deploy:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
