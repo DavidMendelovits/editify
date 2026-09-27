@@ -1,5 +1,7 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Writable } from 'node:stream';
 import type { Clip, Project } from '@editify/shared';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { rendersRoot } from '../config.js';
@@ -8,7 +10,6 @@ import { rasterizeCallout } from './callout.js';
 import { isHdr, normalizeFilter, outputColorArgs, outputColorFilter, probeColor, zscaleAvailable, type HdrHandling, type SourceColor } from './color.js';
 import { duckExpression, duckWindows } from './duck.js';
 import { rasterizeEmoji } from './emoji.js';
-import { runProcess } from './process.js';
 import { planTransitions, type TransitionPlan } from './transitions.js';
 
 type Resolution = '720p' | '1080p' | '4k';
@@ -39,9 +40,16 @@ function atempoChain(speed: number): string {
   return filters.join(',');
 }
 
-interface InputClip { clip: Clip; asset: StoredAsset; inputIndex: number; kind: 'video' | 'audio' }
+/** `seek` is where this clip's inputs open the source; every trim is relative to it. */
+interface InputClip {
+  clip: Clip;
+  asset: StoredAsset;
+  kind: 'video' | 'audio';
+  plan: TransitionPlan | undefined;
+  seek: number;
+}
 /** `assetPath` is set only for b-roll — an overlay clip on a video asset, which needs colour work. */
-interface StickerInput { clip: Clip; inputIndex: number; assetPath?: string | undefined }
+interface StickerInput { clip: Clip; source: string; assetPath?: string | undefined }
 
 /** Filtergraph time argument — millisecond precision keeps float noise out of the graph. */
 function timeArg(value: number): string {
@@ -78,6 +86,210 @@ function zoomFilter(clip: Clip, seconds: number, width: number, height: number, 
   return `zoompan=z='${zoom}':x='(iw-iw/zoom)*${panX}':y='(ih-ih/zoom)*${panY}':d=1:s=${width}x${height}:fps=${fps}`;
 }
 
+/*
+ * Input strategy: the picture is rendered in short windows, each by its own
+ * ffmpeg that opens only the clips in that window (seeked at the input), and
+ * the windows stream as raw frames into one final ffmpeg that adds stickers,
+ * captions and the audio mix once.
+ *
+ * The old single graph opened every clip as its own full-resolution input for
+ * the whole render, and each decoder parks a queue of decoded 4k pictures
+ * whether or not its clip is on screen yet. Measured with
+ * scripts/bench-render.ts (one 60 s 2160x3840 source, 30 out-of-order cuts, two
+ * speed changes, a crossfade, 1080p out, 14-core Mac, peak RSS of the ffmpeg
+ * tree; the old graph's peak wanders from run to run):
+ *
+ *   old graph                                   6.3 to 8.8 GB   47 to 71 s
+ *   one input per clip, -ss/-t at the input     7.65 GB         21.5 s  (-threads 2)
+ *                                               6.59 GB         30.1 s  (-threads 1)
+ *   windows piped into one final pass           1.40 to 1.43 GB 20.6 to 25.7 s
+ *
+ * The windowed output matched the old graph frame for frame (framemd5 over
+ * all 1800 frames); the mixed audio differed by at most 1.5e-8 before AAC,
+ * float rounding from amix seeing differently sized frames.
+ *
+ * Input seeking alone cannot fix it: the cost is one parked 4k queue per open
+ * input, and every input is open from the first frame. Fanning one input out
+ * with split was not tried as a strategy: out-of-order cuts make split buffer
+ * every frame a later branch has not reached yet.
+ *
+ * Nothing is re-encoded between the stages: windows hand over raw frames
+ * through y4m on a pipe, so the final pass sees the same pixels the old graph
+ * had at the same point, and no intermediate lands on disk.
+ */
+
+/**
+ * Decoder threads per file input. ffmpeg's default is one frame thread per
+ * core, and every frame thread pins its own full-size 4k picture, per input.
+ * Two keeps a single 4k decode moving without multiplying that by the core
+ * count. Decoded pictures are identical at any thread count.
+ */
+const DECODE_ARGS = ['-threads', '2'];
+/** Extra source read past a clip's trim end, so the input cut never lands inside the trim. */
+const SPAN_MARGIN = 0.5;
+const BASE_COLOR = '0x0B0B0F';
+
+/**
+ * Where a clip's input opens its source: 0.2 to 0.3 s before the in point, on
+ * a whole tenth. The lead gives AAC a packet of pre-roll so the first samples
+ * decode the same as they would mid-stream; the whole tenth keeps the seek
+ * exact in every container timebase, so `in - seek` trims on the same
+ * microsecond the unseeked graph did.
+ */
+function seekPoint(sourceIn: number): number {
+  return Math.max(0, Math.floor(sourceIn * 10 - 2) / 10);
+}
+
+/** A source time as a trim argument on an input opened at `seek`. Unseeked inputs keep their exact string. */
+function sinceSeek(time: string, seek: number): string {
+  return seek === 0 ? time : String(Number((Number(time) - seek).toFixed(6)));
+}
+
+/** Input options that open only the part of the source a clip reads. */
+function seekArgs(input: InputClip): string[] {
+  const span = input.clip.out + (input.plan?.extendSourceBy ?? 0) - input.seek + SPAN_MARGIN;
+  return [...(input.seek > 0 ? ['-ss', timeArg(input.seek)] : []), '-t', timeArg(span)];
+}
+
+/** The clip's trim bounds on its seeked input. A crossfading clip keeps rolling past its out point. */
+function trimRange(input: InputClip): { start: string; end: string } {
+  const { clip, plan, seek } = input;
+  const sourceEnd = plan?.extendSourceBy ? timeArg(clip.out + plan.extendSourceBy) : `${clip.out}`;
+  return { start: sinceSeek(`${clip.in}`, seek), end: sinceSeek(sourceEnd, seek) };
+}
+
+/** A picture clip placed in the window plan. Frame numbers are output frames. */
+interface Picture {
+  input: InputClip;
+  /** Draw order: higher sits on top. */
+  stack: number;
+  /** The output frame the clip first shows on. */
+  first: number;
+  /** Bounds on the frame after its last one, a few frames loose on each side. */
+  endAtLeast: number;
+  endAtMost: number;
+  /** Opaque clips hide everything under them; a crossfade's alpha fade-in does not. */
+  opaque: boolean;
+}
+
+interface RenderWindow { start: number; frames: number; pictures: Picture[] }
+
+/**
+ * Splits the picture into windows that can render independently. A window
+ * may start at a clip's first frame only if that clip is opaque and sits on
+ * top of everything still showing from before, for at least as long: then the
+ * earlier clips can stop at the boundary without a visible change. Crossfades
+ * therefore stay in one window with the clip they blend into. Window 0 always
+ * holds a clip, so every window runs through at least one overlay and hands
+ * over the same pixel format.
+ */
+function planWindows(pictures: Picture[], totalFrames: number): RenderWindow[] {
+  const visible = pictures.filter((picture) => picture.first < totalFrames);
+  if (visible.length === 0) return [];
+  const earliest = Math.min(...visible.map((picture) => picture.first));
+  const starts = [0];
+  for (const boundary of [...new Set(visible.map((picture) => picture.first))].sort((left, right) => left - right)) {
+    if (boundary <= earliest) continue;
+    const cover = visible
+      .filter((picture) => picture.first === boundary && picture.opaque)
+      .reduce<Picture | undefined>((top, picture) => (top && top.stack > picture.stack ? top : picture), undefined);
+    if (!cover) continue;
+    const hidden = visible
+      .filter((picture) => picture.first < boundary && picture.endAtMost > boundary)
+      .every((picture) => picture.stack < cover.stack && picture.endAtMost <= cover.endAtLeast);
+    if (hidden) starts.push(boundary);
+  }
+  return starts.map((start, index) => {
+    const next = starts[index + 1] ?? totalFrames;
+    return {
+      start,
+      frames: next - start,
+      pictures: visible.filter((picture) => picture.first >= start && picture.first < next),
+    };
+  });
+}
+
+/** ffmpeg with stderr kept for the error message, like runProcess, plus optional pipes. */
+function startFfmpeg(args: string[], pipes: { stdin?: boolean; stdout?: boolean }): { child: ChildProcess; done: Promise<void> } {
+  const child = spawn('ffmpeg', args, { stdio: [pipes.stdin ? 'pipe' : 'ignore', pipes.stdout ? 'pipe' : 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
+  const done = new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited with ${code ?? signal}: ${stderr}`));
+    });
+  });
+  // The caller races or awaits it; this only stops an early failure being "unhandled".
+  done.catch(() => undefined);
+  return { child, done };
+}
+
+/**
+ * Streams one window's y4m into the final pass. Every window writes its own
+ * stream header; the first one opens the final input and later ones must match
+ * it exactly, then are dropped so the frames read as one continuous stream.
+ */
+async function pumpWindow(source: NodeJS.ReadableStream, sink: Writable, header: { line?: Buffer }, stoppedEarly: Promise<never>): Promise<void> {
+  let pending: Buffer | undefined = Buffer.alloc(0);
+  for await (const piece of source) {
+    let chunk = Buffer.isBuffer(piece) ? piece : Buffer.from(piece);
+    if (pending) {
+      pending = Buffer.concat([pending, chunk]);
+      const newline = pending.indexOf(0x0a);
+      if (newline < 0) continue;
+      const line = pending.subarray(0, newline + 1);
+      if (!header.line) {
+        header.line = Buffer.from(line);
+        chunk = pending;
+      } else if (header.line.equals(line)) {
+        chunk = pending.subarray(newline + 1);
+      } else {
+        throw new Error(`Render windows disagree on frame format: ${header.line.toString().trim()} vs ${line.toString().trim()}`);
+      }
+      pending = undefined;
+    }
+    if (!sink.write(chunk)) {
+      await Promise.race([new Promise((resolve) => { sink.once('drain', resolve); }), stoppedEarly]);
+    }
+  }
+}
+
+/** Runs the final pass with each window's frames piped in, in order, one window process at a time. */
+async function runWindowed(finalArgs: string[], windowArgs: string[][]): Promise<void> {
+  const final = startFfmpeg(finalArgs, { stdin: windowArgs.length > 0 });
+  if (windowArgs.length === 0) return await final.done;
+  let finalError: unknown;
+  final.done.catch((error: unknown) => { finalError = error; });
+  const sink = final.child.stdin as Writable;
+  // A final pass that dies mid-write surfaces through `final.done`, not as an EPIPE crash.
+  sink.on('error', () => undefined);
+  const stoppedEarly = final.done.then(() => { throw new Error('ffmpeg stopped reading render windows early'); });
+  stoppedEarly.catch(() => undefined);
+  let current: ChildProcess | undefined;
+  try {
+    const header: { line?: Buffer } = {};
+    for (const args of windowArgs) {
+      const window = startFfmpeg(args, { stdout: true });
+      current = window.child;
+      await pumpWindow(window.child.stdout as NodeJS.ReadableStream, sink, header, stoppedEarly);
+      await Promise.race([window.done, stoppedEarly]);
+    }
+    sink.end();
+    await final.done;
+  } catch (error) {
+    // Read before the kill below, which would replace it with a SIGKILL exit.
+    const ownFailure = finalError;
+    current?.kill('SIGKILL');
+    final.child.kill('SIGKILL');
+    await final.done.catch(() => undefined);
+    // The final pass's own error says more than "stopped reading" when it has one.
+    throw ownFailure ?? error;
+  }
+}
+
 export async function renderProject(
   project: Project,
   resolution: Resolution,
@@ -90,17 +302,11 @@ export async function renderProject(
   const outputPath = join(destinationDirectory, 'output.mp4');
   const [width, height] = dimensions(project.format, resolution);
   const duration = Math.max(project.duration, 0.1);
-  const args = [
-    '-y',
-    '-f', 'lavfi', '-i', `color=c=0x0B0B0F:s=${width}x${height}:r=${project.fps}:d=${duration}`,
-    '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=48000:d=${duration}`,
-  ];
   const inputs: InputClip[] = [];
   const stickers: StickerInput[] = [];
   const transitionPlans = new Map<string, TransitionPlan>();
   /** Emoji and callouts that could not be rasterized fall back to the ASS pass. */
   const assStickerIds: string[] = [];
-  let nextInputIndex = 2;
   for (const track of project.tracks) {
     if (track.kind === 'caption') continue;
     // Timeline order, so overlapping clips stack the same way the preview draws them.
@@ -138,18 +344,13 @@ export async function renderProject(
           if (!source) assStickerIds.push(clip.id);
         }
         if (!source) continue;
-        // Loop the source so GIF animations run for the sticker's whole window.
-        args.push('-stream_loop', '-1', '-i', source);
-        stickers.push({ clip, inputIndex: nextInputIndex, assetPath: videoOverlayPath });
-        nextInputIndex += 1;
+        stickers.push({ clip, source, assetPath: videoOverlayPath });
         continue;
       }
       if (!clip.assetId) continue;
       const asset = assets.get(clip.assetId);
       if (!asset) throw new Error(`Asset ${clip.assetId} referenced by clip ${clip.id} was not found`);
-      args.push('-i', asset.originalPath);
-      inputs.push({ clip, asset, inputIndex: nextInputIndex, kind: track.kind });
-      nextInputIndex += 1;
+      inputs.push({ clip, asset, kind: track.kind, plan: transitionPlans.get(clip.id), seek: seekPoint(clip.in) });
     }
   }
 
@@ -174,75 +375,133 @@ export async function renderProject(
   }
 
   const basePixelFormat = targetIsHdr ? 'yuv420p10le' : 'yuv420p';
+
+  /**
+   * One clip's picture, placed on the timeline. `shift` moves it back by whole
+   * frames into a window that starts `shift` frames in; integer frames keep the
+   * placement bit-exact, since setpts truncates the same way either side.
+   */
+  function pictureChain(input: InputClip, source: string, label: string, shift: number): string {
+    const { clip, asset, plan } = input;
+    const speed = clip.speed ?? 1;
+    const trim = trimRange(input);
+    const transform = clip.transform ?? { scale: 1, x: 0, y: 0 };
+    const formatted = `${normalize(asset.originalPath, Boolean(plan?.videoFadeIn?.alpha))}${videoFades(plan)}`;
+    const place = `setpts=PTS+${clip.start}/TB${shift > 0 ? `-${shift}` : ''}`;
+    if (clip.transformEnd) {
+      // Animated zoom: cover-scale to an oversized frame, then zoompan tweens
+      // scale and pan per frame across the clip.
+      // ponytail: pre-scale capped at 2x for memory; zooms past 2x go soft. Raise if 4k punch-ins matter.
+      const oversample = Math.min(2, Math.max(1, transform.scale, clip.transformEnd.scale));
+      const overWidth = Math.round(width * oversample / 2) * 2;
+      const overHeight = Math.round(height * oversample / 2) * 2;
+      return `[${source}]trim=start=${trim.start}:end=${trim.end},setpts=(PTS-STARTPTS)/${speed},fps=${project.fps},` +
+        `scale=${overWidth}:${overHeight}:force_original_aspect_ratio=increase,crop=${overWidth}:${overHeight},` +
+        `${zoomFilter(clip, (clip.out - clip.in) / speed, width, height, project.fps)},` +
+        `${formatted},${place}[${label}]`;
+    }
+    const scaledWidth = Math.max(width, Math.round(width * transform.scale / 2) * 2);
+    const scaledHeight = Math.max(height, Math.round(height * transform.scale / 2) * 2);
+    return `[${source}]trim=start=${trim.start}:end=${trim.end},setpts=(PTS-STARTPTS)/${speed},` +
+      `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase,` +
+      `crop=${width}:${height}:(iw-${width})/2*(1+${transform.x}):(ih-${height})/2*(1+${transform.y}),` +
+      `fps=${project.fps},${formatted},${place}[${label}]`;
+  }
+
+  // The frame count is one past what the output can hold, so the last window
+  // never comes up short; the final pass's -t trims the spare.
+  const totalFrames = Math.ceil(duration * project.fps) + 1;
+  const pictures: Picture[] = inputs
+    .filter((input) => input.kind === 'video' && input.asset.width > 0 && input.asset.height > 0)
+    .map((input, stack) => {
+      const seconds = (input.clip.out + (input.plan?.extendSourceBy ?? 0) - input.clip.in) / (input.clip.speed ?? 1);
+      // setpts truncates PTS+start/TB, and the chain's first frame is PTS 0; this is that same double arithmetic.
+      const first = Math.trunc(input.clip.start / (1 / project.fps));
+      return {
+        input,
+        stack,
+        first,
+        endAtLeast: first + Math.floor(seconds * project.fps) - 2,
+        endAtMost: first + Math.ceil(seconds * project.fps) + 2,
+        opaque: !input.plan?.videoFadeIn?.alpha,
+      };
+    });
+  const windows = planWindows(pictures, totalFrames);
+  const windowArgs = windows.map((window) => {
+    const args = ['-f', 'lavfi', '-i', `color=c=${BASE_COLOR}:s=${width}x${height}:r=${project.fps}`];
+    const filters = [`[0:v]format=${basePixelFormat}[base0]`];
+    let current = 'base0';
+    window.pictures.forEach((picture, index) => {
+      args.push(...DECODE_ARGS, ...seekArgs(picture.input), '-an', '-i', picture.input.asset.originalPath);
+      filters.push(pictureChain(picture.input, `${index + 1}:v`, `vclip${index}`, window.start));
+      filters.push(`[${current}][vclip${index}]overlay=eof_action=pass:shortest=0[vbase${index + 1}]`);
+      current = `vbase${index + 1}`;
+    });
+    // overlay's default yuv420 mode hands back 8-bit 4:2:0 whatever the base
+    // was: plain yuv420p over an SDR base, where this is a no-op, and yuva420p
+    // over a 10-bit one, where the alpha is opaque everywhere and y4m cannot
+    // carry it. The final pass's overlay puts that same opaque alpha back.
+    filters.push(`[${current}]format=yuv420p[vwindow]`);
+    return [
+      ...args, '-filter_complex', filters.join(';'), '-map', '[vwindow]',
+      '-frames:v', String(window.frames), '-f', 'yuv4mpegpipe', 'pipe:1',
+    ];
+  });
+
+  const args = [
+    '-y',
+    '-f', 'lavfi', '-i', `color=c=${BASE_COLOR}:s=${width}x${height}:r=${project.fps}:d=${duration}`,
+    '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=48000:d=${duration}`,
+  ];
+  let nextInputIndex = 2;
   const filters: string[] = [`[0:v]format=${basePixelFormat}[base0]`, `[1:a]atrim=0:${duration},asetpts=PTS-STARTPTS[asilence]`];
   let currentVideo = 'base0';
-  let videoNumber = 0;
+  if (windows.length > 0) {
+    // The windows' frames go over this canvas like one full-frame clip: the
+    // output frames keep the canvas's own properties, as they did when every
+    // clip was overlaid onto it directly.
+    args.push('-f', 'yuv4mpegpipe', '-i', 'pipe:0');
+    filters.push(`[base0][${nextInputIndex}:v]overlay=eof_action=pass:shortest=0[vpictures]`);
+    currentVideo = 'vpictures';
+    nextInputIndex += 1;
+  }
   const audioLabels = ['[asilence]'];
   /** Audio-track clips that duck everything else: their labels, and their clips for the windows. */
   const duckerLabels: string[] = [];
   const duckerClips: Clip[] = [];
 
   for (const input of inputs) {
-    const { clip, asset, inputIndex } = input;
+    const { clip, asset, plan } = input;
+    if (!asset.hasAudio) continue;
     const speed = clip.speed ?? 1;
-    const plan = transitionPlans.get(clip.id);
-    // A clip crossfading into the next one keeps rolling past its out point.
-    const trimEnd = plan?.extendSourceBy ? timeArg(clip.out + plan.extendSourceBy) : `${clip.out}`;
-    if (input.kind === 'video' && asset.width > 0 && asset.height > 0) {
-      const transform = clip.transform ?? { scale: 1, x: 0, y: 0 };
-      const formatted = `${normalize(asset.originalPath, Boolean(plan?.videoFadeIn?.alpha))}${videoFades(plan)}`;
-      if (clip.transformEnd) {
-        // Animated zoom: cover-scale to an oversized frame, then zoompan tweens
-        // scale and pan per frame across the clip.
-        // ponytail: pre-scale capped at 2x for memory; zooms past 2x go soft. Raise if 4k punch-ins matter.
-        const oversample = Math.min(2, Math.max(1, transform.scale, clip.transformEnd.scale));
-        const overWidth = Math.round(width * oversample / 2) * 2;
-        const overHeight = Math.round(height * oversample / 2) * 2;
-        filters.push(
-          `[${inputIndex}:v]trim=start=${clip.in}:end=${trimEnd},setpts=(PTS-STARTPTS)/${speed},fps=${project.fps},` +
-          `scale=${overWidth}:${overHeight}:force_original_aspect_ratio=increase,crop=${overWidth}:${overHeight},` +
-          `${zoomFilter(clip, (clip.out - clip.in) / speed, width, height, project.fps)},` +
-          `${formatted},setpts=PTS+${clip.start}/TB[vclip${videoNumber}]`,
-        );
-      } else {
-        const scaledWidth = Math.max(width, Math.round(width * transform.scale / 2) * 2);
-        const scaledHeight = Math.max(height, Math.round(height * transform.scale / 2) * 2);
-        filters.push(
-          `[${inputIndex}:v]trim=start=${clip.in}:end=${trimEnd},setpts=(PTS-STARTPTS)/${speed},` +
-          `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase,` +
-          `crop=${width}:${height}:(iw-${width})/2*(1+${transform.x}):(ih-${height})/2*(1+${transform.y}),` +
-          `fps=${project.fps},${formatted},setpts=PTS+${clip.start}/TB[vclip${videoNumber}]`,
-        );
-      }
-      filters.push(`[${currentVideo}][vclip${videoNumber}]overlay=eof_action=pass:shortest=0[vbase${videoNumber + 1}]`);
-      currentVideo = `vbase${videoNumber + 1}`;
-      videoNumber += 1;
-    }
-    if (asset.hasAudio) {
-      const audioIndex = audioLabels.length;
-      const delayMs = Math.round(clip.start * 1000);
-      // 8ms edge fades make butt-joined cuts inaudible (UIST 2013 uses 5ms; jumpcutter ~9ms).
-      const fade = 0.008;
-      const segmentSeconds = (clip.out + (plan?.extendSourceBy ?? 0) - clip.in) / speed;
-      const fadeOutStart = Math.max(0, segmentSeconds - fade);
-      // Transition edges swap the edge fade for a tri fade: amix sums the two
-      // overlapping halves back to roughly unity gain.
-      const fadeIn = plan?.audioFadeIn === undefined
-        ? `afade=t=in:curve=hsin:d=${fade}`
-        : `afade=t=in:curve=tri:d=${timeArg(plan.audioFadeIn)}`;
-      const fadeOut = plan?.audioFadeOut
-        ? `afade=t=out:curve=tri:st=${timeArg(plan.audioFadeOut.st)}:d=${timeArg(plan.audioFadeOut.d)}`
-        : `afade=t=out:curve=hsin:st=${fadeOutStart}:d=${fade}`;
-      filters.push(
-        `[${inputIndex}:a]atrim=start=${clip.in}:end=${trimEnd},asetpts=PTS-STARTPTS,${atempoChain(speed)},` +
-        `volume=${clip.volume ?? 1},${fadeIn},${fadeOut},` +
-        `adelay=${delayMs}|${delayMs}[aclip${audioIndex}]`,
-      );
-      audioLabels.push(`[aclip${audioIndex}]`);
-      if (input.kind === 'audio' && clip.duck) {
-        duckerLabels.push(`[aclip${audioIndex}]`);
-        duckerClips.push(clip);
-      }
+    const trim = trimRange(input);
+    // Audio only: the picture was drawn by the windows.
+    args.push(...seekArgs(input), '-vn', '-i', asset.originalPath);
+    const inputIndex = nextInputIndex;
+    nextInputIndex += 1;
+    const audioIndex = audioLabels.length;
+    const delayMs = Math.round(clip.start * 1000);
+    // 8ms edge fades make butt-joined cuts inaudible (UIST 2013 uses 5ms; jumpcutter ~9ms).
+    const fade = 0.008;
+    const segmentSeconds = (clip.out + (plan?.extendSourceBy ?? 0) - clip.in) / speed;
+    const fadeOutStart = Math.max(0, segmentSeconds - fade);
+    // Transition edges swap the edge fade for a tri fade: amix sums the two
+    // overlapping halves back to roughly unity gain.
+    const fadeIn = plan?.audioFadeIn === undefined
+      ? `afade=t=in:curve=hsin:d=${fade}`
+      : `afade=t=in:curve=tri:d=${timeArg(plan.audioFadeIn)}`;
+    const fadeOut = plan?.audioFadeOut
+      ? `afade=t=out:curve=tri:st=${timeArg(plan.audioFadeOut.st)}:d=${timeArg(plan.audioFadeOut.d)}`
+      : `afade=t=out:curve=hsin:st=${fadeOutStart}:d=${fade}`;
+    filters.push(
+      `[${inputIndex}:a]atrim=start=${trim.start}:end=${trim.end},asetpts=PTS-STARTPTS,${atempoChain(speed)},` +
+      `volume=${clip.volume ?? 1},${fadeIn},${fadeOut},` +
+      `adelay=${delayMs}|${delayMs}[aclip${audioIndex}]`,
+    );
+    audioLabels.push(`[aclip${audioIndex}]`);
+    if (input.kind === 'audio' && clip.duck) {
+      duckerLabels.push(`[aclip${audioIndex}]`);
+      duckerClips.push(clip);
     }
   }
 
@@ -253,6 +512,10 @@ export async function renderProject(
   // captions round-trips through 8-bit there. Fine until HDR captions matter.
   const overlayFormat = targetIsHdr ? 'yuva420p10le' : 'rgba';
   stickers.forEach((sticker, index) => {
+    // Loop the source so GIF animations run for the sticker's whole window.
+    args.push(...DECODE_ARGS, '-stream_loop', '-1', '-i', sticker.source);
+    const inputIndex = nextInputIndex;
+    nextInputIndex += 1;
     const placement = sticker.clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
     const stickerWidth = Math.max(2, Math.round(width * placement.width / 2) * 2);
     const radians = (placement.rotation * Math.PI) / 180;
@@ -262,7 +525,7 @@ export async function renderProject(
     // B-roll gets the same normalization as a main clip before it turns rgba;
     // PNG stickers are already sRGB and just need the alpha format.
     const prefix = sticker.assetPath ? `${normalize(sticker.assetPath, false)},` : '';
-    filters.push(`[${sticker.inputIndex}:v]${prefix}format=${overlayFormat},scale=${stickerWidth}:-2${rotate}[stk${index}]`);
+    filters.push(`[${inputIndex}:v]${prefix}format=${overlayFormat},scale=${stickerWidth}:-2${rotate}[stk${index}]`);
     filters.push(
       `[${currentVideo}][stk${index}]overlay=x=${Math.round(placement.x * width)}-w/2:y=${Math.round(placement.y * height)}-h/2` +
       `:enable='between(t,${begin},${end})'[vstk${index}]`,
@@ -312,6 +575,6 @@ export async function renderProject(
     '-pix_fmt', basePixelFormat, ...outputColorArgs(hdr, anyInputIsHdr),
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outputPath,
   );
-  await runProcess('ffmpeg', args);
+  await runWindowed(args, windowArgs);
   return outputPath;
 }
