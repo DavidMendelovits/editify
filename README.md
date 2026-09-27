@@ -129,6 +129,7 @@ quietly falls back to the offline mock agent.
 ```bash
 npm run typecheck                  # all workspaces
 npm test -w @editify/server        # server Vitest suite
+npm test -w @editify/mobile        # app unit tests (share routing, media rules, the share-extension patch)
 npm run seed                       # local color-bar demo project
 npm run dev:server                 # Fastify on port 3001
 npm run dev:mobile                 # Expo development server

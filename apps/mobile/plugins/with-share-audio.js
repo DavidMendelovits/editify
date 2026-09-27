@@ -49,26 +49,41 @@ const HANDLE_AUDIO = `  ${MARKER}
 
 `;
 
+/**
+ * The patch itself, as a plain string transform so it can be tested without a
+ * prebuild. Already-patched source comes back unchanged; source whose anchors
+ * moved throws, failing the prebuild loudly rather than shipping an extension
+ * that drops voice memos.
+ * @param {string} source
+ * @returns {string}
+ */
+function patchShareController(source) {
+  if (source.includes(MARKER)) return source;
+  if (!source.includes(DISPATCH_ANCHOR) || !source.includes(METHOD_ANCHOR)) {
+    throw new Error('with-share-audio: expo-share-intent changed ShareViewController.swift; update the audio branch anchors');
+  }
+  return source
+    .replace(
+      DISPATCH_ANCHOR,
+      `} else if attachment.hasItemConformingToTypeIdentifier(UTType.audio.identifier) {\n          await handleAudio(content: content, attachment: attachment, index: index)\n        ${DISPATCH_ANCHOR}`,
+    )
+    .replace(METHOD_ANCHOR, `${HANDLE_AUDIO}${METHOD_ANCHOR}`);
+}
+
 /** @param {import('expo/config').ExpoConfig} config */
-module.exports = function withShareAudio(config, { extensionName = 'ShareExtension' } = {}) {
+function withShareAudio(config, { extensionName = 'ShareExtension' } = {}) {
   return withFinalizedMod(config, [
     'ios',
     async (modConfig) => {
       const file = path.join(modConfig.modRequest.platformProjectRoot, extensionName, 'ShareViewController.swift');
-      let source = await fs.promises.readFile(file, 'utf8');
-      if (source.includes(MARKER)) return modConfig;
-      // Fail the prebuild loudly rather than ship an extension that drops voice memos.
-      if (!source.includes(DISPATCH_ANCHOR) || !source.includes(METHOD_ANCHOR)) {
-        throw new Error('with-share-audio: expo-share-intent changed ShareViewController.swift; update the audio branch anchors');
-      }
-      source = source
-        .replace(
-          DISPATCH_ANCHOR,
-          `} else if attachment.hasItemConformingToTypeIdentifier(UTType.audio.identifier) {\n          await handleAudio(content: content, attachment: attachment, index: index)\n        ${DISPATCH_ANCHOR}`,
-        )
-        .replace(METHOD_ANCHOR, `${HANDLE_AUDIO}${METHOD_ANCHOR}`);
-      await fs.promises.writeFile(file, source);
+      const source = await fs.promises.readFile(file, 'utf8');
+      const patched = patchShareController(source);
+      if (patched !== source) await fs.promises.writeFile(file, patched);
       return modConfig;
     },
   ]);
-};
+}
+
+module.exports = withShareAudio;
+module.exports.patchShareController = patchShareController;
+module.exports.MARKER = MARKER;

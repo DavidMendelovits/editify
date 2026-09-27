@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AssetMetadata, LibrarySound, Operation, Project, SyncAudioResult } from '@editify/shared';
+import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
 import { Button } from '../../src/components/Button';
 import { EditSummaryPanel } from '../../src/components/EditSummaryPanel';
@@ -28,6 +28,7 @@ import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
 import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
 import { isAudioOnly } from '../../src/lib/media';
+import { describeSync } from '../../src/lib/sync-messages';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { setReportContext, track } from '../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../src/lib/nav';
@@ -37,14 +38,6 @@ import { colors, radius, space, type, fonts } from '../../src/lib/theme';
 /** Above this width the editor lays out as preview + timeline | chat dock. */
 const WIDE_BREAKPOINT = 1024;
 const NATIVE_DRIVER = Platform.OS !== 'web';
-
-function describeSync(result: Extract<SyncAudioResult, { ok: true }>): string {
-  const offset = Math.abs(result.offsetSec).toFixed(2);
-  const lead = result.offsetSec < 0 ? `the memo started ${offset}s before the camera` : `the memo started ${offset}s after the camera`;
-  const pieces = result.pieces > 1 ? ` Matched under ${result.pieces} shots.` : '';
-  const drift = result.speed !== 1 && result.driftMs !== undefined ? ` Clock drift of ${Math.abs(result.driftMs)}ms corrected.` : '';
-  return `Synced: ${lead}.${pieces}${drift}`;
-}
 
 interface ApplyVariables {
   ops: Operation[];
