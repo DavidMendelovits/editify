@@ -528,7 +528,7 @@ export default function EditorScreen() {
     return <Screen><Text style={styles.error}>Could not open this project: {projectQuery.error?.message}</Text></Screen>;
   }
 
-  // Below this width the back control and the four actions already fill the row,
+  // Below this width the back control and the five actions already fill the row,
   // so the title gets a row of its own rather than being squeezed to nothing.
   const narrowHeader = width < 560;
   const heading = (
@@ -553,7 +553,7 @@ export default function EditorScreen() {
       <View style={styles.headerTop}>
         <Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
         {!narrowHeader && heading}
-        <View style={styles.headerActions}>
+        <View style={[styles.headerActions, narrowHeader && styles.headerActionsNarrow]}>
           <HistoryButton label="↶" accessibilityLabel="Undo" testID="undo-button" enabled={canUndo} onPress={() => runHistory('undo')} />
           <HistoryButton label="↷" accessibilityLabel="Redo" testID="redo-button" enabled={canRedo} onPress={() => runHistory('redo')} />
           {/* Adding media lives in the library (+ photos / + files / + folder), which also
@@ -561,15 +561,25 @@ export default function EditorScreen() {
           {/* Feedback belongs here and not just on the home screen: sent from the
               editor it carries the open project, the timeline, and the last edits
               the user made, which is most of what triage needs. */}
+          {/* Style Memory is otherwise only reachable from home, which a phone user
+              deep in an edit has no reason to go back to (#92). */}
+          <Button
+            accessibilityLabel="style memory"
+            secondary
+            style={[styles.feedbackButton, narrowHeader && styles.headerButtonNarrow]}
+            onPress={() => router.push('/style')}
+          >
+            style
+          </Button>
           <Button
             accessibilityLabel="send feedback"
             secondary
-            style={styles.feedbackButton}
+            style={[styles.feedbackButton, narrowHeader && styles.headerButtonNarrow]}
             onPress={() => { track('feedback_open', 'editor'); void captureScreen().then(setShot); setFeedbackOpen(true); }}
           >
             feedback
           </Button>
-          <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
+          <Button style={[styles.exportButton, narrowHeader && styles.exportButtonNarrow]} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
             export ↗
           </Button>
         </View>
@@ -806,8 +816,14 @@ const styles = StyleSheet.create({
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
   headerActions: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  // At 393pt (iPhone) back + undo/redo + style/feedback/export measure ~400pt at the
+  // wide spacing; these bring it to ~367 of the 377 available. Wrap is the fallback
+  // for anything narrower, so the row never runs off screen.
+  headerActionsNarrow: { flexShrink: 1, flexWrap: 'wrap', justifyContent: 'flex-end', gap: space.md },
   feedbackButton: { paddingHorizontal: space.xl, minHeight: 30 },
+  headerButtonNarrow: { paddingHorizontal: space.lg },
   exportButton: { minWidth: 96, minHeight: 30 },
+  exportButtonNarrow: { minWidth: 0 },
   historyButton: {
     minWidth: 30, minHeight: 30, alignItems: 'center', justifyContent: 'center',
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
