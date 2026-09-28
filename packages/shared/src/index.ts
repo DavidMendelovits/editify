@@ -438,7 +438,11 @@ export const styleAnalyzeSchema = z.object({
 
 export const styleAnalyzerSelectSchema = z.object({ analyzer: z.string().min(1).max(60) }).strict();
 
-export const styleRenameSchema = z.object({ name: z.string().min(1).max(60) });
+/** PATCH a style profile: rename it and/or hand-edit the style memory that briefs the agent. */
+export const styleRenameSchema = z.object({
+  name: z.string().min(1).max(60).optional(),
+  styleDoc: z.string().trim().min(1).max(20000).optional(),
+}).refine((body) => body.name !== undefined || body.styleDoc !== undefined, { message: 'Send a name or a styleDoc' });
 
 /**
  * Re-fit a caption's per-word karaoke timings onto edited text. Both the ASS

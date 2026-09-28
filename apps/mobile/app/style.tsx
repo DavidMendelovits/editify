@@ -67,6 +67,12 @@ export default function StyleScreen() {
     mutationFn: ({ id, name }: { id: string; name: string }) => api.renameStyle(id, name),
     onSuccess: async () => { setRenaming(undefined); await refreshStyles(); },
   });
+  // Hand-editing the brief: the draft text while the editor is open.
+  const [docDraft, setDocDraft] = useState<{ id: string; text: string }>();
+  const saveStyleDoc = useMutation({
+    mutationFn: ({ id, text }: { id: string; text: string }) => api.updateStyleDoc(id, text),
+    onSuccess: async () => { setDocDraft(undefined); await refreshStyles(); },
+  });
   const duplicateStyle = useMutation({ mutationFn: api.duplicateStyle, onSuccess: refreshStyles });
   const deleteStyle = useMutation({ mutationFn: api.deleteStyle, onSuccess: refreshStyles });
   // Every clip on the server, so a reference can be measured before any project
@@ -191,9 +197,39 @@ export default function StyleScreen() {
             <Metric label="PRIMARY FORMAT" value={mode(current.metrics.map((metric) => metric.format))} detail="frame orientation" />
           </View>
           <View style={styles.styleDoc}>
-            <Text style={styles.styleDocEyebrow}>STYLE BRIEF</Text>
+            <View style={styles.styleDocHeader}>
+              <Text style={styles.styleDocEyebrow}>STYLE BRIEF</Text>
+              {docDraft?.id !== current.id && (
+                <Button secondary accessibilityLabel="Edit style memory" onPress={() => { saveStyleDoc.reset(); setDocDraft({ id: current.id, text: current.styleDoc }); }}>edit</Button>
+              )}
+            </View>
             <Text style={styles.styleFoot}>{watchedLine(current)}</Text>
-            <Markdown text={current.styleDoc} />
+            {docDraft?.id === current.id ? (
+              <>
+                <TextInput
+                  value={docDraft.text}
+                  onChangeText={(text) => setDocDraft({ id: current.id, text })}
+                  multiline
+                  autoFocus
+                  testID="style-doc-input"
+                  accessibilityLabel="style-doc-input"
+                  style={styles.styleDocInput}
+                />
+                {saveStyleDoc.error && <Text style={styles.error}>{saveStyleDoc.error.message}</Text>}
+                <View style={styles.styleDocActions}>
+                  <Button secondary accessibilityLabel="Cancel style memory edit" disabled={saveStyleDoc.isPending} onPress={() => setDocDraft(undefined)}>cancel</Button>
+                  <Button
+                    accessibilityLabel="Save style memory"
+                    disabled={saveStyleDoc.isPending || !docDraft.text.trim()}
+                    onPress={() => saveStyleDoc.mutate(docDraft)}
+                  >
+                    {saveStyleDoc.isPending ? 'saving…' : 'save'}
+                  </Button>
+                </View>
+              </>
+            ) : (
+              <Markdown text={current.styleDoc} />
+            )}
             <Text style={styles.styleFoot}>This brief is injected into every edit conversation.</Text>
           </View>
         </>
@@ -309,6 +345,12 @@ const styles = StyleSheet.create({
   metricValue: { color: colors.text, fontFamily: fonts.bold, fontSize: type.title, marginTop: space.md },
   metricDetail: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, marginTop: space.sm },
   styleDoc: { borderRadius: radius.md, padding: space.xxl, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, gap: space.lg },
+  styleDocHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.lg },
+  styleDocInput: {
+    minHeight: 220, color: colors.text, fontFamily: fonts.regular, fontSize: type.lg, lineHeight: 20, textAlignVertical: 'top',
+    borderWidth: 1, borderColor: colors.accent, borderRadius: radius.md, padding: space.lg,
+  },
+  styleDocActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.lg },
   styleDocEyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
   styleFoot: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },
