@@ -405,7 +405,9 @@ export async function renderProject(
     const speed = clip.speed ?? 1;
     const trim = trimRange(input);
     const transform = clip.transform ?? { scale: 1, x: 0, y: 0 };
-    const formatted = `${normalize(asset.originalPath, Boolean(plan?.videoFadeIn?.alpha))}${videoFades(plan)}`;
+    // A crossfade the source has no frames left for holds its last one instead.
+    const hold = plan?.holdLastFrameFor ? `tpad=stop_mode=clone:stop_duration=${timeArg(plan.holdLastFrameFor)},` : '';
+    const formatted = `${hold}${normalize(asset.originalPath, Boolean(plan?.videoFadeIn?.alpha))}${videoFades(plan)}`;
     const place = `setpts=PTS+${clip.start}/TB${shift > 0 ? `-${shift}` : ''}`;
     if (clip.transformEnd) {
       // Animated zoom: cover-scale to an oversized frame, then zoompan tweens
@@ -433,7 +435,8 @@ export async function renderProject(
   const pictures: Picture[] = inputs
     .filter((input) => input.kind === 'video' && input.asset.width > 0 && input.asset.height > 0)
     .map((input, stack) => {
-      const seconds = (input.clip.out + (input.plan?.extendSourceBy ?? 0) - input.clip.in) / (input.clip.speed ?? 1);
+      const seconds = (input.clip.out + (input.plan?.extendSourceBy ?? 0) - input.clip.in) / (input.clip.speed ?? 1)
+        + (input.plan?.holdLastFrameFor ?? 0);
       // setpts truncates PTS+start/TB, and the chain's first frame is PTS 0; this is that same double arithmetic.
       const first = Math.trunc(input.clip.start / (1 / project.fps));
       return {

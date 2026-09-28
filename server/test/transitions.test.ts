@@ -33,24 +33,25 @@ describe('planTransitions', () => {
     expect(plans.get('a')).toEqual({ extendSourceBy: 1, audioFadeOut: { st: 2, d: 0.5 } });
   });
 
-  it('clamps the extension to the material left past the out point', () => {
+  it('clamps the extension to the material left past the out point and holds the last frame for the rest', () => {
     const plans = planTransitions([
       clip({ id: 'a' }),
       clip({ id: 'b', start: 2, transition: { type: 'crossfade', duration: 0.5 } }),
     ], new Map([['asset', 2.25]]), 30);
-    expect(plans.get('a')).toEqual({ extendSourceBy: 0.25, audioFadeOut: { st: 2, d: 0.25 } });
-    // The incoming clip still fades over the full duration — it just reveals
-    // the base canvas once the borrowed tail runs out.
-    expect(plans.get('b')?.videoFadeIn).toEqual({ d: 0.5, alpha: true });
+    expect(plans.get('a')).toEqual({ extendSourceBy: 0.25, holdLastFrameFor: 0.25, audioFadeOut: { st: 2, d: 0.25 } });
+    // The picture still dissolves over the full duration; the audio only
+    // crossfades over the sound that was really borrowed.
+    expect(plans.get('b')).toEqual({ extendSourceBy: 0, videoFadeIn: { d: 0.5, alpha: true }, audioFadeIn: 0.25 });
   });
 
-  it('degrades to a fade from the canvas when there is no headroom at all', () => {
+  it('freezes the outgoing clip instead of fading from the canvas when there is no headroom (#89)', () => {
+    // Clips dropped in whole from the camera roll end exactly at the asset's end.
     const plans = planTransitions([
       clip({ id: 'a' }),
       clip({ id: 'b', start: 2, transition: { type: 'crossfade', duration: 0.5 } }),
     ], new Map([['asset', 2]]), 30);
-    expect(plans.has('a')).toBe(false);
-    expect(plans.get('b')).toEqual({ extendSourceBy: 0, videoFadeIn: { d: 0.5, alpha: true }, audioFadeIn: 0.5 });
+    expect(plans.get('a')).toEqual({ extendSourceBy: 0, holdLastFrameFor: 0.5 });
+    expect(plans.get('b')).toEqual({ extendSourceBy: 0, videoFadeIn: { d: 0.5, alpha: true } });
   });
 
   it('treats a clip more than a frame after its predecessor as having no partner', () => {
