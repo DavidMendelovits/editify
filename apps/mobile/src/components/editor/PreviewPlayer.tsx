@@ -932,6 +932,19 @@ function Sticker({ clip, asset, stage, selected, onSelect, onApply }: {
     ? calloutFont * (CALLOUT_LINE + CALLOUT_PAD_V * 2)
     : clip.assetId ? width * aspect : width;
   const guides = drag && (shown.x === 0.5 || shown.y === 0.5);
+  // Grip anchors, not the box corners. The stage clips overflow, so a sticker
+  // dragged to an edge would put the ✕ outside it and out of reach; and a box
+  // shorter than a grip (a callout card is ~20px) would stack the ✕ under the
+  // duplicate. So anchor on a box at least HANDLE across, then slide the whole
+  // set back inside by one shared offset, which keeps the corners' relation.
+  const gw = Math.max(width, HANDLE);
+  const gh = Math.max(height, HANDLE);
+  const gLeft = shown.x * stage.width - gw / 2;
+  const gRight = gLeft + gw;
+  const gTop = shown.y * stage.height - gh / 2;
+  const gBottom = gTop + gh;
+  const gDx = Math.max(0, HANDLE / 2 - gLeft) - Math.max(0, (gRight + HANDLE / 2) - stage.width);
+  const gDy = Math.max(0, HANDLE / 2 - gTop) - Math.max(0, (gBottom + HANDLE / 2) - stage.height);
   // ponytail: b-roll previews as a still; the export plays it.
   const stickerUri = clip.assetId
     ? (asset?.mimeType.startsWith('video/') ? assetThumbUrl(clip.assetId) : assetOriginalUrl(clip.assetId))
@@ -988,17 +1001,17 @@ function Sticker({ clip, asset, stage, selected, onSelect, onApply }: {
         <>
           <CornerHandle
             label="delete sticker" glyph="✕" testID="sticker-delete" danger
-            left={shown.x * stage.width - width / 2} top={shown.y * stage.height - height / 2}
+            left={gLeft + gDx} top={gTop + gDy}
             onPress={removeSelf}
           />
           <CornerHandle
             label="duplicate sticker" glyph="⧉" testID="sticker-duplicate"
-            left={shown.x * stage.width - width / 2} top={shown.y * stage.height + height / 2}
+            left={gLeft + gDx} top={gBottom + gDy}
             onPress={duplicateSelf}
           />
           <CornerHandle
             label="resize and rotate sticker" glyph="⤡" testID="sticker-grip"
-            left={shown.x * stage.width + width / 2} top={shown.y * stage.height + height / 2}
+            left={gRight + gDx} top={gBottom + gDy}
             handlers={grip.panHandlers}
           />
         </>

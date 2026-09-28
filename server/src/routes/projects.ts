@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { newProjectSchema, operationBatchSchema, renderRequestSchema } from '@editify/shared';
+import { newProjectSchema, operationBatchSchema, renderRequestSchema, syncAudioRequestSchema } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import type { ProjectStore } from '../db/project-store.js';
 import { OperationError } from '../operations/apply.js';
@@ -12,6 +12,7 @@ import {
   type CleanupRange,
 } from '../services/cleanup.js';
 import type { RenderQueue } from '../services/render-queue.js';
+import type { SyncService } from '../services/sync-service.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 
 export function registerProjectRoutes(
@@ -20,6 +21,7 @@ export function registerProjectRoutes(
   renderQueue: RenderQueue,
   assets: AssetStore,
   transcripts: TranscriptService,
+  syncs: SyncService,
 ): void {
   app.post('/projects', async (request, reply) => {
     const input = newProjectSchema.parse(request.body ?? {});
@@ -98,10 +100,28 @@ export function registerProjectRoutes(
     };
   });
 
+  // Read-only like /cleanup: it measures and returns the edit, and the client
+  // applies it through its own op chain so undo and version checks stay theirs.
+  app.get<{ Params: { id: string }; Querystring: Record<string, string> }>('/projects/:id/sync', async (request, reply) => {
+    const project = projects.get(request.params.id, request.userId);
+    if (!project) return await reply.code(404).send({ error: 'Project not found' });
+    // Not strict here: the query also carries `?k=` when a client authenticates that way.
+    const input = syncAudioRequestSchema.strip().parse(request.query);
+    return await syncs.plan(project, input, request.userId);
+  });
+
   app.post<{ Params: { id: string } }>('/projects/:id/render', async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
-    const { resolution, hdr } = renderRequestSchema.parse(request.body ?? {});
-    return await reply.code(202).send(renderQueue.enqueue(project.id, resolution, hdr));
+    const { resolution: requested, hdr, loudness } = renderRequestSchema.parse(request.body ?? {});
+    // A 4K encode can run the single 4 GB server out of memory, but shipped app
+    // builds still offer 4K, so rejecting it would surface as an error. Export
+    // 1080p instead and record that on the render row, which is what the
+    // client reads back from GET /renders/:id.
+    const resolution = requested === '4k' ? '1080p' : requested;
+    if (resolution !== requested) {
+      request.log.info({ projectId: project.id, requested, resolution }, 'Clamped render resolution');
+    }
+    return await reply.code(202).send(renderQueue.enqueue(project.id, resolution, hdr, loudness));
   });
 }

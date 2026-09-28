@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Animated, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
@@ -20,11 +20,15 @@ import { StylePacketSheet } from '../../src/components/editor/StylePacketSheet';
 import { LayoutPresets, PanelDivider, useEditorLayout } from '../../src/components/editor/PanelLayout';
 import { ReportModal } from '../../src/components/ReportModal';
 import { Timeline } from '../../src/components/editor/Timeline';
+import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
-import { pickFromFiles, pickFromPhotos, uploadFiles, type PickProgress, type PickResult } from '../../src/lib/pick';
+import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
+import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
+import { isAudioOnly } from '../../src/lib/media';
+import { describeSync } from '../../src/lib/sync-messages';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { setReportContext, track } from '../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../src/lib/nav';
@@ -39,6 +43,12 @@ interface ApplyVariables {
   ops: Operation[];
   /** Paints the expected result before the round trip; rolled back by a refetch on error. */
   optimistic?: (project: Project) => Project;
+  /**
+   * Apply against this version instead of the freshest one. Set for edits
+   * planned elsewhere (a sync measurement), so a change that landed while they
+   * were being planned is a 409, not a silent overwrite.
+   */
+  baseVersion?: number;
 }
 
 export default function EditorScreen() {
@@ -73,6 +83,9 @@ export default function EditorScreen() {
   const [uploadError, setUploadError] = useState<string>();
   /** Only set while a multi-file import is running. */
   const [progress, setProgress] = useState<{ done: number; total: number }>();
+  /** Per clip, so one clip's result survives another clip being synced. */
+  const [syncs, setSyncs] = useState<Record<string, SyncState>>({});
+  const setSync = (state: SyncState): void => setSyncs((current) => ({ ...current, [state.clipId]: state }));
   const [optimisticMessage, setOptimisticMessage] = useState<string>();
   // Covers the gap between the chat mutation resolving and the history refetch.
   const [latestTrace, setLatestTrace] = useState<AgentTraceStep[]>();
@@ -117,11 +130,11 @@ export default function EditorScreen() {
   // (stepper taps, rapid imports) no longer races itself into 409s.
   const opChain = useRef<Promise<unknown>>(Promise.resolve());
   const apply = useMutation({
-    mutationFn: ({ ops }: ApplyVariables) => {
+    mutationFn: ({ ops, baseVersion }: ApplyVariables) => {
       const run = opChain.current.catch(() => undefined).then(async () => {
         const current = queryClient.getQueryData<Project>(['project', id]);
         if (!current) throw new Error('Project is still loading');
-        const updated = await api.applyOps(current.id, ops, current.version);
+        const updated = await api.applyOps(current.id, ops, baseVersion ?? current.version);
         // Written here, not just in onSuccess, so the next queued batch sees it.
         queryClient.setQueryData(['project', id], updated);
         return updated;
@@ -266,6 +279,29 @@ export default function EditorScreen() {
     return () => { root.style.overscrollBehaviorX = previous; };
   }, []));
 
+  // This is "the open project" for the share sheet from the moment it is on
+  // screen until it unmounts. Not cleared on blur: export and the paywall push
+  // on top of the editor, and a memo shared then still belongs here.
+  useFocusEffect(useCallback(() => { if (id) setActiveProject(id); }, [id]));
+  useEffect(() => () => { if (getActiveProject() === id) setActiveProject(undefined); }, [id]);
+
+  // Media shared from another app (a Voice Memos recording, a Photos video) is
+  // parked by ShareIntake until this project's doc has loaded, then imported
+  // like any other pick. The ref keeps the listener on this render's `addFrom`,
+  // not the one from when the doc first loaded.
+  const addFromRef = useRef(addFrom);
+  addFromRef.current = addFrom;
+  const projectLoaded = project !== undefined;
+  useEffect(() => {
+    if (!id || !projectLoaded) return undefined;
+    const pickUp = (): void => {
+      const files = takeShare(id);
+      if (files) void addFromRef.current((projectId, onProgress) => uploadShared(projectId, files, onProgress));
+    };
+    pickUp();
+    return subscribeShares(pickUp);
+  }, [id, projectLoaded]);
+
   // Space toggles playback on web, unless the composer has focus.
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -306,20 +342,35 @@ export default function EditorScreen() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [canRedo, canUndo, runHistory]);
 
-  function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): void {
+  /**
+   * Resolves once the batch is on the server (true) or has failed (false); it
+   * never rejects, so fire-and-forget callers can ignore it. The mutation's
+   * own onError already refetches and surfaces the failure.
+   */
+  function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): Promise<boolean> {
     // One line per edit batch, so a report can show what the user did by hand
     // right before they hit a wall (or a crash).
     track('edit', ops.map((op) => op.type).join(','));
-    apply.mutate(optimistic ? { ops, optimistic } : { ops });
+    return apply.mutateAsync(optimistic ? { ops, optimistic } : { ops }).then(() => true, () => false);
   }
 
-  /** Lays imported assets back-to-back at the end of the video track, in one batch. */
-  function appendAssets(assetList: AssetMetadata[]): void {
+  const round3 = (value: number): number => Math.round(value * 1000) / 1000;
+
+  /**
+   * Footage goes back-to-back at the end of the video track; audio-only files
+   * (a voice memo, a lav recording) go on the audio track at the playhead, all
+   * in one batch. Returns the new audio clips so the caller can sync them, and
+   * whether the batch landed: a clip cannot be measured before it exists.
+   */
+  function appendAssets(assetList: AssetMetadata[]): { audioClipIds: string[]; landed: Promise<boolean> } {
     // A probe that could not read a duration would make an invalid clip; skip those.
     const added = assetList.filter((asset) => asset.duration > 0);
-    if (!project || added.length === 0) return;
+    if (!project || added.length === 0) return { audioClipIds: [], landed: Promise.resolve(false) };
     const videoTrack = project.tracks.find((track) => track.kind === 'video');
     const trackId = videoTrack?.id ?? 'video-main';
+    // A project without an audio track keeps the old behaviour (everything on
+    // the video track): an add_clip to a missing track would fail the whole batch.
+    const audioTrackId = project.tracks.find((track) => track.kind === 'audio')?.id;
     const stamp = Date.now();
     // The end of the VIDEO track — project.duration can be stretched by a
     // caption or sticker, which would leave a silent gap before the new clip.
@@ -327,16 +378,53 @@ export default function EditorScreen() {
       (end, clip) => Math.max(end, clip.start + (clip.out - clip.in) / (clip.speed ?? 1)),
       0,
     );
+    const playhead = round3(clock.get());
+    const audioClipIds: string[] = [];
+    let lastId = '';
     const ops = added.map((asset, index): Operation => {
-      const clip = { id: `clip-${stamp}-${index}`, assetId: asset.id, start, in: 0, out: asset.duration, volume: 1, speed: 1 };
+      if (audioTrackId && isAudioOnly(asset)) {
+        lastId = `audio-${stamp}-${index}`;
+        audioClipIds.push(lastId);
+        return { type: 'add_clip', params: { trackId: audioTrackId, clip: { id: lastId, assetId: asset.id, start: playhead, in: 0, out: asset.duration, volume: 1, speed: 1 } } };
+      }
+      lastId = `clip-${stamp}-${index}`;
+      const clip = { id: lastId, assetId: asset.id, start, in: 0, out: asset.duration, volume: 1, speed: 1 };
       start += asset.duration;
       return { type: 'add_clip', params: { trackId, clip } };
     });
-    applyOps(ops);
-    setSelectedId(`clip-${stamp}-${added.length - 1}`);
+    const landed = applyOps(ops);
+    setSelectedId(audioClipIds[0] ?? lastId);
+    return { audioClipIds, landed };
   }
 
-  const round3 = (value: number): number => Math.round(value * 1000) / 1000;
+  /**
+   * Line an audio clip up under the video by its sound. The server measures and
+   * returns the edit; it rides the same op chain as every other edit, so undo
+   * takes it back in one step. `auto` is the import-time attempt: it only
+   * reports, since a music track that matches nothing is not a failure.
+   */
+  async function syncAudio(clipId: string, auto = false): Promise<void> {
+    setSync({ clipId, busy: true });
+    try {
+      // Measure what the server has once any edit already in flight lands.
+      await opChain.current.catch(() => undefined);
+      const result = await api.syncAudio(id, clipId);
+      if (!result.ok) {
+        setSync({ clipId, busy: false, failed: !auto, message: auto ? `Not synced: ${result.error}` : result.error });
+        return;
+      }
+      track('audio_sync', auto ? 'auto' : 'manual');
+      // Against the measured version: an edit made while measuring is a 409
+      // ("the project changed underneath this edit"), not a misplaced memo.
+      await apply.mutateAsync({ ops: result.ops, baseVersion: result.version });
+      setSync({ clipId, busy: false, message: describeSync(result) });
+    } catch (error) {
+      // An import-time attempt stays quiet: an older server without /sync, or
+      // a flaky connection, is not something the user asked about.
+      setSync({ clipId, busy: false, failed: !auto, message: error instanceof Error ? error.message : 'Could not sync that clip' });
+    }
+  }
+
 
   /** CapCut model: `+` on a sound row drops it on the audio track at the playhead. */
   async function addSound(sound: LibrarySound): Promise<void> {
@@ -396,6 +484,25 @@ export default function EditorScreen() {
     setSelectedId(clipId);
   }
 
+  /**
+   * Put assets on the timeline, then sync any audio among them. A memo added to
+   * a project with footage is almost always meant to line up with it, however
+   * it arrived (picker, library strip, server folder, share sheet), so every
+   * path lands here. Syncs wait for the clips to exist server-side and run one
+   * at a time.
+   */
+  function landOnTimeline(added: AssetMetadata[]): void {
+    if (!project) return;
+    const { audioClipIds, landed } = appendAssets(added);
+    const hasFootage = added.some((asset) => !isAudioOnly(asset))
+      || project.tracks.some((track) => track.kind === 'video' && track.clips.length > 0);
+    if (!hasFootage || audioClipIds.length === 0) return;
+    void landed.then(async (ok) => {
+      if (!ok) return;
+      for (const clipId of audioClipIds) await syncAudio(clipId, true);
+    });
+  }
+
   /** Run a source picker, then land whatever it uploaded in the library and on the timeline. */
   async function addFrom(pick: (projectId: string, onProgress: PickProgress) => Promise<PickResult>): Promise<void> {
     if (!project) return;
@@ -405,7 +512,7 @@ export default function EditorScreen() {
     try {
       // One clip needs no counter; a batch does.
       const { assets: added, failed } = await pick(id, (done, total) => setProgress(total > 1 ? { done, total } : undefined));
-      appendAssets(added);
+      landOnTimeline(added);
       if (added.length > 0) await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
       if (failed.length > 0) setUploadError(`Could not import ${failed.length} of ${added.length + failed.length}: ${failed.join(', ')}`);
     } catch (error) {
@@ -421,7 +528,7 @@ export default function EditorScreen() {
     return <Screen><Text style={styles.error}>Could not open this project: {projectQuery.error?.message}</Text></Screen>;
   }
 
-  // Below this width the back control and the four actions already fill the row,
+  // Below this width the back control and the five actions already fill the row,
   // so the title gets a row of its own rather than being squeezed to nothing.
   const narrowHeader = width < 560;
   const heading = (
@@ -446,7 +553,7 @@ export default function EditorScreen() {
       <View style={styles.headerTop}>
         <Pressable onPress={() => goBack(router, '/')} accessibilityRole="button" style={backControlStyle}><Text style={styles.back}>‹  PROJECTS</Text></Pressable>
         {!narrowHeader && heading}
-        <View style={styles.headerActions}>
+        <View style={[styles.headerActions, narrowHeader && styles.headerActionsNarrow]}>
           <HistoryButton label="↶" accessibilityLabel="Undo" testID="undo-button" enabled={canUndo} onPress={() => runHistory('undo')} />
           <HistoryButton label="↷" accessibilityLabel="Redo" testID="redo-button" enabled={canRedo} onPress={() => runHistory('redo')} />
           {/* Adding media lives in the library (+ photos / + files / + folder), which also
@@ -454,15 +561,25 @@ export default function EditorScreen() {
           {/* Feedback belongs here and not just on the home screen: sent from the
               editor it carries the open project, the timeline, and the last edits
               the user made, which is most of what triage needs. */}
+          {/* Style Memory is otherwise only reachable from home, which a phone user
+              deep in an edit has no reason to go back to (#92). */}
+          <Button
+            accessibilityLabel="style memory"
+            secondary
+            style={[styles.feedbackButton, narrowHeader && styles.headerButtonNarrow]}
+            onPress={() => router.push('/style')}
+          >
+            style
+          </Button>
           <Button
             accessibilityLabel="send feedback"
             secondary
-            style={styles.feedbackButton}
+            style={[styles.feedbackButton, narrowHeader && styles.headerButtonNarrow]}
             onPress={() => { track('feedback_open', 'editor'); void captureScreen().then(setShot); setFeedbackOpen(true); }}
           >
             feedback
           </Button>
-          <Button style={styles.exportButton} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
+          <Button style={[styles.exportButton, narrowHeader && styles.exportButtonNarrow]} onPress={() => router.push({ pathname: '/project/[id]/export', params: { id } })}>
             export ↗
           </Button>
         </View>
@@ -496,6 +613,8 @@ export default function EditorScreen() {
         onCleanup={() => setCleanupOpen(true)}
         onRecordVoice={() => setVoiceOpen(true)}
         onStyle={() => setStyleOpen(true)}
+        syncs={syncs}
+        onSyncAudio={(clipId) => void syncAudio(clipId)}
       />
     </Animated.View>
   );
@@ -509,7 +628,7 @@ export default function EditorScreen() {
       onPickPhotos={() => void addFrom(pickFromPhotos)}
       onPickFiles={() => void addFrom(pickFromFiles)}
       onOpenFolder={() => setImportOpen(true)}
-      onAdd={(asset) => appendAssets([asset])}
+      onAdd={(asset) => landOnTimeline([asset])}
     />
   );
 
@@ -610,19 +729,30 @@ export default function EditorScreen() {
             onDragEnd={commit}
           />
         )}
-        <View style={[styles.dockColumn, !wide && styles.dockColumnStacked, wide && { width: layout.dockWidth }]}>
-          {wide && library}
-          {dock}
-          {wide && summary}
-          {wide && insights}
-        </View>
+        {wide ? (
+          /* The dock column is taller than the viewport once the summary and
+             insights panels expand, so it scrolls on its own here (stacked mode
+             keeps the page-level scroll from <Screen scroll={!wide} />). */
+          <ScrollView
+            style={[styles.dockColumn, { width: layout.dockWidth }]}
+            contentContainerStyle={styles.dockScroll}
+            nestedScrollEnabled
+          >
+            {library}
+            {dock}
+            {summary}
+            {insights}
+          </ScrollView>
+        ) : (
+          <View style={[styles.dockColumn, styles.dockColumnStacked]}>{dock}</View>
+        )}
       </View>
       <ImportSheet
         projectId={id}
         visible={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={(asset) => {
-          appendAssets([asset]);
+          landOnTimeline([asset]);
           void queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
         }}
       />
@@ -697,8 +827,14 @@ const styles = StyleSheet.create({
   projectTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.lg },
   projectMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, marginTop: space.xs, letterSpacing: 0.5 },
   headerActions: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  // At 393pt (iPhone) back + undo/redo + style/feedback/export measure ~400pt at the
+  // wide spacing; these bring it to ~367 of the 377 available. Wrap is the fallback
+  // for anything narrower, so the row never runs off screen.
+  headerActionsNarrow: { flexShrink: 1, flexWrap: 'wrap', justifyContent: 'flex-end', gap: space.md },
   feedbackButton: { paddingHorizontal: space.xl, minHeight: 30 },
+  headerButtonNarrow: { paddingHorizontal: space.lg },
   exportButton: { minWidth: 96, minHeight: 30 },
+  exportButtonNarrow: { minWidth: 0 },
   historyButton: {
     minWidth: 30, minHeight: 30, alignItems: 'center', justifyContent: 'center',
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised,
@@ -715,6 +851,9 @@ const styles = StyleSheet.create({
   timelineWide: { flex: 1, minHeight: 180 },
   editColumnStacked: {},
   dockColumn: { width: 372, minHeight: 0, gap: space.lg },
+  // flexGrow keeps the dock at full height when nothing is expanded; the ChatDock's
+  // own minHeight then pushes the content past the viewport once the panels open.
+  dockScroll: { flexGrow: 1, gap: space.lg },
   dockColumnStacked: { width: '100%', minHeight: 560 },
   center: { color: colors.text, fontFamily: fonts.semibold, textAlign: 'center', marginTop: 120 },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg },

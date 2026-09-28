@@ -4,6 +4,14 @@ import { calloutSchema } from './packets.js';
 export const projectFormatSchema = z.enum(['9:16', '1:1', '16:9']);
 export type ProjectFormat = z.infer<typeof projectFormatSchema>;
 
+/**
+ * Where a vertical edit will be posted. Each app covers a different band of
+ * the frame with its own buttons, so this picks the safe area captions are
+ * kept inside; `all` is the intersection of the three.
+ */
+export const deliveryPlatformSchema = z.enum(['instagram', 'tiktok', 'shorts', 'all']);
+export type DeliveryPlatform = z.infer<typeof deliveryPlatformSchema>;
+
 export const captionStyleSchema = z.object({
   font: z.string().min(1).default('Montserrat'),
   size: z.number().min(10).max(200).default(52),
@@ -107,6 +115,8 @@ export const projectSchema = z.object({
   duration: z.number().min(0),
   tracks: z.array(trackSchema),
   version: z.number().int().min(0),
+  /** Delivery target for caption safe areas; unset reads as `instagram`. */
+  platform: deliveryPlatformSchema.optional(),
 });
 export type Project = z.infer<typeof projectSchema>;
 
@@ -185,7 +195,7 @@ export const operationParamsSchemas = {
       seen.add(update.clipId);
     });
   }),
-  set_format: z.object({ format: projectFormatSchema }),
+  set_format: z.object({ format: projectFormatSchema, platform: deliveryPlatformSchema.optional() }),
   undo: z.object({}).strict(),
   redo: z.object({}).strict(),
   /** Not an agent tool: only the client's per-turn Revert issues this. */
@@ -261,6 +271,44 @@ export const chatResponseSchema = z.object({
   runId: z.string().optional(),
 });
 export type ChatResponse = z.infer<typeof chatResponseSchema>;
+
+/**
+ * Line an audio-track clip (a voice memo, a lav) up against a video clip's own
+ * soundtrack. `videoClipId` is optional: without it the longest video clip with
+ * sound is used. Every clip cut from that video's footage gets a matching piece.
+ */
+export const syncAudioRequestSchema = z.object({
+  audioClipId: z.string().min(1),
+  videoClipId: z.string().min(1).optional(),
+}).strict();
+export type SyncAudioRequest = z.infer<typeof syncAudioRequestSchema>;
+
+export const syncAudioResultSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    /** The edit, for the caller to apply: the measuring route never mutates the project. */
+    ops: z.array(operationSchema),
+    /**
+     * The project version `ops` were planned against. Apply them with this as
+     * `baseVersion`: an edit that landed while measuring then fails with a 409
+     * instead of the memo being placed against a timeline that no longer exists.
+     */
+    version: z.number().int().min(0),
+    videoClipId: z.string(),
+    /** Video source seconds at which memo second 0 plays; negative when the memo started first. */
+    offsetSec: z.number(),
+    /** Memo clip speed: 1 unless the two recorders' clocks drift. */
+    speed: z.number(),
+    /** Measured drift across the whole overlap, before correction. */
+    driftMs: z.number().optional(),
+    /** Fine-stage peak over the noise floor, in standard deviations. The confidence gate itself lives in server/src/media/sync.ts. */
+    confidence: z.number(),
+    pieces: z.number().int().min(1),
+    notes: z.array(z.string()),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+export type SyncAudioResult = z.infer<typeof syncAudioResultSchema>;
 
 export const assetMetadataSchema = z.object({
   id: z.string(),
@@ -355,7 +403,31 @@ export const renderRequestSchema = z.object({
   resolution: z.enum(['720p', '1080p', '4k']).default('1080p'),
   /** 'sdr' tone maps HDR sources to BT.709 so the export matches the preview. */
   hdr: z.enum(['sdr', 'hdr']).default('sdr'),
+  /** 'normalize' brings the master to -16 LUFS with one gain stage and a limiter. */
+  loudness: z.enum(['normalize', 'off']).default('normalize'),
 });
+
+/** What the post-render check found in a finished master. */
+export const renderQaSchema = z.object({
+  targetLufs: z.number(),
+  loudnessLufs: z.number().nullable(),
+  truePeakDb: z.number().nullable(),
+  /** Set when the master was off target and its audio got one gain stage. */
+  normalized: z.object({ fromLufs: z.number(), gainDb: z.number() }).nullable(),
+  /** Pauses left inside the programme, in output seconds. */
+  deadAir: z.array(z.object({ start: z.number(), end: z.number() })),
+  mix: z.object({
+    voiceReferenceDb: z.number().nullable(),
+    hitsPerMinute: z.number(),
+    /** Sound effects and beds off their level target against the voice. */
+    offTarget: z.number().int(),
+  }).nullable(),
+  /** A 6x3 grid of frames is served at /renders/:id/contact.jpg. */
+  contactSheet: z.boolean(),
+  warnings: z.array(z.string()),
+  checkedAt: z.string(),
+});
+export type RenderQa = z.infer<typeof renderQaSchema>;
 
 export const styleAnalyzeSchema = z.object({
   assetIds: z.array(z.string().min(1)).min(1).max(10),
@@ -368,7 +440,11 @@ export const styleAnalyzeSchema = z.object({
 
 export const styleAnalyzerSelectSchema = z.object({ analyzer: z.string().min(1).max(60) }).strict();
 
-export const styleRenameSchema = z.object({ name: z.string().min(1).max(60) });
+/** PATCH a style profile: rename it and/or hand-edit the style memory that briefs the agent. */
+export const styleRenameSchema = z.object({
+  name: z.string().min(1).max(60).optional(),
+  styleDoc: z.string().trim().min(1).max(20000).optional(),
+}).refine((body) => body.name !== undefined || body.styleDoc !== undefined, { message: 'Send a name or a styleDoc' });
 
 /**
  * Re-fit a caption's per-word karaoke timings onto edited text. Both the ASS

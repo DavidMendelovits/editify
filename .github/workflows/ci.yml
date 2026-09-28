@@ -20,6 +20,7 @@ jobs:
       - run: npm run build -w @editify/shared
       - run: npm run typecheck
       - run: npm test -w @editify/server
+      - run: npm test -w @editify/mobile
   deploy:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -30,3 +31,27 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: flyctl deploy --remote-only
         env: { FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN }}" }
+  # Every merge reaches preview installs. The fingerprint action compares the
+  # native fingerprint against existing EAS builds: JS-only changes go out as an
+  # OTA update on the preview channel, and a native change starts a new iOS
+  # preview build instead (which only reaches phones once it is installed).
+  preview:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: { group: eas-preview, cancel-in-progress: false }
+    permissions: { contents: read, pull-requests: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }  # eas-cli needs >= 22
+      - run: npm ci
+      - uses: expo/expo-github-action@v8
+        with: { eas-version: latest, token: "${{ secrets.EXPO_TOKEN }}" }
+      - uses: expo/expo-github-action/continuous-deploy-fingerprint@main
+        with:
+          profile: preview
+          branch: preview
+          environment: preview
+          platform: ios
+          working-directory: apps/mobile

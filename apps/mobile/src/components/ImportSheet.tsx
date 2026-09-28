@@ -156,13 +156,13 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
             onPress={() => void upload(async () => await pickFromPhotos(projectId, onProgress))}
             disabled={uploading}
             accessibilityRole="button"
-            accessibilityLabel="import from photo library"
+            accessibilityLabel="import from camera roll"
             testID="import-sheet-photos"
             style={({ pressed }) => [styles.file, pressed && !uploading && styles.pressed, uploading && styles.disabled]}
           >
             <View style={styles.fileText}>
-              <Text style={styles.fileName}>photo library</Text>
-              <Text style={styles.fileMeta}>videos from your camera roll</Text>
+              <Text style={styles.fileName}>camera roll</Text>
+              <Text style={styles.fileMeta}>videos only</Text>
             </View>
             <Text style={styles.importCue}>open ↗</Text>
           </Pressable>

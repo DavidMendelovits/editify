@@ -84,3 +84,25 @@ if (tier === 'free') return <Button onPress={() => router.push('/paywall')}>upgr
 
 Nothing is gated yet. Deciding what Pro and Studio each unlock is a product
 call, not a plumbing one.
+
+### The tier is a UI hint, not a permission
+
+`useTier()` reads RevenueCat's client SDK, and nothing on the server checks it.
+That is fine while nothing is gated, but the snippet above only decides what to
+draw. Anyone running a patched build can render the gated screen.
+
+So before the first feature is genuinely paid, the server has to be the one
+saying no: verify the caller's entitlement in the route that does the work, and
+keep `useTier()` for deciding what the UI offers. RevenueCat exposes both a
+webhook and a REST lookup for this, and the choice between them depends on
+whether the check can tolerate being eventually consistent. Until that exists,
+treat every tier check in the app as cosmetic.
+
+One more claim to make honest at the same time: the paywall hero and the
+subscribe button both hardcode a 7-day free trial. Apple grants an introductory
+offer once per subscription group per Apple ID, so a returning buyer is charged
+immediately while the screen promises a trial. `priceLabel` in
+`apps/mobile/src/lib/purchases.ts` already derives the truthful per-package
+string from the store, and it also drops a discounted intro offer today, showing
+"12/month" where the first month is 1. Both are deliberately left until the
+paywall goes live.

@@ -32,6 +32,8 @@ import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { ensureSoundLibrary } from './media/sound-library.js';
 import { RenderQueue } from './services/render-queue.js';
 import { DissectService } from './services/dissect-service.js';
+import { SyncService } from './services/sync-service.js';
+import { FaceService } from './services/face-service.js';
 import { InsightService } from './services/insight-service.js';
 import { StyleService } from './services/style-service.js';
 import { StyleAnalyzerRegistry } from './style/registry.js';
@@ -64,6 +66,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const renderQueue = new RenderQueue(renders, projects, assets);
   renderQueue.recover();
   const dissections = new DissectService(database);
+  const syncs = new SyncService(assets);
+  const faces = new FaceService(database);
   const telemetry = new TelemetryService(
     new ReportStore(database),
     resolveProvider,
@@ -108,11 +112,11 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerLegalRoutes(app);
   registerAccountRoutes(app, database);
   registerAgentRoutes(app, registry);
-  registerProjectRoutes(app, projects, renderQueue, assets, transcripts);
-  registerAssetRoutes(app, assets, projects, transcripts, insights, dissections, database);
+  registerProjectRoutes(app, projects, renderQueue, assets, transcripts, syncs);
+  registerAssetRoutes(app, assets, projects, transcripts, insights, dissections, database, faces);
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
-  registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections);
+  registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
   registerTelemetryRoutes(app, telemetry);
 
   app.setErrorHandler(async (error, _request, reply) => {

@@ -7,11 +7,13 @@ import {
   STYLE_PACKETS,
   captionStyleSchema,
   clipSchema,
+  deliveryPlatformSchema,
   clipTimelineDuration,
   operationParamsSchemas,
   operationSchema,
   presetSchema,
   stylePacketSchema,
+  syncAudioRequestSchema,
   type Operation,
   type CaptionStyle,
   type Clip,
@@ -22,7 +24,9 @@ import {
 import { z, ZodError, type ZodTypeAny } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { ProjectStore, VersionConflictError } from '../db/project-store.js';
+import type { RenderStore } from '../db/render-store.js';
 import type { StoredTranscript, TranscriptWord } from '../db/transcript-store.js';
+import { DEFAULT_CAPTION_STYLE, planCaptionPlacements, placeableCaption, PLATFORM_SAFE_AREAS, type PlaceableCaption } from '../media/safezone.js';
 import { ensureSoundLibrary } from '../media/sound-library.js';
 import { OperationError } from '../operations/apply.js';
 import {
@@ -32,7 +36,11 @@ import {
   planWordRemovalRanges,
 } from '../services/cleanup.js';
 import type { DissectService } from '../services/dissect-service.js';
+import type { FaceService, FaceTrack } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
+import type { SyncService } from '../services/sync-service.js';
+import { checkMix, loadProjectEnergy } from '../services/mix-check.js';
+import { buildTakeMap, snapTakeToWords } from '../services/takes.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 import { parseTranscriptInput } from './transcript-input.js';
 
@@ -48,6 +56,11 @@ export interface ToolContext {
   transcripts: TranscriptService;
   insights: InsightService;
   dissections?: DissectService;
+  syncs?: SyncService;
+  /** Face tracks for caption placement; without it captions only keep to the safe area. */
+  faces?: FaceService;
+  /** Finished renders, for reading back their QA. */
+  renders?: RenderStore;
   appliedOperations?: Operation[];
   /** Checkpoint id for the whole turn — stamped on every operation it logs. */
   runId?: string;
@@ -95,6 +108,17 @@ const cutToBeatsSchema = z.object({
   maxCuts: z.number().int().min(1).max(30).default(12),
 }).strict();
 const presetNameSchema = z.object({ name: presetSchema.shape.name }).strict();
+const assembleTakesSchema = z.object({
+  clipId: z.string().min(1),
+  takes: z.array(z.object({ start: z.number().min(0), end: z.number().positive() })
+    .refine((take) => take.end > take.start, { message: 'take end must be after start', path: ['end'] })).min(1).max(100),
+  snapToWords: z.boolean().default(true),
+}).strict();
+const placeCaptionsSchema = z.object({
+  clipIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  platform: deliveryPlatformSchema.optional(),
+}).strict();
+const checkMixSchema = z.object({ fix: z.boolean().default(false) }).strict();
 /**
  * Either a built-in id or a whole packet inline — a look derived from a saved
  * style profile or a dissected reference is a packet like any other, it just
@@ -289,7 +313,7 @@ const operationDescriptions: Record<(typeof OPERATION_CATALOG)[number], string> 
   remove_caption: 'Remove an existing caption by its clipId.',
   ripple_delete_ranges: 'Atomically delete and close multiple absolute timeline ranges on one video/audio track. Overlaps are merged; intersecting clips are split or trimmed, later clips shift left, and captions are cut and shifted with the deleted time.',
   set_clip_properties: 'Atomically batch-update 1-100 clips: the preferred way to trim or retime many clips at once. Each update names clipId and one or more of volume, speed, transform, absolute timeline start, source-time in/out (out must stay greater than in), duck (true ducks all other audio beneath this clip while it plays, the voiceover treatment), or text (text-only overlay stickers such as callouts/emoji only). Any invalid update rejects the entire operation.',
-  set_format: 'Set the project canvas format to 9:16, 1:1, or 16:9.',
+  set_format: 'Set the project canvas format to 9:16, 1:1, or 16:9. Optional platform (instagram, tiktok, shorts, or all) records where a vertical edit will be posted, which picks the caption safe area; set it when the user names the app.',
   undo: 'Undo the latest non-undone project operation using project history. Input must be an empty object.',
   redo: 'Redo the operation the most recent undo retracted, when nothing has been edited since. Input must be an empty object.',
 };
@@ -365,6 +389,36 @@ async function ensureTranscript(ctx: ToolContext, assetId: string): Promise<Stor
   }
 }
 
+interface ProjectFaces {
+  lookup: (assetId: string) => FaceTrack | undefined;
+  tracked: number;
+  untracked: number;
+}
+
+/** Face tracks for every source on the video tracks, tracking any not seen before. */
+async function loadFaces(ctx: ToolContext, project: Project): Promise<ProjectFaces> {
+  const ids = new Set(project.tracks.filter((track) => track.kind === 'video')
+    .flatMap((track) => track.clips.map((clip) => clip.assetId).filter((id): id is string => Boolean(id))));
+  const tracks = new Map<string, FaceTrack>();
+  for (const id of ids) {
+    const track = await ctx.faces?.tryGet(ctx.assets.get(id));
+    if (track) tracks.set(id, track);
+  }
+  return { lookup: (assetId) => tracks.get(assetId), tracked: tracks.size, untracked: ids.size - tracks.size };
+}
+
+/**
+ * The anchor each caption should use so it clears the face and the platform's
+ * UI. Captions already clear of both keep their own anchor (absent from the map).
+ */
+async function captionAnchors(ctx: ToolContext, project: Project, captions: PlaceableCaption[]): Promise<Map<string, number>> {
+  if (!captions.length) return new Map();
+  const faces = await loadFaces(ctx, project);
+  return new Map(planCaptionPlacements(project, captions, faces.lookup)
+    .filter((placement) => placement.reason !== 'kept')
+    .map((placement) => [placement.clipId, placement.toPct]));
+}
+
 async function captionClipFromTranscript(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
   try {
     const input = captionFromTranscriptSchema.parse(rawInput);
@@ -434,20 +488,23 @@ async function captionOneClip(
       font: 'Montserrat', size: 64, color: '#FFFFFF', position: 'bottom', emphasis: 'bold',
     });
     const operations: Operation[] = existingIds.map((clipId) => operationSchema.parse({ type: 'remove_caption', params: { clipId } }));
-    for (const [index, chunk] of chunks.entries()) {
+    const captionClips = chunks.map((chunk, index) => ({
+      id: `${prefix}${index + 1}`,
+      start: chunk.start,
+      in: 0,
+      out: chunk.duration,
+      text: preset?.captions.uppercase ? chunk.text.toUpperCase() : preset ? chunk.text : chunk.text.toUpperCase(),
+      style: { ...style, words: chunk.words },
+    }));
+    // Placed before they land, so each caption goes in off the face and inside the safe area.
+    const anchors = await captionAnchors(ctx, project, captionClips.map((clip) => ({
+      id: clip.id, start: clip.start, end: clip.start + clip.out, text: clip.text, style: clip.style,
+    })));
+    for (const clip of captionClips) {
+      const anchorPct = anchors.get(clip.id);
       operations.push(operationSchema.parse({
         type: 'add_caption',
-        params: {
-          trackId: 'captions',
-          clip: {
-            id: `${prefix}${index + 1}`,
-            start: chunk.start,
-            in: 0,
-            out: chunk.duration,
-            text: preset?.captions.uppercase ? chunk.text.toUpperCase() : preset ? chunk.text : chunk.text.toUpperCase(),
-            style: { ...style, words: chunk.words },
-          },
-        },
+        params: { trackId: 'captions', clip: anchorPct === undefined ? clip : { ...clip, style: { ...clip.style, anchorPct } } },
       }));
     }
     const notes = existingIds.length
@@ -608,6 +665,30 @@ async function resolveSound(ctx: ToolContext, soundId: string): Promise<StoredAs
   return ctx.assets.get(soundId);
 }
 
+async function syncAudio(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
+  try {
+    const input = syncAudioRequestSchema.parse(rawInput);
+    if (!ctx.syncs) return { ok: false, error: 'Audio sync is not available' };
+    let project = requireProject(ctx);
+    let plan = await ctx.syncs.plan(project, input);
+    // Measuring takes seconds; if the timeline moved meanwhile, plan again
+    // against what is there now (the measurement is cached, so this is cheap)
+    // rather than place the memo against shots that have since moved.
+    const latest = requireProject(ctx);
+    if (latest.version !== project.version) {
+      project = latest;
+      plan = await ctx.syncs.plan(project, input);
+    }
+    if (!plan.ok) return plan;
+    const { ops, notes, version: _version, ...measurement } = plan;
+    const after = applyMany(ctx, ops);
+    return { ...measurement, ...createMutationDelta(project, after, notes) };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
 async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
   try {
     const input = applyPacketSchema.parse(rawInput);
@@ -632,6 +713,7 @@ async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<un
     // from the clip's own style — that is what carries `words`, and losing it
     // would silently destroy karaoke timing.
     const captions = project.tracks.filter((track) => track.kind === 'caption').flatMap((track) => track.clips);
+    const restyled: Array<{ caption: Clip; style: CaptionStyle }> = [];
     for (const caption of captions) {
       const style = captionStyleSchema.parse({
         ...caption.style,
@@ -644,12 +726,20 @@ async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<un
         anchorPct: typography.anchorPct,
         emphasis: typography.emphasis,
       });
+      restyled.push({ caption, style });
+    }
+    // The packet's anchor is where it wants captions; placement only moves the ones it would put on the face.
+    const anchors = await captionAnchors(ctx, project, restyled
+      .map(({ caption, style }) => placeableCaption(caption, style))
+      .filter((caption): caption is PlaceableCaption => Boolean(caption)));
+    for (const { caption, style } of restyled) {
+      const anchorPct = anchors.get(caption.id);
       operations.push(operationSchema.parse({
         type: 'update_caption',
         params: {
           clipId: caption.id,
           ...(caption.text ? { text: typography.uppercase ? caption.text.toUpperCase() : caption.text } : {}),
-          style,
+          style: anchorPct === undefined ? style : { ...style, anchorPct },
         },
       }));
     }
@@ -768,6 +858,183 @@ async function applyStylePacket(ctx: ToolContext, rawInput: unknown): Promise<un
 
     const after = operations.length ? applyMany(ctx, operations) : project;
     return { ...createMutationDelta(project, after, notes), guidance };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+async function placeCaptions(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
+  try {
+    const input = placeCaptionsSchema.parse(rawInput);
+    const project = requireProject(ctx);
+    const captions = project.tracks.filter((track) => track.kind === 'caption').flatMap((track) => track.clips)
+      .filter((clip) => !input.clipIds || input.clipIds.includes(clip.id));
+    const missing = (input.clipIds ?? []).filter((id) => !captions.some((clip) => clip.id === id));
+    if (missing.length) return { ok: false, error: `Caption clip(s) not found: ${missing.join(', ')}` };
+    const operations: Operation[] = [];
+    const target: Project = input.platform ? { ...project, platform: input.platform } : project;
+    if (input.platform && input.platform !== project.platform) {
+      operations.push(operationSchema.parse({ type: 'set_format', params: { format: project.format, platform: input.platform } }));
+    }
+    const faces = await loadFaces(ctx, target);
+    const placements = planCaptionPlacements(target, captions
+      .map((clip) => placeableCaption(clip))
+      .filter((caption): caption is PlaceableCaption => Boolean(caption)), faces.lookup);
+    const moved = placements.filter((placement) => placement.reason !== 'kept');
+    for (const placement of moved) {
+      const clip = captions.find((candidate) => candidate.id === placement.clipId);
+      if (!clip || Math.abs((clip.style?.anchorPct ?? -100) - placement.toPct) < 0.25) continue;
+      operations.push(operationSchema.parse({
+        type: 'update_caption',
+        params: { clipId: clip.id, style: { ...(clip.style ?? DEFAULT_CAPTION_STYLE), anchorPct: placement.toPct } },
+      }));
+    }
+    const notes: string[] = [];
+    if (faces.untracked > 0) {
+      notes.push(`${faces.untracked} video source(s) had no face track (OpenCV unavailable or no face found), so their captions were only kept inside the safe area.`);
+    }
+    const after = operations.length ? applyMany(ctx, operations) : project;
+    return {
+      ...createMutationDelta(project, after, notes),
+      platform: PLATFORM_SAFE_AREAS[target.platform ?? 'instagram'].name,
+      faceTrackedSources: faces.tracked,
+      kept: placements.length - moved.length,
+      moved: moved.map(({ clipId, fromPct, toPct, reason }) => ({ clipId, fromPct, toPct, reason })).slice(0, 40),
+    };
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+/** Float ends that merely touch are not an overlap. */
+const TAKE_EPSILON = 1e-6;
+
+/**
+ * Rebuild one recording on its video track from chosen takes, in edit order:
+ * every clip of that source on the track is replaced, later clips and
+ * captions close up behind the new cut, and captions that covered the old
+ * clips are regenerated from the transcript in their old style.
+ */
+async function assembleTakes(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
+  try {
+    const input = assembleTakesSchema.parse(rawInput);
+    const project = requireProject(ctx);
+    const track = project.tracks.find((candidate) => candidate.kind === 'video' && candidate.clips.some((clip) => clip.id === input.clipId));
+    const source = track?.clips.find((clip) => clip.id === input.clipId);
+    if (!track || !source) return { ok: false, error: `Video clip ${input.clipId} was not found` };
+    if (!source.assetId) return { ok: false, error: `Video clip ${input.clipId} has no asset` };
+    const asset = ctx.assets.get(source.assetId);
+    if (!asset) return { ok: false, error: `Asset ${source.assetId} was not found` };
+
+    let words: TranscriptWord[] = [];
+    if (input.snapToWords) {
+      const transcript = await ensureTranscript(ctx, asset.id);
+      if ('error' in transcript) return { ok: false, error: `${transcript.error}. Pass snapToWords: false to cut on the given times.` };
+      words = transcript.words;
+    }
+    const ranges = input.takes.map((take, index) => {
+      const end = Math.min(take.end, asset.duration);
+      if (end <= take.start) throw new OperationError(`Take ${index + 1} starts after the recording ends (${asset.duration.toFixed(2)}s)`);
+      if (!input.snapToWords) return { start: take.start, end };
+      const snapped = snapTakeToWords(words, take.start, end, asset.duration);
+      if (!snapped) throw new OperationError(`Take ${index + 1} (${take.start}-${take.end}s) holds no transcript words; widen it or pass snapToWords: false`);
+      return snapped;
+    });
+
+    const replaced = track.clips.filter((clip) => clip.assetId === asset.id);
+    const spanStart = Math.min(...replaced.map((clip) => clip.start));
+    const spanEnd = Math.max(...replaced.map((clip) => clip.start + clipTimelineDuration(clip)));
+    const others = track.clips.filter((clip) => clip.assetId !== asset.id);
+    const interleaved = others.filter((clip) => clip.start < spanEnd - TAKE_EPSILON && clip.start + clipTimelineDuration(clip) > spanStart + TAKE_EPSILON);
+    if (interleaved.length) {
+      return { ok: false, error: `${interleaved.map((clip) => clip.id).join(', ')} sit between this recording's clips on ${track.id}; move or remove them first.` };
+    }
+    const keptSeconds = ranges.reduce((total, range) => total + range.end - range.start, 0);
+    const delta = spanStart + keptSeconds - spanEnd;
+
+    const operations: Operation[] = replaced.map((clip) => operationSchema.parse({ type: 'remove_clip', params: { clipId: clip.id } }));
+    const captions = project.tracks.filter((candidate) => candidate.kind === 'caption').flatMap((candidate) => candidate.clips);
+    const covered = captions.filter((caption) => caption.start < spanEnd - TAKE_EPSILON && caption.start + clipTimelineDuration(caption) > spanStart + TAKE_EPSILON);
+    operations.push(...covered.map((caption) => operationSchema.parse({ type: 'remove_caption', params: { clipId: caption.id } })));
+    if (Math.abs(delta) > TAKE_EPSILON) {
+      const later = others.filter((clip) => clip.start >= spanEnd - TAKE_EPSILON);
+      if (later.length) {
+        operations.push(operationSchema.parse({
+          type: 'set_clip_properties',
+          params: { updates: later.map((clip) => ({ clipId: clip.id, start: Math.max(0, clip.start + delta) })) },
+        }));
+      }
+      for (const caption of captions.filter((clip) => clip.start >= spanEnd - TAKE_EPSILON && !covered.includes(clip))) {
+        operations.push(operationSchema.parse({ type: 'update_caption', params: { clipId: caption.id, start: Math.max(0, caption.start + delta) } }));
+      }
+    }
+    const nextId = createIdAllocator(project);
+    const newIds: string[] = [];
+    let cursor = spanStart;
+    for (const range of ranges) {
+      const id = nextId('take');
+      newIds.push(id);
+      operations.push(operationSchema.parse({
+        type: 'add_clip',
+        params: {
+          trackId: track.id,
+          clip: { id, assetId: asset.id, start: cursor, in: range.start, out: range.end, ...(source.volume !== undefined ? { volume: source.volume } : {}) },
+        },
+      }));
+      cursor += range.end - range.start;
+    }
+
+    const notes: string[] = [];
+    if (replaced.some((clip) => clip.transform || clip.transformEnd || clip.transition || (clip.speed ?? 1) !== 1)) {
+      notes.push('Zooms, speed changes and transitions on the replaced clips were dropped; reapply them to the takes if wanted.');
+    }
+    const untouched = project.tracks.filter((candidate) => (candidate.kind === 'audio' || candidate.kind === 'overlay')
+      && candidate.clips.some((clip) => clip.start + clipTimelineDuration(clip) > spanStart + TAKE_EPSILON));
+    if (untouched.length && Math.abs(delta) > TAKE_EPSILON) {
+      notes.push(`${untouched.map((candidate) => candidate.id).join(', ')} were not moved; the video span changed by ${delta.toFixed(2)}s, so re-place music, SFX and overlays against the new cut.`);
+    }
+    const after = applyMany(ctx, operations);
+    const result: Record<string, unknown> = {
+      ...createMutationDelta(project, after, notes),
+      takes: ranges.map((range, index) => ({ clipId: newIds[index], in: range.start, out: range.end })),
+      keptSeconds: Math.round(keptSeconds * 100) / 100,
+    };
+    // Captions follow the words they covered: regenerate them over the new takes in the old look.
+    const oldStyle = covered.find((caption) => caption.style)?.style;
+    if (covered.length && asset.hasAudio) {
+      const { words: _words, anchorPct: _anchor, ...style } = oldStyle ?? { font: 'Montserrat', size: 64, color: '#FFFFFF', position: 'bottom' as const, emphasis: 'bold' as const };
+      const recaptioned = await captionClipFromTranscript(ctx, newIds.length > 1 ? { clipIds: newIds, style } : { clipId: newIds[0], style }) as {
+        ok?: boolean; error?: string; captionsAdded?: number;
+      };
+      result.captionsAdded = recaptioned.captionsAdded ?? 0;
+      result.version = ctx.currentVersion;
+      if (recaptioned.ok === false) {
+        result.notes = [...notes, `The old captions were removed but regenerating them failed: ${recaptioned.error ?? 'unknown error'}. Run caption_clip_from_transcript on the takes.`];
+      }
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+async function checkMixTool(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
+  try {
+    const input = checkMixSchema.parse(rawInput);
+    const project = requireProject(ctx);
+    const report = checkMix(project, await loadProjectEnergy(project, ctx.assets, ctx.transcripts));
+    const summary = { ...report, hits: report.hits.slice(0, 40), beds: report.beds.slice(0, 10) };
+    if (!input.fix) return { ok: true, readOnly: true, ...summary };
+    const updates = [...report.hits, ...report.beds]
+      .filter((hit) => hit.suggestedVolume !== undefined && Math.abs(hit.suggestedVolume - hit.volume) >= 0.01)
+      .map((hit) => ({ clipId: hit.clipId, volume: hit.suggestedVolume as number }));
+    if (!updates.length) return { ...createMutationDelta(project, project, ['Every sound already sat on its level target.']), ...summary };
+    const after = applyMany(ctx, [operationSchema.parse({ type: 'set_clip_properties', params: { updates } })]);
+    const recheck = checkMix(after, await loadProjectEnergy(after, ctx.assets, ctx.transcripts));
+    return { ...createMutationDelta(project, after), rebalanced: updates.length, warnings: recheck.warnings, voiceReferenceDb: recheck.voiceReferenceDb };
   } catch (error) {
     if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
     throw error;
@@ -900,6 +1167,44 @@ export function createToolRegistry(): ToolDef[] {
       execute: async (_ctx, input) => PRESETS_BY_NAME[presetNameSchema.parse(input).name],
     },
     {
+      name: 'get_take_map',
+      description: 'Map the takes in a raw multi-take recording (someone saying each line, restarting, and saying it again) from its transcript. Returns sentence rows [index, startSec, endSec, text, flags] in source seconds, where flags mark restart lines ("okay, again"), false starts cut short, and superseded retakes; `groups` lists every line recorded more than once with the attempt picked (the last complete one); `takes` is the suggested cut in script order with word-snapped cut points, ready for assemble_takes. Review the picks against the script before assembling: a later take is usually, not always, the better one.',
+      schema: assetInputSchema,
+      execute: async (ctx, input) => {
+        const { assetId } = assetInputSchema.parse(input);
+        const asset = ctx.assets.get(assetId);
+        if (!asset) return { ok: false, error: `Asset ${assetId} was not found` };
+        const transcript = await ensureTranscript(ctx, assetId);
+        if ('error' in transcript) return { ok: false, error: transcript.error };
+        const map = buildTakeMap(transcript.words, asset.duration);
+        const retakes = map.groups.filter((group) => group.attempts.length > 1);
+        return {
+          sourceSeconds: map.sourceSeconds,
+          keptSeconds: map.keptSeconds,
+          sentences: map.sentences.map((sentence) => [
+            sentence.index, Math.round(sentence.start * 100) / 100, Math.round(sentence.end * 100) / 100, sentence.text, sentence.flags.join(','),
+          ]),
+          groups: retakes,
+          takes: map.takes,
+          notes: [
+            `${map.groups.length} distinct line(s); ${retakes.length} recorded more than once; ${map.sentences.filter((sentence) => sentence.flags.includes('restart')).length} restart marker(s) dropped.`,
+          ],
+        };
+      },
+    },
+    {
+      name: 'get_render_qa',
+      description: 'Read the quality check of this project\'s latest finished export: integrated loudness and true peak (target -16 LUFS, peak under -1 dBFS; the export is normalized unless the user turned that off), dead air left inside the speech, sound-effect levels against the voice, and a contact-sheet URL of 18 frames. It describes the last export, not edits made since.',
+      schema: emptyInputSchema,
+      execute: async (ctx, input) => {
+        emptyInputSchema.parse(input);
+        const render = ctx.renders?.latestDone(ctx.projectId);
+        if (!render) return { ok: false, error: 'This project has no finished export yet; the user starts exports from the export screen.' };
+        if (!render.qa) return { ok: false, error: `Export ${render.id} finished without a quality check.` };
+        return { renderId: render.id, exportedAt: render.updatedAt, qa: render.qa, contactSheetUrl: render.contactSheetUrl };
+      },
+    },
+    {
       name: 'get_style_packets',
       description: 'List the built-in style packets, a creator\'s repeatable look captured as data: typography, colour system, music bed, transition habit, punch-in cadence, and callout/b-roll density. Read one before calling apply_style_packet.',
       schema: emptyInputSchema,
@@ -940,6 +1245,30 @@ export function createToolRegistry(): ToolDef[] {
       description: 'Apply one style packet, either `packetId` for a built-in from get_style_packets, or a whole `packet` object inline (the shape get_style_packets returns; that is how a look derived from the user\'s style profile or a dissected reference arrives, usually pasted into the message). Runs in one atomic batch: restyle every caption to its typography (karaoke word timings are preserved), tile its music bed under the video, set its transition and cut SFX at every adjacent cut, and set its punch-in cadence. Returns the timeline delta plus `guidance`: the creative half (callouts, b-roll, pacing) that you still have to author yourself.',
       schema: applyPacketSchema,
       execute: applyStylePacket,
+    },
+    {
+      name: 'sync_audio',
+      description: 'Line up an audio-track clip (a voice memo, lav, or second recorder of the same moment) with a video clip by matching it against the video\'s own sound, then place it: every clip cut from that footage gets a matching memo piece, trimmed to the shot, with a tiny speed correction when the two recorders\' clocks drift. Omit videoClipId to use the longest video clip with sound. Levels are left alone: if the user wants the memo to replace the camera audio, follow with set_volume 0 on the video clips. Sync before cutting when you can; later ripple cuts keep both tracks aligned. Fails without moving anything when no confident match exists.',
+      schema: syncAudioRequestSchema,
+      execute: syncAudio,
+    },
+    {
+      name: 'assemble_takes',
+      description: 'Rebuild a raw recording from chosen takes. clipId names any video clip of that recording; takes are source-second ranges in EDIT order (usually get_take_map\'s `takes`). Every clip of that source on the track is replaced by one clip per take, laid back to back from where the recording started; later clips and captions close up behind it. With snapToWords (default), cut points snap to word times: 0.12s before the first word and 0.25s after the last, never into a neighbouring word. Captions that covered the recording are regenerated over the takes in their old style. Audio and overlay tracks are not moved.',
+      schema: assembleTakesSchema,
+      execute: assembleTakes,
+    },
+    {
+      name: 'place_captions',
+      description: 'Move captions off the speaker\'s face and inside the posting app\'s safe area (its top bar and bottom caption/button band). A caption already clear of both keeps its anchor; others move to the nearest spot below the chin or above the head. Face positions come from tracking each source video (done once, cached) and follow every punch-in and crop. platform (instagram default, tiktok, shorts, or all) also sets the project\'s delivery platform. Omit clipIds to place every caption. caption_clip_from_transcript and apply_style_packet already place the captions they write; run this after reframing, zooming, or restyling by hand.',
+      schema: placeCaptionsSchema,
+      execute: placeCaptions,
+    },
+    {
+      name: 'check_mix',
+      description: 'Judge every sound effect and music bed against this speaker\'s measured voice: each hit\'s loudest moment vs the voice\'s 95th-percentile level (targets: impact -8 dB, whoosh/pop/riser -12, ui -14; beds sit about -20 dB under the voice on average), plus whoosh/impact density (over 14 per minute sounds busy). Returns per-clip levels, verdicts and a suggested volume for each off-target clip. fix: true applies the suggested volumes in one batch. Run it after adding music or SFX; never guess SFX volumes by hand.',
+      schema: checkMixSchema,
+      execute: checkMixTool,
     },
     {
       name: 'remove_words',

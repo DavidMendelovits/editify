@@ -1,7 +1,9 @@
 import * as DocumentPicker from 'expo-document-picker';
+import { discardSharedCopy } from './shared-files';
 import * as ImagePicker from 'expo-image-picker';
 import type { AssetMetadata } from '@editify/shared';
 import { uploadAsset } from './api';
+import type { SharedFile } from './share-intake';
 
 /** `assets` is empty when the user backed out of the picker — that is not an error. */
 export interface PickResult {
@@ -113,6 +115,19 @@ export async function pickFromFiles(projectId: string | undefined, onProgress?: 
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
     ...(file.file ? { file: file.file } : {}),
   })), onProgress);
+}
+
+/**
+ * Files handed over by the OS share sheet (a Voice Memos recording, a Photos
+ * video). The share extension copies each one into the app's own storage, and
+ * nothing else ever deletes those copies, so once a file is on the server its
+ * copy goes; a failed one stays for a retry.
+ */
+export async function uploadShared(projectId: string | undefined, files: SharedFile[], onProgress?: PickProgress): Promise<PickResult> {
+  const result = await uploadAll(projectId, files, onProgress);
+  const failed = new Set(result.failed);
+  for (const file of files) if (!failed.has(file.name)) discardSharedCopy(file.uri);
+  return result;
 }
 
 /** Files dropped on the editor (web only) — same upload path as the pickers. */

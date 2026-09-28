@@ -14,7 +14,9 @@ import { COLOR_PIPELINE_VERSION } from '../media/color.js';
 import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbnail, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
 import type { DissectService } from '../services/dissect-service.js';
+import type { FaceService } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
+import { withMediaSlot } from '../services/media-slots.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 import { WaveformService } from '../services/waveform-service.js';
 
@@ -77,41 +79,24 @@ export const pendingAssetWork = new Map<string, Promise<void>>();
 
 /**
  * ffmpeg and whisper each saturate the box on their own, so a 40-clip import
- * that spawns 40 of them leaves everything crawling. Two jobs at a time; the
- * rest wait their turn inside their own `pendingAssetWork` promise, so awaiting
- * an import still waits for the queue. One slot covers the encode *and* the
- * transcription — whisper is a local python process (`transcript-service.ts`),
- * so releasing between the two would just move the pile-up downstream.
- * ponytail: one counter for all CPU-heavy media work, split it if encode and
- * transcribe ever need different limits.
+ * that spawns 40 of them leaves everything crawling. Imports wait their turn in
+ * the shared media pool (`media-slots.ts`) inside their own `pendingAssetWork`
+ * promise, so awaiting an import still waits for the queue. One slot covers the
+ * encode *and* the transcription: the transcription runs inside the slot this
+ * chain already holds rather than taking a second one.
+ *
+ * Runs after the import responded, and moves the row to `ready` or `error`.
  */
-const MAX_CONCURRENT_MEDIA_JOBS = 2;
-let runningMediaJobs = 0;
-const waitingMediaJobs: Array<() => void> = [];
-
-async function acquireMediaSlot(): Promise<void> {
-  if (runningMediaJobs < MAX_CONCURRENT_MEDIA_JOBS) runningMediaJobs += 1;
-  else await new Promise<void>((resolve) => waitingMediaJobs.push(resolve));
-}
-
-function releaseMediaSlot(): void {
-  // Hand the slot straight to the next waiter rather than freeing and re-taking it.
-  const next = waitingMediaJobs.shift();
-  if (next) next();
-  else runningMediaJobs -= 1;
-}
-
-/** Runs after the import responded, and moves the row to `ready` or `error`. */
 function queueAssetWork(
   app: FastifyInstance,
   assets: AssetStore,
   transcripts: TranscriptService,
   asset: StoredAsset,
   probe: ProbeResult,
+  faces?: FaceService,
 ): void {
   const pending = (async () => {
-    await acquireMediaSlot();
-    try {
+    await withMediaSlot(`import ${asset.id}`, async () => {
       try {
         const generated = await createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe);
         assets.setStatus(asset.id, 'ready', generated);
@@ -121,9 +106,15 @@ function queueAssetWork(
         return;
       }
       await transcribeQuietly(app, transcripts, asset);
-    } finally {
-      releaseMediaSlot();
-    }
+      // Tracked now so the first caption placement doesn't wait on OpenCV.
+      if (faces && probe.hasVideo) {
+        try {
+          await faces.getOrCreate(asset);
+        } catch (error) {
+          app.log.warn({ err: error, assetId: asset.id }, 'Face tracking failed; captions will only keep to the safe area');
+        }
+      }
+    });
   })().finally(() => pendingAssetWork.delete(asset.id));
   pendingAssetWork.set(asset.id, pending);
 }
@@ -139,6 +130,7 @@ async function processAsset(
   input: { originalName: string; mimeType: string; originalPath: string },
   id = randomUUID(),
   userId?: string,
+  faces?: FaceService,
 ): Promise<StoredAsset> {
   const directory = join(assetsRoot, id);
   await mkdir(directory, { recursive: true });
@@ -188,7 +180,7 @@ async function processAsset(
       filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
     }, userId);
-    queueAssetWork(app, assets, transcripts, asset, probe);
+    queueAssetWork(app, assets, transcripts, asset, probe, faces);
     return asset;
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
@@ -217,6 +209,7 @@ export function registerAssetRoutes(
   insights: InsightService,
   dissections: DissectService,
   database: EditifyDatabase,
+  faces?: FaceService,
 ): void {
   // ponytail: built here rather than in `buildApp` so wiring stays one line —
   // hoist it up if anything outside these routes ever needs an envelope.
@@ -254,7 +247,7 @@ export function registerAssetRoutes(
         originalName: part.filename,
         mimeType: part.mimetype,
         originalPath,
-      }, id, request.userId);
+      }, id, request.userId, faces);
       if (projectId) assets.link(projectId, asset.id);
       return await reply.code(201).send(publicAsset(asset));
     } catch (error) {
@@ -349,7 +342,7 @@ export function registerAssetRoutes(
       originalName: name,
       mimeType: videoMimeTypes[extension] ?? 'video/mp4',
       originalPath: sourcePath,
-    }, undefined, request.userId);
+    }, undefined, request.userId, faces);
     if (projectId) assets.link(projectId, asset.id);
     return await reply.code(201).send(publicAsset(asset));
   });

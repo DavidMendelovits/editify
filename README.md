@@ -129,6 +129,7 @@ quietly falls back to the offline mock agent.
 ```bash
 npm run typecheck                  # all workspaces
 npm test -w @editify/server        # server Vitest suite
+npm test -w @editify/mobile        # app unit tests (share routing, media rules, the share-extension patch)
 npm run seed                       # local color-bar demo project
 npm run dev:server                 # Fastify on port 3001
 npm run dev:mobile                 # Expo development server
@@ -227,6 +228,95 @@ implementing `analyzeVideo`. The Gemini and webhook classes take an injectable
 `fetchImpl`, and `server/test/style-pipeline.test.ts` shows both exercised
 offline.
 
+## Audio sync
+
+A second recording of the same moment (a voice memo from a phone in the
+performer's pocket, a lav, another camera) lines up under a video by matching
+it against the video's own sound. `server/src/media/sync.ts` does it in two
+stages: a 10ms onset-envelope cross-correlation over every possible offset, then
+GCC-PHAT on raw samples within 50ms of that answer, which stays sharp through
+room reverb. The fine match runs early and late in the overlap; when the two
+recorders' clocks drift more than a frame apart, the memo gets a tiny speed
+correction (for example 1.00006x). A match that does not clearly stand above the
+noise floor is refused rather than guessed.
+
+```
+GET /projects/:id/sync?audioClipId=…[&videoClipId=…]
+  → { ok: true, ops, version, videoClipId, offsetSec, speed, driftMs?, confidence, pieces, notes }
+  | { ok: false, error }
+```
+
+The route only measures, and never edits. Domain failures (no match, no video
+with sound, too long) come back as HTTP 200 with `ok: false`; a bad query is a
+400 and an unknown project a 404. Apply `ops` with `version` as `baseVersion`:
+an edit that landed while measuring then fails with a 409 instead of the memo
+being placed against shots that have moved. The editor does exactly that, on
+its own op chain, so one undo takes the sync back. The agent's `sync_audio` tool does both in one
+step ("sync the memo to the video" works on the offline mock too). Every clip
+cut from the same footage gets its own matching memo piece, trimmed to the shot.
+Syncing again rebuilds that memo's pieces rather than adding another set.
+Levels are left alone: the camera's own audio keeps playing until you turn it
+down. Measuring reads the originals because that is what the render cuts from.
+
+Measuring decodes both recordings in memory, so it is bounded: recordings over
+three hours are refused, measurements run one at a time with at most four in
+hand (the rest are told the server is busy), a decode is abandoned after five
+minutes, and the correlation yields to the event loop between stages.
+
+In the app, an audio file added to a project that has footage lands on the
+audio track and syncs on arrival, however it gets there: the file and photo
+pickers, the library strip's +, the server media folder, or the share sheet.
+The sound sheet is the exception (music and effects are not recordings of the
+set). The Inspector's SYNC control re-runs it for a selected audio clip.
+
+### Share sheet
+
+The iOS share extension comes from
+[`expo-share-intent`](https://github.com/achorein/expo-share-intent), configured
+in `app.json` to accept video and audio. Android sharing is switched off
+(`disableAndroid`): the library's Android handler writes each shared file under
+the name the sending app supplies, unsanitised, so a hostile app could use `../`
+to overwrite files in Editify's private storage. Turn it back on once that copy
+uses generated names. Its stock iOS extension has no audio
+branch, and a Voice Memos recording can arrive typed only as audio, so
+`plugins/with-share-audio.js` patches one in at prebuild. Shared media goes into
+the project whose editor is open, or a new project when none is, and the app's
+copy of each file is deleted once it has uploaded.
+
+This is native code, so it needs a new build (`eas build`), not an OTA update,
+and it does not run in Expo Go. EAS provisions a second target,
+`com.editify.app.share-extension`, and both targets need the
+`group.com.editify.app` App Group; EAS syncs that capability when it manages the
+credentials.
+## Talking-head reel tools
+
+Ported from [ghost-editor](https://github.com/kurbaitaev/ghost-editor) (MIT),
+an agent skill that turns a raw talking-head recording into a finished reel,
+and rebuilt on this app's operation API and ffmpeg render. Only the parts that
+fit that pipeline came over: its HyperFrames motion scenes and meme library did
+not. Credits and licences are in `server/THIRD-PARTY-NOTICES.md`.
+
+| Agent tool | What it does |
+|---|---|
+| `get_take_map` | Splits a multi-take recording into sentences, flags restart lines ("okay, again") and false starts, groups the attempts at each line, and picks the last complete one. |
+| `assemble_takes` | Rebuilds the recording from chosen takes, with cut points snapped to word times (0.12s lead, 0.25s tail, never into a neighbouring word). Later clips and captions close up; captions are regenerated over the new cut. |
+| `place_captions` | Keeps captions off the speaker's face and inside the posting app's safe area (Instagram by default; TikTok, Shorts, or all three). `caption_clip_from_transcript` and `apply_style_packet` do this as they write. |
+| `check_mix` | Levels every SFX against this speaker's measured voice (impact -8 dB, whoosh/pop/riser -12, click -14, beds about -20) and flags a busy edit; `fix: true` applies the volumes. |
+| `get_render_qa` | Reads the last export's quality check. |
+
+**Face tracking** runs OpenCV's YuNet detector (`server/scripts/face_track.py`)
+once per imported video and caches the track in `face_tracks`. It is optional:
+the Docker image installs it, and locally it needs
+`pip install opencv-python-headless`. The model is downloaded on first use to
+`server/data/models/` (override with `FACE_MODEL_PATH`). Without OpenCV,
+placement still keeps captions inside the safe area.
+
+**Every export is checked** before it is marked done: integrated loudness and
+true peak, pauses over 0.8s left inside the programme, SFX levels against the
+voice, and an 18-frame contact sheet. By default a master that is off
+-16 LUFS gets one gain stage and a limiter on its audio (the picture is copied,
+not re-encoded); `loudness: "off"` on the render request keeps the mix levels.
+
 ## Operation catalog
 
 All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "baseVersion": number }`. A batch is transactional.
@@ -245,15 +335,15 @@ All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "
 | `add_caption` | `trackId`, text `clip` | Creates or appends to a caption track. |
 | `update_caption` | `clipId` plus text/timing/style fields | Updates a caption. |
 | `remove_caption` | `clipId` | Removes a caption clip. |
-| `set_format` | `format` | Changes output canvas to 9:16, 1:1, or 16:9. |
+| `set_format` | `format`, optional `platform` | Changes output canvas to 9:16, 1:1, or 16:9; `platform` (instagram, tiktok, shorts, all) picks the caption safe area. |
 | `undo` | `{}` | Reverts the latest non-undone mutation using its stored snapshot. |
 
 ## API summary
 
-- Projects: `POST /projects`, `GET /projects`, `GET /projects/:id`, `POST /projects/:id/ops`, `GET /projects/:id/oplog`
+- Projects: `POST /projects`, `GET /projects`, `GET /projects/:id`, `POST /projects/:id/ops`, `GET /projects/:id/oplog`, `GET /projects/:id/sync`
 - Assets: `POST /assets` (multipart), metadata/original/proxy/thumbnail under `GET /assets/:id/*`
 - Agent: `POST /projects/:id/chat`, `GET /projects/:id/chat`
 - Styles: `POST /style-profile/analyze`, `GET /style-profile`, `GET /style-profiles`, `GET`/`PUT /style/analyzer`
-- Rendering: `POST /projects/:id/render`, `GET /renders/:id`, `GET /renders/:id/file.mp4`
+- Rendering: `POST /projects/:id/render` (`resolution`, `hdr`, `loudness`), `GET /renders/:id` (with `qa`), `GET /renders/:id/file.mp4`, `GET /renders/:id/contact.jpg`
 
 The v1 server is intentionally single-user and local: no authentication, cloud storage, billing, or predictive analytics.

@@ -103,7 +103,7 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
           </Text>
         </View>
         <View style={styles.sources}>
-          <Source label="photos" hint="device library" onPress={onPickPhotos} disabled={busy} />
+          <Source label="camera roll" hint="camera roll" onPress={onPickPhotos} disabled={busy} />
           <Source label="files" hint="documents" onPress={onPickFiles} disabled={busy} />
           <Source label="folder" hint="server media" onPress={onOpenFolder} disabled={busy} />
           {busy && <ActivityIndicator color={colors.accent} />}
@@ -121,8 +121,8 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
         {!library.isLoading && assets.length === 0 && (
           <Text style={styles.empty}>
             {scope === 'project'
-              ? 'No media in this project yet. Add from photos, files, or the server media folder.'
-              : 'Nothing on the server yet. Pull a clip in from photos, files, or the server media folder.'}
+              ? 'No media in this project yet. Add from camera roll, files, or the server media folder.'
+              : 'Nothing on the server yet. Pull a clip in from camera roll, files, or the server media folder.'}
           </Text>
         )}
         {assets.map((asset) => (
