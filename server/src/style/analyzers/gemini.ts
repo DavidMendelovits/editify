@@ -16,8 +16,13 @@ export interface GeminiAnalyzerOptions {
   pollIntervalMs?: number;
 }
 
-const PROMPT = `You are an editing analyst. Watch this short-form video and describe its editing pattern as JSON.
-Report only what you can see or hear. Keep every string under 120 characters.
+const PROMPT = `You are an editing analyst. Watch this short-form video frame by frame and describe its editing pattern as JSON,
+precisely enough that an editor could rebuild the look. Report only what you can see or hear; never invent a value, and
+mark any number you estimated with "(est.)". Keep every string under 120 characters.
+Be specific in the notes: captions.notes gives the caption height as % of frame height, words per caption, case, and how
+keywords are treated (colour change, pill, highlight box); visuals.notes gives punch-in scale and when they happen (every
+cut, stressed words, punchlines); audio.notes gives the music level against the voice and which moments carry sound
+effects (cuts, key words, reactions) and of what kind (whoosh, pop, impact, click).
 Fields: summary (one or two sentences), pacing {averageShotSeconds, cutCount, rhythm: fast-punch|balanced|slow-burn, notes},
 hook {durationSeconds, technique, notes}, captions {present, position: top|center|bottom, style, animation, notes},
 transitions {dominant, frequency: rare|occasional|constant, notes}, audio {music, soundEffects, voice, notes},
@@ -71,7 +76,8 @@ export class GeminiVideoAnalyzer implements VideoAnalyzer {
 
   constructor(private readonly options: GeminiAnalyzerOptions) {
     this.model = options.model ?? 'gemini-3.6-flash';
-    this.version = `2:${this.model}`;
+    // Bumped with the prompt: observations from an older prompt are re-watched, not reused.
+    this.version = `3:${this.model}`;
     this.baseUrl = (options.baseUrl ?? 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.processingTimeoutMs = options.processingTimeoutMs ?? 5 * 60 * 1000;

@@ -288,6 +288,34 @@ and it does not run in Expo Go. EAS provisions a second target,
 `com.editify.app.share-extension`, and both targets need the
 `group.com.editify.app` App Group; EAS syncs that capability when it manages the
 credentials.
+## Talking-head reel tools
+
+Ported from [ghost-editor](https://github.com/kurbaitaev/ghost-editor) (MIT),
+an agent skill that turns a raw talking-head recording into a finished reel,
+and rebuilt on this app's operation API and ffmpeg render. Only the parts that
+fit that pipeline came over: its HyperFrames motion scenes and meme library did
+not. Credits and licences are in `server/THIRD-PARTY-NOTICES.md`.
+
+| Agent tool | What it does |
+|---|---|
+| `get_take_map` | Splits a multi-take recording into sentences, flags restart lines ("okay, again") and false starts, groups the attempts at each line, and picks the last complete one. |
+| `assemble_takes` | Rebuilds the recording from chosen takes, with cut points snapped to word times (0.12s lead, 0.25s tail, never into a neighbouring word). Later clips and captions close up; captions are regenerated over the new cut. |
+| `place_captions` | Keeps captions off the speaker's face and inside the posting app's safe area (Instagram by default; TikTok, Shorts, or all three). `caption_clip_from_transcript` and `apply_style_packet` do this as they write. |
+| `check_mix` | Levels every SFX against this speaker's measured voice (impact -8 dB, whoosh/pop/riser -12, click -14, beds about -20) and flags a busy edit; `fix: true` applies the volumes. |
+| `get_render_qa` | Reads the last export's quality check. |
+
+**Face tracking** runs OpenCV's YuNet detector (`server/scripts/face_track.py`)
+once per imported video and caches the track in `face_tracks`. It is optional:
+the Docker image installs it, and locally it needs
+`pip install opencv-python-headless`. The model is downloaded on first use to
+`server/data/models/` (override with `FACE_MODEL_PATH`). Without OpenCV,
+placement still keeps captions inside the safe area.
+
+**Every export is checked** before it is marked done: integrated loudness and
+true peak, pauses over 0.8s left inside the programme, SFX levels against the
+voice, and an 18-frame contact sheet. By default a master that is off
+-16 LUFS gets one gain stage and a limiter on its audio (the picture is copied,
+not re-encoded); `loudness: "off"` on the render request keeps the mix levels.
 
 ## Operation catalog
 
@@ -307,7 +335,7 @@ All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "
 | `add_caption` | `trackId`, text `clip` | Creates or appends to a caption track. |
 | `update_caption` | `clipId` plus text/timing/style fields | Updates a caption. |
 | `remove_caption` | `clipId` | Removes a caption clip. |
-| `set_format` | `format` | Changes output canvas to 9:16, 1:1, or 16:9. |
+| `set_format` | `format`, optional `platform` | Changes output canvas to 9:16, 1:1, or 16:9; `platform` (instagram, tiktok, shorts, all) picks the caption safe area. |
 | `undo` | `{}` | Reverts the latest non-undone mutation using its stored snapshot. |
 
 ## API summary
@@ -316,6 +344,6 @@ All mutations are posted to `POST /projects/:id/ops` as `{ "ops": Operation[], "
 - Assets: `POST /assets` (multipart), metadata/original/proxy/thumbnail under `GET /assets/:id/*`
 - Agent: `POST /projects/:id/chat`, `GET /projects/:id/chat`
 - Styles: `POST /style-profile/analyze`, `GET /style-profile`, `GET /style-profiles`, `GET`/`PUT /style/analyzer`
-- Rendering: `POST /projects/:id/render`, `GET /renders/:id`, `GET /renders/:id/file.mp4`
+- Rendering: `POST /projects/:id/render` (`resolution`, `hdr`, `loudness`), `GET /renders/:id` (with `qa`), `GET /renders/:id/file.mp4`, `GET /renders/:id/contact.jpg`
 
 The v1 server is intentionally single-user and local: no authentication, cloud storage, billing, or predictive analytics.

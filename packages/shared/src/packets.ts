@@ -99,6 +99,40 @@ export const STYLE_PACKETS: readonly StylePacket[] = [
     broll: { density: 'sparse' },
     pacing: { targetShotSeconds: 1.6 },
   },
+  {
+    id: 'clean-talking-head',
+    name: 'Clean talking head',
+    description: 'Nothing distracting: bold karaoke captions with the spoken word in warm yellow, snap punch-ins on every shot, dry hard cuts with no SFX and no music.',
+    source: { creator: 'ghost-editor clean style', url: 'https://github.com/kurbaitaev/ghost-editor' },
+    typography: {
+      sizePct: 3.4, color: '#FFFFFF', emphasisColor: '#FFD166', strokeColor: '#000000', strokePx: 4,
+      anchorPct: 64, emphasis: 'highlight', uppercase: false, karaoke: true,
+    },
+    colors: { accent: '#FFD166' },
+    music: { soundId: null, volume: 0 },
+    transition: { type: 'cut', duration: 0.3, soundId: null, soundVolume: 0 },
+    zoom: { cadence: 'every-shot', scale: 1.1 },
+    callouts: { density: 'off' },
+    broll: { density: 'off' },
+    pacing: { targetShotSeconds: 3 },
+  },
+  {
+    id: 'editorial-explainer',
+    name: 'Editorial explainer',
+    description: 'News-explainer calm: small sentence-case captions without karaoke, a low dream bed, soft dips between sections, the odd slow push-in, and a stat card where the speaker gives a number.',
+    source: { creator: 'ghost-editor editorial style', url: 'https://github.com/kurbaitaev/ghost-editor' },
+    typography: {
+      sizePct: 3, color: '#FFFFFF', strokeColor: '#000000', strokePx: 2,
+      anchorPct: 66, emphasis: 'none', uppercase: false, karaoke: false,
+    },
+    colors: { accent: '#E4572E' },
+    music: { soundId: 'sound-music-dream', volume: 0.12 },
+    transition: { type: 'dip', duration: 0.3, soundId: null, soundVolume: 0 },
+    zoom: { cadence: 'sparse', scale: 1.06 },
+    callouts: { density: 'sparse' },
+    broll: { density: 'sparse' },
+    pacing: { targetShotSeconds: 4 },
+  },
 ];
 
 export const PACKETS_BY_ID: ReadonlyMap<string, StylePacket> = new Map(STYLE_PACKETS.map((packet) => [packet.id, packet]));

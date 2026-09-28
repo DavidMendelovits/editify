@@ -15,6 +15,8 @@ vi.mock('../src/media/render.js', () => ({
     return `/renders/${renderId}/output.mp4`;
   },
 }));
+// The fake output has no file for ffmpeg to measure.
+vi.mock('../src/services/render-qa.js', () => ({ runRenderQa: async () => undefined }));
 
 let database: EditifyDatabase;
 beforeEach(() => {

@@ -1,4 +1,4 @@
-import type { AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project, SyncAudioResult } from '@editify/shared';
+import type { AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project, RenderQa, SyncAudioResult } from '@editify/shared';
 import { track } from './event-log';
 import type { AgentTraceStep } from './agent';
 import type { EditPreset } from './presets';
@@ -129,6 +129,9 @@ export interface RenderRecord {
   status: 'queued' | 'processing' | 'done' | 'error';
   outputUrl?: string;
   error?: string;
+  /** Post-render check: loudness, dead air, sound levels against the voice. */
+  qa?: RenderQa;
+  contactSheetUrl?: string;
 }
 
 export interface StyleMetric {
@@ -362,8 +365,8 @@ export const api = {
   /** Undo a whole agent turn in one step. */
   revertRun: (id: string, runId: string) => request<Project>(`/projects/${id}/runs/${runId}/revert`, { method: 'POST', body: '{}' }),
   getChatLive: (id: string) => request<ChatLive>(`/projects/${id}/chat/live`),
-  render: (id: string, resolution: RenderRecord['resolution'], hdr: 'sdr' | 'hdr' = 'sdr') => request<RenderRecord>(`/projects/${id}/render`, {
-    method: 'POST', body: JSON.stringify({ resolution, hdr }),
+  render: (id: string, resolution: RenderRecord['resolution'], hdr: 'sdr' | 'hdr' = 'sdr', loudness: 'normalize' | 'off' = 'normalize') => request<RenderRecord>(`/projects/${id}/render`, {
+    method: 'POST', body: JSON.stringify({ resolution, hdr, loudness }),
   }),
   getRender: (id: string) => request<RenderRecord>(`/renders/${id}`),
   /** Measures where an audio clip lines up under the video; never edits. Apply `ops` to commit. */

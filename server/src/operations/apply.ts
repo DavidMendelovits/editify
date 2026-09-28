@@ -281,6 +281,7 @@ export function applyOperation(input: Project, operation: Operation): Project {
     }
     case 'set_format': {
       project.format = operation.params.format;
+      if (operation.params.platform) project.platform = operation.params.platform;
       break;
     }
   }

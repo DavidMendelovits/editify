@@ -150,6 +150,14 @@ function migrate(database: EditifyDatabase): void {
       waveform_json TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    -- Where the speaker's face sits over time, per source video, so captions
+    -- can be placed off it. A cache: re-running the tracker rebuilds it.
+    CREATE TABLE IF NOT EXISTS face_tracks (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+      track_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   const transcriptColumns = database.prepare('PRAGMA table_info(transcripts)').all() as Array<{ name: string }>;
@@ -200,6 +208,12 @@ function migrate(database: EditifyDatabase): void {
     database.exec('ALTER TABLE reports ADD COLUMN repro_json TEXT');
   }
 
+  // Post-render QA (loudness, dead air, mix levels) rides on the render row.
+  const renderColumns = database.prepare('PRAGMA table_info(renders)').all() as Array<{ name: string }>;
+  if (!renderColumns.some((column) => column.name === 'qa_json')) {
+    database.exec('ALTER TABLE renders ADD COLUMN qa_json TEXT');
+  }
+
   const operationLogColumns = database.prepare('PRAGMA table_info(operation_log)').all() as Array<{ name: string }>;
   if (!operationLogColumns.some((column) => column.name === 'run_id')) {
     database.exec('ALTER TABLE operation_log ADD COLUMN run_id TEXT');
@@ -214,7 +228,6 @@ function migrate(database: EditifyDatabase): void {
 
   // Which project version a render exported, so a file can be matched to the
   // edit it shows. Written when the render starts; older rows stay NULL.
-  const renderColumns = database.prepare('PRAGMA table_info(renders)').all() as Array<{ name: string }>;
   if (!renderColumns.some((column) => column.name === 'project_version')) {
     database.exec('ALTER TABLE renders ADD COLUMN project_version INTEGER');
   }

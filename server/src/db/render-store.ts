@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { renderQaSchema, type RenderQa } from '@editify/shared';
 import type { EditifyDatabase } from './database.js';
 import { publicBaseUrl } from '../config.js';
 
@@ -12,6 +13,9 @@ export interface RenderRecord {
   projectVersion?: number;
   outputUrl?: string;
   error?: string;
+  qa?: RenderQa;
+  /** Present when QA wrote a contact sheet of the master's frames. */
+  contactSheetUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,6 +24,7 @@ interface RenderRow {
   id: string; project_id: string; resolution: '720p' | '1080p' | '4k'; status: RenderStatus;
   output_path: string | null; error: string | null; created_at: string; updated_at: string;
   project_version: number | null;
+  qa_json: string | null;
 }
 
 export class RenderStore {
@@ -44,6 +49,18 @@ export class RenderStore {
     `).run(status, values.outputPath ?? null, values.error ?? null, new Date().toISOString(), values.projectVersion ?? null, id);
   }
 
+  setQa(id: string, qa: RenderQa): void {
+    this.database.prepare('UPDATE renders SET qa_json = ? WHERE id = ?').run(JSON.stringify(qa), id);
+  }
+
+  /** The newest finished render of a project, for the agent's QA read-back. */
+  latestDone(projectId: string): RenderRecord | undefined {
+    const row = this.database.prepare(`
+      SELECT * FROM renders WHERE project_id = ? AND status = 'done' ORDER BY updated_at DESC LIMIT 1
+    `).get(projectId) as RenderRow | undefined;
+    return row ? this.toRecord(row) : undefined;
+  }
+
   /** `userId` scopes through the owning project, matching ProjectStore's rules. */
   get(id: string, userId?: string): RenderRecord | undefined {
     const row = (userId === undefined
@@ -65,6 +82,7 @@ export class RenderStore {
   }
 
   private toRecord(row: RenderRow): RenderRecord {
+    const qa = row.qa_json ? renderQaSchema.safeParse(JSON.parse(row.qa_json)) : undefined;
     return {
       id: row.id,
       projectId: row.project_id,
@@ -73,6 +91,8 @@ export class RenderStore {
       ...(row.project_version !== null ? { projectVersion: row.project_version } : {}),
       ...(row.output_path ? { outputUrl: `${publicBaseUrl}/renders/${row.id}/file.mp4` } : {}),
       ...(row.error ? { error: row.error } : {}),
+      ...(qa?.success ? { qa: qa.data } : {}),
+      ...(qa?.success && qa.data.contactSheet ? { contactSheetUrl: `${publicBaseUrl}/renders/${row.id}/contact.jpg` } : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
