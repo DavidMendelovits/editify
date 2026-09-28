@@ -249,5 +249,5 @@ describe.skipIf(!hasFfmpeg)('windowed render matches the single-graph render', (
         }
       }
     }
-  }, 30_000);
+  }, 60_000); // four x265 renders: ~22s on CI runners, so 30s flaked
 });
