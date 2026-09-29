@@ -1,12 +1,12 @@
 import type { PurchasesPackage } from 'react-native-purchases';
-import type { Tier } from './purchases';
+import type { Plan, Tier } from './purchases';
 
 /**
  * The browser build has no store to buy from: react-native-purchases needs a
  * native module, and web billing would be a separate Stripe integration. Web
  * stays on the free tier and the paywall says so.
  */
-export type { Tier } from './purchases';
+export type { Plan, Tier } from './purchases';
 
 export const billingAvailable = false;
 
@@ -16,7 +16,12 @@ export function useTier(): Tier {
   return 'free';
 }
 
-export async function getPackages(): Promise<PurchasesPackage[]> {
+/** Never ready: there is no store user to line up with the account. */
+export function usePurchasesReady(): boolean {
+  return false;
+}
+
+export async function getPlans(): Promise<Plan[]> {
   return [];
 }
 
@@ -29,6 +34,10 @@ export async function restore(): Promise<Tier> {
 }
 
 export function userCancelled(): boolean {
+  return false;
+}
+
+export function hasFreeTrial(): boolean {
   return false;
 }
 

@@ -47,12 +47,17 @@ plus a 7-day free-trial offer on each base plan.
 3. One offering, `default`, made current, with two packages. They cannot both
    be the built-in `$rc_monthly`, so use custom identifiers `pro_monthly` and
    `studio_monthly`.
-4. Copy the two public SDK keys into `apps/mobile/.env`:
+4. Copy the two public SDK keys into `apps/mobile/.env` for local builds:
 
    ```
    EXPO_PUBLIC_REVENUECAT_IOS_KEY=appl_xxx
    EXPO_PUBLIC_REVENUECAT_ANDROID_KEY=goog_xxx
    ```
+
+   EAS builds read `base.env` in `apps/mobile/eas.json`, which every profile
+   `extends`. Add `EXPO_PUBLIC_REVENUECAT_IOS_KEY` there too. It is left out
+   until the RevenueCat project exists, because a wrong key is worse than none.
+   After a production build, check the IPA's `main.jsbundle` contains `appl_`.
 
 Without those keys `billingAvailable` is false, the paywall says subscriptions
 are app-only, and every user is on `free`. That is what Expo web and any dev
@@ -98,11 +103,16 @@ webhook and a REST lookup for this, and the choice between them depends on
 whether the check can tolerate being eventually consistent. Until that exists,
 treat every tier check in the app as cosmetic.
 
-One more claim to make honest at the same time: the paywall hero and the
-subscribe button both hardcode a 7-day free trial. Apple grants an introductory
-offer once per subscription group per Apple ID, so a returning buyer is charged
-immediately while the screen promises a trial. `priceLabel` in
-`apps/mobile/src/lib/purchases.ts` already derives the truthful per-package
-string from the store, and it also drops a discounted intro offer today, showing
-"12/month" where the first month is 1. Both are deliberately left until the
-paywall goes live.
+### Trial copy follows eligibility
+
+Apple grants an introductory offer once per subscription group per Apple ID, so
+a returning buyer is charged immediately. `getPlans()` asks RevenueCat
+(`checkTrialOrIntroductoryPriceEligibility`) per package, and the paywall hero,
+the button ("start free trial" or "subscribe") and `priceLabel` all follow it.
+An unknown answer counts as not eligible. `priceLabel` also shows a paid intro
+("€1.00 for 1 month, then €12.00/month") instead of dropping it.
+
+Buy and restore stay disabled until `syncPurchaseUser` has pointed RevenueCat at
+the signed-in account (`usePurchasesReady()`): before that, a purchase would be
+credited to the previous user. Session changes run one at a time, and a failed
+sync leaves the tier free until the next session event retries it.

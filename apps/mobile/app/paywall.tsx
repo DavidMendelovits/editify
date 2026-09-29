@@ -6,15 +6,20 @@ import type { PurchasesPackage } from 'react-native-purchases';
 import { Button } from '../src/components/Button';
 import { LegalLinks } from '../src/components/LegalLinks';
 import { Screen } from '../src/components/Screen';
-import { billingAvailable, buy, getPackages, priceLabel, restore, useTier, userCancelled } from '../src/lib/purchases';
+import {
+  billingAvailable, buy, getPlans, hasFreeTrial, priceLabel, restore, usePurchasesReady, useTier, userCancelled,
+} from '../src/lib/purchases';
 import { track } from '../src/lib/telemetry';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
 
 export default function PaywallScreen() {
   const router = useRouter();
   const tier = useTier();
+  const ready = usePurchasesReady();
   const [error, setError] = useState<string>();
-  const packages = useQuery({ queryKey: ['packages'], queryFn: getPackages, staleTime: 5 * 60_000 });
+  const plans = useQuery({ queryKey: ['plans'], queryFn: getPlans, staleTime: 5 * 60_000 });
+  // Only promise a trial the store will actually give this account.
+  const trial = plans.data?.some(hasFreeTrial) ?? false;
 
   const purchase = useMutation({
     mutationFn: (pkg: PurchasesPackage) => buy(pkg),
@@ -30,7 +35,8 @@ export default function PaywallScreen() {
     onError: (cause) => setError(cause instanceof Error ? cause.message : String(cause)),
   });
 
-  const busy = purchase.isPending || restoring.isPending;
+  // Until the store user is this account, a purchase or restore would land on the last one.
+  const busy = purchase.isPending || restoring.isPending || !ready;
 
   return (
     <Screen header={
@@ -41,30 +47,34 @@ export default function PaywallScreen() {
     }>
       <View style={styles.hero}>
         <Text style={styles.title}>Cut without the ceiling</Text>
-        <Text style={styles.body}>Every plan starts with a 7-day free trial. Cancel any time before it ends and you are not charged.</Text>
+        <Text style={styles.body}>
+          {trial
+            ? 'Start with a free trial. Cancel any time before it ends and you are not charged.'
+            : 'Pick a plan and cancel any time in your store account.'}
+        </Text>
       </View>
 
       {!billingAvailable && (
         <View style={styles.card}><Text style={styles.body}>Subscriptions are only available in the Editify app on iOS and Android.</Text></View>
       )}
-      {packages.isLoading && <Text style={styles.body}>Loading plans…</Text>}
-      {packages.error && <Text style={styles.error}>Could not reach the store: {packages.error.message}</Text>}
-      {billingAvailable && packages.data?.length === 0 && (
+      {plans.isLoading && <Text style={styles.body}>Loading plans…</Text>}
+      {plans.error && <Text style={styles.error}>Could not reach the store: {plans.error.message}</Text>}
+      {billingAvailable && plans.data?.length === 0 && (
         <Text style={styles.error}>No plans are available on this account yet.</Text>
       )}
 
       <View style={styles.plans}>
-        {packages.data?.map((pkg) => (
-          <View key={pkg.identifier} style={styles.card}>
-            <Text style={styles.planName}>{pkg.product.title}</Text>
-            <Text style={styles.price}>{priceLabel(pkg)}</Text>
-            {!!pkg.product.description && <Text style={styles.body}>{pkg.product.description}</Text>}
+        {plans.data?.map((plan) => (
+          <View key={plan.pkg.identifier} style={styles.card}>
+            <Text style={styles.planName}>{plan.pkg.product.title}</Text>
+            <Text style={styles.price}>{priceLabel(plan.pkg, plan.introEligible)}</Text>
+            {!!plan.pkg.product.description && <Text style={styles.body}>{plan.pkg.product.description}</Text>}
             <Button
               disabled={busy}
-              accessibilityLabel={`subscribe to ${pkg.product.title}`}
-              onPress={() => purchase.mutate(pkg)}
+              accessibilityLabel={`subscribe to ${plan.pkg.product.title}`}
+              onPress={() => purchase.mutate(plan.pkg)}
             >
-              {purchase.isPending ? 'opening the store…' : 'start free trial'}
+              {purchase.isPending ? 'opening the store…' : hasFreeTrial(plan) ? 'start free trial' : 'subscribe'}
             </Button>
           </View>
         ))}
@@ -78,8 +88,8 @@ export default function PaywallScreen() {
           {restoring.isPending ? 'restoring…' : 'restore purchases'}
         </Button>
         <Text style={styles.legal}>
-          The trial converts to a paid subscription unless you cancel at least 24 hours before it ends. Payment is charged to your store
-          account and renews until you cancel it there.
+          {trial ? 'The trial converts to a paid subscription unless you cancel at least 24 hours before it ends. ' : ''}
+          Payment is charged to your store account and renews until you cancel it there.
         </Text>
         <LegalLinks />
       </View>
