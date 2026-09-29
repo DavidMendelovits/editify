@@ -71,7 +71,13 @@
           "disableAndroid": true
         }
       ],
-      "./plugins/with-share-audio"
+      "./plugins/with-share-audio",
+      [
+        "posthog-react-native/expo",
+        {
+          "uploadNativeSymbols": true
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

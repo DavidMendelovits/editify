@@ -17,6 +17,7 @@
     "@expo-google-fonts/space-grotesk": "^0.4.1",
     "@expo-google-fonts/space-mono": "^0.4.2",
     "@expo-google-fonts/unbounded": "^0.4.1",
+    "@posthog/react-native-plugin": "^2.12.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-google-signin/google-signin": "^16.1.4",
     "@supabase/supabase-js": "^2.112.3",
@@ -40,7 +41,7 @@
     "expo-updates": "~29.0.20",
     "expo-video": "~3.0.15",
     "html-to-image": "^1.11.13",
-    "posthog-react-native": "^4.75.0",
+    "posthog-react-native": "^4.78.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
@@ -51,6 +52,7 @@
     "react-native-web": "~0.21.0"
   },
   "devDependencies": {
+    "@posthog/cli": "^0.18.9",
     "@types/react": "~19.1.10",
     "typescript": "~5.9.2",
     "vitest": "^3.2.7"
