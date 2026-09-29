@@ -340,7 +340,7 @@ export const api = {
   /** Whether the editor's undo/redo controls have anything to offer. */
   getHistory: (id: string) => request<{ canUndo: boolean; canRedo: boolean }>(`/projects/${id}/history`),
   getAsset: (id: string) => request<AssetMetadata>(`/assets/${id}`),
-  /** This project's media, or every asset on the server when `projectId` is omitted. Newest first. */
+  /** This project's media, or every asset the user can see when `projectId` is omitted. Newest first. */
   listAssets: (projectId?: string) => request<AssetMetadata[]>(projectId ? `/assets?projectId=${encodeURIComponent(projectId)}` : '/assets'),
   /** Adopts an asset from another project into this one. */
   linkAsset: (projectId: string, assetId: string) => request<AssetMetadata>(`/assets/${assetId}/link`, {

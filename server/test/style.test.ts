@@ -9,6 +9,7 @@ import { StyleService } from '../src/services/style-service.js';
 import { SettingsStore } from '../src/db/settings-store.js';
 import { ffmpegAnalyzer } from '../src/style/analyzers/ffmpeg.js';
 import { StyleAnalyzerRegistry } from '../src/style/registry.js';
+import { deleteUserData } from '../src/services/account-service.js';
 
 // Holds the ffmpeg scan open so the 'processing' window is observable.
 const scan = vi.hoisted(() => {
@@ -170,6 +171,92 @@ describe('style profile analysis', () => {
         .toMatchObject({ status: 'error', error: 'ffmpeg exploded' });
     });
     await app.close();
+  });
+});
+
+describe('style profiles per user', () => {
+  let database: EditifyDatabase;
+  let styles: StyleService;
+  beforeEach(() => {
+    database = createDatabase(':memory:');
+    const assets = new AssetStore(database);
+    for (const [id, owner] of [['alice-clip', 'alice'], ['bob-clip', 'bob']] as const) {
+      assets.insert({
+        id, originalName: `${id}.mp4`, mimeType: 'video/mp4', duration: 6, width: 1080, height: 1920, fps: 30, hasAudio: true,
+        originalPath: '/fine.mp4', proxyPath: '/not/read-proxy.mp4', thumbnailPath: '/not/read.jpg',
+        originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: new Date(0).toISOString(),
+      }, owner);
+    }
+    styles = styleService(database, assets);
+  });
+  afterEach(() => { scan.release(); database.close(); });
+
+  /** Stands in for the auth hook: `x-user` becomes request.userId. */
+  function serve() {
+    const app = Fastify();
+    app.addHook('onRequest', async (request) => {
+      const user = request.headers['x-user'];
+      if (typeof user === 'string') request.userId = user;
+    });
+    registerStyleRoutes(app, styles);
+    return app;
+  }
+
+  it('runs each user\'s analysis on its own, and each lands only in its owner\'s list', async () => {
+    scan.hold();
+    const alice = styles.start(['alice-clip'], {}, 'alice');
+    // Bob does not join Alice's run; the same user still does.
+    expect(styles.start(['bob-clip'], {}, 'bob')).toEqual({ status: 'processing' });
+    expect(styles.start(['alice-clip'], { name: 'ignored' }, 'alice')).toEqual(alice);
+    expect(styles.state('carol')).toEqual({ status: 'idle' });
+    scan.release();
+    await vi.waitFor(() => {
+      expect(styles.state('alice').status).toBe('idle');
+      expect(styles.state('bob').status).toBe('idle');
+    });
+    expect(styles.list('alice').map((profile) => profile.assetIds)).toEqual([['alice-clip']]);
+    expect(styles.list('bob').map((profile) => profile.assetIds)).toEqual([['bob-clip']]);
+    expect(styles.selected('alice')?.id).not.toBe(styles.selected('bob')?.id);
+    expect(styles.list('carol')).toEqual([]);
+    expect(styles.selected('carol')).toBeUndefined();
+  });
+
+  it('keeps selection per user and 404s another user\'s profile or asset', async () => {
+    const mine = await styles.analyze(['alice-clip'], { name: 'Mine' }, 'alice');
+    const older = await styles.analyze(['alice-clip'], { name: 'Older' }, 'alice');
+    const theirs = await styles.analyze(['bob-clip'], { name: 'Theirs' }, 'bob');
+    expect(styles.select(mine.id, 'alice')?.id).toBe(mine.id);
+    expect(styles.selectedId('alice')).toBe(mine.id);
+    expect(styles.selectedId('bob')).toBe(theirs.id);
+    expect(styles.missingAsset(['alice-clip', 'bob-clip'], 'alice')).toBe('bob-clip');
+    expect(older.name).toBe('Older');
+
+    const app = serve();
+    const asBob = { 'x-user': 'bob' };
+    expect((await app.inject({ method: 'POST', url: '/style-profile/analyze', headers: asBob, payload: { assetIds: ['alice-clip'] } })).statusCode).toBe(404);
+    for (const [method, url] of [
+      ['POST', `/style-profiles/${mine.id}/select`], ['POST', `/style-profiles/${mine.id}/duplicate`], ['DELETE', `/style-profiles/${mine.id}`],
+    ] as const) {
+      expect((await app.inject({ method, url, headers: asBob })).statusCode).toBe(404);
+    }
+    expect((await app.inject({ method: 'PATCH', url: `/style-profiles/${mine.id}`, headers: asBob, payload: { name: 'x' } })).statusCode).toBe(404);
+    const bobsList = (await app.inject({ method: 'GET', url: '/style-profiles', headers: asBob })).json();
+    expect(bobsList).toEqual({ profiles: [expect.objectContaining({ id: theirs.id })], selectedId: theirs.id });
+    expect(styles.get(mine.id, 'alice')?.name).toBe('Mine');
+    await app.close();
+  });
+
+  it('keeps nothing from a run still going when the account is deleted', async () => {
+    scan.hold();
+    styles.start(['alice-clip'], {}, 'alice');
+    await deleteUserData(database, 'alice', styles);
+    expect(styles.state('alice')).toEqual({ status: 'idle' });
+    scan.release();
+    // The run finishes in the background; give it every chance to (wrongly) save.
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(styles.list('alice')).toEqual([]);
+    expect(styles.state('alice')).toEqual({ status: 'idle' });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM settings WHERE key LIKE '%:alice'").get()).toEqual({ count: 0 });
   });
 });
 

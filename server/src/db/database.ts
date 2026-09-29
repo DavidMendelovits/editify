@@ -165,8 +165,9 @@ function migrate(database: EditifyDatabase): void {
     database.exec('ALTER TABLE transcripts ADD COLUMN energy_json TEXT');
   }
 
-  // User scoping: NULL user_id means shared/global (pre-auth rows, the built-in
-  // sound library) and stays visible to everyone; owned rows only to their owner.
+  // User scoping: owned rows are visible only to their owner. NULL user_id rows
+  // belong to nobody: signed-in users see none of them except the built-in sound
+  // library (`sound-*` assets). Unscoped callers (shared token) still see all.
   const projectColumns = database.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
   if (!projectColumns.some((column) => column.name === 'user_id')) {
     database.exec('ALTER TABLE projects ADD COLUMN user_id TEXT');
@@ -196,6 +197,10 @@ function migrate(database: EditifyDatabase): void {
     if (!styleColumns.some((existing) => existing.name === column)) {
       database.exec(`ALTER TABLE style_profiles ADD COLUMN ${column} TEXT`);
     }
+  }
+  // Profiles are per user, like projects. Older rows stay NULL and unscoped-only.
+  if (!styleColumns.some((column) => column.name === 'user_id')) {
+    database.exec('ALTER TABLE style_profiles ADD COLUMN user_id TEXT');
   }
 
   // One agent turn is one run: every row it logs shares a run_id, so the whole

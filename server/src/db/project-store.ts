@@ -8,6 +8,7 @@ import {
   type Operation,
   type Project,
 } from '@editify/shared';
+import { AssetStore } from './asset-store.js';
 import type { EditifyDatabase } from './database.js';
 import { applyOperation, findVideoOverlaps, overlapKey, OperationError } from '../operations/apply.js';
 
@@ -34,6 +35,18 @@ function assertNoNewVideoOverlap(before: Project, after: Project): void {
   throw new OperationError(
     `Clips ${first} and ${second} would overlap on video track ${introduced.trackId} from ${second3(introduced.start)} to ${second3(introduced.end)}; video clips cannot share timeline time`,
   );
+}
+
+/** Raised when an edit references media the project was never given. */
+export class AssetAccessError extends OperationError {
+  constructor(assetId: string) {
+    super(`Asset ${assetId} is not in this project`);
+    this.name = 'AssetAccessError';
+  }
+}
+
+function assetIds(project: Project): Set<string> {
+  return new Set(project.tracks.flatMap((track) => track.clips.flatMap((clip) => clip.assetId ?? [])));
 }
 
 /** Structural project comparison ignoring `version`, normalized through the schema so key order can't differ. */
@@ -87,11 +100,15 @@ export interface OperationLogEntry {
 
 /**
  * `userId` scoping: undefined means "no scope" — shared-token requests and
- * internal service calls see everything. A real user sees their own rows plus
- * NULL-owner rows (pre-auth data, the built-in sound library).
+ * internal service calls see everything. A real user sees only their own rows;
+ * NULL-owner (pre-auth) projects belong to nobody.
  */
 export class ProjectStore {
-  constructor(private readonly database: EditifyDatabase) {}
+  private readonly assets: AssetStore;
+
+  constructor(private readonly database: EditifyDatabase) {
+    this.assets = new AssetStore(database);
+  }
 
   create(input: NewProject, userId?: string): Project {
     const values = newProjectSchema.parse(input);
@@ -129,7 +146,7 @@ export class ProjectStore {
   list(userId?: string): Project[] {
     const rows = (userId === undefined
       ? this.database.prepare('SELECT doc_json FROM projects ORDER BY updated_at DESC').all()
-      : this.database.prepare('SELECT doc_json FROM projects WHERE user_id = ? OR user_id IS NULL ORDER BY updated_at DESC').all(userId)
+      : this.database.prepare('SELECT doc_json FROM projects WHERE user_id = ? ORDER BY updated_at DESC').all(userId)
     ) as ProjectRow[];
     return rows.map((row) => projectSchema.parse(JSON.parse(row.doc_json)));
   }
@@ -137,7 +154,7 @@ export class ProjectStore {
   get(id: string, userId?: string): Project | undefined {
     const row = (userId === undefined
       ? this.database.prepare('SELECT doc_json FROM projects WHERE id = ?').get(id)
-      : this.database.prepare('SELECT doc_json FROM projects WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(id, userId)
+      : this.database.prepare('SELECT doc_json FROM projects WHERE id = ? AND user_id = ?').get(id, userId)
     ) as ProjectRow | undefined;
     return row ? projectSchema.parse(JSON.parse(row.doc_json)) : undefined;
   }
@@ -263,6 +280,14 @@ export class ProjectStore {
       // legitimately passes through an intermediate overlap. History operations
       // restore an earlier document verbatim, so they are exempt.
       if (!isHistoryOperation) assertNoNewVideoOverlap(original, project);
+      // project_assets is the grant: a clip may only name media linked to this
+      // project (or a library sound). Only new references are checked, so an
+      // older timeline stays editable.
+      if (!isHistoryOperation) {
+        const before = assetIds(original);
+        const foreign = [...assetIds(project)].find((id) => !before.has(id) && !this.assets.linkedOrSound(projectId, id));
+        if (foreign) throw new AssetAccessError(foreign);
+      }
       // A write that changed nothing must not bump the version: it would create a
       // bogus revert checkpoint and make the client flash an identical document.
       if (!isHistoryOperation && sameDoc(original, project)) return original;

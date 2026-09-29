@@ -3,6 +3,7 @@ import type { Operation, Project } from '@editify/shared';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { OperationError } from '../src/operations/apply.js';
+import { grant } from './fixtures/grant.js';
 
 const RUN = 'run-1';
 
@@ -45,6 +46,7 @@ describe('reverting one agent run', () => {
     database = createDatabase(':memory:');
     projects = new ProjectStore(database);
     projectId = projects.create({ title: 'Revert', format: '9:16', fps: 30 }).id;
+    grant(database, projectId, 'asset-a');
   });
 
   it('restores the pre-run document across every batch of the run and bumps the version', () => {

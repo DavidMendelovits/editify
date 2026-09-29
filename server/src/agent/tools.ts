@@ -49,6 +49,8 @@ export type { TimelineTranscript, TimelineTranscriptWord } from '../services/cle
 
 export interface ToolContext {
   projectId: string;
+  /** The signed-in owner; undefined for shared-token and local-dev turns. */
+  userId?: string;
   projects: ProjectStore;
   assets: AssetStore;
   styleDoc: string | null;
@@ -372,6 +374,15 @@ async function executeBatch(ctx: ToolContext, operations: Operation[], notes: st
 }
 
 /**
+ * A model-supplied asset id goes through the project: `project_assets` is the
+ * grant, so an id from someone else's library reads as not found. Ids read off
+ * the project's own clips need no check; the timeline only takes granted media.
+ */
+function projectAsset(ctx: ToolContext, assetId: string): StoredAsset | undefined {
+  return ctx.assets.getInProject(ctx.projectId, assetId, ctx.userId);
+}
+
+/**
  * Cache read that falls back to running transcription on demand. A failed
  * import-time transcription never writes to the store, so this call doubles as
  * the retry; TranscriptService dedupes concurrent runs per asset.
@@ -659,10 +670,10 @@ function createIdAllocator(project: Project): (prefix: string) => string {
 
 /** Resolve a library sound, synthesizing the library once if it was never generated. */
 async function resolveSound(ctx: ToolContext, soundId: string): Promise<StoredAsset | undefined> {
-  const existing = ctx.assets.get(soundId);
+  const existing = projectAsset(ctx, soundId);
   if (existing) return existing;
   await ensureSoundLibrary(ctx.assets);
-  return ctx.assets.get(soundId);
+  return projectAsset(ctx, soundId);
 }
 
 async function syncAudio(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
@@ -1062,7 +1073,7 @@ export function createToolRegistry(): ToolDef[] {
       execute: async (ctx, input) => {
         emptyInputSchema.parse(input);
         // Scoped to the project: another project's footage is not yours to cut.
-        return ctx.assets.listForProject(ctx.projectId).map(({ id, originalName, label, duration, width, height, hasAudio, mimeType }) => ({
+        return ctx.assets.listForProject(ctx.projectId, ctx.userId).map(({ id, originalName, label, duration, width, height, hasAudio, mimeType }) => ({
           id, originalName, label, duration, width, height, hasAudio, mimeType,
         }));
       },
@@ -1082,6 +1093,7 @@ export function createToolRegistry(): ToolDef[] {
       schema: assetInputSchema,
       execute: async (ctx, input) => {
         const { assetId } = assetInputSchema.parse(input);
+        if (!projectAsset(ctx, assetId)) return { ok: false, error: `Asset ${assetId} was not found` };
         const transcript = await ensureTranscript(ctx, assetId);
         if ('error' in transcript) return { ok: false, error: transcript.error };
         return {
@@ -1109,11 +1121,11 @@ export function createToolRegistry(): ToolDef[] {
       schema: assetInputSchema,
       execute: async (ctx, input) => {
         const { assetId } = assetInputSchema.parse(input);
-        const asset = ctx.assets.get(assetId);
+        const asset = projectAsset(ctx, assetId);
         if (!asset) return { ok: false, error: `Asset ${assetId} was not found` };
         const transcript = await ensureTranscript(ctx, assetId);
         if ('error' in transcript) return { ok: false, error: transcript.error };
-        const result = await ctx.insights.getOrCreate(asset);
+        const result = await ctx.insights.getOrCreate(asset, false, ctx.userId);
         return result ?? { ok: false, error: `No transcript for asset ${assetId}` };
       },
     },
@@ -1139,7 +1151,7 @@ export function createToolRegistry(): ToolDef[] {
       schema: assetInputSchema,
       execute: async (ctx, input) => {
         const { assetId } = assetInputSchema.parse(input);
-        const asset = ctx.assets.get(assetId);
+        const asset = projectAsset(ctx, assetId);
         if (!asset) return { ok: false, error: `Asset ${assetId} was not found` };
         if (!ctx.dissections) return { ok: false, error: 'Dissection service is not available' };
         const dissection = await ctx.dissections.getOrCreate(asset);
@@ -1172,7 +1184,7 @@ export function createToolRegistry(): ToolDef[] {
       schema: assetInputSchema,
       execute: async (ctx, input) => {
         const { assetId } = assetInputSchema.parse(input);
-        const asset = ctx.assets.get(assetId);
+        const asset = projectAsset(ctx, assetId);
         if (!asset) return { ok: false, error: `Asset ${assetId} was not found` };
         const transcript = await ensureTranscript(ctx, assetId);
         if ('error' in transcript) return { ok: false, error: transcript.error };

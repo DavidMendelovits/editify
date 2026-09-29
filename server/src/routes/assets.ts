@@ -257,12 +257,12 @@ export function registerAssetRoutes(
   });
 
   // The media library. With `?projectId=` it is scoped to that project's own
-  // imports; without it, every asset on the server, for the "all clips" browser.
+  // imports; without it, every asset the caller can see, for the "all clips" browser.
   // Newest first either way.
   app.get<{ Querystring: { projectId?: string } }>('/assets', async (request, reply) => {
     const projectId = requireProject(request.query.projectId, reply, request.userId);
     if (projectId === null) return reply;
-    const list = projectId ? assets.listForProject(projectId) : assets.list(request.userId);
+    const list = projectId ? assets.listForProject(projectId, request.userId) : assets.list(request.userId);
     return list.reverse().map(publicAsset);
   });
 
@@ -280,12 +280,15 @@ export function registerAssetRoutes(
 
   app.patch<{ Params: { id: string } }>('/assets/:id', async (request, reply) => {
     const { label } = labelRequestSchema.parse(request.body);
-    if (!assets.get(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Asset not found' });
+    if (!assets.owned(request.params.id, request.userId)) return await reply.code(404).send({ error: 'Asset not found' });
     const updated = assets.setLabel(request.params.id, label);
     return updated ? publicAsset(updated) : await reply.code(404).send({ error: 'Asset not found' });
   });
 
-  app.get('/assets/importable', async (request) => {
+  // MEDIA_IMPORT_DIR is one folder on the server, not anybody's library, so
+  // only unscoped callers (shared token, local dev) may browse or import it.
+  app.get('/assets/importable', async (request, reply) => {
+    if (request.userId) return await reply.code(403).send({ error: 'Server imports are not available to signed-in users' });
     let entries;
     try {
       entries = await readdir(mediaImportDir, { withFileTypes: true });
@@ -305,6 +308,7 @@ export function registerAssetRoutes(
   });
 
   app.post('/assets/import', async (request, reply) => {
+    if (request.userId) return await reply.code(403).send({ error: 'Server imports are not available to signed-in users' });
     const { name, projectId: requestedProject } = importRequestSchema.parse(request.body);
     const projectId = requireProject(requestedProject, reply, request.userId);
     if (projectId === null) return reply;
@@ -363,7 +367,7 @@ export function registerAssetRoutes(
   app.get<{ Params: { id: string } }>('/assets/:id/insights', async (request, reply) => {
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
-    const result = await insights.getOrCreate(asset);
+    const result = await insights.getOrCreate(asset, false, request.userId);
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 
@@ -371,7 +375,7 @@ export function registerAssetRoutes(
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     const { force } = forceRequestSchema.parse(request.body ?? {});
-    const result = await insights.getOrCreate(asset, force);
+    const result = await insights.getOrCreate(asset, force, request.userId);
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 

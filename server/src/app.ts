@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
-import { registerAuth } from './auth.js';
+import { registerAuth, type AuthOptions } from './auth.js';
 import { supabaseUrl } from './config.js';
 import { EDITING_PRESETS } from '@editify/shared';
 import { ZodError } from 'zod';
@@ -14,7 +14,7 @@ import { AssetStore } from './db/asset-store.js';
 import { ChatStore } from './db/chat-store.js';
 import { createDatabase, type EditifyDatabase } from './db/database.js';
 import { InsightStore } from './db/insight-store.js';
-import { ProjectStore, VersionConflictError } from './db/project-store.js';
+import { AssetAccessError, ProjectStore, VersionConflictError } from './db/project-store.js';
 import { RenderStore } from './db/render-store.js';
 import { ReportStore } from './db/report-store.js';
 import { SettingsStore } from './db/settings-store.js';
@@ -41,7 +41,12 @@ import { ReproService } from './services/repro-service.js';
 import { TelemetryService } from './services/telemetry-service.js';
 import { TranscriptService } from './services/transcript-service.js';
 
-export interface AppOptions { database?: EditifyDatabase; logger?: boolean }
+export interface AppOptions {
+  database?: EditifyDatabase;
+  logger?: boolean;
+  /** Tests sign their own JWTs: a Supabase URL for the issuer and a local key set. */
+  auth?: Pick<AuthOptions, 'supabaseUrl' | 'jwks'>;
+}
 
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 20 * 1024 * 1024 });
@@ -58,7 +63,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const chats = new ChatStore(database);
   const settings = new SettingsStore(database);
   const registry = new ProviderRegistry(settings);
-  const resolveProvider = async (): Promise<ToolProvider> => await registry.resolve();
+  const resolveProvider = async (userId?: string): Promise<ToolProvider> => await registry.resolve(userId);
   const agent = new AgentService(resolveProvider);
   const transcripts = new TranscriptService(new TranscriptStore(database));
   const insights = new InsightService(new InsightStore(database), transcripts, resolveProvider);
@@ -76,13 +81,14 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   );
 
   // EDITIFY_NO_AUTH=1 disables auth for local agent testing; every request
-  // lands in the shared (NULL userId) scope. Ignored on Fly/production.
+  // is unscoped (no userId) and sees every row. Ignored on Fly/production.
   const noAuth = process.env.EDITIFY_NO_AUTH === '1'
     && process.env.NODE_ENV !== 'production' && !process.env.FLY_APP_NAME;
   if (noAuth) app.log.warn('EDITIFY_NO_AUTH=1: serving all requests unauthenticated');
   else registerAuth(app, {
     sharedToken: process.env.EDITIFY_TOKEN,
     supabaseUrl,
+    ...options.auth,
     // The exported web client is public — the sign-in screen IS the gate, so the
     // static wildcard route (and the index.html 404 fallback for deep links)
     // skip auth. Every other API route still demands credentials.
@@ -110,7 +116,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   // Built-in SFX/music, synthesized on first request and registered as assets.
   app.get('/sounds', async () => await ensureSoundLibrary(assets));
   registerLegalRoutes(app);
-  registerAccountRoutes(app, database);
+  registerAccountRoutes(app, database, styles);
   registerAgentRoutes(app, registry);
   registerProjectRoutes(app, projects, renderQueue, assets, transcripts, syncs);
   registerAssetRoutes(app, assets, projects, transcripts, insights, dissections, database, faces);
@@ -125,6 +131,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
     if (error instanceof ZodError) {
       return await reply.code(400).send({ error: 'Validation failed', issues: error.issues });
+    }
+    if (error instanceof AssetAccessError) {
+      return await reply.code(403).send({ error: error.message });
     }
     if (error instanceof OperationError) {
       return await reply.code(400).send({ error: error.message });

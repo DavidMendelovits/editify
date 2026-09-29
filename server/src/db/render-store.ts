@@ -61,13 +61,13 @@ export class RenderStore {
     return row ? this.toRecord(row) : undefined;
   }
 
-  /** `userId` scopes through the owning project, matching ProjectStore's rules. */
+  /** `userId` scopes through the owning project: owner-only, like ProjectStore. */
   get(id: string, userId?: string): RenderRecord | undefined {
     const row = (userId === undefined
       ? this.database.prepare('SELECT * FROM renders WHERE id = ?').get(id)
       : this.database.prepare(`
           SELECT renders.* FROM renders JOIN projects ON projects.id = renders.project_id
-          WHERE renders.id = ? AND (projects.user_id = ? OR projects.user_id IS NULL)
+          WHERE renders.id = ? AND projects.user_id = ?
         `).get(id, userId)
     ) as RenderRow | undefined;
     if (!row) return undefined;

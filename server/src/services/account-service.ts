@@ -2,8 +2,9 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { assetsRoot, supabaseUrl } from '../config.js';
 import type { EditifyDatabase } from '../db/database.js';
+import type { StyleService } from './style-service.js';
 
-export interface AccountDeletion { projects: number; assets: number; reports: number }
+export interface AccountDeletion { projects: number; assets: number; reports: number; styles: number }
 
 /** Well under SQLite's bound-parameter ceiling on every build we might run on. */
 const OBSERVATION_DELETE_CHUNK = 500;
@@ -17,14 +18,16 @@ export class AccountDeletionUnavailable extends Error {
 }
 
 /**
- * Everything one user owns. `user_id IS NULL` is the shared scope (pre-auth
- * rows, the built-in sound library) and belongs to nobody, so `= ?` is the
- * whole rule. Cascades do the rest: a project takes its operation log, asset
- * links, renders and chat with it; an asset takes its transcript, insights,
- * dissection and waveform. `video_observations` carries no foreign key, so its
- * rows are cleared by hand.
+ * Everything one user owns. `user_id IS NULL` rows (pre-auth data, the built-in
+ * sound library) belong to nobody, so `= ?` is the whole rule. Cascades do the
+ * rest: a project takes its operation log, asset links, renders and chat with
+ * it; an asset takes its transcript, insights, dissection and waveform.
+ * `video_observations` carries no foreign key, so its rows are cleared by hand,
+ * as are the user's `key:userId` preferences. `styles` cancels a style
+ * analysis still running for them, so it cannot save a profile afterwards.
  */
-export async function deleteUserData(database: EditifyDatabase, userId: string): Promise<AccountDeletion> {
+export async function deleteUserData(database: EditifyDatabase, userId: string, styles?: Pick<StyleService, 'forget'>): Promise<AccountDeletion> {
+  styles?.forget(userId);
   const assetIds = (database.prepare('SELECT id FROM assets WHERE user_id = ?').all(userId) as Array<{ id: string }>)
     .map((row) => row.id);
   // Read before the delete: dropping the projects cascades these rows away.
@@ -42,10 +45,13 @@ export async function deleteUserData(database: EditifyDatabase, userId: string):
       database.prepare(`DELETE FROM video_observations WHERE asset_id IN (${chunk.map(() => '?').join(', ')})`)
         .run(...chunk);
     }
+    // Per-user preferences are `key:userId` rows (SettingsStore.setFor).
+    database.prepare('DELETE FROM settings WHERE substr(key, -length(?)) = ?').run(`:${userId}`, `:${userId}`);
     return {
       projects: database.prepare('DELETE FROM projects WHERE user_id = ?').run(userId).changes,
       assets: database.prepare('DELETE FROM assets WHERE user_id = ?').run(userId).changes,
       reports: database.prepare('DELETE FROM reports WHERE user_id = ?').run(userId).changes,
+      styles: database.prepare('DELETE FROM style_profiles WHERE user_id = ?').run(userId).changes,
     };
   })();
 

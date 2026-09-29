@@ -147,6 +147,7 @@ describe('media library', () => {
     });
     const app = await buildApp({ database });
     const project = (await app.inject({ method: 'POST', url: '/projects', payload: { title: 'Batch import' } })).json();
+    durations.forEach((_duration, index) => assets.link(project.id, `a${index}`));
 
     let start = project.duration;
     const ops = durations.map((duration, index) => {

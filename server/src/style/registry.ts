@@ -69,10 +69,11 @@ export class StyleAnalyzerRegistry {
     })));
   }
 
-  async status(): Promise<AnalyzerStatus> {
+  /** The choice is per user, falling back to the global one (no user reads and writes the global). */
+  async status(userId?: string): Promise<AnalyzerStatus> {
     const options = await this.options();
     const usable = (id: string | undefined) => id !== undefined && options.some((option) => option.id === id && option.available);
-    const requested = this.settings.get(ANALYZER_SETTING_KEY);
+    const requested = this.settings.getFor(ANALYZER_SETTING_KEY, userId);
     const envChoice = this.env.EDITIFY_STYLE_ANALYZER;
     const active = usable(requested) ? requested as string
       : usable(envChoice) ? envChoice as string
@@ -80,16 +81,16 @@ export class StyleAnalyzerRegistry {
     return { active, ...(requested && !usable(requested) ? { requested } : {}), options };
   }
 
-  async select(id: string): Promise<AnalyzerStatus> {
+  async select(id: string, userId?: string): Promise<AnalyzerStatus> {
     const options = await this.options();
     const chosen = options.find((option) => option.id === id);
     if (!chosen?.available) throw new Error(`${id} is not available: ${chosen?.detail ?? 'unknown analyzer'}`);
-    this.settings.set(ANALYZER_SETTING_KEY, id);
-    return await this.status();
+    this.settings.setFor(ANALYZER_SETTING_KEY, id, userId);
+    return await this.status(userId);
   }
 
-  async resolve(): Promise<VideoAnalyzer> {
-    const { active } = await this.status();
+  async resolve(userId?: string): Promise<VideoAnalyzer> {
+    const { active } = await this.status(userId);
     return this.analyzers.get(active) ?? ffmpegAnalyzer;
   }
 }

@@ -44,6 +44,7 @@ describe('sync service edges', () => {
     memo: { assetId?: string; out?: number } = {},
   ): Project {
     const project = projects.create({ title: 'Set', format: '9:16', fps: 30 });
+    for (const asset of assets.list()) assets.link(project.id, asset.id);
     return projects.applyOperations(project.id, [
       ...videoClips.map((clip) => ({ type: 'add_clip' as const, params: { trackId: 'video-main', clip: { assetId: 'standup', ...clip } } })),
       { type: 'add_clip', params: { trackId: 'audio-main', clip: { id: 'memo-clip', assetId: memo.assetId ?? 'memo', start: 0, in: 0, out: memo.out ?? 40 } } },

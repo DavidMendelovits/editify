@@ -5,7 +5,10 @@ import { ChatStore } from '../src/db/chat-store.js';
 import { createDatabase } from '../src/db/database.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { RenderStore } from '../src/db/render-store.js';
+import { SettingsStore } from '../src/db/settings-store.js';
+import { PROVIDER_SETTING_KEY } from '../src/agent/registry.js';
 import { deleteUserData } from '../src/services/account-service.js';
+import { SELECTED_KEY } from '../src/services/style-service.js';
 
 // Ids are distinctive because the delete also unlinks `assets/<id>` on disk.
 const media = (id: string) => ({
@@ -42,7 +45,7 @@ describe('DELETE /account', () => {
     report.run('r-bob', 's', 'account-bob', 'crash', '{}', new Date().toISOString());
 
     const counts = await deleteUserData(database, 'account-alice');
-    expect(counts).toEqual({ projects: 1, assets: 1, reports: 1 });
+    expect(counts).toEqual({ projects: 1, assets: 1, reports: 1, styles: 0 });
 
     // Alice is gone, everyone else is untouched.
     expect(projects.list().map((project) => project.id).sort()).toEqual([theirs.id, shared.id].sort());
@@ -58,7 +61,30 @@ describe('DELETE /account', () => {
     expect(count('SELECT COUNT(*) AS count FROM reports WHERE user_id = ?', 'account-bob')).toBe(1);
 
     // Deleting twice is not an error; the second pass finds nothing.
-    expect(await deleteUserData(database, 'account-alice')).toEqual({ projects: 0, assets: 0, reports: 0 });
+    expect(await deleteUserData(database, 'account-alice')).toEqual({ projects: 0, assets: 0, reports: 0, styles: 0 });
+    database.close();
+  });
+
+  it('takes the caller\'s style profiles and preferences, and cancels their style run', async () => {
+    const database = createDatabase(':memory:');
+    const settings = new SettingsStore(database);
+    const style = database.prepare(
+      "INSERT INTO style_profiles (id, asset_ids_json, metrics_json, style_doc, created_at, user_id) VALUES (?, '[]', '[]', 'doc', ?, ?)",
+    );
+    style.run('style-alice', new Date().toISOString(), 'account-alice');
+    style.run('style-bob', new Date().toISOString(), 'account-bob');
+    settings.setFor(PROVIDER_SETTING_KEY, 'mock', 'account-alice');
+    settings.setFor(SELECTED_KEY, 'style-alice', 'account-alice');
+    settings.setFor(PROVIDER_SETTING_KEY, 'mock', 'account-bob');
+    settings.set(PROVIDER_SETTING_KEY, 'mock');
+    const forgotten: string[] = [];
+
+    const counts = await deleteUserData(database, 'account-alice', { forget: (userId) => forgotten.push(userId) });
+    expect(counts.styles).toBe(1);
+    expect(forgotten).toEqual(['account-alice']);
+    const keys = (database.prepare('SELECT key FROM settings ORDER BY key').all() as Array<{ key: string }>).map((row) => row.key);
+    expect(keys).toEqual([PROVIDER_SETTING_KEY, `${PROVIDER_SETTING_KEY}:account-bob`]);
+    expect((database.prepare('SELECT id FROM style_profiles').all() as Array<{ id: string }>).map((row) => row.id)).toEqual(['style-bob']);
     database.close();
   });
 
