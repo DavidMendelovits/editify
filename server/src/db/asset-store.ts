@@ -1,6 +1,7 @@
 import type { AssetMetadata } from '@editify/shared';
 import type { EditifyDatabase } from './database.js';
 import { publicBaseUrl } from '../config.js';
+import { SOUND_ID_PREFIX } from '../media/sound-library.js';
 
 export interface StoredAsset extends AssetMetadata {
   originalPath: string;
@@ -17,10 +18,17 @@ interface AssetRow {
   thumbnail_path: string; created_at: string; label: string | null; status: string | null;
 }
 
+/**
+ * What a signed-in user may read: their own rows plus the built-in sound
+ * library. Other NULL-owner rows (pre-auth uploads) belong to nobody and stay
+ * hidden. Binds one parameter, the user id.
+ */
+const VISIBLE = `(assets.user_id = ? OR (assets.user_id IS NULL AND assets.id LIKE '${SOUND_ID_PREFIX}%'))`;
+
 export class AssetStore {
   constructor(private readonly database: EditifyDatabase) {}
 
-  /** `userId` scoping matches ProjectStore: undefined = unscoped, NULL rows are shared. */
+  /** `userId` scoping matches ProjectStore: undefined = unscoped (shared token, internal calls). */
   insert(asset: NewAsset, userId?: string): StoredAsset {
     this.database.prepare(`
       INSERT INTO assets
@@ -74,15 +82,22 @@ export class AssetStore {
   get(id: string, userId?: string): StoredAsset | undefined {
     const row = (userId === undefined
       ? this.database.prepare('SELECT * FROM assets WHERE id = ?').get(id)
-      : this.database.prepare('SELECT * FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(id, userId)
+      : this.database.prepare(`SELECT * FROM assets WHERE id = ? AND ${VISIBLE}`).get(id, userId)
     ) as AssetRow | undefined;
+    return row ? this.fromRow(row) : undefined;
+  }
+
+  /** Writes need ownership: the sound library is readable by everyone, editable by no user. */
+  owned(id: string, userId?: string): StoredAsset | undefined {
+    if (userId === undefined) return this.get(id);
+    const row = this.database.prepare('SELECT * FROM assets WHERE id = ? AND user_id = ?').get(id, userId) as AssetRow | undefined;
     return row ? this.fromRow(row) : undefined;
   }
 
   getByOriginalName(originalName: string, userId?: string): StoredAsset | undefined {
     const row = (userId === undefined
       ? this.database.prepare('SELECT * FROM assets WHERE original_name = ? ORDER BY rowid ASC LIMIT 1').get(originalName)
-      : this.database.prepare('SELECT * FROM assets WHERE original_name = ? AND (user_id = ? OR user_id IS NULL) ORDER BY rowid ASC LIMIT 1').get(originalName, userId)
+      : this.database.prepare(`SELECT * FROM assets WHERE original_name = ? AND ${VISIBLE} ORDER BY rowid ASC LIMIT 1`).get(originalName, userId)
     ) as AssetRow | undefined;
     return row ? this.fromRow(row) : undefined;
   }
@@ -90,19 +105,35 @@ export class AssetStore {
   list(userId?: string): StoredAsset[] {
     const rows = (userId === undefined
       ? this.database.prepare('SELECT * FROM assets ORDER BY rowid ASC').all()
-      : this.database.prepare('SELECT * FROM assets WHERE user_id = ? OR user_id IS NULL ORDER BY rowid ASC').all(userId)
+      : this.database.prepare(`SELECT * FROM assets WHERE ${VISIBLE} ORDER BY rowid ASC`).all(userId)
     ) as AssetRow[];
     return rows.map((row) => this.fromRow(row));
   }
 
   /** The media belonging to one project — everything else stays out of its way. */
-  listForProject(projectId: string): StoredAsset[] {
+  listForProject(projectId: string, userId?: string): StoredAsset[] {
     return (this.database.prepare(`
       SELECT assets.* FROM assets
       JOIN project_assets ON project_assets.asset_id = assets.id
-      WHERE project_assets.project_id = ?
+      WHERE project_assets.project_id = ?${userId === undefined ? '' : ` AND ${VISIBLE}`}
       ORDER BY assets.rowid ASC
-    `).all(projectId) as AssetRow[]).map((row) => this.fromRow(row));
+    `).all(...(userId === undefined ? [projectId] : [projectId, userId])) as AssetRow[]).map((row) => this.fromRow(row));
+  }
+
+  /**
+   * One asset as the project may use it: linked to it, or a library sound.
+   * `project_assets` is the grant the agent's tools read through.
+   */
+  getInProject(projectId: string, id: string, userId?: string): StoredAsset | undefined {
+    if (!this.linkedOrSound(projectId, id)) return undefined;
+    return this.get(id, userId);
+  }
+
+  /** Whether a timeline may reference `id`: linked to the project, or a library sound. */
+  linkedOrSound(projectId: string, id: string): boolean {
+    return id.startsWith(SOUND_ID_PREFIX) || Boolean(this.database.prepare(
+      'SELECT 1 FROM project_assets WHERE project_id = ? AND asset_id = ?',
+    ).get(projectId, id));
   }
 
   /** Idempotent: re-importing the same file into a project is not an error. */

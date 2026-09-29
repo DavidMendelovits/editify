@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { OperationError } from '../src/operations/apply.js';
+import { grant } from './fixtures/grant.js';
 
 function addClip(id: string, start: number): Operation {
   return { type: 'add_clip', params: { trackId: 'video-main', clip: { id, assetId: 'asset-a', start, in: 0, out: 2 } } };
@@ -30,6 +31,7 @@ describe('redo', () => {
     database = createDatabase(':memory:');
     projects = new ProjectStore(database);
     projectId = projects.create({ title: 'Redo', format: '9:16', fps: 30 }).id;
+    grant(database, projectId, 'asset-a');
   });
 
   it('restores what the undo retracted and bumps the version', () => {
@@ -89,6 +91,7 @@ describe('GET /projects/:id/history', () => {
     app = await buildApp({ database });
     const created = await app.inject({ method: 'POST', url: '/projects', payload: { title: 'History', format: '9:16', fps: 30 } });
     project = created.json() as Project;
+    grant(database, project.id, 'asset-a');
   });
 
   afterEach(async () => { await app.close(); });

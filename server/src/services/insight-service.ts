@@ -92,28 +92,28 @@ export class InsightService {
   constructor(
     readonly store: InsightStore,
     private readonly transcripts: TranscriptService,
-    /** Resolved per call so the UI's provider picker applies without a restart. */
-    private readonly provider: () => Promise<ToolProvider>,
+    /** Resolved per call (and per user) so the UI's provider picker applies without a restart. */
+    private readonly provider: (userId?: string) => Promise<ToolProvider>,
   ) {}
 
   getStored(assetId: string): AssetInsights | undefined {
     return this.store.get(assetId);
   }
 
-  async getOrCreate(asset: StoredAsset, force = false): Promise<AssetInsights | undefined> {
+  async getOrCreate(asset: StoredAsset, force = false, userId?: string): Promise<AssetInsights | undefined> {
     const existing = this.store.get(asset.id);
     if (existing && !force) return existing;
     const transcript = this.transcripts.get(asset.id);
     if (!transcript) return undefined;
     // ponytail: like transcribe(), a force=true call that lands mid-run joins
     // the in-flight run rather than paying for a second provider round trip.
-    const pending = this.inFlight.get(asset.id) ?? this.analyze(asset, transcript)
+    const pending = this.inFlight.get(asset.id) ?? this.analyze(asset, transcript, userId)
       .finally(() => this.inFlight.delete(asset.id));
     this.inFlight.set(asset.id, pending);
     return await pending;
   }
 
-  private async analyze(asset: StoredAsset, transcript: StoredTranscript): Promise<AssetInsights> {
+  private async analyze(asset: StoredAsset, transcript: StoredTranscript, userId?: string): Promise<AssetInsights> {
     const generatedAt = new Date().toISOString();
     const system = [
       'Analyze this timed transcript for a short-form video edit.',
@@ -138,7 +138,7 @@ export class InsightService {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const user = `${JSON.stringify(payload)}${validationError ? `\nPrevious response was invalid: ${validationError}` : ''}`;
       try {
-        const provider = await this.provider();
+        const provider = await this.provider(userId);
         const parsed = assetInsightsSchema.parse(parseJsonResponse(await provider.completeText(system, user)));
         if (parsed.assetId !== asset.id) throw new Error(`assetId must be ${asset.id}`);
         return this.store.put(parsed);

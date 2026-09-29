@@ -57,7 +57,7 @@ describe('reel tools', () => {
   afterEach(() => database.close());
 
   function seedProject(): Project {
-    return projects.insert({
+    const project = projects.insert({
       id: 'reel', title: 'Reel', format: '9:16', fps: 30, duration: 22, version: 0,
       tracks: [
         { id: 'video-main', kind: 'video', clips: [
@@ -72,6 +72,8 @@ describe('reel tools', () => {
         ] },
       ],
     });
+    for (const id of ['raw', 'outro']) assets.link(project.id, id);
+    return project;
   }
 
   function context(extra: Partial<ToolContext> = {}): ToolContext {

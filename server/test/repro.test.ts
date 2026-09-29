@@ -43,8 +43,9 @@ function serveWithProject() {
     thumbnailUrl: '/assets/asset-1/thumb.jpg',
     filmstripUrl: '/assets/asset-1/filmstrip.jpg',
     createdAt: new Date().toISOString(),
-  });
+  }, REPORTER);
   const project = projects.create({ title: "Dad's 70th", format: '9:16', fps: 30 }, REPORTER);
+  assets.link(project.id, asset.id);
   projects.applyOperations(project.id, [{
     type: 'add_clip',
     params: { trackId: 'video-main', clip: { id: 'clip-1', assetId: asset.id, start: 0, in: 0, out: 6, volume: 1, speed: 1 } },
@@ -151,6 +152,9 @@ describe('repro bundles', () => {
       thumbnailUrl: '/assets/theirs/thumb.jpg', filmstripUrl: '/assets/theirs/filmstrip.jpg',
       createdAt: new Date().toISOString(),
     }, 'someone-else');
+    // Linked the way pre-scoping data could be: the grant lets the clip in, the
+    // bundle still has to check the owner.
+    new AssetStore(database).link(projectId, 'theirs');
     const current = projects.get(projectId)!;
     projects.applyOperations(projectId, [{
       type: 'add_clip',

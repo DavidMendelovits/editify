@@ -81,19 +81,20 @@ function isProviderId(value: string | undefined): value is AgentProviderId {
 /**
  * Resolves the provider for one chat turn: the stored UI choice when it is still
  * usable, otherwise whatever the environment supports. Reading it per request is
- * what lets the picker take effect without a server restart.
+ * what lets the picker take effect without a server restart. The choice is per
+ * user, falling back to the global one (no user reads and writes the global).
  */
 export class ProviderRegistry {
   constructor(private readonly settings: SettingsStore) {}
 
-  private stored(): AgentProviderId | undefined {
-    const value = this.settings.get(PROVIDER_SETTING_KEY);
+  private stored(userId?: string): AgentProviderId | undefined {
+    const value = this.settings.getFor(PROVIDER_SETTING_KEY, userId);
     return isProviderId(value) ? value : undefined;
   }
 
-  async status(): Promise<ProviderStatus> {
+  async status(userId?: string): Promise<ProviderStatus> {
     const options = await listProviders();
-    const requested = this.stored();
+    const requested = this.stored(userId);
     const usable = requested && options.find((option) => option.id === requested)?.available;
     return {
       active: usable ? requested : defaultProviderId(),
@@ -102,20 +103,20 @@ export class ProviderRegistry {
     };
   }
 
-  async select(id: AgentProviderId): Promise<ProviderStatus> {
+  async select(id: AgentProviderId, userId?: string): Promise<ProviderStatus> {
     const options = await listProviders();
     const chosen = options.find((option) => option.id === id);
     if (!chosen?.available) throw new Error(`${id} is not available: ${chosen?.detail ?? 'unknown provider'}`);
-    this.settings.set(PROVIDER_SETTING_KEY, id);
-    return await this.status();
+    this.settings.setFor(PROVIDER_SETTING_KEY, id, userId);
+    return await this.status(userId);
   }
 
   /**
    * The provider a turn will actually run with. Mirrors `status().active` —
    * an unavailable stored choice falls back instead of dying in spawn.
    */
-  async resolve(): Promise<ToolProvider> {
-    const { active } = await this.status();
+  async resolve(userId?: string): Promise<ToolProvider> {
+    const { active } = await this.status(userId);
     return createProvider(active);
   }
 }

@@ -59,11 +59,14 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
 
   /** Borrowing from "all clips" adopts the asset, so it stops being someone else's. */
   function add(asset: AssetMetadata): void {
-    onAdd(asset);
-    if (scope === 'project') return;
+    if (scope === 'project') { onAdd(asset); return; }
+    // Link before the clip lands: the server refuses clips of unlinked media.
     void api.linkAsset(projectId, asset.id)
-      .then(async () => { await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT }); })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .then(async () => {
+        onAdd(asset);
+        await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
+      });
   }
 
   function startEdit(asset: AssetMetadata): void {

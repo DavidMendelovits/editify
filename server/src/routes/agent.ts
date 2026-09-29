@@ -7,12 +7,12 @@ const selectSchema = z.object({
 }).strict();
 
 export function registerAgentRoutes(app: FastifyInstance, registry: ProviderRegistry): void {
-  app.get('/agent/provider', async () => await registry.status());
+  app.get('/agent/provider', async (request) => await registry.status(request.userId));
 
   app.put('/agent/provider', async (request, reply) => {
     const { provider } = selectSchema.parse(request.body);
     try {
-      return await registry.select(provider);
+      return await registry.select(provider, request.userId);
     } catch (error) {
       return await reply.code(409).send({ error: error instanceof Error ? error.message : 'Provider is unavailable' });
     }

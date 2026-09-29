@@ -114,6 +114,7 @@ describe('audio sync', () => {
   /** A project with the stand-up video on the video track and a memo dropped at 0 on the audio track. */
   function setUp(videoClips: Array<Pick<Clip, 'id' | 'start' | 'in' | 'out'>>, memoAssetId = 'memo'): Project {
     const project = projects.create({ title: 'Set', format: '9:16', fps: 30 });
+    for (const asset of assets.list()) assets.link(project.id, asset.id);
     return projects.applyOperations(project.id, [
       ...videoClips.map((clip) => ({ type: 'add_clip' as const, params: { trackId: 'video-main', clip: { ...clip, assetId: 'standup' } } })),
       { type: 'add_clip', params: { trackId: 'audio-main', clip: { id: 'memo-clip', assetId: memoAssetId, start: 0, in: 0, out: MEMO_SECONDS } } },

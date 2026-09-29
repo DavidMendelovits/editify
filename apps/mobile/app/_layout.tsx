@@ -15,6 +15,7 @@ import {
 import { Unbounded_700Bold } from '@expo-google-fonts/unbounded';
 import { SpaceMono_700Bold } from '@expo-google-fonts/space-mono';
 import { AppProviders } from '../src/providers/AppProviders';
+import { scopeCacheTo } from '../src/lib/query-client';
 import { ShareIntake } from '../src/components/ShareIntake';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { syncPurchaseUser } from '../src/lib/purchases';
@@ -44,12 +45,14 @@ export default function RootLayout() {
 
   useEffect(() => {
     let active = true;
-    void supabase.auth.getSession().then(({ data }) => {
-      if (active) setSession(data.session);
-    });
-    const unsubscribe = onAuthStateChange((nextSession) => {
-      if (active) setSession(nextSession);
-    });
+    // The cache is dropped before a different user's session renders.
+    const adopt = (next: Session | null): void => {
+      if (!active) return;
+      scopeCacheTo(next?.user.id);
+      setSession(next);
+    };
+    void supabase.auth.getSession().then(({ data }) => adopt(data.session));
+    const unsubscribe = onAuthStateChange(adopt);
     return () => {
       active = false;
       unsubscribe();

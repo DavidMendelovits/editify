@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
 import { SettingsStore } from '../src/db/settings-store.js';
+import { createProvider } from '../src/agent/providers.js';
 import { PROVIDER_SETTING_KEY, ProviderRegistry } from '../src/agent/registry.js';
+import { ffmpegAnalyzer } from '../src/style/analyzers/ffmpeg.js';
+import { StyleAnalyzerRegistry } from '../src/style/registry.js';
 
 describe('provider registry', () => {
   let database: EditifyDatabase;
@@ -50,6 +53,30 @@ describe('provider registry', () => {
     const status = await registry.status();
     expect(status.active).toBe('mock');
     expect(status.requested).toBe('anthropic');
+  });
+
+  it('keeps a choice per user, falling back to the global one', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    await registry.select('openai');
+    expect((await registry.status('alice')).active).toBe('openai');
+
+    await registry.select('mock', 'alice');
+    expect(settings.get(`${PROVIDER_SETTING_KEY}:alice`)).toBe('mock');
+    expect((await registry.status('alice')).active).toBe('mock');
+    // Alice's pick changes nobody else's, and never the global default.
+    expect((await registry.status('bob')).active).toBe('openai');
+    expect((await registry.status()).active).toBe('openai');
+    expect((await registry.resolve('alice')).name).toBe(createProvider('mock').name);
+  });
+
+  it('keeps an analyzer choice per user too', async () => {
+    const analyzers = new StyleAnalyzerRegistry(settings, [ffmpegAnalyzer, { ...ffmpegAnalyzer, id: 'local', label: 'Local' }], {});
+    await analyzers.select('local', 'alice');
+    expect((await analyzers.status('alice')).active).toBe('local');
+    expect((await analyzers.status('bob')).active).toBe('ffmpeg');
+    expect((await analyzers.resolve('alice')).id).toBe('local');
+    await analyzers.select('local');
+    expect((await analyzers.status('bob')).active).toBe('local');
   });
 
   it('ignores an unrecognised stored value', async () => {

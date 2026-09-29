@@ -59,9 +59,10 @@ export function registerChatRoutes(
     // which operations landed before a crash.
     const ctx: ToolContext = {
       projectId: project.id,
+      ...(request.userId ? { userId: request.userId } : {}),
       projects,
       assets,
-      styleDoc: styles.latest()?.styleDoc ?? null,
+      styleDoc: styles.selected(request.userId)?.styleDoc ?? null,
       currentVersion: project.version,
       transcripts,
       insights,

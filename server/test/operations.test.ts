@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Project } from '@editify/shared';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
-import { ProjectStore, VersionConflictError } from '../src/db/project-store.js';
+import { AssetAccessError, ProjectStore, VersionConflictError } from '../src/db/project-store.js';
 import { applyOperation } from '../src/operations/apply.js';
+import { grant } from './fixtures/grant.js';
 
 function project(): Project {
   return {
@@ -223,10 +224,54 @@ describe('video overlap invariant', () => {
 
   it('still allows overlapping audio clips', () => {
     const created = twoClipProject();
+    grant(database, created.id, 'song', 'whoosh');
     const mixed = store.applyOperations(created.id, [
       { type: 'add_clip', params: { trackId: 'audio-main', clip: { id: 'bed', assetId: 'song', start: 0, in: 0, out: 10 } } },
       { type: 'add_clip', params: { trackId: 'audio-main', clip: { id: 'sfx', assetId: 'whoosh', start: 2, in: 0, out: 1 } } },
     ], 0);
     expect(mixed.tracks[1]?.clips).toHaveLength(2);
+  });
+});
+
+describe('project_assets is the grant', () => {
+  let database: EditifyDatabase;
+  let store: ProjectStore;
+  beforeEach(() => {
+    database = createDatabase(':memory:');
+    store = new ProjectStore(database);
+  });
+
+  const addClip = (id: string, assetId: string) => ({
+    type: 'add_clip' as const, params: { trackId: 'audio-main', clip: { id, assetId, start: 0, in: 0, out: 1 } },
+  });
+
+  it('rejects a clip of an asset that is not linked to the project, and changes nothing', () => {
+    const mine = store.create({ title: 'Mine', format: '9:16', fps: 30 });
+    const other = store.create({ title: 'Other', format: '9:16', fps: 30 });
+    grant(database, other.id, 'elsewhere');
+    expect(() => store.applyOperations(mine.id, [addClip('c', 'elsewhere')], 0)).toThrow(AssetAccessError);
+    expect(() => store.applyOperations(mine.id, [addClip('c', 'never-existed')], 0)).toThrow(/not in this project/);
+    expect(store.get(mine.id)?.version).toBe(0);
+    expect(store.operationLog(mine.id)).toHaveLength(0);
+  });
+
+  it('accepts linked media and library sounds', () => {
+    const created = store.create({ title: 'Mine', format: '9:16', fps: 30 });
+    grant(database, created.id, 'linked');
+    const edited = store.applyOperations(created.id, [addClip('a', 'linked'), addClip('b', 'sound-whoosh-soft')], 0);
+    expect(edited.tracks.find((track) => track.id === 'audio-main')?.clips.map((clip) => clip.assetId)).toEqual(['linked', 'sound-whoosh-soft']);
+  });
+
+  it('only checks new references, so an older timeline stays editable', () => {
+    const created = store.insert({
+      id: 'legacy', title: 'Legacy', format: '9:16', fps: 30, duration: 5, version: 0,
+      tracks: [
+        { id: 'video-main', kind: 'video', clips: [{ id: 'a', assetId: 'unlinked', start: 0, in: 0, out: 5 }] },
+        { id: 'audio-main', kind: 'audio', clips: [] },
+      ],
+    });
+    // Splitting copies the unlinked reference, which the timeline already had.
+    expect(store.applyOperations(created.id, [{ type: 'split_clip', params: { clipId: 'a', at: 2, newClipId: 'b' } }], 0).version).toBe(1);
+    expect(() => store.applyOperations(created.id, [addClip('c', 'foreign')], 1)).toThrow(AssetAccessError);
   });
 });

@@ -8,6 +8,9 @@ import { probeMedia, runProcess } from './process.js';
 
 export const soundsRoot = join(dataRoot, 'sounds');
 
+/** Library sounds are the only NULL-owner assets a signed-in user can see. */
+export const SOUND_ID_PREFIX = 'sound-';
+
 /**
  * The built-in sound library is synthesized with ffmpeg's lavfi sources on
  * first request — no downloads, no licensing, works offline. Each entry is a
@@ -169,7 +172,7 @@ export async function ensureSoundLibrary(assets: AssetStore): Promise<LibrarySou
         const probe = await probeMedia(path);
         // upsert, not insert: a pre-v2 row already holds this `sound-<id>`.
         asset = assets.upsert({
-          id: `sound-${recipe.id}`,
+          id: `${SOUND_ID_PREFIX}${recipe.id}`,
           originalName: fileName,
           mimeType: 'audio/mp4',
           duration: probe.duration,
