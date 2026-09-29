@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 import Purchases, { INTRO_ELIGIBILITY_STATUS, type CustomerInfo, type PurchasesPackage } from 'react-native-purchases';
+import { periodName } from './plan-display';
 
 /**
  * Subscriptions. Prices, trials and storefront conversions live in App Store
@@ -164,13 +165,4 @@ export function priceLabel(pkg: PurchasesPackage, introEligible: boolean): strin
   // Paid up front for one period, or pay-as-you-go per period for `cycles` of them.
   if (introPrice.cycles <= 1) return `${introPrice.priceString} for ${span(introPrice.periodNumberOfUnits)}, then ${recurring}`;
   return `${introPrice.priceString}/${unit} for ${span(introPrice.cycles * introPrice.periodNumberOfUnits)}, then ${recurring}`;
-}
-
-/** ISO 8601 durations are all the store sends: P1M, P1Y, P1W. */
-function periodName(period: string | null): string {
-  const unit = period?.slice(-1);
-  if (unit === 'Y') return 'year';
-  if (unit === 'W') return 'week';
-  if (unit === 'D') return 'day';
-  return 'month';
 }
