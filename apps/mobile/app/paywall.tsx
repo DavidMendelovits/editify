@@ -9,6 +9,7 @@ import { Button } from '../src/components/Button';
 import { LegalLinks } from '../src/components/LegalLinks';
 import { Screen } from '../src/components/Screen';
 import { PLAN_FEATURES, bigPrice, tierOfPackage } from '../src/lib/plan-display';
+import { posthog } from '../src/lib/posthog';
 import {
   billingAvailable, buy, getPlans, hasFreeTrial, priceLabel, restore, usePurchasesReady, useTier, userCancelled, type Plan,
 } from '../src/lib/purchases';
@@ -24,7 +25,13 @@ export default function PaywallScreen() {
   const tier = useTier();
   const ready = usePurchasesReady();
   const [error, setError] = useState<string>();
-  const plans = useQuery({ queryKey: ['plans'], queryFn: getPlans, staleTime: 5 * 60_000 });
+  // The store's own error text is written for developers (dashboard setup, SDK
+  // links), so it goes to error tracking and the screen gets a plain retry.
+  const plans = useQuery({
+    queryKey: ['plans'],
+    queryFn: () => getPlans().catch((cause: unknown) => { posthog?.captureException(cause); throw cause; }),
+    staleTime: 5 * 60_000,
+  });
   // Only promise a trial the store will actually give this account.
   const trial = plans.data?.some(hasFreeTrial) ?? false;
 
@@ -65,7 +72,14 @@ export default function PaywallScreen() {
         <View style={styles.notice}><Text style={styles.body}>Subscriptions are only available in the Editify app on iOS and Android.</Text></View>
       )}
       {plans.isLoading && <Text style={styles.body}>Loading plans…</Text>}
-      {plans.error && <Text style={styles.error}>Could not reach the store: {plans.error.message}</Text>}
+      {plans.error && (
+        <View style={styles.notice}>
+          <Text style={styles.error}>Plans could not load right now.</Text>
+          <Button secondary disabled={plans.isFetching} accessibilityLabel="try loading plans again" onPress={() => { void plans.refetch(); }}>
+            {plans.isFetching ? 'trying…' : 'try again'}
+          </Button>
+        </View>
+      )}
       {billingAvailable && plans.data?.length === 0 && (
         <Text style={styles.error}>No plans are available on this account yet.</Text>
       )}
