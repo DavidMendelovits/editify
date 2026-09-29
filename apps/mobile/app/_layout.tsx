@@ -45,10 +45,13 @@ export default function RootLayout() {
 
   useEffect(() => {
     let active = true;
-    // The cache is dropped before a different user's session renders.
+    // The cache and the tier are dropped before a different user's session
+    // renders. Entitlements follow the Editify account, so the store user is
+    // re-pointed on every session change rather than once at launch.
     const adopt = (next: Session | null): void => {
       if (!active) return;
       scopeCacheTo(next?.user.id);
+      void syncPurchaseUser(next?.user.id);
       setSession(next);
     };
     void supabase.auth.getSession().then(({ data }) => adopt(data.session));
@@ -59,11 +62,8 @@ export default function RootLayout() {
     };
   }, []);
 
-  // Entitlements follow the Editify account, so the store user is re-pointed
-  // whenever the session changes rather than once at launch.
   useEffect(() => {
     if (session === undefined) return;
-    void syncPurchaseUser(session?.user.id);
     if (session) posthog?.identify(session.user.id);
     else posthog?.reset();
   }, [session]);

@@ -30,6 +30,21 @@ export const colors = {
   warnSoft: '#2E2412',
 } as const;
 
+/**
+ * The brand's purple-to-blue gradient and the navy pricing cards. The paywall
+ * is the only place these appear; the editor stays on the neutral palette.
+ */
+export const brand = {
+  gradientFrom: '#A855F7',
+  gradientTo: '#3B82F6',
+  panel: '#0E0F24',
+  border: '#2A2D5C',
+  check: '#A66BFF',
+  /** Feature rows on the navy panel (10:1). */
+  text: '#C9CBE0',
+  cardRadius: 16,
+} as const;
+
 /** Near-square everywhere; `full` only for things that are genuinely round (a radio, the record button). */
 export const radius = { sm: 2, md: 3, lg: 4, full: 999 } as const;
 
