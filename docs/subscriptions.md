@@ -1,16 +1,19 @@
 # Subscriptions
 
-Editify sells two auto-renewing monthly subscriptions through RevenueCat. The
-app never hardcodes a price: it renders whatever the store returns for the
-user's storefront, so the euro prices below convert to every other currency.
+Editify sells auto-renewing monthly subscriptions through RevenueCat. The app
+never hardcodes a price: it renders whatever the store returns for the user's
+storefront, so the US prices below convert to every other currency.
 
-| Plan   | Base price (EUR) | Product ID (iOS + Android) | RevenueCat entitlement | Trial  |
-| ------ | ---------------- | -------------------------- | ---------------------- | ------ |
-| Pro    | 12.00 / month    | `editify.pro.monthly`      | `pro`                  | 7 days |
-| Studio | 29.99 / month    | `editify.studio.monthly`   | `studio`               | 7 days |
+| Plan    | Base price (USD) | Product ID (iOS + Android) | Entitlement | Package           | Trial  | At launch                  |
+| ------- | ---------------- | -------------------------- | ----------- | ----------------- | ------ | -------------------------- |
+| Free    | 0                | none                       | none        | none              | none   | always                     |
+| Creator | 12 / month       | `editify.creator.monthly`  | `creator`   | `creator_monthly` | 7 days | in the offering            |
+| Studio  | 29 / month       | `editify.studio.monthly`   | `studio`    | `studio_monthly`  | 7 days | later, not in the offering |
 
-`src/lib/purchases.ts` resolves the tier richest-first, so a user holding both
-entitlements is `studio`.
+Creator is the plan to launch with. Studio is documented so the ids are settled,
+but it is not created in the offering until it ships. `src/lib/purchases.ts`
+already resolves the tier richest-first, so a user holding both entitlements
+will read as `studio`.
 
 ## Setting it up
 
@@ -19,34 +22,35 @@ Nothing below is configurable from the codebase.
 
 ### 1. App Store Connect
 
-1. Subscriptions > new subscription group `Editify` with both products above.
-2. For each product set **EUR** as the base price (12.00 and 29.99). App Store
-   Connect generates every other storefront from it.
-3. Open the generated price table and check the **United States** row before
-   accepting it. Apple's automatic conversion works off the VAT-exclusive
-   amount, so the suggested USD price will not be a straight 1:1 of the euro
-   figure. Override it to the nearest clean US price point if the generated one
-   reads badly (12.99 and 32.99 are the usual parity choices, but take whatever
-   Apple currently offers next to its suggestion).
-4. On each product add an **Introductory Offer**: type *Free*, duration
-   *1 week*, all territories, no end date. That is the 7-day trial, and only
-   users who have never subscribed in the group are eligible for it.
+1. Subscriptions > new subscription group `Editify` with `editify.creator.monthly`.
+   Studio joins the same group when it ships, ranked above Creator.
+2. Set the base price on the **United States** storefront at the $12 price
+   point, or the closest one App Store Connect offers, and let Apple derive
+   every other storefront from it.
+3. Check the generated **euro** rows before accepting. Euro prices include VAT
+   and US prices do not, so the derived figure will sit above a straight
+   conversion (somewhere around 13 to 14 euros). That is expected; override a
+   row only if it lands on an odd-looking price point.
+4. On Creator add an **Introductory Offer**: type *Free*, duration *1 week*,
+   all territories, no end date. That is the 7-day trial, and only users who
+   have never subscribed in the group are eligible for it.
 5. Fill the localisation display name and description. The paywall renders
    `product.title` and `product.description` straight from the store.
 
 ### 2. Google Play Console
 
-Same two product IDs as base plans, price set in EUR with automatic conversion,
-plus a 7-day free-trial offer on each base plan.
+`editify.creator.monthly` as a base plan, priced at $12 in the United States
+with automatic conversion, plus a 7-day free-trial offer on it.
 
 ### 3. RevenueCat
 
 1. Create the project, add the iOS and Android apps, upload the App Store
    Connect in-app purchase key and the Play service account.
-2. Entitlements `pro` and `studio`, each attached to its product.
-3. One offering, `default`, made current, with two packages. They cannot both
-   be the built-in `$rc_monthly`, so use custom identifiers `pro_monthly` and
-   `studio_monthly`.
+2. Entitlement `creator`, attached to `editify.creator.monthly`. Studio later
+   gets entitlement `studio` and package `studio_monthly`.
+3. One offering, `default`, made current. At launch it holds only
+   `creator_monthly` (a custom identifier, so Studio can join it later without
+   two packages fighting over the built-in `$rc_monthly`).
 4. Copy the two public SDK keys into `apps/mobile/.env` for local builds:
 
    ```
@@ -55,9 +59,20 @@ plus a 7-day free-trial offer on each base plan.
    ```
 
    EAS builds read `base.env` in `apps/mobile/eas.json`, which every profile
-   `extends`. Add `EXPO_PUBLIC_REVENUECAT_IOS_KEY` there too. It is left out
-   until the RevenueCat project exists, because a wrong key is worse than none.
-   After a production build, check the IPA's `main.jsbundle` contains `appl_`.
+   `extends` (a profile's own `env` is merged on top of it).
+
+   - `development` carries RevenueCat's Test Store key (`test_…`) in its own
+     `env`. Purchases go through RevenueCat's test modal, so no App Store setup
+     is needed to exercise the paywall. In RevenueCat's Test Store, create a
+     `creator` entitlement and a `creator_monthly` package ($12/month, 1-week
+     free trial) in the `default` offering: the sample Monthly/Yearly products
+     grant no `creator` entitlement, so buying them would not change the tier.
+   - `preview` and `production` need the real `appl_` key once App Store Connect
+     is connected, in both `eas.json` and EAS env for the `preview` and
+     `production` environments: CI's OTA updates read EAS env, not `eas.json`.
+     After a production build, check the IPA's `main.jsbundle` contains `appl_`.
+   - Never put a `test_` key in a release profile or in EAS env. A release
+     build configured with one shows an alert and crashes on purpose.
 
 Without those keys `billingAvailable` is false, the paywall says subscriptions
 are app-only, and every user is on `free`. That is what Expo web and any dev
@@ -87,8 +102,9 @@ const tier = useTier();
 if (tier === 'free') return <Button onPress={() => router.push('/paywall')}>upgrade</Button>;
 ```
 
-Nothing is gated yet. Deciding what Pro and Studio each unlock is a product
-call, not a plumbing one.
+Nothing is gated yet. The agreed split is Creator for AI editing tools and custom
+templates, Studio for advanced AI features and exclusive templates; wiring that
+to actual screens is still to do.
 
 ### The tier is a UI hint, not a permission
 
@@ -110,7 +126,7 @@ a returning buyer is charged immediately. `getPlans()` asks RevenueCat
 (`checkTrialOrIntroductoryPriceEligibility`) per package, and the paywall hero,
 the button ("start free trial" or "subscribe") and `priceLabel` all follow it.
 An unknown answer counts as not eligible. `priceLabel` also shows a paid intro
-("€1.00 for 1 month, then €12.00/month") instead of dropping it.
+("$1.00 for 1 month, then $12.00/month") instead of dropping it.
 
 Buy and restore stay disabled until `syncPurchaseUser` has pointed RevenueCat at
 the signed-in account (`usePurchasesReady()`): before that, a purchase would be

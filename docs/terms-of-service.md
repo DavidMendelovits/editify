@@ -42,7 +42,7 @@ Editify is provided as is. We do not promise that the service will be uninterrup
 
 ## 7. Price
 
-Editify has a free tier and two paid auto-renewing subscriptions, Pro and Studio, sold as in-app purchases.
+Editify has a free tier and paid auto-renewing subscriptions (such as Creator), sold as in-app purchases.
 
 - **Where you pay.** Subscriptions are bought and billed through Apple's App Store or Google Play, under that store's own terms. We never see or store your payment card.
 - **Price and duration.** The price, the billing period and the length of any free trial are shown in the app before you buy, in your own currency. They come from the store, not from us, so the app always shows what you will actually be charged.

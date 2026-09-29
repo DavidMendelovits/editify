@@ -8,13 +8,13 @@ import Purchases, { INTRO_ELIGIBILITY_STATUS, type CustomerInfo, type PurchasesP
  * hardcodes an amount, it renders whatever the store says for the user's
  * region. See docs/subscriptions.md for the products to create.
  */
-export type Tier = 'free' | 'pro' | 'studio';
+export type Tier = 'free' | 'creator' | 'studio';
 
 /** A package, and whether this store account can still get its intro offer. */
 export interface Plan { pkg: PurchasesPackage; introEligible: boolean }
 
-/** RevenueCat entitlement identifiers, richest first: a user can hold both. */
-const TIERS: Array<Exclude<Tier, 'free'>> = ['studio', 'pro'];
+/** RevenueCat entitlement identifiers, richest first: a user can hold both. Studio is not sold at launch. */
+const TIERS: Array<Exclude<Tier, 'free'>> = ['studio', 'creator'];
 
 const apiKey = Platform.select({
   ios: process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY,

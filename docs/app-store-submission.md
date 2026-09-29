@@ -216,7 +216,7 @@ Three findings that matter for the label:
 2. **PostHog is never handed the account id.** Because `identify()` is never called, PostHog's `distinct_id` stays the anonymous per-install UUID the SDK generates. That is a vendor-generated persistent identifier, not an OS one.
 3. **The integration looks unfinished.** PostHog's own React Native documentation (vendored into this repo at `apps/mobile/.posthog/wizard-spellbook-R3HZaQ/skills/integration-react-native/references/react-native.md`) lists `expo-file-system`, `expo-device` and `expo-localization` as peer dependencies for Expo apps. **None of the three is in `apps/mobile/package.json`** (`expo-application` and `@react-native-async-storage/async-storage` are). Device model, OS locale and on-disk event persistence therefore may not be collected or may fall back to weaker paths. Declare as if they are collected anyway — if the missing packages are added later, the label does not have to change.
 
-**RevenueCat.** Configured in `apps/mobile/src/lib/purchases.ts:50` as `Purchases.configure({ apiKey, appUserID: userId })`, where `userId` is the **Supabase account id** of the signed-in user, re-synced on every session change from `apps/mobile/app/_layout.tsx:49-52` (`logIn` at `purchases.ts:54`, `logOut` at `:57`). Purchases go through StoreKit via `Purchases.purchasePackage` (`purchases.ts:81`); entitlements `pro` and `studio` are read back from `CustomerInfo` (`purchases.ts:14`, `:24-26`). Keys come from `EXPO_PUBLIC_REVENUECAT_IOS_KEY` / `..._ANDROID_KEY` (`purchases.ts:16-19`); without them `billingAvailable` is `false` (`:22`) and the SDK is never configured.
+**RevenueCat.** Configured in `apps/mobile/src/lib/purchases.ts:50` as `Purchases.configure({ apiKey, appUserID: userId })`, where `userId` is the **Supabase account id** of the signed-in user, re-synced on every session change from `apps/mobile/app/_layout.tsx:49-52` (`logIn` at `purchases.ts:54`, `logOut` at `:57`). Purchases go through StoreKit via `Purchases.purchasePackage` (`purchases.ts:81`); entitlements `creator` and `studio` (Studio is not sold at launch) are read back from `CustomerInfo` (`purchases.ts:14`, `:24-26`). Keys come from `EXPO_PUBLIC_REVENUECAT_IOS_KEY` / `..._ANDROID_KEY` (`purchases.ts:16-19`); without them `billingAvailable` is `false` (`:22`) and the SDK is never configured.
 
 RevenueCat ships its own Apple privacy manifest at `apps/mobile/ios/Pods/RevenueCat/Sources/PrivacyInfo.xcprivacy`, and it declares:
 
@@ -605,10 +605,10 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 8a | Answer the age rating questionnaire in the live form (section 1.9). Untouched today | David |
 | 8b | Set Support URL, Privacy Policy URL and the EULA field to the three `editify-dm.fly.dev` URLs. All still `null` | Automatable, after item 1 deploys |
 | 8c | **Answer `contentRightsDeclaration` on the app record. It is `null`, confirmed against the App Store Connect API for app `6814607865`,** and App Store Connect will not accept a submission without it. The question is whether the app contains, shows or accesses third-party content. Editify ships no third-party content of its own; users import their own footage and nothing is published or shared. The expected answer is that it does **not** use third-party content, but read the live question before answering: it was rewritten in 2025 and now also asks about rights to content the app generates | David |
-| 8d | **Create the subscription group and both products** (`editify.pro.monthly`, `editify.studio.monthly`), with localised display names and descriptions, prices, the 7-day introductory offer, and a review screenshot for each. Section 8.3 | David |
-| 8e | **Attach both products to the 1.0.0 version submission.** IAP products are reviewed alongside the first build that includes them; a product that is created but not attached does not exist for the reviewer, who then sees an empty paywall. Section 8.4 | David |
+| 8d | **Create the subscription group and the Creator product** (`editify.creator.monthly`; `editify.studio.monthly` comes later), with localised display name and description, price, the 7-day introductory offer, and a review screenshot. Section 8.3 | David |
+| 8e | **Attach the Creator product to the 1.0.0 version submission.** IAP products are reviewed alongside the first build that includes them; a product that is created but not attached does not exist for the reviewer, who then sees an empty paywall. Section 8.4 | David |
 | 8f | **Fix the remaining guideline 3.1.2 gaps in the binary** before building: a real gated feature and a truthful free-trial claim. Section 7.1 items 3 and 4. The privacy policy and terms links (item 1) are done | Owner of `apps/mobile/app/paywall.tsx` |
-| 8g | **Set up RevenueCat**: entitlements `pro` and `studio`, one current offering with both packages, and the App Store Connect in-app purchase key uploaded | David |
+| 8g | **Set up RevenueCat**: entitlement `creator`, one current offering `default` holding only the `creator_monthly` package, and the App Store Connect in-app purchase key uploaded | David |
 | 8h | **Add the SDK keys to the production build profile.** `apps/mobile/eas.json` currently carries **none** of the four keys the two SDKs need — all three profiles have only `EXPO_PUBLIC_API_URL` and the two Google client ids. Consequences if this ships as-is: without `EXPO_PUBLIC_REVENUECAT_IOS_KEY`, `billingAvailable` is false (`purchases.ts:22`) and the reviewer's paywall reads "Subscriptions are only available in the Editify app on iOS and Android" with no plans and a dead restore button — an automatic 3.1.2 rejection on a build that also declares in-app purchases. Without `EXPO_PUBLIC_POSTHOG_PROJECT_TOKEN` and `EXPO_PUBLIC_POSTHOG_HOST`, PostHog is never constructed and collects nothing (`posthog.ts:18`). Set them in the `production` profile's `env` block or as EAS environment variables, and do it **before** filing App Privacy (2.11 item 7) and before the production build | David |
 | 8i | Create a Sandbox Apple ID and test purchase, restore and upgrade end to end. Section 8.5 | David |
 | 8j | **Answer the App Privacy questionnaire including the new rows**: Purchase History (yes, linked) and Device ID (yes, linked), having first settled item 8h so the declaration matches the build. Section 2 | David |
@@ -697,25 +697,25 @@ VERIFY: who is the Account Holder on Apple Developer Team `F9R8TK7W79`, and has 
 
 ### 8.2 Create the subscription group
 
-Subscriptions live in a group, and the group is what governs upgrade, downgrade and crossgrade behaviour and free-trial eligibility. Editify has two plans that are alternatives to each other, so **both go in one group**.
+Subscriptions live in a group, and the group is what governs upgrade, downgrade and crossgrade behaviour and free-trial eligibility. Editify launches with one plan, Creator; Studio comes later as its alternative, so **both belong in one group** from the start.
 
 - Group name (internal) and **Group Display Name** (user-visible, shown in the user's App Store subscription management): `Editify`.
-- Both products in the same group means a Pro subscriber moving to Studio is an **upgrade**, handled by Apple as a prorated switch, and it means the 7-day free trial is available **once per group per Apple ID**, not once per product. That second point is exactly why the hardcoded trial claim in 7/item 11 is wrong.
-- Set the **rank** within the group: Studio above Pro, so Apple treats Studio as the upgrade.
+- Both products in the same group means a Creator subscriber moving to Studio (once it ships) is an **upgrade**, handled by Apple as a prorated switch, and it means the 7-day free trial is available **once per group per Apple ID**, not once per product. That second point is exactly why the hardcoded trial claim in 7/item 11 is wrong.
+- Set the **rank** within the group when Studio is added: Studio above Creator, so Apple treats Studio as the upgrade.
 
 ### 8.3 Create the two products
 
 Per `docs/subscriptions.md`:
 
-| Plan | Product ID | Duration | Base price (EUR) | RevenueCat entitlement |
-|---|---|---|---|---|
-| Pro | `editify.pro.monthly` | 1 month | 12.00 | `pro` |
-| Studio | `editify.studio.monthly` | 1 month | 29.99 | `studio` |
+| Plan | Product ID | Duration | Base price (USD) | RevenueCat entitlement | At launch |
+|---|---|---|---|---|---|
+| Creator | `editify.creator.monthly` | 1 month | 12 | `creator` | yes |
+| Studio | `editify.studio.monthly` | 1 month | 29 | `studio` | no, later |
 
 For each product, all of the following are required before it can be submitted:
 
 - **Reference name** (internal) and **Subscription Duration** (1 month).
-- **Price**: set EUR as the base and review the generated table, especially the US row — Apple converts from the VAT-exclusive amount, so the suggestion is not a 1:1 of the euro figure.
+- **Price**: set the base on the United States storefront at the $12 price point (or the closest one offered) and review the generated table; euro rows include VAT, so they sit above a straight conversion.
 - **Localised Display Name and Description** for en-US. These are not decoration: `paywall.tsx:58` and `:60` render them verbatim, so this is where requirement 4 of the 3.1.2 audit is half-satisfied. Write the description as a plain statement of what the plan unlocks.
 - **Introductory Offer**: type *Free*, duration *1 week*, all territories, no end date. This is the 7-day trial; it does not exist until it is created here.
 - **Review screenshot** (required per product): a screenshot of the paywall as the reviewer will see it. This is separate from the app's own screenshots in section 4.
@@ -737,7 +737,7 @@ App Review tests purchases in the sandbox, against Apple's own sandbox infrastru
 - **For our own testing:** create Sandbox Apple IDs in **Users and Access > Sandbox > Testers**, then sign in to them on the device under **Settings > App Store > Sandbox Account**. Do not sign the device's main Apple ID into a sandbox account. `docs/subscriptions.md` already documents the accelerated clock: a 7-day trial renews every 3 minutes in sandbox and the subscription self-cancels after 6 renewals, so a sandbox subscription is gone within about 20 minutes.
 - **For the reviewer:** the reviewer uses their own sandbox account and does **not** need credentials from us for the purchase itself. What they do need is the Editify demo account (section 5) to reach the paywall at all, because the app requires sign-in. Say so in the review notes.
 
-Test at minimum, before submitting: purchase Pro, confirm the entitlement arrives; restore on a second install; purchase Studio from a Pro subscription and confirm the upgrade path; and confirm the app behaves when `getOfferings` returns nothing. None of this is testable until the RevenueCat key is in the build profile (checklist item 8h) — without it the SDK is never configured and the paywall has nothing to sell.
+Test at minimum, before submitting: purchase Creator, confirm the entitlement arrives; restore on a second install; and confirm the app behaves when `getOfferings` returns nothing. None of this is testable until the RevenueCat key is in the build profile (checklist item 8h) — without it the SDK is never configured and the paywall has nothing to sell.
 
 ### 8.6 Review-notes text for the paywall
 
@@ -746,7 +746,7 @@ Append this to the App Review Information notes in section 5.
 ```text
 SUBSCRIPTIONS (guideline 3.1.2)
 
-Editify offers two auto-renewing monthly subscriptions, Pro and Studio, sold
+Editify offers an auto-renewing monthly subscription, Creator, sold
 through StoreKit. There is no other way to pay for them and no external
 purchase path anywhere in the app.
 

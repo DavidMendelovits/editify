@@ -42,16 +42,16 @@ const freeWeek: Intro = { price: 0, priceString: '€0.00', cycles: 1, periodUni
 
 describe('priceLabel', () => {
   it('promises a free trial only to an account that can still get it', () => {
-    expect(priceLabel(pkg('pro', 12, freeWeek), true)).toBe('1 week free, then €12.00/month');
-    expect(priceLabel(pkg('pro', 12, freeWeek), false)).toBe('€12.00/month');
+    expect(priceLabel(pkg('creator', 12, freeWeek), true)).toBe('1 week free, then €12.00/month');
+    expect(priceLabel(pkg('creator', 12, freeWeek), false)).toBe('€12.00/month');
   });
 
   it('shows a paid intro instead of dropping it', () => {
     const upFront: Intro = { price: 1, priceString: '€1.00', cycles: 1, periodUnit: 'MONTH', periodNumberOfUnits: 1 };
     const perMonth: Intro = { price: 1, priceString: '€1.00', cycles: 3, periodUnit: 'MONTH', periodNumberOfUnits: 1 };
-    expect(priceLabel(pkg('pro', 12, upFront), true)).toBe('€1.00 for 1 month, then €12.00/month');
-    expect(priceLabel(pkg('pro', 12, perMonth), true)).toBe('€1.00/month for 3 months, then €12.00/month');
-    expect(priceLabel(pkg('pro', 12, perMonth), false)).toBe('€12.00/month');
+    expect(priceLabel(pkg('creator', 12, upFront), true)).toBe('€1.00 for 1 month, then €12.00/month');
+    expect(priceLabel(pkg('creator', 12, perMonth), true)).toBe('€1.00/month for 3 months, then €12.00/month');
+    expect(priceLabel(pkg('creator', 12, perMonth), false)).toBe('€12.00/month');
   });
 
   it('shows the plain price when there is no intro offer', () => {
@@ -61,14 +61,14 @@ describe('priceLabel', () => {
 
 describe('getPlans', () => {
   beforeEach(() => {
-    sdk.getOfferings.mockResolvedValue({ current: { availablePackages: [pkg('studio', 30, freeWeek), pkg('pro', 12, freeWeek)] } });
+    sdk.getOfferings.mockResolvedValue({ current: { availablePackages: [pkg('studio', 30, freeWeek), pkg('creator', 12, freeWeek)] } });
   });
 
   it('sorts cheapest first and treats anything but "eligible" as no trial', async () => {
-    sdk.checkTrialOrIntroductoryPriceEligibility.mockResolvedValue({ pro: { status: 2 }, studio: { status: 0 } });
+    sdk.checkTrialOrIntroductoryPriceEligibility.mockResolvedValue({ creator: { status: 2 }, studio: { status: 0 } });
     const plans = await getPlans();
     expect(plans.map((plan) => [plan.pkg.identifier, plan.introEligible, hasFreeTrial(plan)])).toEqual([
-      ['pro', true, true],
+      ['creator', true, true],
       ['studio', false, false],
     ]);
   });
@@ -82,10 +82,10 @@ describe('getPlans', () => {
 describe('syncPurchaseUser', () => {
   // One module, one SDK: these run in order and build on each other.
   it('configures once for the first user and marks the store ready', async () => {
-    sdk.state.entitlements = { alice: ['pro'], bob: ['studio'] };
+    sdk.state.entitlements = { alice: ['creator'], bob: ['studio'] };
     await syncPurchaseUser('alice');
     expect(sdk.configure).toHaveBeenCalledTimes(1);
-    expect(currentTier()).toBe('pro');
+    expect(currentTier()).toBe('creator');
     expect(purchasesReady()).toBe(true);
   });
 

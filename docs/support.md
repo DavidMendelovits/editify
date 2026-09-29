@@ -20,7 +20,7 @@ You can also report a problem without leaving the app. The **send feedback** but
 
 ## Subscriptions
 
-Pro and Studio are auto-renewing subscriptions sold through the App Store and Google Play. The price, the billing period and the length of any free trial are shown in the app before you buy.
+Paid plans (such as Creator) are auto-renewing subscriptions sold through the App Store and Google Play. The price, the billing period and the length of any free trial are shown in the app before you buy.
 
 - **Restoring a purchase.** Sign in with the same Editify account and press "restore purchases" on the subscription screen. Entitlements follow the account, not the phone.
 - **Cancelling.** Cancel in your App Store or Google Play account settings. Cancellation takes effect at the end of the period you have paid for.
