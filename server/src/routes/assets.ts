@@ -239,7 +239,7 @@ export function registerAssetRoutes(
   const waveforms = new WaveformService(database, transcripts);
   // Raw media bodies (POST /assets/raw) reach the handler as the request stream,
   // unbuffered and outside the app-wide bodyLimit; saveUpload caps them itself.
-  app.addContentTypeParser(['application/octet-stream', /^video\//, /^audio\//, /^image\//], (_request, payload, done) => {
+  app.addContentTypeParser(/^(application\/octet-stream|video\/|audio\/|image\/)/, (_request, payload, done) => {
     done(null, payload);
   });
 

@@ -21,6 +21,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.editify.app",
+      "appleTeamId": "F9R8TK7W79",
       "supportsTablet": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
