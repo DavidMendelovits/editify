@@ -8,7 +8,7 @@
 Maja Ventures SL ("Maja Ventures", "we") is the data controller for the personal data described here.
 
 - Company: Maja Ventures SL
-- Registered address: {{FILL_REGISTERED_ADDRESS}}
+- Registered address: Miranda del Valles 19B bjs, E-08173 Sant Cugat, Barcelona, Spain
 - Privacy contact: david.mendelovits@gmail.com
 
 If you are in the EEA or the UK, you can contact us at the address above to exercise the rights described in section 8.
