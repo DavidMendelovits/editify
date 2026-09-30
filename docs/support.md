@@ -10,7 +10,7 @@ Editify is published by Maja Ventures SL.
 
 ## Getting help
 
-Write to {{FILL_CONTACT_EMAIL}} and we will answer. It helps if you say:
+Write to david.mendelovits@gmail.com and we will answer. It helps if you say:
 
 - what you were trying to do, and what happened instead,
 - which device and app version you are on (the version is printed at the bottom of the sign-in screen),

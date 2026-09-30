@@ -9,7 +9,7 @@ Maja Ventures SL ("Maja Ventures", "we") is the data controller for the personal
 
 - Company: Maja Ventures SL
 - Registered address: {{FILL_REGISTERED_ADDRESS}}
-- Privacy contact: {{FILL_CONTACT_EMAIL}}
+- Privacy contact: david.mendelovits@gmail.com
 
 If you are in the EEA or the UK, you can contact us at the address above to exercise the rights described in section 8.
 
