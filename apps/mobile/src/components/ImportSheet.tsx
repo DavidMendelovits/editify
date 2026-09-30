@@ -7,6 +7,8 @@ import { api, IS_LOCAL_API } from '../lib/api';
 import { track } from '../lib/telemetry';
 import { formatMegabytes } from '../lib/agent';
 import { pickFromFiles, pickFromPhotos, uploadFiles, type PickResult } from '../lib/pick';
+import { describeImport, importFraction, type ImportProgress } from '../lib/upload-progress';
+import { ProgressBar } from './ProgressBar';
 
 type ImportState = 'queued' | 'importing' | 'done' | 'error';
 
@@ -36,7 +38,7 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
   const dropRef = useRef<View>(null);
   const [dropping, setDropping] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number }>();
+  const [uploadProgress, setUploadProgress] = useState<ImportProgress>();
   const [uploadError, setUploadError] = useState<string>();
 
   async function upload(run: () => Promise<PickResult>): Promise<void> {
@@ -56,9 +58,7 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
     }
   }
 
-  function onProgress(done: number, total: number): void {
-    setUploadProgress(total > 1 ? { done, total } : undefined);
-  }
+  const onProgress = setUploadProgress;
 
   // react-native-web 0.21 picks View props from a whitelist that has no drag
   // events, so the DOM node has to be wired by hand. Native has nothing to drop.
@@ -140,10 +140,13 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
             {uploading ? <ActivityIndicator color={colors.accent} /> : null}
             <Text style={styles.dropTitle}>
               {dropping ? 'drop to upload'
-                : uploadProgress ? `uploading ${uploadProgress.done} of ${uploadProgress.total}…`
+                : uploadProgress ? `uploading ${describeImport(uploadProgress)}`
                 : uploading ? 'uploading…'
                 : 'choose files'}
             </Text>
+            {uploadProgress && importFraction(uploadProgress) !== undefined && (
+              <ProgressBar fraction={importFraction(uploadProgress) ?? 0} style={styles.progress} />
+            )}
             {!uploading && (
               <Text style={styles.dropHint}>
                 {Platform.OS === 'web' ? 'or drag videos here from your machine' : 'video and audio from your device'}
@@ -223,6 +226,7 @@ const styles = StyleSheet.create({
   dropActive: { borderColor: colors.accent, borderStyle: 'solid' },
   dropError: { borderColor: colors.danger },
   dropTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: type.lg },
+  progress: { alignSelf: 'stretch', marginHorizontal: space.section },
   dropHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.md },
   section: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm, letterSpacing: 0.4 },
   list: { flexGrow: 0 },

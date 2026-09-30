@@ -418,10 +418,16 @@ export const api = {
   deleteStyle: (id: string) => request<{ ok: true; selectedId: string | null }>(`/style-profiles/${id}`, { method: 'DELETE' }),
 };
 
+/** Bytes sent so far and the size being sent. Native uploads report as they go; web reports nothing. */
+export type UploadBytes = (sent: number, expected: number) => void;
+
 /** `file` is the web pickers' real `File`; native callers only ever have a `uri`. */
-export async function uploadAsset(asset: { uri: string; name: string; mimeType?: string; projectId?: string; file?: File }): Promise<AssetMetadata> {
+export async function uploadAsset(
+  asset: { uri: string; name: string; mimeType?: string; projectId?: string; file?: File },
+  onBytes?: UploadBytes,
+): Promise<AssetMetadata> {
   const isBrowserFile = Boolean(asset.file) || (typeof File !== 'undefined' && asset.uri.startsWith('blob:'));
-  if (!isBrowserFile) return await uploadNativeFile(asset);
+  if (!isBrowserFile) return await uploadNativeFile(asset, onBytes);
   const form = new FormData();
   if (asset.file) {
     // Hand the picked File straight over so the browser streams it off disk —
@@ -444,23 +450,27 @@ export async function uploadAsset(asset: { uri: string; name: string; mimeType?:
  * (POST /assets/raw), and a background session keeps it going if the app is
  * backgrounded.
  */
-async function uploadNativeFile(asset: { uri: string; name: string; mimeType?: string; projectId?: string }): Promise<AssetMetadata> {
+async function uploadNativeFile(asset: { uri: string; name: string; mimeType?: string; projectId?: string }, onBytes?: UploadBytes): Promise<AssetMetadata> {
   // ponytail: SDK 54's File has no upload yet, and the legacy module's .ts source
-  // fails this app's exactOptionalPropertyTypes, so its two members are typed here.
-  // Swap for `new File(uri).upload()` once the SDK ships it.
-  const { uploadAsync, FileSystemUploadType } = require('expo-file-system/legacy') as {
-    uploadAsync: (url: string, fileUri: string, options: {
+  // fails this app's exactOptionalPropertyTypes, so the members used are typed here.
+  // Swap for `new File(uri).createUploadTask()` once the SDK ships it.
+  const { createUploadTask, FileSystemUploadType } = require('expo-file-system/legacy') as {
+    createUploadTask: (url: string, fileUri: string, options: {
       httpMethod: 'POST'; uploadType: number; headers: Record<string, string>;
-    }) => Promise<{ status: number; body: string }>;
+    }, callback?: (progress: { totalBytesSent: number; totalBytesExpectedToSend: number }) => void) => {
+      uploadAsync: () => Promise<{ status: number; body: string } | null | undefined>;
+    };
     FileSystemUploadType: { BINARY_CONTENT: number };
   };
   const query = new URLSearchParams({ name: asset.name, ...(asset.projectId ? { projectId: asset.projectId } : {}) });
   const started = Date.now();
-  const result = await uploadAsync(`${API_URL}/assets/raw?${query.toString()}`, asset.uri, {
+  const task = createUploadTask(`${API_URL}/assets/raw?${query.toString()}`, asset.uri, {
     httpMethod: 'POST',
     uploadType: FileSystemUploadType.BINARY_CONTENT,
     headers: { ...authHeaders(), 'Content-Type': asset.mimeType ?? 'application/octet-stream' },
-  });
+  }, onBytes ? (progress) => onBytes(progress.totalBytesSent, progress.totalBytesExpectedToSend) : undefined);
+  const result = await task.uploadAsync();
+  if (!result) throw new Error('Upload was cancelled');
   if (result.status < 200 || result.status >= 300) {
     track('api_error', `POST /assets/raw → ${result.status} in ${Date.now() - started}ms`);
     throw new Error(result.body || `Upload failed with status ${result.status}`);

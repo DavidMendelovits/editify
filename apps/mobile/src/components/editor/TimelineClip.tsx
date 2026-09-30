@@ -8,6 +8,8 @@ import { useHorizontalDrag } from './useHorizontalDrag';
 import { api, type WaveformEnvelope } from '../../lib/api';
 import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
+import { describeImport, importFraction, type ImportProgress } from '../../lib/upload-progress';
+import { ProgressBar } from '../ProgressBar';
 
 export type DragMode = 'move' | 'in' | 'out';
 
@@ -338,7 +340,7 @@ interface EmptyLaneProps {
   /** Files dropped on the lane. Never called off web, where nothing can be dropped. */
   onDropFiles: (files: File[]) => void;
   uploading: boolean;
-  progress: { done: number; total: number } | undefined;
+  progress: ImportProgress | undefined;
   error: string | undefined;
 }
 
@@ -381,9 +383,10 @@ export function EmptyLane({ onPress, onDropFiles, uploading, progress, error }: 
   }, [onDropFiles]);
 
   const label = dropping ? 'DROP TO IMPORT'
-    : progress ? `UPLOADING ${progress.done} OF ${progress.total}…`
+    : progress ? `UPLOADING ${describeImport(progress).toUpperCase()}`
     : uploading ? 'UPLOADING…'
     : '+  IMPORT MEDIA TO START THE TIMELINE';
+  const fraction = progress ? importFraction(progress) : undefined;
   return (
     <Pressable
       ref={ref}
@@ -393,6 +396,7 @@ export function EmptyLane({ onPress, onDropFiles, uploading, progress, error }: 
       accessibilityRole="button"
     >
       <Text style={styles.emptyText}>{label}</Text>
+      {fraction !== undefined && <ProgressBar fraction={fraction} style={styles.emptyProgress} />}
       {error ? <Text style={styles.emptyErrorText} numberOfLines={2}>{error} · TAP TO RETRY</Text> : null}
     </Pressable>
   );
@@ -466,5 +470,6 @@ const styles = StyleSheet.create({
   emptyDropping: { borderColor: colors.accent, borderStyle: 'solid', backgroundColor: colors.accentSoft },
   emptyError: { borderColor: colors.danger },
   emptyText: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1 },
+  emptyProgress: { marginTop: space.md, width: '60%', maxWidth: 280 },
   emptyErrorText: { color: colors.danger, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6, marginTop: space.sm, textAlign: 'center' },
 });

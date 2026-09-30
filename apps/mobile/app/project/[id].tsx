@@ -26,6 +26,7 @@ import { api } from '../../src/lib/api';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
+import type { ImportProgress } from '../../src/lib/upload-progress';
 import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
 import { isAudioOnly } from '../../src/lib/media';
 import { describeSync } from '../../src/lib/sync-messages';
@@ -82,7 +83,7 @@ export default function EditorScreen() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
   /** Only set while a multi-file import is running. */
-  const [progress, setProgress] = useState<{ done: number; total: number }>();
+  const [progress, setProgress] = useState<ImportProgress>();
   /** Per clip, so one clip's result survives another clip being synced. */
   const [syncs, setSyncs] = useState<Record<string, SyncState>>({});
   const setSync = (state: SyncState): void => setSyncs((current) => ({ ...current, [state.clipId]: state }));
@@ -510,8 +511,8 @@ export default function EditorScreen() {
     setUploadError(undefined);
     setProgress(undefined);
     try {
-      // One clip needs no counter; a batch does.
-      const { assets: added, failed } = await pick(id, (done, total) => setProgress(total > 1 ? { done, total } : undefined));
+      // Every import reports: one 4K clip alone can take minutes, so it gets bytes too.
+      const { assets: added, failed } = await pick(id, setProgress);
       landOnTimeline(added);
       if (added.length > 0) await queryClient.invalidateQueries({ queryKey: LIBRARY_ROOT });
       if (failed.length > 0) setUploadError(`Could not import ${failed.length} of ${added.length + failed.length}: ${failed.join(', ')}`);
