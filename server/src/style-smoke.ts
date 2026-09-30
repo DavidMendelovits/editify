@@ -12,7 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { ProviderRegistry } from './agent/registry.js';
+import { createProvider } from './agent/providers.js';
 import { AgentService } from './agent/service.js';
 import type { StoredAsset } from './db/asset-store.js';
 import { createDatabase } from './db/database.js';
@@ -61,7 +61,7 @@ for (const file of files) {
   });
 }
 
-const agent = new AgentService(async () => await new ProviderRegistry(settings).resolve());
+const agent = new AgentService(async () => createProvider());
 const started = Date.now();
 const result = await runStylePipeline({
   videos,

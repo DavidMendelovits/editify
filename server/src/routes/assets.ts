@@ -435,7 +435,7 @@ export function registerAssetRoutes(
   app.get<{ Params: { id: string } }>('/assets/:id/insights', async (request, reply) => {
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
-    const result = await insights.getOrCreate(asset, false, request.userId);
+    const result = await insights.getOrCreate(asset, false);
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 
@@ -443,7 +443,7 @@ export function registerAssetRoutes(
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     const { force } = forceRequestSchema.parse(request.body ?? {});
-    const result = await insights.getOrCreate(asset, force, request.userId);
+    const result = await insights.getOrCreate(asset, force);
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 

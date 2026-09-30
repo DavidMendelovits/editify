@@ -105,7 +105,7 @@ These are the only third parties that receive your data, and they receive it bec
 | **Fly.io** (Fly.io, Inc., USA) | Everything stored server-side: your media files, transcripts, project documents, chat history, renders, diagnostic reports | Hosting for the Editify API, media store, database and renderer |
 | **Supabase** (Supabase, Inc., USA) | Email address, password hash, account id, and any profile fields your identity provider returns | Authentication and session management |
 | **Google** (Google LLC, USA) | Your Google account identity, if and only if you choose "continue with Google" | Sign-in |
-| **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. This is the provider configured on our production server; an OpenAI key can be configured instead, in which case the same text goes to **OpenAI** (OpenAI, L.L.C., USA) rather than to Anthropic. | Running the editing assistant |
+| **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. | Running the editing assistant |
 | **Google (Gemini API)** (Google LLC, USA) | The **full video file** of each clip you submit to "learn my style". This analyzer is configured and active on our production server. The upload is deleted from Google's Files API at the end of the run. The app's style screen tells you which analyzer is active and whether it uploads footage. | Analysing your reference videos |
 | **PostHog** ({{FILL_POSTHOG_ENTITY}}) | The anonymous installation identifier, application lifecycle events, screen views and taps, and the technical properties listed in section 3.4. No content, no email address, no name | Product analytics: understanding how the app is used |
 | **RevenueCat** (RevenueCat, Inc., USA) | Your Editify account identifier, your Editify purchase history and store receipts, and technical details of the device and transaction. No card details, no email address, no content | Managing subscriptions and entitlements across your devices |
@@ -114,7 +114,7 @@ These are the only third parties that receive your data, and they receive it bec
 
 Our issue tracker is the **private** repository `DavidMendelovits/editify`. Reports filed there are readable by the people who maintain Editify and by GitHub as our processor. Nothing you send in a crash report or a feedback message is published publicly.
 
-Confirmed on the production server (Fly app `editify-dm`, September 2026): the Anthropic key, the Gemini key and the GitHub token are all set, so the editing assistant runs on Anthropic's model, the Gemini analyzer is the one that watches your reference videos, and reports are filed into the private repository named above. No OpenAI key is set.
+Confirmed on the production server (Fly app `editify-dm`, September 2026): the Anthropic key, the Gemini key and the GitHub token are all set, so the editing assistant runs on Anthropic's model, the Gemini analyzer is the one that watches your reference videos, and reports are filed into the private repository named above.
 
 Apart from PostHog, whose region is being confirmed, all of these providers are in the United States. Transfers out of the EEA and the UK rely on the providers' Standard Contractual Clauses.
 

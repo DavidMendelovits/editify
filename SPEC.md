@@ -82,9 +82,8 @@ Server endpoints:
 
 ## The agent
 
-- Model-agnostic provider layer in `server/src/agent/`:
+- Provider layer in `server/src/agent/`:
   - `ANTHROPIC_API_KEY` set → Anthropic Messages API (model `claude-sonnet-5`).
-  - else `OPENAI_API_KEY` set → OpenAI chat completions.
   - else → deterministic MockProvider so the whole app works offline/demo:
     parses simple commands ("add captions", "make it choppier", "trim silence",
     "speed up") into real ops with plausible parameters.

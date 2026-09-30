@@ -9,7 +9,6 @@ import { ChatStore } from '../src/db/chat-store.js';
 import { createDatabase } from '../src/db/database.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { ReportStore } from '../src/db/report-store.js';
-import { SettingsStore } from '../src/db/settings-store.js';
 import { registerTelemetryRoutes } from '../src/routes/telemetry.js';
 import { anonymizeName, chooseSubstitute, ReproService, type ReproBundle } from '../src/services/repro-service.js';
 import { TelemetryService } from '../src/services/telemetry-service.js';
@@ -75,7 +74,7 @@ function serveWithProject() {
     reports,
     brokenProvider,
     insightsPath,
-    new ReproService(projects, assets, new ChatStore(database), new SettingsStore(database)),
+    new ReproService(projects, assets, new ChatStore(database)),
   );
   registerTelemetryRoutes(app, telemetry);
   return { app, insightsPath, projectId: project.id, reports, projects, database };

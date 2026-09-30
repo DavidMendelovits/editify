@@ -101,23 +101,6 @@ export interface PromptImprovement { improved: string | null; changes?: string[]
 /** `GET /projects/:id/chat/live` — steps of the turn currently running, if any. */
 export interface ChatLive { running: boolean; steps: AgentTraceStep[] }
 
-export type AgentProviderId = 'claude-cli' | 'codex-cli' | 'anthropic' | 'openai' | 'mock';
-
-export interface ProviderOption {
-  id: AgentProviderId;
-  label: string;
-  available: boolean;
-  /** How it runs, or what is missing — shown under the option. */
-  detail: string;
-}
-
-export interface ProviderStatus {
-  active: AgentProviderId;
-  /** Present when the saved choice is no longer usable and something else is running. */
-  requested?: AgentProviderId;
-  options: ProviderOption[];
-}
-
 /** An entry from `GET /assets/importable` — a file sitting in MEDIA_IMPORT_DIR. */
 export interface ImportableFile { name: string; size: number; alreadyImported: boolean }
 
@@ -307,10 +290,6 @@ async function requestOptional<T>(path: string): Promise<T | null> {
 }
 
 export const api = {
-  getAgentProvider: () => request<ProviderStatus>('/agent/provider'),
-  setAgentProvider: (provider: AgentProviderId) => request<ProviderStatus>('/agent/provider', {
-    method: 'PUT', body: JSON.stringify({ provider }),
-  }),
   listProjects: () => request<Project[]>('/projects'),
   createProject: (input: NewProject) => request<Project>('/projects', { method: 'POST', body: JSON.stringify(input) }),
   getProject: (id: string) => request<Project>(`/projects/${id}`),

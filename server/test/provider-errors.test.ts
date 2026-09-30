@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnthropicToolProvider, OpenAIToolProvider } from '../src/agent/providers.js';
+import { AnthropicToolProvider } from '../src/agent/providers.js';
 
 const realFetch = globalThis.fetch;
 
@@ -19,15 +19,9 @@ describe('provider failure messages', () => {
   it('turns an Anthropic 401 into plain English naming ANTHROPIC_API_KEY', async () => {
     stubFetch(401, authBody);
     const message = await messageFor(new AnthropicToolProvider('bad-key'));
-    expect(message).toBe('Anthropic rejected the API key (401). Check ANTHROPIC_API_KEY on the server, or pick a different provider in settings.');
+    expect(message).toBe('Anthropic rejected the API key (401). Check ANTHROPIC_API_KEY on the server.');
     expect(message).not.toContain('authentication_error');
     expect(message).not.toContain('{');
-  });
-
-  it('turns an OpenAI 401 into plain English naming OPENAI_API_KEY', async () => {
-    stubFetch(401, authBody);
-    expect(await messageFor(new OpenAIToolProvider('bad-key')))
-      .toBe('OpenAI rejected the API key (401). Check OPENAI_API_KEY on the server, or pick a different provider in settings.');
   });
 
   it('explains a 429 as rate limiting', async () => {
@@ -38,8 +32,8 @@ describe('provider failure messages', () => {
 
   it('explains a 500 as the vendor being down', async () => {
     stubFetch(500, '<html>upstream exploded</html>');
-    expect(await messageFor(new OpenAIToolProvider('key')))
-      .toBe('OpenAI is unavailable right now (500). Try again in a moment.');
+    expect(await messageFor(new AnthropicToolProvider('key')))
+      .toBe('Anthropic is unavailable right now (500). Try again in a moment.');
   });
 
   it('still surfaces the status and a trimmed body for other statuses', async () => {

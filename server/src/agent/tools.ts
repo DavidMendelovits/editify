@@ -1125,7 +1125,7 @@ export function createToolRegistry(): ToolDef[] {
         if (!asset) return { ok: false, error: `Asset ${assetId} was not found` };
         const transcript = await ensureTranscript(ctx, assetId);
         if ('error' in transcript) return { ok: false, error: transcript.error };
-        const result = await ctx.insights.getOrCreate(asset, false, ctx.userId);
+        const result = await ctx.insights.getOrCreate(asset, false);
         return result ?? { ok: false, error: `No transcript for asset ${assetId}` };
       },
     },
