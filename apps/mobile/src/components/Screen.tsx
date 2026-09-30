@@ -5,6 +5,8 @@ import { colors, space } from '../lib/theme';
 
 interface Props {
   scroll?: boolean;
+  /** Temporarily lock a scrolling screen, e.g. while the timeline ruler scrubs. */
+  scrollEnabled?: boolean;
   header?: ReactNode;
   /** Editor chrome: drop the reading-width cap and tighten the padding. */
   bleed?: boolean;
@@ -26,7 +28,7 @@ interface Props {
  * PanelLayout are re-clamped against the smaller bounds, so the composer rides
  * up and the timeline keeps its minimum instead of being covered.
  */
-export function Screen({ children, scroll = true, header, bleed = false }: PropsWithChildren<Props>) {
+export function Screen({ children, scroll = true, scrollEnabled = true, header, bleed = false }: PropsWithChildren<Props>) {
   const insets = useSafeAreaInsets();
   // SafeAreaView below claims the top and the sides. The bottom is left to the
   // content padding so a scrolling screen keeps scrolling under the home
@@ -37,6 +39,8 @@ export function Screen({ children, scroll = true, header, bleed = false }: Props
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       {scroll ? (
         <ScrollView
+          testID="screen-scroll"
+          scrollEnabled={scrollEnabled}
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
