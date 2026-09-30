@@ -239,9 +239,11 @@ export function registerAssetRoutes(
   const waveforms = new WaveformService(database, transcripts);
   // Raw media bodies (POST /assets/raw) reach the handler as the request stream,
   // unbuffered and outside the app-wide bodyLimit; saveUpload caps them itself.
-  app.addContentTypeParser(['application/octet-stream', /^video\//, /^audio\//, /^image\//], (_request, payload, done) => {
+  const passStream = (_request: unknown, payload: NodeJS.ReadableStream, done: (error: Error | null, body?: unknown) => void): void => {
     done(null, payload);
-  });
+  };
+  app.addContentTypeParser('application/octet-stream', passStream);
+  app.addContentTypeParser(/^(video|audio|image)\//, passStream);
 
   /** Reads `?projectId=` and refuses ids that do not exist, so links cannot dangle. */
   function requireProject(id: unknown, reply: FastifyReply, userId?: string): string | undefined | null {
