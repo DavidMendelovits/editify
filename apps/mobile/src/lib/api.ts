@@ -420,23 +420,50 @@ export const api = {
 
 /** `file` is the web pickers' real `File`; native callers only ever have a `uri`. */
 export async function uploadAsset(asset: { uri: string; name: string; mimeType?: string; projectId?: string; file?: File }): Promise<AssetMetadata> {
+  const isBrowserFile = Boolean(asset.file) || (typeof File !== 'undefined' && asset.uri.startsWith('blob:'));
+  if (!isBrowserFile) return await uploadNativeFile(asset);
   const form = new FormData();
   if (asset.file) {
     // Hand the picked File straight over so the browser streams it off disk —
     // reading the blob: URI instead buffers the whole clip into memory first.
     form.append('file', asset.file, asset.name);
-  } else if (typeof File !== 'undefined' && asset.uri.startsWith('blob:')) {
+  } else {
     const blob = await fetch(asset.uri).then(async (response) => await response.blob());
     form.append('file', new File([blob], asset.name, { type: asset.mimeType ?? blob.type }));
-  } else {
-    form.append('file', {
-      uri: asset.uri,
-      name: asset.name,
-      type: asset.mimeType ?? 'application/octet-stream',
-    } as unknown as Blob);
   }
   const query = asset.projectId ? `?projectId=${encodeURIComponent(asset.projectId)}` : '';
   const response = await timedFetch(`/assets${query}`, { method: 'POST', body: form, headers: authHeaders() });
   if (!response.ok) throw new Error(await response.text());
   return await response.json() as AssetMetadata;
+}
+
+/**
+ * React Native's FormData reads the whole file into memory on iOS, so a phone
+ * video past a gigabyte or two got the app killed mid-import with no crash
+ * report. A binary upload streams the file from disk as the raw request body
+ * (POST /assets/raw), and a background session keeps it going if the app is
+ * backgrounded.
+ */
+async function uploadNativeFile(asset: { uri: string; name: string; mimeType?: string; projectId?: string }): Promise<AssetMetadata> {
+  // ponytail: SDK 54's File has no upload yet, and the legacy module's .ts source
+  // fails this app's exactOptionalPropertyTypes, so its two members are typed here.
+  // Swap for `new File(uri).upload()` once the SDK ships it.
+  const { uploadAsync, FileSystemUploadType } = require('expo-file-system/legacy') as {
+    uploadAsync: (url: string, fileUri: string, options: {
+      httpMethod: 'POST'; uploadType: number; headers: Record<string, string>;
+    }) => Promise<{ status: number; body: string }>;
+    FileSystemUploadType: { BINARY_CONTENT: number };
+  };
+  const query = new URLSearchParams({ name: asset.name, ...(asset.projectId ? { projectId: asset.projectId } : {}) });
+  const started = Date.now();
+  const result = await uploadAsync(`${API_URL}/assets/raw?${query.toString()}`, asset.uri, {
+    httpMethod: 'POST',
+    uploadType: FileSystemUploadType.BINARY_CONTENT,
+    headers: { ...authHeaders(), 'Content-Type': asset.mimeType ?? 'application/octet-stream' },
+  });
+  if (result.status < 200 || result.status >= 300) {
+    track('api_error', `POST /assets/raw → ${result.status} in ${Date.now() - started}ms`);
+    throw new Error(result.body || `Upload failed with status ${result.status}`);
+  }
+  return JSON.parse(result.body) as AssetMetadata;
 }
