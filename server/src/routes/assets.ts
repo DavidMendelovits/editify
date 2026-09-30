@@ -315,6 +315,12 @@ export function registerAssetRoutes(
         error: !name.success ? 'A file name is required' : 'Only video, audio, and image files are supported',
       });
     }
+    // The phone sends the file's size up front; refuse an oversized one before
+    // it spends minutes uploading. capBytes still guards a body that lies.
+    if (Number(request.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) {
+      body.resume();
+      return await reply.code(413).send({ error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
+    }
     return await saveUpload(reply, body, { name: name.data, mimeType }, projectId, request.userId);
   });
 

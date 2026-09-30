@@ -60,6 +60,18 @@ describe('POST /assets/raw', () => {
     await app.close();
   });
 
+  it('refuses a declared size over the cap before reading the body', async () => {
+    const app = await buildApp({ database: createDatabase(':memory:') });
+    const oversized = await app.inject({
+      method: 'POST',
+      url: '/assets/raw?name=huge.mov',
+      headers: { 'content-type': 'video/quicktime', 'content-length': String(3 * 1024 ** 3) },
+      payload: Readable.from([Buffer.alloc(16)]),
+    });
+    expect(oversized.statusCode).toBe(413);
+    await app.close();
+  });
+
   it('fails the stream once the byte cap is crossed', async () => {
     const drain = async (source: AsyncIterable<unknown>): Promise<void> => { for await (const _chunk of source) { /* discard */ } };
     await expect(pipeline(Readable.from([Buffer.alloc(6), Buffer.alloc(6)]), capBytes(10), drain))
