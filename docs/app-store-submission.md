@@ -605,7 +605,7 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 8a | Answer the age rating questionnaire in the live form (section 1.9). Untouched today | David |
 | 8b | Set Support URL, Privacy Policy URL and the EULA field to the three `editify-dm.fly.dev` URLs. All still `null` | Automatable, after item 1 deploys |
 | 8c | **Answer `contentRightsDeclaration` on the app record. It is `null`, confirmed against the App Store Connect API for app `6814607865`,** and App Store Connect will not accept a submission without it. The question is whether the app contains, shows or accesses third-party content. Editify ships no third-party content of its own; users import their own footage and nothing is published or shared. The expected answer is that it does **not** use third-party content, but read the live question before answering: it was rewritten in 2025 and now also asks about rights to content the app generates | David |
-| 8d | **Create the subscription group and the Creator product** (`editify.creator.monthly`; `editify.studio.monthly` comes later), with localised display name and description, price, the 7-day introductory offer, and a review screenshot. Section 8.3 | David |
+| 8d | **Create the subscription group and the Creator product** (`creator`; `studio` comes later), with localised display name and description, price, the 7-day introductory offer, and a review screenshot. Section 8.3 | David |
 | 8e | **Attach the Creator product to the 1.0.0 version submission.** IAP products are reviewed alongside the first build that includes them; a product that is created but not attached does not exist for the reviewer, who then sees an empty paywall. Section 8.4 | David |
 | 8f | **Fix the remaining guideline 3.1.2 gaps in the binary** before building: a real gated feature and a truthful free-trial claim. Section 7.1 items 3 and 4. The privacy policy and terms links (item 1) are done | Owner of `apps/mobile/app/paywall.tsx` |
 | 8g | **Set up RevenueCat**: entitlement `creator`, one current offering `default` holding only the `creator_monthly` package, and the App Store Connect in-app purchase key uploaded | David |
@@ -709,8 +709,8 @@ Per `docs/subscriptions.md`:
 
 | Plan | Product ID | Duration | Base price (USD) | RevenueCat entitlement | At launch |
 |---|---|---|---|---|---|
-| Creator | `editify.creator.monthly` | 1 month | 12 | `creator` | yes |
-| Studio | `editify.studio.monthly` | 1 month | 29 | `studio` | no, later |
+| Creator | `creator` | 1 month | 12 | `creator` | yes |
+| Studio | `studio` | 1 month | 29 | `studio` | no, later |
 
 For each product, all of the following are required before it can be submitted:
 
