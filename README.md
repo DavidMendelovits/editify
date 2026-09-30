@@ -24,39 +24,7 @@ npm run dev:mobile
 
 The API defaults to `http://localhost:3001`. Set `EXPO_PUBLIC_API_URL` before starting Expo when the server is on another host (for example, your computer's LAN address when using a physical phone). Uploaded originals, generated proxies/thumbnails, the SQLite database, and rendered masters live under `server/data/` and are intentionally gitignored.
 
-No model key is required. The deterministic mock agent supports prompts such as “add captions,” “make it choppier,” “trim silence,” and “speed this up.” Set `ANTHROPIC_API_KEY` to use Anthropic Messages or `OPENAI_API_KEY` to use OpenAI Chat Completions. Anthropic takes precedence when both are present.
-
-### Choosing the model in the app
-
-The provider chip at the top of the chat dock switches which model runs the
-agent. The server probes what is actually usable, checking whether `claude` and
-`codex` are on `PATH` and whether the API keys are set. Unavailable options stay
-listed but disabled with the reason. The choice is stored in the `settings`
-table and applies to the next message; no restart.
-
-```
-GET /agent/provider   → { active, requested?, options: [{ id, label, available, detail }] }
-PUT /agent/provider   { "provider": "claude-cli" }
-```
-
-`requested` appears when a saved choice has stopped being usable (key removed,
-CLI uninstalled) and something else is running in its place. `EDITIFY_AGENT_CLI=claude`
-(or `codex`) still sets the boot default for a server nobody has configured
-through the UI.
-
-### Driving the agent with a local CLI
-
-`claude-cli` and `codex-cli` run the agent on the
-[Claude Code](https://claude.com/claude-code) or Codex CLI already installed and
-signed in on your machine: the subscription pays for it, not a key.
-
-Each loop turn spawns one CLI process with the conversation replayed and the
-tool catalog attached, and the reply is parsed back into tool calls. Both CLIs
-are launched isolated, with no MCP servers, no user settings, and none of their
-own tools, in a throwaway working directory. Expect roughly 20–60 seconds and a
-few cents per chat message; `EDITIFY_AGENT_CLI_MODEL` and
-`EDITIFY_AGENT_CLI_TIMEOUT_MS` (default 240000) tune it. Anything in
-`server/.env` is loaded at boot, so these can live there.
+The agent runs on the Anthropic Messages API: set `ANTHROPIC_API_KEY` (in the environment or `server/.env`). There is no model picker in the app. Without a key the server falls back to a deterministic mock agent so local development and tests work offline; it supports prompts such as “add captions,” “make it choppier,” “trim silence,” and “speed this up,” and `GET /health` reports which one is running.
 
 ## Deploying
 
@@ -120,9 +88,8 @@ covers it. A phone running Expo Go against the deployed server needs both:
 EXPO_PUBLIC_API_URL=https://editify-dm.fly.dev EXPO_PUBLIC_API_TOKEN=<token> npm run dev:mobile
 ```
 
-Providers: `claude-cli` and `codex-cli` are not in the image, so a deployed
-server needs `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` (`fly secrets set`) or it
-quietly falls back to the offline mock agent.
+A deployed server needs `ANTHROPIC_API_KEY` (`fly secrets set`) or it quietly
+falls back to the offline mock agent.
 
 ## Useful commands
 

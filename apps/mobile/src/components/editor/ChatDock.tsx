@@ -6,7 +6,6 @@ import { AgentActivity } from '../AgentActivity';
 import { AgentTrace } from '../AgentTrace';
 import { PresetPicker } from '../PresetPicker';
 import { Markdown } from './Markdown';
-import { ProviderPicker } from './ProviderPicker';
 import { api, rebaseServerUrl, type ChatMessage, type RenderRecord } from '../../lib/api';
 import { receiptItems, type AgentTraceStep } from '../../lib/agent';
 import { presetPrompt } from '../../lib/presets';
@@ -85,7 +84,6 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
           <Text style={[styles.statusText, pending && styles.statusWorking]}>{pending ? 'WORKING' : 'READY'}</Text>
         </View>
       </View>
-      <ProviderPicker />
 
       <ScrollView
         ref={scroller}

@@ -66,8 +66,6 @@ export const chatResponseSchema = z.object({
 - **AnthropicToolProvider**: Messages API native tool use, model `claude-sonnet-5`,
   `max_tokens 4096`, pass tools as `[{name, description, input_schema}]`, map
   `tool_use`/`tool_result` blocks. Keep conversation as proper content blocks.
-- **OpenAIToolProvider**: function calling (`tools: [{type:'function',...}]`),
-  model `process.env.OPENAI_MODEL ?? 'gpt-4.1'`.
 - **MockToolProvider**: deterministic multi-step director so the demo works with zero keys.
   Behavior: first call `list_assets` + `get_project` + `get_style_profile`; if the prompt asks
   to build/style/make a cut and video track has no clips, `add_clip` each asset (in listed
@@ -78,7 +76,7 @@ export const chatResponseSchema = z.object({
   vertical/9:16. Then finish with an honest reply describing what it did. It must go through
   the SAME loop/tool execution path as real providers (it emits tool calls, it does not
   shortcut the registry).
-- `createProvider()` unchanged precedence: ANTHROPIC_API_KEY → OPENAI_API_KEY → mock.
+- `createProvider()`: ANTHROPIC_API_KEY → Anthropic, else mock (no key only).
   Load `server/.env` if present (dotenv or manual parse — trivial).
 
 ### A4. Chat route + persistence

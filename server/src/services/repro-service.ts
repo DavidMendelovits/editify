@@ -4,8 +4,7 @@ import type { Operation, Project } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import type { ChatStore } from '../db/chat-store.js';
 import type { ProjectStore } from '../db/project-store.js';
-import type { SettingsStore } from '../db/settings-store.js';
-import { PROVIDER_SETTING_KEY } from '../agent/registry.js';
+import { defaultProviderId } from '../agent/providers.js';
 
 /** Ops and chat turns are trails, not archives: only the recent end is useful. */
 const RECENT_OPS = 20;
@@ -96,7 +95,7 @@ export interface ReproBundle {
    * produced how many operations, not what the user typed about their footage.
    */
   chat: Array<{ role: string; at: string; characters: number; opCount: number }>;
-  server: { provider?: string; commit?: string; node: string; platform: string };
+  server: { provider: string; commit?: string; node: string; platform: string };
 }
 
 function gitCommit(): string | undefined {
@@ -143,7 +142,6 @@ export class ReproService {
     private readonly projects: ProjectStore,
     private readonly assets: AssetStore,
     private readonly chat: ChatStore,
-    private readonly settings: SettingsStore,
   ) {}
 
   build(projectId: string, userId: string): ReproBundle | undefined {
@@ -195,7 +193,6 @@ export class ReproService {
       opCount: message.ops?.length ?? 0,
     }));
 
-    const provider = this.settings.get(PROVIDER_SETTING_KEY);
     const commit = gitCommit();
     return {
       capturedAt: new Date().toISOString(),
@@ -204,7 +201,7 @@ export class ReproService {
       recentOps,
       chat,
       server: {
-        ...(provider ? { provider } : {}),
+        provider: defaultProviderId(),
         ...(commit ? { commit } : {}),
         node: process.version,
         platform: process.platform,

@@ -7,8 +7,8 @@ storefront, so the US prices below convert to every other currency.
 | Plan    | Base price (USD) | Product ID (iOS + Android) | Entitlement | Package           | Trial  | At launch                  |
 | ------- | ---------------- | -------------------------- | ----------- | ----------------- | ------ | -------------------------- |
 | Free    | 0                | none                       | none        | none              | none   | always                     |
-| Creator | 12 / month       | `editify.creator.monthly`  | `creator`   | `creator_monthly` | 7 days | in the offering            |
-| Studio  | 29 / month       | `editify.studio.monthly`   | `studio`    | `studio_monthly`  | 7 days | later, not in the offering |
+| Creator | 12 / month       | `creator`  | `creator`   | `creator_monthly` | 7 days | in the offering            |
+| Studio  | 29 / month       | `studio`   | `studio`    | `studio_monthly`  | 7 days | later, not in the offering |
 
 Creator is the plan to launch with. Studio is documented so the ids are settled,
 but it is not created in the offering until it ships. `src/lib/purchases.ts`
@@ -22,7 +22,7 @@ Nothing below is configurable from the codebase.
 
 ### 1. App Store Connect
 
-1. Subscriptions > new subscription group `Editify` with `editify.creator.monthly`.
+1. Subscriptions > new subscription group `Editify` with `creator`.
    Studio joins the same group when it ships, ranked above Creator.
 2. Set the base price on the **United States** storefront at the $12 price
    point, or the closest one App Store Connect offers, and let Apple derive
@@ -39,14 +39,14 @@ Nothing below is configurable from the codebase.
 
 ### 2. Google Play Console
 
-`editify.creator.monthly` as a base plan, priced at $12 in the United States
+`creator` as a base plan, priced at $12 in the United States
 with automatic conversion, plus a 7-day free-trial offer on it.
 
 ### 3. RevenueCat
 
 1. Create the project, add the iOS and Android apps, upload the App Store
    Connect in-app purchase key and the Play service account.
-2. Entitlement `creator`, attached to `editify.creator.monthly`. Studio later
+2. Entitlement `creator`, attached to `creator`. Studio later
    gets entitlement `studio` and package `studio_monthly`.
 3. One offering, `default`, made current. At launch it holds only
    `creator_monthly` (a custom identifier, so Studio can join it later without

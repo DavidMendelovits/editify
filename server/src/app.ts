@@ -7,8 +7,7 @@ import { registerAuth, type AuthOptions } from './auth.js';
 import { supabaseUrl } from './config.js';
 import { EDITING_PRESETS } from '@editify/shared';
 import { ZodError } from 'zod';
-import type { ToolProvider } from './agent/providers.js';
-import { ProviderRegistry } from './agent/registry.js';
+import { createProvider, type ToolProvider } from './agent/providers.js';
 import { AgentService } from './agent/service.js';
 import { AssetStore } from './db/asset-store.js';
 import { ChatStore } from './db/chat-store.js';
@@ -21,7 +20,6 @@ import { SettingsStore } from './db/settings-store.js';
 import { TranscriptStore } from './db/transcript-store.js';
 import { OperationError } from './operations/apply.js';
 import { registerAccountRoutes } from './routes/account.js';
-import { registerAgentRoutes } from './routes/agent.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { isLegalRoute, registerLegalRoutes } from './routes/legal.js';
@@ -62,8 +60,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const renders = new RenderStore(database);
   const chats = new ChatStore(database);
   const settings = new SettingsStore(database);
-  const registry = new ProviderRegistry(settings);
-  const resolveProvider = async (userId?: string): Promise<ToolProvider> => await registry.resolve(userId);
+  const resolveProvider = async (): Promise<ToolProvider> => createProvider();
   const agent = new AgentService(resolveProvider);
   const transcripts = new TranscriptService(new TranscriptStore(database));
   const insights = new InsightService(new InsightStore(database), transcripts, resolveProvider);
@@ -77,7 +74,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     new ReportStore(database),
     resolveProvider,
     undefined,
-    new ReproService(projects, assets, chats, settings),
+    new ReproService(projects, assets, chats),
   );
 
   // EDITIFY_NO_AUTH=1 disables auth for local agent testing; every request
@@ -117,7 +114,6 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   app.get('/sounds', async () => await ensureSoundLibrary(assets));
   registerLegalRoutes(app);
   registerAccountRoutes(app, database, styles);
-  registerAgentRoutes(app, registry);
   registerProjectRoutes(app, projects, renderQueue, assets, transcripts, syncs);
   registerAssetRoutes(app, assets, projects, transcripts, insights, dissections, database, faces);
   registerRenderRoutes(app, renders);

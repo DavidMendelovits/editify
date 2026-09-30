@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { AssetMetadata } from '@editify/shared';
@@ -38,6 +39,28 @@ const importRequestSchema = z.object({
 const forceRequestSchema = z.object({ force: z.boolean().optional().default(false) }).strict();
 const labelRequestSchema = z.object({ label: z.string().max(120) }).strict();
 const linkRequestSchema = z.object({ projectId: z.string().min(1) }).strict();
+const rawUploadSchema = z.string().trim().min(1).max(255);
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+
+export class UploadTooLargeError extends Error {}
+
+function isMediaType(mimeType: string): boolean {
+  return mimeType.startsWith('video/') || mimeType.startsWith('audio/')
+    || mimeType.startsWith('image/') || mimeType === 'application/octet-stream';
+}
+
+/** Fails the pipeline once more than `limit` bytes pass, instead of filling the disk. */
+export function capBytes(limit: number): Transform {
+  let seen = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      seen += chunk.length;
+      if (seen > limit) done(new UploadTooLargeError(`Uploads are limited to ${Math.round(limit / 1024 ** 3)} GB`));
+      else done(null, chunk);
+    },
+  });
+}
+
 const videoExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
 const videoMimeTypes: Record<string, string> = {
   '.mp4': 'video/mp4',
@@ -214,6 +237,13 @@ export function registerAssetRoutes(
   // ponytail: built here rather than in `buildApp` so wiring stays one line —
   // hoist it up if anything outside these routes ever needs an envelope.
   const waveforms = new WaveformService(database, transcripts);
+  // Raw media bodies (POST /assets/raw) reach the handler as the request stream,
+  // unbuffered and outside the app-wide bodyLimit; saveUpload caps them itself.
+  const passStream = (_request: unknown, payload: NodeJS.ReadableStream, done: (error: Error | null, body?: unknown) => void): void => {
+    done(null, payload);
+  };
+  app.addContentTypeParser('application/octet-stream', passStream);
+  app.addContentTypeParser(/^(video|audio|image)\//, passStream);
 
   /** Reads `?projectId=` and refuses ids that do not exist, so links cannot dangle. */
   function requireProject(id: unknown, reply: FastifyReply, userId?: string): string | undefined | null {
@@ -226,34 +256,74 @@ export function registerAssetRoutes(
     return projectId;
   }
 
-  app.post<{ Querystring: { projectId?: string } }>('/assets', async (request, reply) => {
-    const projectId = requireProject(request.query.projectId, reply, request.userId);
-    if (projectId === null) return reply;
-    const part = await request.file({ limits: { fileSize: 2 * 1024 * 1024 * 1024, files: 1 } });
-    if (!part) return await reply.code(400).send({ error: 'A multipart media file is required' });
-    if (!part.mimetype.startsWith('video/') && !part.mimetype.startsWith('audio/')
-      && !part.mimetype.startsWith('image/') && part.mimetype !== 'application/octet-stream') {
-      part.file.resume();
-      return await reply.code(415).send({ error: 'Only video, audio, and image files are supported' });
-    }
+  /** Streams one upload to disk, then probes and registers it. Shared by the multipart and raw routes. */
+  async function saveUpload(
+    reply: FastifyReply,
+    body: NodeJS.ReadableStream,
+    file: { name: string; mimeType: string },
+    projectId: string | undefined,
+    userId: string | undefined,
+  ): Promise<FastifyReply> {
     const id = randomUUID();
     const directory = join(assetsRoot, id);
     await mkdir(directory, { recursive: true });
-    const extension = extname(part.filename).replace(/[^.a-zA-Z0-9]/g, '').slice(0, 12) || '.media';
+    const extension = extname(file.name).replace(/[^.a-zA-Z0-9]/g, '').slice(0, 12) || '.media';
     const originalPath = join(directory, `original${extension}`);
     try {
-      await pipeline(part.file, (await import('node:fs')).createWriteStream(originalPath));
+      await pipeline(body, capBytes(MAX_UPLOAD_BYTES), (await import('node:fs')).createWriteStream(originalPath));
       const asset = await processAsset(app, assets, transcripts, {
-        originalName: part.filename,
-        mimeType: part.mimetype,
+        originalName: file.name,
+        mimeType: file.mimeType,
         originalPath,
-      }, id, request.userId, faces);
+      }, id, userId, faces);
       if (projectId) assets.link(projectId, asset.id);
       return await reply.code(201).send(publicAsset(asset));
     } catch (error) {
       await rm(directory, { recursive: true, force: true });
+      if (error instanceof UploadTooLargeError) return await reply.code(413).send({ error: error.message });
       throw error;
     }
+  }
+
+  app.post<{ Querystring: { projectId?: string } }>('/assets', async (request, reply) => {
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
+    if (projectId === null) return reply;
+    const part = await request.file({ limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
+    if (!part) return await reply.code(400).send({ error: 'A multipart media file is required' });
+    if (!isMediaType(part.mimetype)) {
+      part.file.resume();
+      return await reply.code(415).send({ error: 'Only video, audio, and image files are supported' });
+    }
+    return await saveUpload(reply, part.file, { name: part.filename, mimeType: part.mimetype }, projectId, request.userId);
+  });
+
+  /**
+   * The same upload with the file as the raw request body and its name in the
+   * query. iOS builds a multipart body in memory, so a 2 GB clip sent as
+   * FormData gets the app killed; a raw body streams from disk on the phone.
+   */
+  app.post<{ Querystring: { projectId?: string; name?: string } }>('/assets/raw', async (request, reply) => {
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
+    if (projectId === null) return reply;
+    const name = rawUploadSchema.safeParse(request.query.name);
+    const mimeType = (request.headers['content-type'] ?? '').split(';')[0]?.trim() ?? '';
+    // Only the media parser above hands over a stream; any other type arrives parsed.
+    const body = typeof (request.body as NodeJS.ReadableStream | undefined)?.pipe === 'function'
+      ? request.body as NodeJS.ReadableStream
+      : undefined;
+    if (!name.success || !body || !isMediaType(mimeType)) {
+      body?.resume();
+      return await reply.code(!name.success ? 400 : 415).send({
+        error: !name.success ? 'A file name is required' : 'Only video, audio, and image files are supported',
+      });
+    }
+    // The phone sends the file's size up front; refuse an oversized one before
+    // it spends minutes uploading. capBytes still guards a body that lies.
+    if (Number(request.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) {
+      body.resume();
+      return await reply.code(413).send({ error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
+    }
+    return await saveUpload(reply, body, { name: name.data, mimeType }, projectId, request.userId);
   });
 
   // The media library. With `?projectId=` it is scoped to that project's own
@@ -367,7 +437,7 @@ export function registerAssetRoutes(
   app.get<{ Params: { id: string } }>('/assets/:id/insights', async (request, reply) => {
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
-    const result = await insights.getOrCreate(asset, false, request.userId);
+    const result = await insights.getOrCreate(asset, false);
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 
@@ -375,7 +445,7 @@ export function registerAssetRoutes(
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     const { force } = forceRequestSchema.parse(request.body ?? {});
-    const result = await insights.getOrCreate(asset, force, request.userId);
+    const result = await insights.getOrCreate(asset, force);
     return result ?? await reply.code(404).send({ error: 'No transcript' });
   });
 

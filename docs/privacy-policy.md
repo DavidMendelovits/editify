@@ -1,6 +1,6 @@
 # Editify Privacy Policy
 
-**Last updated:** 21 September 2026
+**Last updated:** 30 September 2026
 **Applies to:** the Editify iOS and Android apps (bundle id `com.editify.app`) and the Editify web client.
 
 ## 1. Who is responsible for your data
@@ -57,10 +57,12 @@ Editify uses **PostHog**, a product-analytics service, to understand how the app
 
 What it receives:
 
-- An **anonymous installation identifier** that PostHog generates on your device the first time you open the app and keeps until you delete the app. It is not your Apple advertising identifier, and we do not read that identifier anywhere.
+- An **installation identifier** that PostHog generates on your device the first time you open the app and keeps until you delete the app. It is not your Apple advertising identifier, and we do not read that identifier anywhere.
+- **Your Editify account identifier** while you are signed in: the random id of your account, not your email address or name. It links your analytics events and crash diagnostics to your account so we can investigate a problem you report. Signing out stops the link for that device.
 - **Application lifecycle events**: when the app is installed, updated, opened and put into the background, with the app version and build number.
 - **Automatic technical properties** attached to those events, such as the app version, operating system version, device type, language and screen dimensions.
-- **Which screens of the app you open.** Individual taps and button presses are not captured. PostHog never receives the contents of your projects.
+- **Which screens of the app you open.** A screen can include the internal id of the project you have open, never its title. Individual taps and button presses are not captured. PostHog never receives the contents of your projects.
+- **Crash and error diagnostics.** If the app crashes, or an error it does not expect occurs, PostHog receives the error type and message, the stack trace (which functions in the app's own code were running), the app version, and the technical properties above. For crashes in the app's native code, the report is sent the next time you open the app.
 
 PostHog never receives your video, audio, transcripts, captions, chat messages, project titles or rendered exports. Nothing in the app sends PostHog your email address or your name.
 
@@ -80,7 +82,7 @@ Cancelling is done in your App Store or Google Play account settings. Deleting y
 
 ### 3.6 What we do not collect
 
-We do not collect your precise or coarse location, contacts, health data, browsing or search history, or advertising identifiers. We never see or store your payment card details. Editify contains no advertising SDK and no third-party crash-reporting SDK.
+We do not collect your precise or coarse location, contacts, health data, browsing or search history, or advertising identifiers. We never see or store your payment card details. Editify contains no advertising SDK. Crash reporting is handled by PostHog, as described in section 3.4.
 
 **We do not track you across other companies' apps or websites**, and we do not sell or share your data for advertising. Neither the analytics software nor the subscription software in the app reads your device's advertising identifier, and the app never asks for permission to track you, because it does not.
 
@@ -105,16 +107,16 @@ These are the only third parties that receive your data, and they receive it bec
 | **Fly.io** (Fly.io, Inc., USA) | Everything stored server-side: your media files, transcripts, project documents, chat history, renders, diagnostic reports | Hosting for the Editify API, media store, database and renderer |
 | **Supabase** (Supabase, Inc., USA) | Email address, password hash, account id, and any profile fields your identity provider returns | Authentication and session management |
 | **Google** (Google LLC, USA) | Your Google account identity, if and only if you choose "continue with Google" | Sign-in |
-| **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. This is the provider configured on our production server; an OpenAI key can be configured instead, in which case the same text goes to **OpenAI** (OpenAI, L.L.C., USA) rather than to Anthropic. | Running the editing assistant |
+| **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. | Running the editing assistant |
 | **Google (Gemini API)** (Google LLC, USA) | The **full video file** of each clip you submit to "learn my style". This analyzer is configured and active on our production server. The upload is deleted from Google's Files API at the end of the run. The app's style screen tells you which analyzer is active and whether it uploads footage. | Analysing your reference videos |
-| **PostHog** ({{FILL_POSTHOG_ENTITY}}) | The anonymous installation identifier, application lifecycle events, screen views and taps, and the technical properties listed in section 3.4. No content, no email address, no name | Product analytics: understanding how the app is used |
+| **PostHog** ({{FILL_POSTHOG_ENTITY}}) | The installation identifier, your account identifier while signed in, application lifecycle events, screen views, crash and error diagnostics, and the technical properties listed in section 3.4. No content, no email address, no name | Product analytics and crash reporting: understanding how the app is used and finding what breaks |
 | **RevenueCat** (RevenueCat, Inc., USA) | Your Editify account identifier, your Editify purchase history and store receipts, and technical details of the device and transaction. No card details, no email address, no content | Managing subscriptions and entitlements across your devices |
 | **Apple** (Apple Inc., USA) and **Google** (Google LLC, USA), as the app stores | Your payment and billing relationship for any subscription you buy, under their own privacy policies. We receive a subscription status from them, never a payment instrument | Taking payment for subscriptions |
 | **GitHub** (GitHub, Inc., USA) | Crash reports and feedback you send: the error text, the stack, the app-state summary, your session event log and anything you typed. On the web client, an attached screenshot is committed to a repository. | Filing bug reports into our issue tracker |
 
 Our issue tracker is the **private** repository `DavidMendelovits/editify`. Reports filed there are readable by the people who maintain Editify and by GitHub as our processor. Nothing you send in a crash report or a feedback message is published publicly.
 
-Confirmed on the production server (Fly app `editify-dm`, September 2026): the Anthropic key, the Gemini key and the GitHub token are all set, so the editing assistant runs on Anthropic's model, the Gemini analyzer is the one that watches your reference videos, and reports are filed into the private repository named above. No OpenAI key is set.
+Confirmed on the production server (Fly app `editify-dm`, September 2026): the Anthropic key, the Gemini key and the GitHub token are all set, so the editing assistant runs on Anthropic's model, the Gemini analyzer is the one that watches your reference videos, and reports are filed into the private repository named above.
 
 Apart from PostHog, whose region is being confirmed, all of these providers are in the United States. Transfers out of the EEA and the UK rely on the providers' Standard Contractual Clauses.
 
@@ -123,7 +125,7 @@ Apart from PostHog, whose region is being confirmed, all of these providers are 
 - Account data, media, transcripts, projects, chat history and renders: until you delete them, or until you delete your account.
 - Deleting a project deletes its timeline, operation log, chat history and renders.
 - Diagnostic and feedback reports: retained indefinitely while the underlying defect is open. Reports linked to your account are deleted when you delete your account; anonymous reports and any issue already filed in the tracker are not.
-- Product-analytics events: retained according to our PostHog project's retention settings. They are tied to an anonymous installation identifier, not to your account.
+- Product-analytics events and crash diagnostics: retained according to our PostHog project's retention settings. Those sent while you were signed in carry your account identifier. Deleting your account does not yet remove them from PostHog automatically; contact us and we will delete them.
 - Subscription records held by our billing provider: retained for as long as we need them to service the subscription and to meet accounting and tax obligations, which outlast the account itself.
 
 ## 7. Deleting your account

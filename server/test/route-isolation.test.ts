@@ -20,7 +20,7 @@ import { TranscriptStore } from '../src/db/transcript-store.js';
 const SUPABASE = 'https://isolation.supabase.test';
 const ALICE = 'alice-0000';
 const BOB = 'bob-0000';
-const ENV_KEYS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'EDITIFY_AGENT_CLI', 'EDITIFY_TOKEN', 'GEMINI_API_KEY'] as const;
+const ENV_KEYS = ['ANTHROPIC_API_KEY', 'EDITIFY_TOKEN', 'GEMINI_API_KEY'] as const;
 
 let app: FastifyInstance;
 let database: EditifyDatabase;
@@ -191,11 +191,10 @@ describe('route isolation between two signed-in users', () => {
     expect((await call(BOB, 'POST', '/assets/import', { name: 'anything.mp4' })).statusCode).toBe(403);
   });
 
-  it('keeps provider and analyzer choices per user', async () => {
-    expect((await call(ALICE, 'PUT', '/agent/provider', { provider: 'mock' })).statusCode).toBe(200);
+  it('keeps the analyzer choice per user', async () => {
     expect((await call(ALICE, 'PUT', '/style/analyzer', { analyzer: 'ffmpeg' })).statusCode).toBe(200);
     const keys = (database.prepare('SELECT key FROM settings').all() as Array<{ key: string }>).map((row) => row.key);
-    expect(keys.sort()).toEqual([`agent.provider:${ALICE}`, `style.analyzer:${ALICE}`]);
+    expect(keys).toEqual([`style.analyzer:${ALICE}`]);
   });
 
   it('lets Alice through the same table', async () => {

@@ -6,13 +6,15 @@ import { api, assetThumbUrl } from '../lib/api';
 import { formatTimecode } from '../lib/timeline';
 import { sensitive } from '../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../lib/theme';
+import { describeImport, importFraction, type ImportProgress } from '../lib/upload-progress';
+import { ProgressBar } from './ProgressBar';
 
 interface Props {
   projectId: string;
   /** A source picker is running — every add button is disabled meanwhile. */
   busy: boolean;
-  /** Set only while a multi-file import is uploading, one clip at a time. */
-  progress?: { done: number; total: number };
+  /** Set while an import is uploading. */
+  progress?: ImportProgress;
   error?: string;
   onPickPhotos: () => void;
   onPickFiles: () => void;
@@ -100,10 +102,13 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
             </Pressable>
           </View>
           <Text style={styles.count}>
-            {progress ? `importing ${progress.done} of ${progress.total} · one at a time`
+            {progress ? `uploading ${describeImport(progress)}`
               : library.isLoading ? 'loading…'
               : `${assets.length} clip${assets.length === 1 ? '' : 's'} · ${scope === 'project' ? 'imported into this project' : 'every project · adding adopts a clip'}`}
           </Text>
+          {progress && importFraction(progress) !== undefined && (
+            <ProgressBar fraction={importFraction(progress) ?? 0} style={styles.progress} />
+          )}
         </View>
         <View style={styles.sources}>
           <Source label="camera roll" hint="camera roll" onPress={onPickPhotos} disabled={busy} />
@@ -200,6 +205,7 @@ const styles = StyleSheet.create({
   scopeText: { color: colors.text, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6 },
   eyebrow: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 1.5 },
   count: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
+  progress: { marginTop: space.sm, maxWidth: 240 },
   sources: { flexShrink: 0, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: space.md },
   source: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, paddingHorizontal: space.lg, paddingVertical: space.md },
   sourceDisabled: { opacity: 0.45 },

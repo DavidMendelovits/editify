@@ -139,7 +139,7 @@ export class StyleService {
       analyzer,
       cache: this.cache,
       ...(refresh ? { refresh } : {}),
-      distill: async (template, observations) => await this.agent.distillStyle(emptyProject, template, observations, template.watchedCount > 0, userId),
+      distill: async (template, observations) => await this.agent.distillStyle(emptyProject, template, observations, template.watchedCount > 0),
       onProgress: (progress) => { if (this.runs.get(key)?.status === 'processing') this.runs.set(key, { status: 'processing', progress }); },
       onWarning: (message) => console.warn('[style]', message),
     });

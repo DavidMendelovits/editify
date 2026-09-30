@@ -6,9 +6,9 @@ import { createDatabase } from '../src/db/database.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { RenderStore } from '../src/db/render-store.js';
 import { SettingsStore } from '../src/db/settings-store.js';
-import { PROVIDER_SETTING_KEY } from '../src/agent/registry.js';
 import { deleteUserData } from '../src/services/account-service.js';
 import { SELECTED_KEY } from '../src/services/style-service.js';
+import { ANALYZER_SETTING_KEY } from '../src/style/registry.js';
 
 // Ids are distinctive because the delete also unlinks `assets/<id>` on disk.
 const media = (id: string) => ({
@@ -73,17 +73,17 @@ describe('DELETE /account', () => {
     );
     style.run('style-alice', new Date().toISOString(), 'account-alice');
     style.run('style-bob', new Date().toISOString(), 'account-bob');
-    settings.setFor(PROVIDER_SETTING_KEY, 'mock', 'account-alice');
+    settings.setFor(ANALYZER_SETTING_KEY, 'ffmpeg', 'account-alice');
     settings.setFor(SELECTED_KEY, 'style-alice', 'account-alice');
-    settings.setFor(PROVIDER_SETTING_KEY, 'mock', 'account-bob');
-    settings.set(PROVIDER_SETTING_KEY, 'mock');
+    settings.setFor(ANALYZER_SETTING_KEY, 'ffmpeg', 'account-bob');
+    settings.set(ANALYZER_SETTING_KEY, 'ffmpeg');
     const forgotten: string[] = [];
 
     const counts = await deleteUserData(database, 'account-alice', { forget: (userId) => forgotten.push(userId) });
     expect(counts.styles).toBe(1);
     expect(forgotten).toEqual(['account-alice']);
     const keys = (database.prepare('SELECT key FROM settings ORDER BY key').all() as Array<{ key: string }>).map((row) => row.key);
-    expect(keys).toEqual([PROVIDER_SETTING_KEY, `${PROVIDER_SETTING_KEY}:account-bob`]);
+    expect(keys).toEqual([ANALYZER_SETTING_KEY, `${ANALYZER_SETTING_KEY}:account-bob`]);
     expect((database.prepare('SELECT id FROM style_profiles').all() as Array<{ id: string }>).map((row) => row.id)).toEqual(['style-bob']);
     database.close();
   });

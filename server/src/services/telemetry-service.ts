@@ -188,8 +188,7 @@ function describeContext(context: TelemetryReport['context']): string[] {
 export class TelemetryService {
   constructor(
     private readonly store: ReportStore,
-    /** Resolved per call (and per user), like the other services, so the provider picker applies live. */
-    private readonly provider: (userId?: string) => Promise<ToolProvider>,
+    private readonly provider: () => Promise<ToolProvider>,
     private readonly insightsPath = join(dataRoot, 'user-insights.md'),
     /** Optional so the telemetry tests, and a report with no project, still work. */
     private readonly repro?: ReproService,
@@ -233,7 +232,7 @@ export class TelemetryService {
       )
       : undefined;
 
-    const assessment = await this.assess(report, bundle, userId);
+    const assessment = await this.assess(report, bundle);
     const issue = await this.file(report, assessment, bundle, reportId, shot);
     if (!issue) {
       this.appendInsight(`## ${assessment.title}`, [
@@ -253,7 +252,7 @@ export class TelemetryService {
    * A short title and a feasibility read from the LLM, with a template fallback
    * so a missing or broken provider never blocks the report.
    */
-  private async assess(report: TelemetryReport, bundle?: ReproBundle, userId?: string): Promise<Assessment> {
+  private async assess(report: TelemetryReport, bundle?: ReproBundle): Promise<Assessment> {
     const subject = report.error?.message ?? report.feedback ?? 'Unspecified report';
     const system = [
       'You triage bug reports and feature requests for a video-editing app.',
@@ -265,7 +264,7 @@ export class TelemetryService {
       NO_DASHES_RULE,
     ].join(' ');
     try {
-      const provider = await this.provider(userId);
+      const provider = await this.provider();
       const raw = await provider.completeText(system, JSON.stringify({
         kind: report.kind,
         platform: report.platform,

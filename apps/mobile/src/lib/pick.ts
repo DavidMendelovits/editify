@@ -1,8 +1,10 @@
 import * as DocumentPicker from 'expo-document-picker';
+import { File as ExpoFile } from 'expo-file-system';
 import { discardSharedCopy } from './shared-files';
 import * as ImagePicker from 'expo-image-picker';
 import type { AssetMetadata } from '@editify/shared';
 import { uploadAsset } from './api';
+import type { ImportProgress } from './upload-progress';
 import type { SharedFile } from './share-intake';
 
 /** `assets` is empty when the user backed out of the picker — that is not an error. */
@@ -12,9 +14,23 @@ export interface PickResult {
   failed: string[];
 }
 
-export type PickProgress = (done: number, total: number) => void;
+export type PickProgress = (progress: ImportProgress) => void;
 
-interface PendingFile { uri: string; name: string; mimeType?: string; file?: File }
+interface PendingFile { uri: string; name: string; mimeType?: string; file?: File; size?: number }
+
+/** Progress lands on React state, and a native upload reports every chunk. */
+const PROGRESS_INTERVAL_MS = 250;
+
+/** The picker's reported size, else the file on disk; 0 means unknown. */
+function sizeOf(file: PendingFile): number {
+  if (file.size) return file.size;
+  if (file.file) return file.file.size;
+  try {
+    return new ExpoFile(file.uri).size ?? 0;
+  } catch {
+    return 0;
+  }
+}
 
 /** Enough to keep the pipe full without the server queueing multipart writes. */
 const UPLOAD_CONCURRENCY = 4;
@@ -32,17 +48,38 @@ async function uploadAll(projectId: string | undefined, files: PendingFile[], on
   const failed: string[] = [];
   let next = 0;
   let settled = 0;
-  onProgress?.(0, files.length);
+  // Bytes per file, so concurrent uploads add up instead of overwriting each other.
+  const sizes = files.map(sizeOf);
+  const sent = files.map(() => 0);
+  let lastReport = 0;
+  const report = (force = false): void => {
+    const now = Date.now();
+    if (!force && now - lastReport < PROGRESS_INTERVAL_MS) return;
+    lastReport = now;
+    onProgress?.({
+      done: settled,
+      total: files.length,
+      sentBytes: sent.reduce((sum, bytes) => sum + bytes, 0),
+      totalBytes: sizes.every((size) => size > 0) ? sizes.reduce((sum, size) => sum + size, 0) : 0,
+    });
+  };
+  report(true);
   await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, async () => {
     for (let index = next++; index < files.length; index = next++) {
       const file = files[index] as PendingFile;
       try {
-        uploaded[index] = await uploadAsset({ ...file, ...(projectId ? { projectId } : {}) });
+        uploaded[index] = await uploadAsset({ ...file, ...(projectId ? { projectId } : {}) }, (bytes, expected) => {
+          sent[index] = bytes;
+          // The upload knows the real size even when the picker did not report one.
+          if (!sizes[index] && expected > 0) sizes[index] = expected;
+          report();
+        });
       } catch {
         failed.push(file.name);
       }
+      sent[index] = sizes[index] ?? 0;
       settled += 1;
-      onProgress?.(settled, files.length);
+      report(true);
     }
   }));
   return { assets: uploaded.filter((asset) => asset !== undefined), failed };
@@ -97,6 +134,7 @@ export async function pickFromPhotos(projectId: string | undefined, onProgress?:
     // iOS only sometimes carries a PHAsset file name; fall back to something unique.
     name: file.fileName ?? `${file.assetId ?? `clip-${index + 1}`}.mov`,
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+    ...(file.fileSize ? { size: file.fileSize } : {}),
     ...(file.file ? { file: file.file } : {}),
   })), onProgress);
 }
@@ -113,6 +151,7 @@ export async function pickFromFiles(projectId: string | undefined, onProgress?: 
     uri: file.uri,
     name: file.name,
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+    ...(file.size ? { size: file.size } : {}),
     ...(file.file ? { file: file.file } : {}),
   })), onProgress);
 }

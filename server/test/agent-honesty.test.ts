@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runAgentLoop } from '../src/agent/loop.js';
-import { MockToolProvider, createProvider, parseCliTurn, type ToolProvider } from '../src/agent/providers.js';
+import { MockToolProvider, createProvider, type ToolProvider } from '../src/agent/providers.js';
 import { createToolRegistry, type ToolContext } from '../src/agent/tools.js';
 import { AssetStore } from '../src/db/asset-store.js';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
@@ -161,12 +161,7 @@ describe('agent honesty and batching', () => {
     expect(failing).toMatchObject({ ok: false });
   });
 
-  it('accepts snake_case tool_calls from a drifting CLI model', () => {
-    const turn = parseCliTurn('{"text":"on it","tool_calls":[{"name":"get_project","input":{}}]}');
-    expect(turn.toolCalls).toEqual([{ id: 'cli-0', name: 'get_project', input: {} }]);
-  });
-
-  it('refuses to build a key-based provider without its key', () => {
+  it('refuses to build the anthropic provider without its key', () => {
     const saved = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     try {

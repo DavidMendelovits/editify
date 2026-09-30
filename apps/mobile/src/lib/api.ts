@@ -101,23 +101,6 @@ export interface PromptImprovement { improved: string | null; changes?: string[]
 /** `GET /projects/:id/chat/live` — steps of the turn currently running, if any. */
 export interface ChatLive { running: boolean; steps: AgentTraceStep[] }
 
-export type AgentProviderId = 'claude-cli' | 'codex-cli' | 'anthropic' | 'openai' | 'mock';
-
-export interface ProviderOption {
-  id: AgentProviderId;
-  label: string;
-  available: boolean;
-  /** How it runs, or what is missing — shown under the option. */
-  detail: string;
-}
-
-export interface ProviderStatus {
-  active: AgentProviderId;
-  /** Present when the saved choice is no longer usable and something else is running. */
-  requested?: AgentProviderId;
-  options: ProviderOption[];
-}
-
 /** An entry from `GET /assets/importable` — a file sitting in MEDIA_IMPORT_DIR. */
 export interface ImportableFile { name: string; size: number; alreadyImported: boolean }
 
@@ -307,10 +290,6 @@ async function requestOptional<T>(path: string): Promise<T | null> {
 }
 
 export const api = {
-  getAgentProvider: () => request<ProviderStatus>('/agent/provider'),
-  setAgentProvider: (provider: AgentProviderId) => request<ProviderStatus>('/agent/provider', {
-    method: 'PUT', body: JSON.stringify({ provider }),
-  }),
   listProjects: () => request<Project[]>('/projects'),
   createProject: (input: NewProject) => request<Project>('/projects', { method: 'POST', body: JSON.stringify(input) }),
   getProject: (id: string) => request<Project>(`/projects/${id}`),
@@ -418,25 +397,62 @@ export const api = {
   deleteStyle: (id: string) => request<{ ok: true; selectedId: string | null }>(`/style-profiles/${id}`, { method: 'DELETE' }),
 };
 
+/** Bytes sent so far and the size being sent. Native uploads report as they go; web reports nothing. */
+export type UploadBytes = (sent: number, expected: number) => void;
+
 /** `file` is the web pickers' real `File`; native callers only ever have a `uri`. */
-export async function uploadAsset(asset: { uri: string; name: string; mimeType?: string; projectId?: string; file?: File }): Promise<AssetMetadata> {
+export async function uploadAsset(
+  asset: { uri: string; name: string; mimeType?: string; projectId?: string; file?: File },
+  onBytes?: UploadBytes,
+): Promise<AssetMetadata> {
+  const isBrowserFile = Boolean(asset.file) || (typeof File !== 'undefined' && asset.uri.startsWith('blob:'));
+  if (!isBrowserFile) return await uploadNativeFile(asset, onBytes);
   const form = new FormData();
   if (asset.file) {
     // Hand the picked File straight over so the browser streams it off disk —
     // reading the blob: URI instead buffers the whole clip into memory first.
     form.append('file', asset.file, asset.name);
-  } else if (typeof File !== 'undefined' && asset.uri.startsWith('blob:')) {
+  } else {
     const blob = await fetch(asset.uri).then(async (response) => await response.blob());
     form.append('file', new File([blob], asset.name, { type: asset.mimeType ?? blob.type }));
-  } else {
-    form.append('file', {
-      uri: asset.uri,
-      name: asset.name,
-      type: asset.mimeType ?? 'application/octet-stream',
-    } as unknown as Blob);
   }
   const query = asset.projectId ? `?projectId=${encodeURIComponent(asset.projectId)}` : '';
   const response = await timedFetch(`/assets${query}`, { method: 'POST', body: form, headers: authHeaders() });
   if (!response.ok) throw new Error(await response.text());
   return await response.json() as AssetMetadata;
+}
+
+/**
+ * React Native's FormData reads the whole file into memory on iOS, so a phone
+ * video past a gigabyte or two got the app killed mid-import with no crash
+ * report. A binary upload streams the file from disk as the raw request body
+ * (POST /assets/raw), and a background session keeps it going if the app is
+ * backgrounded.
+ */
+async function uploadNativeFile(asset: { uri: string; name: string; mimeType?: string; projectId?: string }, onBytes?: UploadBytes): Promise<AssetMetadata> {
+  // ponytail: SDK 54's File has no upload yet, and the legacy module's .ts source
+  // fails this app's exactOptionalPropertyTypes, so the members used are typed here.
+  // Swap for `new File(uri).createUploadTask()` once the SDK ships it.
+  const { createUploadTask, FileSystemUploadType } = require('expo-file-system/legacy') as {
+    createUploadTask: (url: string, fileUri: string, options: {
+      httpMethod: 'POST'; uploadType: number; headers: Record<string, string>;
+    }, callback?: (progress: { totalBytesSent: number; totalBytesExpectedToSend: number }) => void) => {
+      uploadAsync: () => Promise<{ status: number; body: string } | null | undefined>;
+    };
+    FileSystemUploadType: { BINARY_CONTENT: number };
+  };
+  const query = new URLSearchParams({ name: asset.name, ...(asset.projectId ? { projectId: asset.projectId } : {}) });
+  const started = Date.now();
+  const task = createUploadTask(`${API_URL}/assets/raw?${query.toString()}`, asset.uri, {
+    httpMethod: 'POST',
+    uploadType: FileSystemUploadType.BINARY_CONTENT,
+    headers: { ...authHeaders(), 'Content-Type': asset.mimeType ?? 'application/octet-stream' },
+  }, onBytes ? (progress) => onBytes(progress.totalBytesSent, progress.totalBytesExpectedToSend) : undefined);
+  const result = await task.uploadAsync();
+  if (!result) throw new Error('Upload was cancelled');
+  if (result.status < 200 || result.status >= 300) {
+    track('api_error', `POST /assets/raw → ${result.status} in ${Date.now() - started}ms`);
+    throw new Error(result.body || `Upload failed with status ${result.status}`);
+  }
+  return JSON.parse(result.body) as AssetMetadata;
 }

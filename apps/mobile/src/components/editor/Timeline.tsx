@@ -9,6 +9,7 @@ import { Inspector, type SyncState } from './Inspector';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
+import type { ImportProgress } from '../../lib/upload-progress';
 import {
   CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
   beatTargets, bulkMoveUpdates, captionRows, clampStart, clipEnd, clipRangeBetween, closeGapUpdates, findClip,
@@ -42,7 +43,7 @@ interface Props {
   /** Files dropped on the empty video lane (web only). */
   onImportFiles: (files: File[]) => void;
   importing: boolean;
-  importProgress: { done: number; total: number } | undefined;
+  importProgress: ImportProgress | undefined;
   importError: string | undefined;
   onAddSound: () => void;
   onAddSticker: () => void;

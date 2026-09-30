@@ -389,7 +389,7 @@ Written and committed:
 - `docs/terms-of-service.md`
 - `docs/support.md`
 
-Both name Maja Ventures SL as data controller and list the processors actually in use, established by grepping every outbound HTTP call in `server/src`: `api.anthropic.com` (`server/src/agent/providers.ts`), `api.openai.com` (same file), `generativelanguage.googleapis.com` (`server/src/style/analyzers/gemini.ts`), `api.github.com` and `github.com` (`server/src/services/telemetry-service.ts`, `server/src/services/report-media.ts`), the Supabase project at `xvstucurpuwpliowadnh.supabase.co` (auth and JWKS), and Fly.io as the host. `raw.githubusercontent.com` is also called, but only to fetch the Montserrat font file, which carries no user data.
+Both name Maja Ventures SL as data controller and list the processors actually in use, established by grepping every outbound HTTP call in `server/src`: `api.anthropic.com` (`server/src/agent/providers.ts`), `generativelanguage.googleapis.com` (`server/src/style/analyzers/gemini.ts`), `api.github.com` and `github.com` (`server/src/services/telemetry-service.ts`, `server/src/services/report-media.ts`), the Supabase project at `xvstucurpuwpliowadnh.supabase.co` (auth and JWKS), and Fly.io as the host. `raw.githubusercontent.com` is also called, but only to fetch the Montserrat font file, which carries no user data.
 
 Both files, and the support page, still carry fill tokens: the registered address, the contact email, and the PostHog entity and hosting region. Nothing is published until they are filled, and that is enforced in code rather than remembered: see "The publication gate" below.
 
@@ -605,7 +605,7 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 | 8a | Answer the age rating questionnaire in the live form (section 1.9). Untouched today | David |
 | 8b | Set Support URL, Privacy Policy URL and the EULA field to the three `editify-dm.fly.dev` URLs. All still `null` | Automatable, after item 1 deploys |
 | 8c | **Answer `contentRightsDeclaration` on the app record. It is `null`, confirmed against the App Store Connect API for app `6814607865`,** and App Store Connect will not accept a submission without it. The question is whether the app contains, shows or accesses third-party content. Editify ships no third-party content of its own; users import their own footage and nothing is published or shared. The expected answer is that it does **not** use third-party content, but read the live question before answering: it was rewritten in 2025 and now also asks about rights to content the app generates | David |
-| 8d | **Create the subscription group and the Creator product** (`editify.creator.monthly`; `editify.studio.monthly` comes later), with localised display name and description, price, the 7-day introductory offer, and a review screenshot. Section 8.3 | David |
+| 8d | **Create the subscription group and the Creator product** (`creator`; `studio` comes later), with localised display name and description, price, the 7-day introductory offer, and a review screenshot. Section 8.3 | David |
 | 8e | **Attach the Creator product to the 1.0.0 version submission.** IAP products are reviewed alongside the first build that includes them; a product that is created but not attached does not exist for the reviewer, who then sees an empty paywall. Section 8.4 | David |
 | 8f | **Fix the remaining guideline 3.1.2 gaps in the binary** before building: a real gated feature and a truthful free-trial claim. Section 7.1 items 3 and 4. The privacy policy and terms links (item 1) are done | Owner of `apps/mobile/app/paywall.tsx` |
 | 8g | **Set up RevenueCat**: entitlement `creator`, one current offering `default` holding only the `creator_monthly` package, and the App Store Connect in-app purchase key uploaded | David |
@@ -620,7 +620,7 @@ Already done in App Store Connect (app `6814607865`, version `1.0.0`, both still
 |---|---|---|
 | 10 | ~~Resolve the GitHub-issue-tracker visibility question~~ **Done.** The repo is private, so no feedback-sheet warning is needed; the policy now says so | Done |
 | 11 | ~~Fix the stale line on the export screen~~ **Done.** The note is now conditional on the API being localhost; a hosted build says rendering runs on the Editify servers (`apps/mobile/app/project/[id]/export.tsx`) | Done |
-| 12 | ~~Decide whether the agent provider picker should show `claude-cli` and `codex-cli`~~ **Done.** The picker now drops a CLI option when the server's own probe reports it unavailable (`GET /agent/provider`), so a reviewer sees only the providers the deployed server can actually run | Done |
+| 12 | ~~Decide whether the agent provider picker should show `claude-cli` and `codex-cli`~~ **Done.** The picker is gone: the agent always runs on the Anthropic API, so a reviewer never sees a provider choice | Done |
 | 13 | ~~Decide whether the "or from the server media folder" section should ship~~ **Done.** The section, and the `GET /assets/importable` call behind it, are now skipped unless the API base URL is localhost | Done |
 | 14 | Add privacy policy and terms links to the sign-in screen. **Now upgraded from "nice" to necessary**: the same links are mandatory on the paywall under 3.1.2 (section 7, items 5 and 6), so the URLs have to exist regardless, and putting them on both screens costs nothing | Owner of the mobile app screens |
 | 14a | Pin down which PostHog region hosts the data (`EXPO_PUBLIC_POSTHOG_HOST`). The privacy policy has to name the processor and its transfer basis, and PostHog Cloud EU and PostHog Cloud US are different answers. This is blocking, not "should fix", for as long as the privacy page is gated on it: it is fill token `{{FILL_POSTHOG_ENTITY}}` in item 1. Section 2.11 item 6, open question L2 | David |
@@ -709,8 +709,8 @@ Per `docs/subscriptions.md`:
 
 | Plan | Product ID | Duration | Base price (USD) | RevenueCat entitlement | At launch |
 |---|---|---|---|---|---|
-| Creator | `editify.creator.monthly` | 1 month | 12 | `creator` | yes |
-| Studio | `editify.studio.monthly` | 1 month | 29 | `studio` | no, later |
+| Creator | `creator` | 1 month | 12 | `creator` | yes |
+| Studio | `studio` | 1 month | 29 | `studio` | no, later |
 
 For each product, all of the following are required before it can be submitted:
 

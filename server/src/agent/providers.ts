@@ -1,8 +1,5 @@
-import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { EDITING_PRESETS, type EditingPreset, type Project } from '@editify/shared';
@@ -19,7 +16,7 @@ export type LoopMessage =
   | { role: 'tool'; toolCallId: string; name: string; content: string };
 
 export interface ToolProvider {
-  readonly name: 'anthropic' | 'openai' | 'claude-cli' | 'codex-cli' | 'mock';
+  readonly name: 'anthropic' | 'mock';
   runTurn(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Promise<LoopTurn>;
   completeText(system: string, user: string): Promise<string>;
 }
@@ -78,20 +75,14 @@ function jsonSchema(tool: ToolDef): Record<string, unknown> {
  * a raw upstream body would leak JSON (and an `authentication_error` blob) into the
  * UI. Turn the response into a short operator-readable line instead.
  */
-export async function providerFailureMessage(
-  vendor: 'Anthropic' | 'OpenAI',
-  envVar: 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY',
-  response: { status: number; text(): Promise<string> },
-): Promise<string> {
+export async function providerFailureMessage(response: { status: number; text(): Promise<string> }): Promise<string> {
   const { status } = response;
-  if (status === 401 || status === 403) {
-    return `${vendor} rejected the API key (${status}). Check ${envVar} on the server, or pick a different provider in settings.`;
-  }
-  if (status === 429) return `${vendor} is rate limiting this server (429). Wait a moment and try again.`;
-  if (status >= 500) return `${vendor} is unavailable right now (${status}). Try again in a moment.`;
+  if (status === 401 || status === 403) return `Anthropic rejected the API key (${status}). Check ANTHROPIC_API_KEY on the server.`;
+  if (status === 429) return `Anthropic is rate limiting this server (429). Wait a moment and try again.`;
+  if (status >= 500) return `Anthropic is unavailable right now (${status}). Try again in a moment.`;
   const body = (await response.text().catch(() => '')).trim().replace(/\s+/g, ' ');
   const trimmed = body.length > 200 ? `${body.slice(0, 200)}…` : body;
-  return `${vendor} request failed (${status})${trimmed ? `: ${trimmed}` : ''}`;
+  return `Anthropic request failed (${status})${trimmed ? `: ${trimmed}` : ''}`;
 }
 
 type AnthropicBlock =
@@ -149,7 +140,7 @@ export class AnthropicToolProvider implements ToolProvider {
         } : {}),
       }),
     });
-    if (!response.ok) throw new Error(await providerFailureMessage('Anthropic', 'ANTHROPIC_API_KEY', response));
+    if (!response.ok) throw new Error(await providerFailureMessage(response));
     const json = await response.json() as { content?: AnthropicBlock[]; stop_reason?: string };
     // A truncated response can carry a half-written tool call or silently drop all of
     // them, turning into a false "I'm done" — fail loudly instead.
@@ -159,67 +150,6 @@ export class AnthropicToolProvider implements ToolProvider {
       .map((block) => block.text).join('\n').trim();
     const toolCalls = content.filter((block): block is Extract<AnthropicBlock, { type: 'tool_use' }> => block.type === 'tool_use')
       .map((block) => ({ id: block.id, name: block.name, input: block.input }));
-    return { ...(text ? { text } : {}), toolCalls };
-  }
-
-  async completeText(system: string, user: string): Promise<string> {
-    return (await this.runTurn(system, [{ role: 'user', content: user }], [])).text?.trim() ?? '';
-  }
-}
-
-function openAIMessages(messages: LoopMessage[]): Array<Record<string, unknown>> {
-  return messages.map((message) => {
-    if (message.role === 'user') return { role: 'user', content: message.content };
-    if (message.role === 'tool') {
-      return { role: 'tool', tool_call_id: message.toolCallId, content: message.content };
-    }
-    return {
-      role: 'assistant',
-      content: message.content ?? null,
-      ...(message.toolCalls.length ? {
-        tool_calls: message.toolCalls.map((call) => ({
-          id: call.id,
-          type: 'function',
-          function: { name: call.name, arguments: JSON.stringify(call.input) },
-        })),
-      } : {}),
-    };
-  });
-}
-
-export class OpenAIToolProvider implements ToolProvider {
-  readonly name = 'openai' as const;
-  constructor(private readonly apiKey: string) {}
-
-  async runTurn(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Promise<LoopTurn> {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({
-        model: process.env.OPENAI_MODEL ?? 'gpt-4.1',
-        messages: [{ role: 'system', content: system }, ...openAIMessages(messages)],
-        ...(toolDefs.length ? {
-          tools: toolDefs.map((tool) => ({
-            type: 'function',
-            function: { name: tool.name, description: tool.description, parameters: jsonSchema(tool) },
-          })),
-        } : {}),
-      }),
-    });
-    if (!response.ok) throw new Error(await providerFailureMessage('OpenAI', 'OPENAI_API_KEY', response));
-    const json = await response.json() as {
-      choices?: Array<{ message?: {
-        content?: string | null;
-        tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
-      } }>;
-    };
-    const message = json.choices?.[0]?.message;
-    const toolCalls = (message?.tool_calls ?? []).map((call) => {
-      let input: unknown;
-      try { input = JSON.parse(call.function.arguments); } catch { input = call.function.arguments; }
-      return { id: call.id, name: call.function.name, input };
-    });
-    const text = message?.content?.trim();
     return { ...(text ? { text } : {}), toolCalls };
   }
 
@@ -493,192 +423,18 @@ export class MockToolProvider implements ToolProvider {
   }
 }
 
-export type AgentCli = 'claude' | 'codex';
-
-const CLI_TIMEOUT_MS = Number(process.env.EDITIFY_AGENT_CLI_TIMEOUT_MS ?? 240_000);
-
-/** Everything after the first balanced `{`, so a chatty preamble or a code fence cannot break the turn. */
-export function extractJsonObject(raw: string): unknown {
-  const text = raw.replace(/^\s*```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-  const start = text.indexOf('{');
-  if (start < 0) return undefined;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (escaped) { escaped = false; continue; }
-    if (char === '\\' && inString) { escaped = true; continue; }
-    if (char === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (char === '{') depth += 1;
-    else if (char === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        try { return JSON.parse(text.slice(start, index + 1)); } catch { return undefined; }
-      }
-    }
-  }
-  return undefined;
-}
-
-/** A CLI reply that is not the agreed JSON is treated as a final answer, which ends the loop cleanly. */
-export function parseCliTurn(raw: string): LoopTurn {
-  const parsed = extractJsonObject(raw);
-  if (!isRecord(parsed)) return raw.trim() ? { text: raw.trim(), toolCalls: [] } : { toolCalls: [] };
-  const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
-  const rawCalls = parsed.toolCalls ?? parsed.tool_calls; // models drift to snake_case
-  const toolCalls = (Array.isArray(rawCalls) ? rawCalls : [])
-    .filter(isRecord)
-    .filter((call): call is { name: string; input?: unknown } => typeof call.name === 'string')
-    .map((call, index) => ({ id: `cli-${index}`, name: call.name, input: call.input ?? {} }));
-  return { ...(text ? { text } : {}), toolCalls };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** The loop's message list flattened into one prompt — the CLIs are stateless between turns. */
-function cliPrompt(messages: LoopMessage[], toolDefs: ToolDef[]): string {
-  const transcript = messages.map((message) => {
-    if (message.role === 'user') return `USER:\n${message.content}`;
-    if (message.role === 'tool') return `TOOL RESULT (${message.name}):\n${message.content}`;
-    const calls = message.toolCalls.length
-      ? `\nTOOL CALLS: ${JSON.stringify(message.toolCalls.map(({ name, input }) => ({ name, input })))}`
-      : '';
-    return `ASSISTANT:\n${message.content ?? ''}${calls}`;
-  }).join('\n\n');
-
-  return [
-    toolDefs.length ? `# Available tools\n${JSON.stringify(
-      toolDefs.map((tool) => ({ name: tool.name, description: tool.description, input_schema: jsonSchema(tool) })),
-    )}` : '',
-    `# Conversation so far\n${transcript}`,
-    '# Your reply',
-    'Respond with a single JSON object and nothing else. No prose, no code fence:',
-    '{"text": "<message to the user>", "toolCalls": [{"name": "<tool>", "input": {}}]}',
-    'Put the tools you want run next in toolCalls; their results come back on the next turn.',
-    'When the work is done, return an empty toolCalls array and your final message in text.',
-  ].filter(Boolean).join('\n\n');
-}
-
 /**
- * Uses the locally installed Claude Code or Codex CLI as the model, so the app
- * runs on a developer's existing subscription with no API key.
- *
- * Neither CLI exposes a tool-call protocol we can plug into, so each loop turn
- * is flattened into one prompt and the JSON reply is parsed back into tool
- * calls. Both are launched isolated — no MCP servers, no user settings, no
- * tools of their own, in a throwaway working directory — so they answer instead
- * of wandering off and editing files.
- *
- * ponytail: every turn replays the whole conversation to a fresh process, which
- * is simple but pays for the same input tokens each time. `claude --resume
- * <session_id>` would send only the new tool results; do that if turn cost bites.
+ * The agent always runs on the Anthropic API. The mock is only the fallback for
+ * a server with no ANTHROPIC_API_KEY (local dev without a key, CI, tests).
  */
-export class CliToolProvider implements ToolProvider {
-  readonly name: 'claude-cli' | 'codex-cli';
-
-  constructor(private readonly cli: AgentCli) {
-    this.name = cli === 'claude' ? 'claude-cli' : 'codex-cli';
-  }
-
-  async runTurn(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Promise<LoopTurn> {
-    const prompt = cliPrompt(messages, toolDefs);
-    const raw = await this.invoke(system, prompt);
-    if (!raw.trim() || extractJsonObject(raw) !== undefined) return parseCliTurn(raw);
-    // Prose instead of the envelope would silently end the loop with edits claimed
-    // but never made — give the model one corrective retry before accepting it.
-    const retried = await this.invoke(system, [
-      prompt,
-      'Your previous reply was not the required JSON envelope. It began:',
-      raw.slice(0, 400),
-      'Reply again with ONLY the JSON object described above. No prose, no code fence.',
-    ].join('\n\n'));
-    return parseCliTurn(retried.trim() ? retried : raw);
-  }
-
-  async completeText(system: string, user: string): Promise<string> {
-    return (await this.invoke(system, user)).trim();
-  }
-
-  private async invoke(system: string, prompt: string): Promise<string> {
-    const workDir = await mkdtemp(join(tmpdir(), 'editify-agent-'));
-    const model = process.env.EDITIFY_AGENT_CLI_MODEL;
-    try {
-      if (this.cli === 'codex') {
-        // Codex has no system-prompt flag, so it rides along at the top of the prompt.
-        const outputPath = join(workDir, 'reply.txt');
-        await run('codex', [
-          'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
-          ...(model ? ['-m', model] : []), '-o', outputPath,
-        ], `${system}\n\n${prompt}`, workDir);
-        return await readFile(outputPath, 'utf8');
-      }
-      const stdout = await run('claude', [
-        '-p', '--output-format', 'json',
-        '--model', model ?? 'claude-sonnet-5',
-        // Isolate: no MCP servers, no user/project settings, no built-in tools.
-        '--strict-mcp-config', '--setting-sources', '', '--allowed-tools', '',
-        '--system-prompt', system,
-      ], prompt, workDir);
-      const envelope = extractJsonObject(stdout);
-      if (!isRecord(envelope)) throw new Error(`Claude CLI returned no JSON envelope: ${stdout.slice(0, 400)}`);
-      if (envelope.is_error) throw new Error(`Claude CLI reported an error: ${String(envelope.result ?? '')}`);
-      return typeof envelope.result === 'string' ? envelope.result : '';
-    } finally {
-      await rm(workDir, { recursive: true, force: true });
-    }
-  }
+export function defaultProviderId(): ToolProvider['name'] {
+  return process.env.ANTHROPIC_API_KEY ? 'anthropic' : 'mock';
 }
 
-function run(command: string, args: string[], stdin: string, cwd: string): Promise<string> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      rejectPromise(new Error(`${command} timed out after ${CLI_TIMEOUT_MS}ms`));
-    }, CLI_TIMEOUT_MS);
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.on('error', (error) => { clearTimeout(timer); rejectPromise(error); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolvePromise(stdout);
-      else rejectPromise(new Error(`${command} exited with ${String(code)}: ${(stderr || stdout).slice(0, 400)}`));
-    });
-    child.stdin.end(stdin);
-  });
-}
-
-export type AgentProviderId = ToolProvider['name'];
-
-/** What runs when nothing has been picked in the UI: the env var, then keys, then mock. */
-export function defaultProviderId(): AgentProviderId {
-  if (process.env.EDITIFY_AGENT_CLI === 'claude') return 'claude-cli';
-  if (process.env.EDITIFY_AGENT_CLI === 'codex') return 'codex-cli';
-  if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
-  if (process.env.OPENAI_API_KEY ?? process.env.OPENAI_BASE_URL) return 'openai';
-  return 'mock';
-}
-
-export function createProvider(id: AgentProviderId = defaultProviderId()): ToolProvider {
-  switch (id) {
-    case 'claude-cli': return new CliToolProvider('claude');
-    case 'codex-cli': return new CliToolProvider('codex');
-    // A missing key must error, not silently downgrade to the mock — the mock
-    // confidently claims edits, which is the worst possible failure mode.
-    case 'anthropic': {
-      if (!process.env.ANTHROPIC_API_KEY) throw new Error('The anthropic provider needs ANTHROPIC_API_KEY; set it or pick another provider');
-      return new AnthropicToolProvider(process.env.ANTHROPIC_API_KEY);
-    }
-    case 'openai': {
-      if (!process.env.OPENAI_API_KEY && !process.env.OPENAI_BASE_URL) throw new Error('The openai provider needs OPENAI_API_KEY (or OPENAI_BASE_URL); set it or pick another provider');
-      return new OpenAIToolProvider(process.env.OPENAI_API_KEY ?? 'local');
-    }
-    default: return new MockToolProvider();
-  }
+export function createProvider(id: ToolProvider['name'] = defaultProviderId()): ToolProvider {
+  if (id === 'mock') return new MockToolProvider();
+  // Asking for anthropic without a key must error, not silently downgrade to the
+  // mock: the mock confidently claims edits, which is the worst possible failure mode.
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('The anthropic provider needs ANTHROPIC_API_KEY on the server');
+  return new AnthropicToolProvider(process.env.ANTHROPIC_API_KEY);
 }
