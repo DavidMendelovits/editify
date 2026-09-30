@@ -68,4 +68,4 @@ These terms are governed by the laws of Spain, and the courts of Spain have excl
 
 ## 11. Contact
 
-Maja Ventures SL, {{FILL_REGISTERED_ADDRESS}}, {{FILL_CONTACT_EMAIL}}.
+Maja Ventures SL, Miranda del Valles 19B bjs, E-08173 Sant Cugat, Barcelona, Spain, david.mendelovits@gmail.com.

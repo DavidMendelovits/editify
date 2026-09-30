@@ -8,8 +8,8 @@
 Maja Ventures SL ("Maja Ventures", "we") is the data controller for the personal data described here.
 
 - Company: Maja Ventures SL
-- Registered address: {{FILL_REGISTERED_ADDRESS}}
-- Privacy contact: {{FILL_CONTACT_EMAIL}}
+- Registered address: Miranda del Valles 19B bjs, E-08173 Sant Cugat, Barcelona, Spain
+- Privacy contact: david.mendelovits@gmail.com
 
 If you are in the EEA or the UK, you can contact us at the address above to exercise the rights described in section 8.
 
@@ -109,7 +109,7 @@ These are the only third parties that receive your data, and they receive it bec
 | **Google** (Google LLC, USA) | Your Google account identity, if and only if you choose "continue with Google" | Sign-in |
 | **Anthropic** (Anthropic PBC, USA) | The text of your chat messages, your project's timeline structure, your clips' file names and durations, the text of your transcripts and captions, and your style brief. Video and audio files are never sent to it. | Running the editing assistant |
 | **Google (Gemini API)** (Google LLC, USA) | The **full video file** of each clip you submit to "learn my style". This analyzer is configured and active on our production server. The upload is deleted from Google's Files API at the end of the run. The app's style screen tells you which analyzer is active and whether it uploads footage. | Analysing your reference videos |
-| **PostHog** ({{FILL_POSTHOG_ENTITY}}) | The installation identifier, your account identifier while signed in, application lifecycle events, screen views, crash and error diagnostics, and the technical properties listed in section 3.4. No content, no email address, no name | Product analytics and crash reporting: understanding how the app is used and finding what breaks |
+| **PostHog** (PostHog, Inc., USA; US cloud) | The installation identifier, your account identifier while signed in, application lifecycle events, screen views, crash and error diagnostics, and the technical properties listed in section 3.4. No content, no email address, no name | Product analytics and crash reporting: understanding how the app is used and finding what breaks |
 | **RevenueCat** (RevenueCat, Inc., USA) | Your Editify account identifier, your Editify purchase history and store receipts, and technical details of the device and transaction. No card details, no email address, no content | Managing subscriptions and entitlements across your devices |
 | **Apple** (Apple Inc., USA) and **Google** (Google LLC, USA), as the app stores | Your payment and billing relationship for any subscription you buy, under their own privacy policies. We receive a subscription status from them, never a payment instrument | Taking payment for subscriptions |
 | **GitHub** (GitHub, Inc., USA) | Crash reports and feedback you send: the error text, the stack, the app-state summary, your session event log and anything you typed. On the web client, an attached screenshot is committed to a repository. | Filing bug reports into our issue tracker |
@@ -118,7 +118,7 @@ Our issue tracker is the **private** repository `DavidMendelovits/editify`. Repo
 
 Confirmed on the production server (Fly app `editify-dm`, September 2026): the Anthropic key, the Gemini key and the GitHub token are all set, so the editing assistant runs on Anthropic's model, the Gemini analyzer is the one that watches your reference videos, and reports are filed into the private repository named above.
 
-Apart from PostHog, whose region is being confirmed, all of these providers are in the United States. Transfers out of the EEA and the UK rely on the providers' Standard Contractual Clauses.
+All of these providers are in the United States. PostHog stores our analytics in its US cloud region. Transfers out of the EEA and the UK rely on the providers' Standard Contractual Clauses.
 
 ## 6. How long we keep it
 
