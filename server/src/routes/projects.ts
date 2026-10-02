@@ -9,6 +9,7 @@ import {
   buildTimelineTranscript,
   planFillerRanges,
   planSilenceRanges,
+  silenceSources,
   totalRangeSeconds,
   unionRanges,
   type CleanupRange,
@@ -90,7 +91,7 @@ export function registerProjectRoutes(
     const fillers = planFillerRanges(project, timeline.words);
     // Measuring must never fail the whole answer: an asset whose energy has not
     // been analysed yet needs ffmpeg, and filler counts are still useful without it.
-    const silences = await planSilenceRanges(project, timeline.words, { assets, transcripts }, SILENCE_DEFAULTS)
+    const silences = await planSilenceRanges(project, timeline.words, silenceSources(assets, transcripts), SILENCE_DEFAULTS)
       .catch(() => ({ rangesByTrack: new Map<string, CleanupRange[]>() }));
     // One ripple on the video track removes the time from every track, memo included.
     const fillerRanges = unionRanges(fillers.rangesByTrack);

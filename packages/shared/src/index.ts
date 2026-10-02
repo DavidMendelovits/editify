@@ -511,3 +511,8 @@ export * from './packets.js';
 export * from './checklists.js';
 export * from './telemetry.js';
 export * from './apply.js';
+export * from './analysis.js';
+export * from './captions.js';
+export * from './cleanup.js';
+export * from './takes.js';
+export * from './safezone.js';
