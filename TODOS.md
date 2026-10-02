@@ -17,3 +17,15 @@
 - **Why:** After per-user scoping they're invisible to everyone but still use the Fly volume, which has a hard 500 GB cap.
 - **Context:** They were kept on purpose (orphaned, not claimed or deleted) when scoping landed, 2026-09-29. Only the shared token can still reach them.
 - **Blocked by:** scoping PR soaking in prod with nobody missing anything.
+
+## Raise the iOS floor to 26 on main after 1.0 is submitted
+- **What:** Merge `mobile-capability-lab`'s `expo-build-properties` (`ios.deploymentTarget: "26.0"`) and update the App Store listing to "Requires iOS 26".
+- **Why:** The on-device engine is built against iOS 26 only (SpeechAnalyzer, BGContinuedProcessingTask), with no `@available` forks (lab decision 2A).
+- **Context:** Held off main on purpose (decision 3A) so the 1.0 binary stays on iOS 15.1. The deployment target change alters the runtime fingerprint, so preview gets a new native build, not an OTA. Plan: `~/.claude/plans/idempotent-beaming-puppy.md`.
+- **Blocked by:** 1.0 submitted to App Store review.
+
+## Pick one HDR delivery policy for both renderers
+- **What:** Decide between HLG passthrough and PQ for on-device export, then make server `color.ts` match or label the difference in the export sheet.
+- **Why:** iPhones shoot HLG Dolby Vision 8.4. The server's "Keep HDR (BT.2020 PQ)" (`export.tsx:22`, `server/src/media/color.ts`) transcodes to PQ, so the same project would give two different HDR files depending on where it rendered.
+- **Context:** Lab spike S4 measures HLG, PQ and SDR outputs (`ffprobe` color tags). Decide with those files in hand.
+- **Blocked by:** S4 results.
