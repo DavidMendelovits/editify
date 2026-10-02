@@ -216,7 +216,7 @@ export function toMarkdown(results: GroupResult[]): string {
     const lines = [`### ${device}`, '', '| Spike | Variant | Runs | Verdict | Median / worst vs target | Problems |', '|---|---|---|---|---|---|'];
     for (const r of deviceResults) {
       const detail = r.metrics.map((m) => `${m.metric} ${fmt(m.median)} / ${fmt(m.worst)} (${m.op} ${fmt(m.target)})`).join('; ');
-      lines.push(`| ${r.spike} | ${r.variant} | ${r.runs} | ${r.verdict} | ${detail || '—'} | ${r.problems.join('; ') || '—'} |`);
+      lines.push(`| ${r.spike} | ${r.variant} | ${r.runs} | ${r.verdict} | ${detail || '-'} | ${r.problems.join('; ') || '-'} |`);
     }
     sections.push(lines.join('\n'));
   }
