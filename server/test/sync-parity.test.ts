@@ -8,7 +8,7 @@ import { SyncError, measureSync, type SyncMeasurement } from '../src/media/sync.
 import { capture, performance, reverberant } from './helpers/sync-fixtures.js';
 
 /*
- * Decision 1A: the phone syncs with a Swift/vDSP port of sync.ts. This test is
+ * Decision 1A: the phone syncs with a Swift/vDSP port of packages/shared/src/sync.ts. This test is
  * what makes that safe: identical PCM through both, same answer or CI fails.
  * Needs swiftc (macOS); the path-filtered macOS CI job runs it, Linux skips.
  *

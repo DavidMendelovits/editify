@@ -516,3 +516,5 @@ export * from './captions.js';
 export * from './cleanup.js';
 export * from './takes.js';
 export * from './safezone.js';
+export * from './sync.js';
+export * from './sync-plan.js';
