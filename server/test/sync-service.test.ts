@@ -14,6 +14,7 @@ import { ProjectStore } from '../src/db/project-store.js';
 import { TranscriptStore } from '../src/db/transcript-store.js';
 import { runProcess } from '../src/media/process.js';
 import { InsightService } from '../src/services/insight-service.js';
+import { mediaSlots } from '../src/services/media-slots.js';
 import { SyncService } from '../src/services/sync-service.js';
 import { TranscriptService } from '../src/services/transcript-service.js';
 
@@ -155,6 +156,24 @@ describe('audio sync', () => {
     // Levels are the user's call: the camera audio is untouched.
     const video = synced.tracks.find((track) => track.kind === 'video')?.clips[0];
     expect(video?.volume).toBeUndefined();
+  }, 30000);
+
+  it('measures while every media slot is held by imports', async () => {
+    // Regression: sync shared the pool with encodes and Whisper, and on the
+    // stand-up set it sat ~107s behind a transcription for ~2.5s of work.
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const blockers = Array.from({ length: mediaSlots.capacity }, (_, index) =>
+      mediaSlots.run(`import blocker-${index}`, () => held));
+    try {
+      const project = setUp([{ id: 'shot', start: 0, in: 0, out: VIDEO_SECONDS }]);
+      const plan = await syncs.plan(project, { audioClipId: 'memo-clip' });
+      expect(plan.ok).toBe(true);
+      expect(mediaSlots.active()).toHaveLength(mediaSlots.capacity);
+    } finally {
+      release();
+      await Promise.all(blockers);
+    }
   }, 30000);
 
   it('gives every shot cut from the footage its own matching piece', async () => {
