@@ -2,7 +2,6 @@ import { clipTimelineDuration, type Clip, type Project } from '@editify/shared';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import type { EnergyAnalysis } from '../db/transcript-store.js';
 import { analyzeEnergy } from '../media/audio-analysis.js';
-import type { TranscriptService } from './transcript-service.js';
 
 /**
  * Sound effects levelled against THIS speaker's measured voice, not guessed.
@@ -47,6 +46,8 @@ export interface MixReport {
   beds: MixHit[];
   hitsPerMinute: number;
   warnings: string[];
+  /** Audio-track clips with no loudness curve to judge: named, never silently passed. */
+  unmeasured: string[];
 }
 
 export type EnergyLookup = (assetId: string) => EnergyAnalysis | undefined;
@@ -96,10 +97,12 @@ export function checkMix(project: Project, energyOf: EnergyLookup): MixReport {
 
   const hits: MixHit[] = [];
   const beds: MixHit[] = [];
+  const unmeasured: string[] = [];
   for (const track of project.tracks.filter((candidate) => candidate.kind === 'audio')) {
     for (const clip of track.clips) {
       if (!clip.assetId) continue;
       const energy = energyOf(clip.assetId);
+      if (!energy) unmeasured.push(clip.id);
       const cells = energy ? cellsFor(energy, clip).filter((db) => db > SILENCE_FLOOR_DB) : [];
       const category = soundCategory(clip);
       const volume = clip.volume ?? 1;
@@ -150,12 +153,16 @@ export function checkMix(project: Project, energyOf: EnergyLookup): MixReport {
   if (project.duration >= 15 && hitsPerMinute > MAX_HITS_PER_MINUTE) {
     warnings.push(`${hitsPerMinute} whoosh/impact hits per minute (limit ${MAX_HITS_PER_MINUTE}): the edit will sound busy. Keep hits on the structural moments.`);
   }
+  if (unmeasured.length) {
+    warnings.push(`${unmeasured.length} audio clip(s) had no loudness measurement, so their levels were not judged: ${unmeasured.slice(0, 10).join(', ')}${unmeasured.length > 10 ? ', ...' : ''}.`);
+  }
   return {
     voiceReferenceDb: voiceReference === undefined ? null : round1(voiceReference),
     hits,
     beds,
     hitsPerMinute,
     warnings,
+    unmeasured,
   };
 }
 
@@ -174,19 +181,21 @@ const energyCache = new Map<string, Promise<EnergyAnalysis | undefined>>();
 export async function loadProjectEnergy(
   project: Project,
   assets: Pick<AssetStore, 'get'>,
-  transcripts?: Pick<TranscriptService, 'get'>,
+  /** Curves already in hand: a transcript's, or a stateless turn's bundle. Anything else is measured from the file. */
+  known?: EnergyLookup,
 ): Promise<EnergyLookup> {
   const ids = new Set(project.tracks.filter((track) => track.kind === 'video' || track.kind === 'audio')
     .flatMap((track) => track.clips.map((clip) => clip.assetId).filter((id): id is string => Boolean(id))));
   const resolved = new Map<string, EnergyAnalysis>();
   await Promise.all([...ids].map(async (id) => {
-    const fromTranscript = transcripts?.get(id)?.energy;
-    if (fromTranscript) {
-      resolved.set(id, fromTranscript);
+    const fromKnown = known?.(id);
+    if (fromKnown) {
+      resolved.set(id, fromKnown);
       return;
     }
     const asset = assets.get(id);
-    if (!asset?.hasAudio) return;
+    // No originalPath: a stateless turn's snapshot asset, whose file is on the phone.
+    if (!asset?.hasAudio || !asset.originalPath) return;
     const energy = await measure(asset);
     if (energy) resolved.set(id, energy);
   }));
