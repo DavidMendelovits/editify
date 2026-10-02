@@ -1,5 +1,6 @@
-import { clipTimelineDuration, type Project } from '@editify/shared';
+import { clipTimelineDuration, type Clip, type Project } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
+import { SOUND_ID_PREFIX } from '../media/sound-library.js';
 import type { TranscriptService } from './transcript-service.js';
 
 export interface CleanupRange { start: number; end: number }
@@ -14,6 +15,12 @@ export interface TimelineTranscriptWord {
   clipId: string;
   trackId: string;
   assetId: string;
+  /**
+   * The audible window the word was heard in. A clip interrupted by a memo
+   * yields two windows, and a gap is only ever measured inside one: the
+   * stretch between them is the memo's, not silence.
+   */
+  windowId?: string;
 }
 
 export interface TimelineTranscript {
@@ -22,41 +29,99 @@ export interface TimelineTranscript {
   segments: Array<[number, string, number, number]>;
 }
 
-export function buildTimelineTranscript(project: Project, getTranscript: (assetId: string) => ReturnType<TranscriptService['get']>): TimelineTranscript {
-  const words: TimelineTranscriptWord[] = [];
-  const segments: Array<[number, string, number, number]> = [];
-  const clips = project.tracks.filter((track) => track.kind === 'video')
-    .flatMap((track) => track.clips.map((clip) => ({ trackId: track.id, clip })))
-    .sort((left, right) => left.clip.start - right.clip.start || left.trackId.localeCompare(right.trackId) || left.clip.id.localeCompare(right.clip.id));
-  for (const { trackId, clip } of clips) {
-    if (!clip.assetId) continue;
-    const transcript = getTranscript(clip.assetId);
-    if (!transcript) continue;
-    const speed = clip.speed ?? 1;
-    const clipWords = transcript.words.filter((word) => word.s >= clip.in && word.s < clip.out && word.e > word.s);
-    const firstIndex = words.length;
-    for (const word of clipWords) {
-      words.push({
-        index: words.length,
-        text: word.w,
-        timelineStart: clip.start + (word.s - clip.in) / speed,
-        timelineEnd: clip.start + (Math.min(word.e, clip.out) - clip.in) / speed,
-        sourceStart: word.s,
-        sourceEnd: Math.min(word.e, clip.out),
-        clipId: clip.id,
-        trackId,
-        assetId: clip.assetId,
-      });
-    }
-    for (const segment of transcript.segments) {
-      const included = words.slice(firstIndex).filter((word) => word.sourceStart >= segment.s && word.sourceStart < segment.e);
-      const first = included[0];
-      const last = included.at(-1);
-      if (!first || !last) continue;
-      segments.push([first.index, included.map((word) => word.text).join(' '), first.timelineStart, last.timelineEnd]);
+/** One stretch of timeline whose words come from exactly one clip's audio. */
+export interface AudibleWindow {
+  /** The source clip trimmed to the window: `start` and `in`/`out` describe only this stretch. */
+  clip: Pick<Clip, 'id' | 'start' | 'in' | 'out' | 'speed'>;
+  trackId: string;
+  assetId: string;
+}
+
+function trimTo(clip: Pick<Clip, 'id' | 'start' | 'in' | 'out' | 'speed'>, from: number, to: number): AudibleWindow['clip'] {
+  const speed = clip.speed ?? 1;
+  return { ...clip, start: from, in: clip.in + (from - clip.start) * speed, out: clip.in + (to - clip.start) * speed };
+}
+
+/**
+ * Which recording the audience hears, interval by interval. A synced memo or
+ * lav on an audio track is the clean mic, so inside its span its words win;
+ * the camera's own words fill everything the memo does not cover. Library
+ * sounds and muted clips are never speech. Each interval has exactly one
+ * source, so cuts planned from these words never overlap across tracks.
+ *
+ *   camera  |=========================================|
+ *   memo           |====================|
+ *   windows |cam  |memo                 |cam          |
+ *
+ * ponytail: an unsynced memo still sitting at 0 is trusted too; sync_audio
+ * says to sync before cutting, and the project cannot tell synced from not.
+ */
+export function audibleWindows(project: Project, hasTranscript: (assetId: string) => boolean): AudibleWindow[] {
+  const end = (clip: Clip) => clip.start + clipTimelineDuration(clip);
+  const memos: AudibleWindow[] = project.tracks.filter((track) => track.kind === 'audio').flatMap((track) => track.clips
+    .filter((clip) => clip.assetId && !clip.assetId.startsWith(SOUND_ID_PREFIX) && (clip.volume ?? 1) > 0 && hasTranscript(clip.assetId))
+    .map((clip) => ({ clip, trackId: track.id, assetId: clip.assetId as string })));
+  const covered = mergeRanges(memos.map(({ clip }) => ({ start: clip.start, end: end(clip as Clip) })));
+  const camera: AudibleWindow[] = [];
+  for (const track of project.tracks.filter((candidate) => candidate.kind === 'video')) {
+    for (const clip of track.clips) {
+      if (!clip.assetId || !hasTranscript(clip.assetId)) continue;
+      let cursor = clip.start;
+      const clipEnd = end(clip);
+      for (const span of covered) {
+        if (span.end <= cursor || span.start >= clipEnd) continue;
+        if (span.start > cursor) camera.push({ clip: trimTo(clip, cursor, span.start), trackId: track.id, assetId: clip.assetId });
+        cursor = Math.max(cursor, span.end);
+      }
+      if (clipEnd > cursor) camera.push({ clip: cursor === clip.start ? clip : trimTo(clip, cursor, clipEnd), trackId: track.id, assetId: clip.assetId });
     }
   }
+  return [...memos, ...camera].sort((left, right) => left.clip.start - right.clip.start
+    || left.trackId.localeCompare(right.trackId) || left.clip.id.localeCompare(right.clip.id));
+}
+
+export function buildTimelineTranscript(project: Project, getTranscript: (assetId: string) => ReturnType<TranscriptService['get']>): TimelineTranscript {
+  const collected: Array<Omit<TimelineTranscriptWord, 'index'>> = [];
+  const groups: Array<{ entries: Array<Omit<TimelineTranscriptWord, 'index'>>; text: string }> = [];
+  for (const { clip, trackId, assetId } of audibleWindows(project, (id) => Boolean(getTranscript(id)))) {
+    const transcript = getTranscript(assetId);
+    if (!transcript) continue;
+    const speed = clip.speed ?? 1;
+    const windowId = `${clip.id}@${clip.start}`;
+    const entries = transcript.words.filter((word) => word.s >= clip.in && word.s < clip.out && word.e > word.s).map((word) => ({
+      text: word.w,
+      timelineStart: clip.start + (word.s - clip.in) / speed,
+      timelineEnd: clip.start + (Math.min(word.e, clip.out) - clip.in) / speed,
+      sourceStart: word.s,
+      sourceEnd: Math.min(word.e, clip.out),
+      clipId: clip.id,
+      trackId,
+      assetId,
+      windowId,
+    }));
+    collected.push(...entries);
+    for (const segment of transcript.segments) {
+      const included = entries.filter((word) => word.sourceStart >= segment.s && word.sourceStart < segment.e);
+      if (included.length) groups.push({ entries: included, text: included.map((word) => word.text).join(' ') });
+    }
+  }
+  // Windows are disjoint in time, so ordering by start interleaves sources correctly.
+  const ordered = collected.sort((left, right) => left.timelineStart - right.timelineStart);
+  const words: TimelineTranscriptWord[] = ordered.map((word, index) => ({ index, ...word }));
+  const indexOf = new Map(ordered.map((word, index) => [word, index]));
+  const segments = groups.map(({ entries, text }): [number, string, number, number] => [
+    indexOf.get(entries[0]!) ?? 0, text, entries[0]!.timelineStart, entries.at(-1)!.timelineEnd,
+  ]).sort((left, right) => left[2] - right[2]);
   return { words, rows: words.map((word) => [word.index, word.text, word.timelineStart]), segments };
+}
+
+/**
+ * Every `ripple_delete_ranges` moves every track, so ranges planned per track
+ * must land as ONE op in original timeline coordinates; a second op would cut
+ * already-shifted time.
+ */
+export function unionRanges(rangesByTrack: Map<string, CleanupRange[]>): CleanupRange[] {
+  return mergeRanges([...rangesByTrack.values()].flat());
 }
 
 export function planWordCutRanges(
@@ -190,7 +255,7 @@ export async function planSilenceRanges(
   for (let index = 0; index + 1 < words.length; index += 1) {
     const left = words[index];
     const right = words[index + 1];
-    if (!left || !right || left.clipId !== right.clipId || left.trackId !== right.trackId) continue;
+    if (!left || !right || (left.windowId ?? left.clipId) !== (right.windowId ?? right.clipId) || left.trackId !== right.trackId) continue;
     const gapDuration = right.timelineStart - left.timelineEnd;
     if (gapDuration < options.minSilenceSeconds) continue;
     const asset = sources.assets.get(left.assetId);

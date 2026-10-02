@@ -30,10 +30,13 @@ import { DEFAULT_CAPTION_STYLE, planCaptionPlacements, placeableCaption, PLATFOR
 import { ensureSoundLibrary } from '../media/sound-library.js';
 import { OperationError } from '../operations/apply.js';
 import {
+  audibleWindows,
   buildTimelineTranscript,
   normalizeWord,
   planSilenceRanges,
   planWordRemovalRanges,
+  unionRanges,
+  type CleanupRange,
 } from '../services/cleanup.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { FaceService, FaceTrack } from '../services/face-service.js';
@@ -466,11 +469,12 @@ async function captionOneClip(
 ): Promise<unknown> {
   try {
     const project = requireProject(ctx);
-    const videoClip = project.tracks.filter((track) => track.kind === 'video')
+    // A video clip, or the synced memo on an audio track: either names a stretch of timeline to caption.
+    const videoClip = project.tracks.filter((track) => track.kind === 'video' || track.kind === 'audio')
       .flatMap((track) => track.clips)
       .find((clip) => clip.id === clipId);
-    if (!videoClip) return { ok: false, error: `Video clip ${clipId} was not found` };
-    if (!videoClip.assetId) return { ok: false, error: `Video clip ${clipId} has no asset` };
+    if (!videoClip) return { ok: false, error: `Video or audio clip ${clipId} was not found` };
+    if (!videoClip.assetId) return { ok: false, error: `Clip ${clipId} has no asset` };
     const transcript = await ensureTranscript(ctx, videoClip.assetId);
     if ('error' in transcript) return { ok: false, error: transcript.error };
 
@@ -483,13 +487,26 @@ async function captionOneClip(
         || (caption.start < clipEnd && caption.start + clipTimelineDuration(caption) > clipStart))
         .map((caption) => caption.id));
     const preset = input.preset ? PRESETS_BY_NAME[input.preset] : undefined;
-    const chunks = chunkTranscriptForClip(transcript.words, videoClip, preset ? {
+    const chunkOptions = preset ? {
       wordsPerChunk: preset.captions.wordsPerChunk.target,
       maxWordsPerChunk: preset.captions.wordsPerChunk.max,
       minDurationSec: preset.captions.chunkDurationSec.min,
       maxDurationSec: preset.captions.chunkDurationSec.max,
       maxCharsPerSecond: preset.captions.maxCharsPerSecond,
-    } : input.wordsPerChunk);
+    } : input.wordsPerChunk;
+    // Words come from whatever is audible over this stretch: the synced memo where
+    // it covers, the camera elsewhere (same selection as remove_silence).
+    const windows = audibleWindows(project, (assetId) => Boolean(ctx.transcripts.get(assetId)))
+      .filter(({ clip }) => clip.start < clipEnd && clip.start + clipTimelineDuration(clip) > clipStart);
+    const chunks = (windows.length ? windows : [{ clip: videoClip, assetId: videoClip.assetId }])
+      .flatMap(({ clip, assetId }) => {
+        const speed = clip.speed ?? 1;
+        const from = Math.max(clip.start, clipStart);
+        const to = Math.min(clip.start + clipTimelineDuration(clip), clipEnd);
+        const window = { ...clip, start: from, in: clip.in + (from - clip.start) * speed, out: clip.in + (to - clip.start) * speed };
+        return chunkTranscriptForClip(ctx.transcripts.get(assetId)?.words ?? transcript.words, window, chunkOptions);
+      })
+      .sort((left, right) => left.start - right.start);
     const style: CaptionStyle = input.style ?? (preset ? {
       font: 'Montserrat', size: 64, color: preset.captions.fill, position: 'center', emphasis: 'highlight',
       anchorPct: preset.captions.verticalAnchorPct, sizePct: preset.captions.fontSizePct,
@@ -531,6 +548,13 @@ async function captionOneClip(
   }
 }
 
+/** One ripple for the whole plan: ripples move every track, so a second op would cut shifted time. */
+function rippleOnce(project: Project, rangesByTrack: Map<string, CleanupRange[]>): Operation[] {
+  const ranges = unionRanges(rangesByTrack);
+  const trackId = project.tracks.find((track) => track.kind === 'video')?.id ?? [...rangesByTrack.keys()][0];
+  return ranges.length && trackId ? [operationSchema.parse({ type: 'ripple_delete_ranges', params: { trackId, ranges } })] : [];
+}
+
 async function removeWords(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
   try {
     const input = removeWordsSchema.parse(rawInput);
@@ -557,9 +581,7 @@ async function removeWords(ctx: ToolContext, rawInput: unknown): Promise<unknown
     }
     if (!selected.size) return { ...createMutationDelta(project, project, ['No matching timeline words were found.']), wordsRemoved: 0 };
 
-    const tracks = planWordRemovalRanges(project, transcript.words, selected, input.keptGapMs);
-    const operations: Operation[] = [...tracks].map(([trackId, ranges]) =>
-      operationSchema.parse({ type: 'ripple_delete_ranges', params: { trackId, ranges } }));
+    const operations = rippleOnce(project, planWordRemovalRanges(project, transcript.words, selected, input.keptGapMs));
     if (!operations.length) return { ...createMutationDelta(project, project), wordsRemoved: 0 };
     const after = applyMany(ctx, operations);
     return {
@@ -578,10 +600,8 @@ async function removeSilence(ctx: ToolContext, rawInput: unknown): Promise<unkno
     const project = requireProject(ctx);
     const timeline = buildTimelineTranscript(project, (assetId) => ctx.transcripts.get(assetId));
     const { rangesByTrack, gapsCut, gapsProtected } = await planSilenceRanges(project, timeline.words, ctx, input);
-    const operations = [...rangesByTrack].filter(([, ranges]) => ranges.length).map(([trackId, ranges]) =>
-      operationSchema.parse({ type: 'ripple_delete_ranges', params: { trackId, ranges } }));
-    const merged = [...rangesByTrack.values()].flat();
-    const removedSec = merged.reduce((total, range) => total + range.end - range.start, 0);
+    const operations = rippleOnce(project, rangesByTrack);
+    const removedSec = unionRanges(rangesByTrack).reduce((total, range) => total + range.end - range.start, 0);
     if (!operations.length) return { ...createMutationDelta(project, project), removedSec: 0, gapsCut, gapsProtected };
     const after = applyMany(ctx, operations);
     return { ...createMutationDelta(project, after), removedSec, gapsCut, gapsProtected };

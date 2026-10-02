@@ -5,10 +5,12 @@ import type { ProjectStore } from '../db/project-store.js';
 import { OperationError } from '../operations/apply.js';
 import {
   SILENCE_DEFAULTS,
+  audibleWindows,
   buildTimelineTranscript,
   planFillerRanges,
   planSilenceRanges,
   totalRangeSeconds,
+  unionRanges,
   type CleanupRange,
 } from '../services/cleanup.js';
 import type { RenderQueue } from '../services/render-queue.js';
@@ -84,14 +86,15 @@ export function registerProjectRoutes(
     const track = project.tracks.find((candidate) => candidate.kind === 'video');
     if (!track) return await reply.code(404).send({ error: 'Project has no video track' });
     const timeline = buildTimelineTranscript(project, (assetId) => transcripts.get(assetId));
-    const transcribed = track.clips.some((clip) => clip.assetId && transcripts.get(clip.assetId));
+    const transcribed = audibleWindows(project, (assetId) => Boolean(transcripts.get(assetId))).length > 0;
     const fillers = planFillerRanges(project, timeline.words);
     // Measuring must never fail the whole answer: an asset whose energy has not
     // been analysed yet needs ffmpeg, and filler counts are still useful without it.
     const silences = await planSilenceRanges(project, timeline.words, { assets, transcripts }, SILENCE_DEFAULTS)
       .catch(() => ({ rangesByTrack: new Map<string, CleanupRange[]>() }));
-    const fillerRanges = fillers.rangesByTrack.get(track.id) ?? [];
-    const silenceRanges = silences.rangesByTrack.get(track.id) ?? [];
+    // One ripple on the video track removes the time from every track, memo included.
+    const fillerRanges = unionRanges(fillers.rangesByTrack);
+    const silenceRanges = unionRanges(silences.rangesByTrack);
     return {
       transcribed,
       fillers: { ranges: fillerRanges, words: fillers.matched, seconds: totalRangeSeconds(fillerRanges) },
