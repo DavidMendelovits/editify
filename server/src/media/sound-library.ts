@@ -157,7 +157,7 @@ export async function synthesizeSound(id: string, path: string): Promise<void> {
   await synthesize(recipe, path);
 }
 
-export async function ensureSoundLibrary(assets: AssetStore): Promise<LibrarySound[]> {
+export async function ensureSoundLibrary(assets: Pick<AssetStore, 'get' | 'getByOriginalName' | 'upsert'>): Promise<LibrarySound[]> {
   generated ??= (async () => {
     await mkdir(soundsRoot, { recursive: true });
     const sounds: LibrarySound[] = [];

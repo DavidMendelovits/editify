@@ -53,29 +53,45 @@ export { buildTimelineTranscript, planWordCutRanges } from '../services/cleanup.
 export { chunkTranscriptForClip, type CaptionChunkOptions, type TranscriptCaptionChunk } from '@editify/shared';
 export type { TimelineTranscript, TimelineTranscriptWord } from '../services/cleanup.js';
 
+/**
+ * What tools may ask of the world: the narrowest slice of each store they call.
+ * Today's chat turn passes the server's stores; a stateless agent turn (plan
+ * P3) backs the same slices with an in-memory snapshot of the phone's project.
+ */
 export interface ToolContext {
   projectId: string;
   /** The signed-in owner; undefined for shared-token and local-dev turns. */
   userId?: string;
-  projects: ProjectStore;
-  assets: AssetStore;
+  projects: Pick<ProjectStore, 'get' | 'applyOperations'>;
+  assets: Pick<AssetStore, 'get' | 'getInProject' | 'listForProject' | 'link' | 'getByOriginalName' | 'upsert'>;
   styleDoc: string | null;
   currentVersion: number;
-  transcripts: TranscriptService;
-  insights: InsightService;
-  dissections?: DissectService;
-  syncs?: SyncService;
+  transcripts: Pick<TranscriptService, 'get' | 'transcribe' | 'ensureEnergy'>;
+  insights: Pick<InsightService, 'getOrCreate'>;
+  dissections?: Pick<DissectService, 'getOrCreate'>;
+  syncs?: Pick<SyncService, 'plan'>;
   /** Face tracks for caption placement; without it captions only keep to the safe area. */
-  faces?: FaceService;
+  faces?: Pick<FaceService, 'tryGet'>;
   /** Finished renders, for reading back their QA. */
-  renders?: RenderStore;
+  renders?: Pick<RenderStore, 'latestDone'>;
   appliedOperations?: Operation[];
   /** Checkpoint id for the whole turn — stamped on every operation it logs. */
   runId?: string;
 }
 
+/**
+ * What a tool needs beyond the project itself (plan OV6). A turn that cannot
+ * supply a need (a stateless turn has no media, so no dissection or library
+ * sounds) leaves the tool out of what the model is offered, instead of letting
+ * it reach for files or databases it does not have.
+ */
+export type ToolNeed = 'assets' | 'transcripts' | 'energy' | 'sync' | 'dissection' | 'insights' | 'renders' | 'sounds';
+export const ALL_TOOL_NEEDS: ReadonlySet<ToolNeed> = new Set<ToolNeed>(['assets', 'transcripts', 'energy', 'sync', 'dissection', 'insights', 'renders', 'sounds']);
+
 export interface ToolDef {
   name: string;
+  /** Required inputs; optional ones (faces for caption placement) degrade inside the tool instead. */
+  needs: readonly ToolNeed[];
   description: string;
   schema: ZodTypeAny;
   execute(ctx: ToolContext, input: unknown): Promise<unknown>;
@@ -990,6 +1006,7 @@ export function createToolRegistry(): ToolDef[] {
   const readTools: ToolDef[] = [
     {
       name: 'get_project',
+      needs: [],
       description: 'Get the complete current project document, including tracks, clips, timing, format, duration, and version. Call this after mutations when you need fresh clip state.',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
@@ -1002,6 +1019,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'list_assets',
+      needs: ['assets'],
       description: 'List this project\'s media assets, the only ones you may cut with. Use an asset id from this result as add_clip.assetId. Duration is source-time seconds.',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
@@ -1014,6 +1032,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_style_profile',
+      needs: [],
       description: 'Get the latest natural-language editing style document, or null when no style profile exists.',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
@@ -1023,6 +1042,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_transcript',
+      needs: ['transcripts'],
       description: 'Get an asset transcript by assetId, transcribing on demand when none is stored yet (this can take a while for long media). Returns language, segments, wordCount, and compact word tuples [word, sourceStartSeconds, sourceEndSeconds]. Use source timestamps for trims.',
       schema: assetInputSchema,
       execute: async (ctx, input) => {
@@ -1040,6 +1060,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'parse_transcript_text',
+      needs: [],
       description: 'Parse a transcript the user pasted into chat (SRT, VTT, or lines prefixed with timestamps like [00:01:02]) into segments. Use this whenever the user pastes a transcript in chat instead of guessing times. Returned start/end are source-time seconds to feed straight into trim_clip / set_clip_properties in/out.',
       schema: parseTranscriptTextSchema,
       execute: async (_ctx, input) => {
@@ -1051,6 +1072,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_insights',
+      needs: ['transcripts', 'insights'],
       description: 'Get or lazily compute transcript-only hook and highlight insights for an assetId. Timestamps are source-time seconds suitable for add_clip in/out trims.',
       schema: assetInputSchema,
       execute: async (ctx, input) => {
@@ -1065,12 +1087,14 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'caption_clip_from_transcript',
+      needs: ['transcripts'],
       description: 'Replace generated captions for video clips using their asset transcripts, transcribing missing ones on demand. Pass clipId for one clip or clipIds for up to 100 in one call; always prefer clipIds when captioning several clips. wordsPerChunk is 1-4 (default 3). Source word times are mapped through clip.in, clip.start, and speed to absolute timeline seconds. Default captions are uppercase Montserrat Bold, size 64, white, and bottom-positioned.',
       schema: captionFromTranscriptSchema,
       execute: captionClipFromTranscript,
     },
     {
       name: 'get_timeline_transcript',
+      needs: ['transcripts'],
       description: 'Read the speech currently audible on the edited video timeline. Returns compact word rows [globalWordIndex,text,timelineStartSec] and sentence rows [firstWordIndex,text,startSec,endSec]. Word indexes remain valid only until the next timeline mutation.',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
@@ -1081,6 +1105,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'dissect_asset',
+      needs: ['dissection'],
       description: 'Measure a source video with ffmpeg only: scene-cut timestamps and cadence, audio energy curve and onset peaks, estimated tempo BPM, loudness, and spans where burned-in text/graphics sit (top/bottom zones). Use it to mirror a reference video\'s rhythm: cut on its cadence, land edits on its energy peaks. All times are source seconds. Slow on first call; cached afterwards.',
       schema: assetInputSchema,
       execute: async (ctx, input) => {
@@ -1099,6 +1124,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'list_presets',
+      needs: [],
       description: 'List the built-in editing presets with their target content. Fetch a matching preset before applying a named style or content-specific edit.',
       schema: emptyInputSchema,
       execute: async (_ctx, input) => {
@@ -1108,12 +1134,14 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_preset',
+      needs: [],
       description: 'Get every actionable parameter and rationale for one built-in editing preset. Presets guide editorial judgment; they are not rigid law.',
       schema: presetNameSchema,
       execute: async (_ctx, input) => PRESETS_BY_NAME[presetNameSchema.parse(input).name],
     },
     {
       name: 'get_take_map',
+      needs: ['transcripts'],
       description: 'Map the takes in a raw multi-take recording (someone saying each line, restarting, and saying it again) from its transcript. Returns sentence rows [index, startSec, endSec, text, flags] in source seconds, where flags mark restart lines ("okay, again"), false starts cut short, and superseded retakes; `groups` lists every line recorded more than once with the attempt picked (the last complete one); `takes` is the suggested cut in script order with word-snapped cut points, ready for assemble_takes. Review the picks against the script before assembling: a later take is usually, not always, the better one.',
       schema: assetInputSchema,
       execute: async (ctx, input) => {
@@ -1140,6 +1168,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_render_qa',
+      needs: ['renders'],
       description: 'Read the quality check of this project\'s latest finished export: integrated loudness and true peak (target -16 LUFS, peak under -1 dBFS; the export is normalized unless the user turned that off), dead air left inside the speech, sound-effect levels against the voice, and a contact-sheet URL of 18 frames. It describes the last export, not edits made since.',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
@@ -1152,6 +1181,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'get_style_packets',
+      needs: [],
       description: 'List the built-in style packets, a creator\'s repeatable look captured as data: typography, colour system, music bed, transition habit, punch-in cadence, and callout/b-roll density. Read one before calling apply_style_packet.',
       schema: emptyInputSchema,
       execute: async (_ctx, input) => {
@@ -1164,6 +1194,7 @@ export function createToolRegistry(): ToolDef[] {
   const batchTools: ToolDef[] = [
     {
       name: 'add_clips',
+      needs: [],
       description: 'Preferred batch form of add_clip. Atomically add 1-100 media clips to one video/audio track in the supplied order. All clip IDs must be globally unique; source in/out and absolute timeline starts are seconds.',
       schema: addClipsSchema,
       execute: async (ctx, rawInput) => {
@@ -1173,6 +1204,7 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'split_clips',
+      needs: [],
       description: 'Preferred batch form of split_clip. Atomically split 1-100 clips at absolute timeline seconds. Any invalid cut rejects the whole batch.',
       schema: splitClipsSchema,
       execute: async (ctx, rawInput) => {
@@ -1182,54 +1214,63 @@ export function createToolRegistry(): ToolDef[] {
     },
     {
       name: 'cut_to_beats',
+      needs: ['dissection'],
       description: 'Split one video clip on its measured audio onsets so the cuts land on the beat: the montage-pacing primitive. Beats come from the asset dissection (computed on first use, cached after); cuts stay at least 0.25s from the clip edges and from each other, and maxCuts (default 12, max 30) thins them evenly across the clip. Right-hand pieces are named <clipId>-beat-1..N left to right. Follow with reorder_clips, trim_clip, or set_speed to shape the rhythm.',
       schema: cutToBeatsSchema,
       execute: cutToBeats,
     },
     {
       name: 'apply_style_packet',
+      needs: ['sounds'],
       description: 'Apply one style packet, either `packetId` for a built-in from get_style_packets, or a whole `packet` object inline (the shape get_style_packets returns; that is how a look derived from the user\'s style profile or a dissected reference arrives, usually pasted into the message). Runs in one atomic batch: restyle every caption to its typography (karaoke word timings are preserved), tile its music bed under the video, set its transition and cut SFX at every adjacent cut, and set its punch-in cadence. Returns the timeline delta plus `guidance`: the creative half (callouts, b-roll, pacing) that you still have to author yourself.',
       schema: applyPacketSchema,
       execute: applyStylePacket,
     },
     {
       name: 'sync_audio',
+      needs: ['sync'],
       description: 'Line up an audio-track clip (a voice memo, lav, or second recorder of the same moment) with a video clip by matching it against the video\'s own sound, then place it: every clip cut from that footage gets a matching memo piece, trimmed to the shot, with a tiny speed correction when the two recorders\' clocks drift. Omit videoClipId to use the longest video clip with sound. Levels are left alone: if the user wants the memo to replace the camera audio, follow with set_volume 0 on the video clips. Sync before cutting when you can; later ripple cuts keep both tracks aligned. Fails without moving anything when no confident match exists.',
       schema: syncAudioRequestSchema,
       execute: syncAudio,
     },
     {
       name: 'assemble_takes',
+      needs: ['transcripts'],
       description: 'Rebuild a raw recording from chosen takes. clipId names any video clip of that recording; takes are source-second ranges in EDIT order (usually get_take_map\'s `takes`). Every clip of that source on the track is replaced by one clip per take, laid back to back from where the recording started; later clips and captions close up behind it. With snapToWords (default), cut points snap to word times: 0.12s before the first word and 0.25s after the last, never into a neighbouring word. Captions that covered the recording are regenerated over the takes in their old style. Audio and overlay tracks are not moved.',
       schema: assembleTakesSchema,
       execute: assembleTakes,
     },
     {
       name: 'place_captions',
+      needs: [],
       description: 'Move captions off the speaker\'s face and inside the posting app\'s safe area (its top bar and bottom caption/button band). A caption already clear of both keeps its anchor; others move to the nearest spot below the chin or above the head. Face positions come from tracking each source video (done once, cached) and follow every punch-in and crop. platform (instagram default, tiktok, shorts, or all) also sets the project\'s delivery platform. Omit clipIds to place every caption. caption_clip_from_transcript and apply_style_packet already place the captions they write; run this after reframing, zooming, or restyling by hand.',
       schema: placeCaptionsSchema,
       execute: placeCaptions,
     },
     {
       name: 'check_mix',
+      needs: ['energy'],
       description: 'Judge every sound effect and music bed against this speaker\'s measured voice: each hit\'s loudest moment vs the voice\'s 95th-percentile level (targets: impact -8 dB, whoosh/pop/riser -12, ui -14; beds sit about -20 dB under the voice on average), plus whoosh/impact density (over 14 per minute sounds busy). Returns per-clip levels, verdicts and a suggested volume for each off-target clip. fix: true applies the suggested volumes in one batch. Run it after adding music or SFX; never guess SFX volumes by hand.',
       schema: checkMixSchema,
       execute: checkMixTool,
     },
     {
       name: 'remove_words',
+      needs: ['transcripts'],
       description: 'Descript-style transcript cut. Select global timeline word indexes/ranges or exact word matches (mutually exclusive), retain half of keptGapMs on each side, and ripple-delete all selected runs atomically. Re-read the timeline transcript afterward.',
       schema: removeWordsSchema,
       execute: removeWords,
     },
     {
       name: 'remove_silence',
+      needs: ['transcripts', 'energy'],
       description: 'Remove long gaps between timeline words, keeping padSeconds at speech edges. With protectLoudGaps, gaps within 12 dB of speech are protected as laughter/reaction; reactions over 2 seconds may be shortened through the energy peak plus 0.4 seconds.',
       schema: removeSilenceSchema,
       execute: removeSilence,
     },
     {
       name: 'close_gaps',
+      needs: [],
       description: 'Repack one track sequentially from its first clip start, preserving chronological order. Call after speed or trim changes unless black gaps are explicitly intended.',
       schema: closeGapsSchema,
       execute: async (ctx, rawInput) => {
@@ -1256,12 +1297,18 @@ export function createToolRegistry(): ToolDef[] {
   ];
 
   const operationTools = OPERATION_CATALOG.map<ToolDef>((name) => ({
+    needs: [],
     name,
     description: operationDescriptions[name],
     schema: operationParamsSchemas[name],
     execute: async (ctx, input) => await executeOperation(ctx, name, input),
   }));
   return [...readTools, ...batchTools, ...operationTools];
+}
+
+/** The registry a turn can actually serve: tools whose every need is in `available`. */
+export function toolsFor(available: ReadonlySet<ToolNeed>, registry: ToolDef[] = createToolRegistry()): ToolDef[] {
+  return registry.filter((tool) => tool.needs.every((need) => available.has(need)));
 }
 
 export function isOperationTool(name: string): name is Operation['type'] {
