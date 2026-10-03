@@ -26,7 +26,14 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSSpeechRecognitionUsageDescription": "Editify transcribes your clips on this iPhone to make captions and find cuts.",
-        "PHPhotoLibraryPreventAutomaticLimitedAccessAlert": true
+        "PHPhotoLibraryPreventAutomaticLimitedAccessAlert": true,
+        "NSPhotoLibraryAddUsageDescription": "Editify saves your finished videos to Photos.",
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.editify.app.export.*"
+        ]
+      },
+      "entitlements": {
+        "com.apple.developer.background-tasks.continued-processing.gpu": true
       }
     },
     "android": {

@@ -1,12 +1,14 @@
 import AVFoundation
 import ExpoModulesCore
 
-/// The on-device engine. Two surfaces:
+/// The on-device engine. Three surfaces:
 ///   - capability lab: each `runSpike` call is one run: Sampler begin → spike → one
 ///     JSONL row, which is also returned to JS for display.
 ///   - analyzers (plan P2): direct calls that return a part result
 ///     `{status, analyzerVersion, data?, error?}`, and the 8A scheduler that runs
 ///     them per asset and reports through `analysisStatus` events.
+///   - export (plan P4): `exportProject` renders a RenderPlan on the phone
+///     (ExportCenter, PlanExporter) and reports through `exportState` events.
 public class EditifyEngineModule: Module {
   /// This instance's JS context (see EngineContext): set before any JS call can arrive.
   private var contextEpoch = 0
@@ -17,7 +19,7 @@ public class EditifyEngineModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("EditifyEngine")
-    Events("progress", "analysisStatus", "analysisState")
+    Events("progress", "analysisStatus", "analysisState", "exportState")
 
     OnCreate {
       LabStore.recoverKilledRun()
@@ -32,6 +34,11 @@ public class EditifyEngineModule: Module {
         // Idempotent per epoch, so landing after this context's own calls changes nothing.
         await AnalysisScheduler.shared.reset(epoch: epoch)
       }
+    }
+
+    OnDestroy {
+      // Nobody listens to a running export once this JS context is gone.
+      ExportCenter.shared.cancelAll()
     }
 
     Function("readResults") { LabStore.readAll() }
@@ -160,6 +167,28 @@ public class EditifyEngineModule: Module {
     /// True while an export renders: proxies are cancelled and held, words/faces pause.
     AsyncFunction("setExportActive") { (active: Bool, seq: Int?) async in
       await AnalysisScheduler.shared.setExportActive(active, epoch: self.epochForCalls, seq: seq)
+    }
+
+    // MARK: On-device export (plan P4, 8A + OV8, OV5)
+
+    /// Renders a RenderPlan v1 (JSON) to an .mp4 and answers its export id at once; the run
+    /// reports `exportState` events. options: media {assetId: ref from resolveMedia} (every
+    /// plan asset, required), destination 'photos' | 'file' (default photos), videoBitrate
+    /// (bit/s), keyframeInterval (s). Rejects bad input or a second concurrent export.
+    AsyncFunction("exportProject") { (planJson: String, options: [String: Any]?) async throws -> String in
+      try await ExportCenter.shared.start(planJson: planJson, options: options ?? [:]) { [weak self] body in
+        self?.sendEvent("exportState", body)
+      }
+    }
+
+    /// Cancels an export (queued or running); its temp file is removed. Unknown ids are ignored.
+    Function("cancelExport") { (id: String) in
+      ExportCenter.shared.cancel(id)
+    }
+
+    /// {backgroundGPU}: whether this phone can keep exporting with Editify in the background.
+    Function("exportCapabilities") { () -> [String: Any] in
+      ExportCenter.capabilities()
     }
 
     // MARK: Local media registry (decision 3A) and preview proxies (10B)
