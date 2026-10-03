@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -57,6 +57,7 @@ const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
 
 let app: FastifyInstance;
 let assets: InstanceType<typeof AssetStore>;
+let database: ReturnType<typeof createDatabase>;
 const auth: Record<string, { authorization: string }> = {};
 const media = mkdtempSync(join(tmpdir(), 'editify-snapshot-media-'));
 const savedToken = process.env.EDITIFY_TOKEN;
@@ -72,11 +73,15 @@ async function sign(privateKey: CryptoKey, subject: string): Promise<string> {
 }
 
 /** An asset row; `file: false` leaves its original off disk (never uploaded, or removed). */
-function addAsset(id: string, owner: string | undefined, options: { file?: boolean; duration?: number } = {}): void {
+function addAsset(
+  id: string, owner: string | undefined,
+  options: { file?: boolean; duration?: number; width?: number; height?: number; hasAudio?: boolean; mimeType?: string } = {},
+): void {
   const originalPath = join(media, `${id}.mp4`);
   if (options.file !== false) writeFileSync(originalPath, 'x');
   assets.insert({
-    id, originalName: `${id}.mp4`, mimeType: 'video/mp4', duration: options.duration ?? 4, width: 1080, height: 1920, fps: 30, hasAudio: true,
+    id, originalName: `${id}.mp4`, mimeType: options.mimeType ?? 'video/mp4', duration: options.duration ?? 4,
+    width: options.width ?? 1080, height: options.height ?? 1920, fps: 30, hasAudio: options.hasAudio ?? true,
     originalPath, proxyPath: originalPath, thumbnailPath: originalPath,
     originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: new Date(0).toISOString(),
   }, owner);
@@ -119,7 +124,7 @@ beforeAll(async () => {
   const jwks = createLocalJWKSet({ keys: [{ ...await exportJWK(publicKey), alg: 'ES256', kid: 'snapshot', use: 'sig' }] });
   auth[ALICE] = { authorization: `Bearer ${await sign(privateKey, ALICE)}` };
   auth[BOB] = { authorization: `Bearer ${await sign(privateKey, BOB)}` };
-  const database = createDatabase(':memory:');
+  database = createDatabase(':memory:');
   assets = new AssetStore(database);
   app = await buildApp({ database, auth: { supabaseUrl: SUPABASE, jwks }, databaseUrl: null });
 });
@@ -250,6 +255,73 @@ describe('POST /projects/:id/render with a snapshot', () => {
     expect((await finished(response.json<{ id: string }>().id)).status).toBe('done');
   });
 
+  it("derives the duration itself: a client's duration is never trusted", async () => {
+    addAsset('dur-a', ALICE);
+    const project = await newProject(ALICE);
+    // Hashed honestly over a lie: no clips, but a 115-day timeline.
+    const lie: Project = { ...project, duration: 1e7, tracks: project.tracks.map((track) => ({ ...track, clips: [] })) };
+    const response = await renderWith(ALICE, project.id, { revision: lie.version, hash: projectHash(lie), project: lie });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'hash' });
+    expect(calls.legacy).toEqual([]);
+  });
+
+  it('refuses a timeline over 4 hours and a new video overlap', async () => {
+    addAsset('long-a', ALICE);
+    const project = await newProject(ALICE);
+    const long = await renderWith(ALICE, project.id, renderSnapshot(withClip(project, 'long-a', 4 * 3600 + 1)));
+    expect(long.statusCode).toBe(400);
+    expect(long.json()).toMatchObject({ code: 'too_long' });
+    const overlapping: Project = {
+      ...project,
+      tracks: project.tracks.map((track) => (track.kind === 'video'
+        ? { ...track, clips: [{ id: 'x1', assetId: 'long-a', start: 0, in: 0, out: 2 }, { id: 'x2', assetId: 'long-a', start: 1, in: 0, out: 2 }] }
+        : track)),
+    };
+    const overlap = await renderWith(ALICE, project.id, renderSnapshot(overlapping));
+    expect(overlap.statusCode).toBe(400);
+    expect(overlap.json()).toMatchObject({ code: 'invalid' });
+    expect(calls.legacy).toEqual([]);
+  });
+
+  it('keeps the hash and revision on a finished render but drops the stored document', async () => {
+    addAsset('drop-a', ALICE);
+    const project = await newProject(ALICE);
+    const snapshot = renderSnapshot(withClip(project, 'drop-a', 2, 3));
+    const response = await renderWith(ALICE, project.id, snapshot);
+    const id = response.json<{ id: string }>().id;
+    expect(await finished(id)).toMatchObject({ status: 'done', snapshot: { revision: 3, hash: snapshot.hash } });
+    expect(database.prepare('SELECT snapshot_json FROM renders WHERE id = ?').get(id)).toEqual({ snapshot_json: null });
+  });
+
+  it('renders the snapshot when a stranded render is recovered after a restart', async () => {
+    addAsset('recover-a', ALICE);
+    addAsset('recover-b', ALICE);
+    const project = await newProject(ALICE);
+    assets.link(project.id, 'recover-a');
+    assets.link(project.id, 'recover-b');
+    const snapshot = renderSnapshot(withClip(project, 'recover-a', 2, 4));
+    const { RenderStore } = await import('../src/db/render-store.js');
+    const { ProjectStore } = await import('../src/db/project-store.js');
+    const { RenderQueue } = await import('../src/services/render-queue.js');
+    const renders = new RenderStore(database);
+    const stranded = renders.create(project.id, '720p', snapshot);
+    renders.update(stranded.id, 'processing');
+    // The stored project moves on while the server is down.
+    database.prepare('UPDATE projects SET doc_json = ? WHERE id = ?').run(JSON.stringify(withClip(project, 'recover-b', 3, 9)), project.id);
+    new RenderQueue(renders, new ProjectStore(database), assets).recover();
+    await vi.waitFor(() => expect(renders.get(stranded.id)?.status).toBe('done'));
+    const rendered = calls.legacy.find((entry) => entry.renderId === stranded.id);
+    expect(rendered?.project.tracks.flatMap((track) => track.clips.map((clip) => clip.assetId))).toEqual(['recover-a']);
+    expect(renders.get(stranded.id)?.projectVersion).toBe(4);
+  });
+
+  it('refuses a legacy render longer than 4 hours before it encodes anything', async () => {
+    const { renderProject } = await vi.importActual<typeof import('../src/media/render.js')>('../src/media/render.js');
+    const project = await newProject(ALICE);
+    await expect(renderProject({ ...project, duration: 1e7 }, '720p', 'too-long', assets)).rejects.toThrow('longer than 4 hours');
+  });
+
   it('caps the request body like a sync push', async () => {
     const project = await newProject(ALICE);
     const big = renderSnapshot({ ...project, title: 'x'.repeat(RENDER_BODY_LIMIT) });
@@ -301,12 +373,14 @@ describe('PUT /assets/:id/original', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'editify-restore-'));
   afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-  function clip(name: string, seconds: number): Buffer {
+  /** 160 x 284 test pattern, no audio. */
+  function clip(name: string, seconds: number, size = '160x284'): Buffer {
     const path = join(scratch, name);
-    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=s=160x284:r=30:d=${seconds}`,
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=s=${size}:r=30:d=${seconds}`,
       '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', path]);
     return readFileSync(path);
   }
+  const gone = (id: string, owner: string, duration = 1): void => addAsset(id, owner, { file: false, duration, width: 160, height: 284, hasAudio: false });
 
   async function put(user: string, id: string, projectId: string, body: Buffer | object, name = 'clip.mp4') {
     return await app.inject({
@@ -318,7 +392,7 @@ describe('PUT /assets/:id/original', () => {
   }
 
   it.skipIf(!hasFfmpeg)('puts a missing original back under its own id, then it is present', async () => {
-    addAsset('restore-a', ALICE, { file: false, duration: 1 });
+    gone('restore-a', ALICE);
     const project = await newProject(ALICE);
     const response = await put(ALICE, 'restore-a', project.id, clip('one.mp4', 1));
     expect(response.statusCode).toBe(200);
@@ -329,28 +403,34 @@ describe('PUT /assets/:id/original', () => {
     expect(assets.linkedOrSound(project.id, 'restore-a')).toBe(true);
     expect((await call(ALICE, 'POST', `/projects/${project.id}/assets/availability`, { assetIds: ['restore-a'] })).json())
       .toEqual({ assets: [{ id: 'restore-a', status: 'present' }] });
+    // Nothing but the original is left behind in its folder.
+    expect(readdirSync(join(assetsRoot, 'restore-a'))).toEqual(['original.mp4']);
   });
 
-  it.skipIf(!hasFfmpeg)('refuses a different file and writes nothing', async () => {
-    addAsset('restore-b', ALICE, { file: false, duration: 1 });
+  it.skipIf(!hasFfmpeg)('refuses another file (length, picture size, kind) and writes nothing', async () => {
     const project = await newProject(ALICE);
-    const response = await put(ALICE, 'restore-b', project.id, clip('three.mp4', 3));
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toMatchObject({ code: 'mismatch' });
+    gone('restore-b', ALICE);
+    const longer = await put(ALICE, 'restore-b', project.id, clip('three.mp4', 3));
+    expect(longer.statusCode).toBe(409);
+    expect(longer.json()).toMatchObject({ code: 'mismatch' });
+    expect((await put(ALICE, 'restore-b', project.id, clip('wide.mp4', 1, '320x180'))).statusCode).toBe(409);
+    // The record has sound; a silent file of the same length and size is another clip.
+    addAsset('restore-voice', ALICE, { file: false, duration: 1, width: 160, height: 284, hasAudio: true });
+    expect((await put(ALICE, 'restore-voice', project.id, clip('silent.mp4', 1))).statusCode).toBe(409);
+    expect((await put(ALICE, 'restore-b', project.id, Buffer.from('not media at all'))).statusCode).toBe(409);
     expect(existsSync(assets.get('restore-b')!.originalPath)).toBe(false);
-    expect(existsSync(join(assetsRoot, 'restore-b', 'original.mp4'))).toBe(false);
+    expect(readdirSync(join(assetsRoot, 'restore-b'))).toEqual([]);
   });
 
-  it.skipIf(!hasFfmpeg)('creates a device-first import under the id the phone gave it', async () => {
-    const id = '0f8e1c0a-6b3d-4f7e-9a51-2c4d6e8f0a1b';
+  it.skipIf(!hasFfmpeg)('lets two restores of the same clip race: each writes its own file, one whole file stays', async () => {
+    gone('restore-race', ALICE);
     const project = await newProject(ALICE);
-    const response = await put(ALICE, id, project.id, clip('new.mp4', 1));
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({ id, originalName: 'clip.mp4' });
-    expect(assets.owned(id, ALICE)?.id).toBe(id);
-    expect(assets.linkedOrSound(project.id, id)).toBe(true);
-    // The proxy is made in the background; let it finish before the database closes.
-    await vi.waitFor(() => expect(assets.get(id)?.status).not.toBe('processing'), { timeout: 20_000 });
+    const [first, second] = await Promise.all([
+      put(ALICE, 'restore-race', project.id, clip('race-1.mp4', 1)),
+      put(ALICE, 'restore-race', project.id, clip('race-2.mp4', 1)),
+    ]);
+    expect([first.statusCode, second.statusCode]).toEqual([200, 200]);
+    expect(readdirSync(join(assetsRoot, 'restore-race'))).toEqual(['original.mp4']);
   });
 
   it('answers a retry for an original already there without reading a body', async () => {
@@ -361,13 +441,33 @@ describe('PUT /assets/:id/original', () => {
     expect(assets.get('restore-here')!.originalPath).toBe(join(media, 'restore-here.mp4'));
   });
 
-  it("refuses another account's asset, a bad new id, and a missing project", async () => {
+  it('never creates an asset: an id with no row is 404, whatever its spelling', async () => {
+    const project = await newProject(ALICE);
+    const id = '0f8e1c0a-6b3d-4f7e-9a51-2c4d6e8f0a1b';
+    expect((await put(ALICE, id, project.id, Buffer.from('x'))).statusCode).toBe(404);
+    expect(assets.get(id)).toBeUndefined();
+    expect(existsSync(join(assetsRoot, id))).toBe(false);
+  });
+
+  it("only takes canonical ids: another spelling of Alice's id can't reach her folder", async () => {
+    const id = '1a2b3c4d-1111-4222-8333-444455556666';
+    gone(id, ALICE);
+    mkdirSync(join(assetsRoot, id), { recursive: true });
+    writeFileSync(join(assetsRoot, id, 'proxy.mp4'), 'hers');
+    const bobs = await newProject(BOB);
+    for (const spelling of [id.toUpperCase(), '1A2b3c4d-1111-4222-8333-444455556666', 'Sound-x', 'a.b', 'x_y']) {
+      expect((await put(BOB, spelling, bobs.id, Buffer.from('not media'))).statusCode).toBe(400);
+    }
+    // Bob with the exact id is told it doesn't exist.
+    expect((await put(BOB, id, bobs.id, Buffer.from('not media'))).statusCode).toBe(404);
+    expect(readFileSync(join(assetsRoot, id, 'proxy.mp4'), 'utf8')).toBe('hers');
+  });
+
+  it("refuses another account's asset and a missing project", async () => {
     addAsset('restore-bobs', BOB, { file: false });
     const project = await newProject(ALICE);
     expect((await put(ALICE, 'restore-bobs', project.id, Buffer.from('x'))).statusCode).toBe(404);
-    expect((await put(ALICE, 'not-a-uuid', project.id, Buffer.from('x'))).statusCode).toBe(400);
     const noProject = await app.inject({ method: 'PUT', url: '/assets/restore-bobs/original?name=a.mp4', headers: { ...auth[ALICE], 'content-type': 'video/mp4' }, payload: Buffer.from('x') });
     expect(noProject.statusCode).toBe(400);
-    expect(existsSync(join(assetsRoot, 'not-a-uuid'))).toBe(false);
   });
 });

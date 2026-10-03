@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { calloutSchema } from './packets.js';
+import { applyBatch } from './apply.js';
 import { projectHash } from './proposal.js';
 
 export const projectFormatSchema = z.enum(['9:16', '1:1', '16:9']);
@@ -426,11 +427,12 @@ export function projectAssetIds(project: Project): string[] {
 }
 
 /**
- * The snapshot a server render takes: the document normalized through the schema (what
- * the server parses and hashes), its version as the revision, and its projectHash.
+ * The snapshot a server render takes: the document normalized the way the server
+ * normalizes it (applyBatch with no ops: schema defaults, the duration derived from the
+ * clips), its version as the revision, and the projectHash of that normalized document.
  */
 export function renderSnapshot(project: Project): RenderSnapshot {
-  const normalized = projectSchema.parse(project);
+  const normalized = { ...applyBatch(projectSchema.parse(project), []), version: project.version };
   return { revision: normalized.version, hash: projectHash(normalized), project: normalized };
 }
 

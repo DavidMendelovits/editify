@@ -92,9 +92,10 @@ export interface MediaNative {
   removeFile(uri: string): void;
   /**
    * Writes a PHAsset's original (`.original`, never downloading) to a new temporary file and
-   * answers its file:// URI, for an upload the server is missing (OV1). The caller removes it.
+   * answers its file:// URI and Photos' original file name, for an upload the server is
+   * missing (OV1). The caller removes it.
    */
-  exportOriginal(ref: string): Promise<{ uri: string; bytes: number }>;
+  exportOriginal(ref: string): Promise<{ uri: string; bytes: number; name: string }>;
   /** MediaGeometry of a PHAsset id or file:// URI (never downloading); null when unreadable or not a picture. */
   geometry(ref: string): Promise<MediaGeometry | null>;
   ensureProxy(assetId: string, ref: string): Promise<void>;

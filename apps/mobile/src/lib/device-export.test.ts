@@ -4,8 +4,8 @@ import type { AssetAvailability, AssetMetadata, PlanAssetRef, Project, RenderPla
 import type { ExportProjectOptions, ExportStateEvent } from '../../modules/editify-engine';
 import {
   assetInfoOf, buildExportPlan, DEVICE_EXPORT_RESOLUTIONS, exportOnDevice, exportReducer, exportStateLabel, isTerminal, missingClipsLine,
-  planAssetRefs, projectAssetRefs, routeExport, serverRenderable, serverRouteLine, STARTING, uploadMissing,
-  type DeviceExportView, type ExportNative, type GeometryMap, type ServerCheck,
+  copyFileName, mimeTypeOf, planAssetRefs, projectAssetRefs, routeExport, serverRenderable, serverRouteLine, STARTING, uploadMissing,
+  type DeviceExportView, type ExportNative, type GeometryMap, type OriginalFile, type ServerCheck,
 } from './device-export';
 import {
   createLocalMediaStore, isLeased, migrate, type MediaDeps, type MediaFingerprint, type MediaGeometry, type MediaNative, type MediaProbe,
@@ -51,7 +51,7 @@ async function registry(
     touchProxy: () => false,
     removeProxy: () => undefined,
     analyze: async () => undefined,
-    exportOriginal: async (ref) => ({ uri: `file:///tmp/original-${ref}.mov`, bytes: 1000 }),
+    exportOriginal: async (ref) => ({ uri: `file:///tmp/original-${ref}.mov`, bytes: 1000, name: `IMG_${ref}.MOV` }),
     ...overrides,
   };
   return { store: createLocalMediaStore(db), native };
@@ -446,22 +446,27 @@ describe('the server fallback (OV1)', () => {
     expect(serverRouteLine(route)).toBe('Upload Interview to export.');
     expect(serverRenderable(route)).toBe(false);
 
-    const sent: Array<{ assetId: string; uri: string; leased: boolean }> = [];
+    const sent: Array<OriginalFile & { leased: boolean; cancellable: boolean }> = [];
     const progress: number[] = [];
     const clips = route.kind === 'server' && route.server?.state === 'upload' ? route.server.clips : [];
     const result = await uploadMissing({
       clips, deps,
-      upload: async (assetId, uri, onBytes) => {
-        sent.push({ assetId, uri, leased: isLeased(deps, assetId) });
+      upload: async (file, onBytes, signal) => {
+        const { assetId } = file;
+        sent.push({ ...file, leased: isLeased(deps, assetId), cancellable: signal !== undefined });
         onBytes(500, 1000);
         onBytes(1000, 1000);
         statuses[assetId] = 'present';
       },
       onProgress: (value) => progress.push(value.sentBytes),
+      signal: new AbortController().signal,
     });
     expect(result).toEqual({ uploaded: ['asset-b'], failed: [] });
     // Only the missing clip, from a temporary copy of its Photos original, removed afterwards; leased while it went.
-    expect(sent).toEqual([{ assetId: 'asset-b', uri: 'file:///tmp/original-PH-b.mov', leased: true }]);
+    // Under Photos' own file name and its real type, never a made-up one.
+    expect(sent).toEqual([{
+      assetId: 'asset-b', uri: 'file:///tmp/original-PH-b.mov', name: 'IMG_PH-b.MOV', mimeType: 'video/quicktime', leased: true, cancellable: true,
+    }]);
     expect(removed).toEqual(['file:///tmp/original-PH-b.mov']);
     expect(isLeased(deps, 'asset-b')).toBe(false);
     expect(progress.at(-1)).toBe(1000);
@@ -487,7 +492,7 @@ describe('the server fallback (OV1)', () => {
     const result = await uploadMissing({
       clips: [{ assetId: 'asset-a', kind: 'video', name: 'Intro' }, { assetId: 'asset-b', kind: 'video', name: 'Interview' }],
       deps,
-      upload: async (assetId, uri) => {
+      upload: async ({ assetId, uri }) => {
         sent.push(uri);
         if (assetId === 'asset-b') throw new Error('Upload failed with status 500');
       },
@@ -499,6 +504,20 @@ describe('the server fallback (OV1)', () => {
     expect(isLeased(deps, 'asset-a') || isLeased(deps, 'asset-b')).toBe(false);
   });
 
+  it('names an app copy by the file it was imported as, with its type from the extension', async () => {
+    expect(copyFileName(`${ROOT}media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-Beach%20day.MP4`)).toBe('Beach day.MP4');
+    expect(copyFileName('file:///tmp/plain.mov')).toBe('plain.mov');
+    expect(mimeTypeOf('Beach day.MP4')).toBe('video/mp4');
+    expect(mimeTypeOf('memo.m4a')).toBe('audio/mp4');
+    expect(mimeTypeOf('sticker.HEIC')).toBe('image/heic');
+    expect(mimeTypeOf('mystery.xyz')).toBeUndefined();
+    const deps = await registry({}, ['media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-talk.m4a']);
+    await deps.store.record({ assetId: 'asset-talk', fileUri: 'media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-talk.m4a' });
+    const sent: OriginalFile[] = [];
+    await uploadMissing({ clips: [{ assetId: 'asset-talk', kind: 'audio', name: 'Talk' }], deps, upload: async (file) => { sent.push(file); } });
+    expect(sent).toEqual([{ assetId: 'asset-talk', uri: `${ROOT}media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-talk.m4a`, name: 'talk.m4a', mimeType: 'audio/mp4' }]);
+  });
+
   it('refuses to upload a clip that is no longer here, and skips the rest once aborted', async () => {
     const deps = await bothLocal();
     const controller = new AbortController();
@@ -506,7 +525,7 @@ describe('the server fallback (OV1)', () => {
     const result = await uploadMissing({
       clips: [{ assetId: 'asset-gone', kind: 'video', name: 'Gone' }, { assetId: 'asset-a', kind: 'video', name: 'Intro' }, { assetId: 'asset-b', kind: 'video', name: 'Interview' }],
       deps,
-      upload: async (assetId) => { sent.push(assetId); controller.abort(); },
+      upload: async ({ assetId }) => { sent.push(assetId); controller.abort(); },
       signal: controller.signal,
     });
     expect(sent).toEqual(['asset-a']);

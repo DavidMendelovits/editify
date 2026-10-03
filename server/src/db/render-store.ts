@@ -59,13 +59,17 @@ export class RenderStore {
     return projectSchema.parse(JSON.parse(row.snapshot_json));
   }
 
-  /** `projectVersion` is only written when given, so later status changes keep it. */
+  /**
+   * `projectVersion` is only written when given, so later status changes keep it. A
+   * finished render drops its snapshot document (the hash and revision stay on the row).
+   */
   update(id: string, status: RenderStatus, values: { outputPath?: string; error?: string; projectVersion?: number } = {}): void {
     this.database.prepare(`
       UPDATE renders SET status = ?, output_path = ?, error = ?, updated_at = ?,
-        project_version = COALESCE(?, project_version)
+        project_version = COALESCE(?, project_version),
+        snapshot_json = CASE WHEN ? IN ('done', 'error') THEN NULL ELSE snapshot_json END
       WHERE id = ?
-    `).run(status, values.outputPath ?? null, values.error ?? null, new Date().toISOString(), values.projectVersion ?? null, id);
+    `).run(status, values.outputPath ?? null, values.error ?? null, new Date().toISOString(), values.projectVersion ?? null, status, id);
   }
 
   setQa(id: string, qa: RenderQa): void {

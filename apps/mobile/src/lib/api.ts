@@ -270,6 +270,23 @@ export function rebaseServerUrl(url: string | undefined): string | undefined {
 }
 
 /** Raw JSON error bodies are illegible in the UI; surface the message inside. */
+/** A refused request: the readable message, with the status and the server's `code` when it sent one. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+function failure(status: number, body: string): ApiError {
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    if (typeof parsed.code === 'string') code = parsed.code;
+  } catch { /* not JSON */ }
+  return new ApiError(describeFailure(status, body), status, code);
+}
+
 function describeFailure(status: number, body: string): string {
   try {
     const parsed = JSON.parse(body) as { error?: string };
@@ -288,7 +305,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...init?.headers },
   });
   if (!response.ok) {
-    throw new Error(describeFailure(response.status, await response.text()));
+    throw failure(response.status, await response.text());
   }
   return await response.json() as T;
 }
@@ -462,6 +479,7 @@ async function uploadNativeFile(
   asset: { uri: string; name: string; mimeType?: string; projectId?: string },
   onBytes?: UploadBytes,
   target: { path: string; method: 'POST' | 'PUT' } = { path: '/assets/raw', method: 'POST' },
+  signal?: AbortSignal,
 ): Promise<AssetMetadata> {
   // ponytail: SDK 54's File has no upload yet, and the legacy module's .ts source
   // fails this app's exactOptionalPropertyTypes, so the members used are typed here.
@@ -471,6 +489,7 @@ async function uploadNativeFile(
       httpMethod: 'POST' | 'PUT'; uploadType: number; headers: Record<string, string>;
     }, callback?: (progress: { totalBytesSent: number; totalBytesExpectedToSend: number }) => void) => {
       uploadAsync: () => Promise<{ status: number; body: string } | null | undefined>;
+      cancelAsync: () => Promise<void>;
     };
     FileSystemUploadType: { BINARY_CONTENT: number };
   };
@@ -481,11 +500,19 @@ async function uploadNativeFile(
     uploadType: FileSystemUploadType.BINARY_CONTENT,
     headers: { ...authHeaders(), 'Content-Type': asset.mimeType ?? 'application/octet-stream' },
   }, onBytes ? (progress) => onBytes(progress.totalBytesSent, progress.totalBytesExpectedToSend) : undefined);
-  const result = await task.uploadAsync();
-  if (!result) throw new Error('Upload was cancelled');
+  if (signal?.aborted) throw new Error('Upload was cancelled');
+  const cancel = (): void => { void task.cancelAsync().catch(() => undefined); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  let result: { status: number; body: string } | null | undefined;
+  try {
+    result = await task.uploadAsync();
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+  if (!result || signal?.aborted) throw new Error('Upload was cancelled');
   if (result.status < 200 || result.status >= 300) {
     track('api_error', `${target.method} ${target.path} → ${result.status} in ${Date.now() - started}ms`);
-    throw new Error(result.body || `Upload failed with status ${result.status}`);
+    throw failure(result.status, result.body);
   }
   return JSON.parse(result.body) as AssetMetadata;
 }
@@ -500,6 +527,7 @@ export async function uploadOriginal(
   projectId: string,
   file: { uri: string; name: string; mimeType?: string },
   onBytes?: UploadBytes,
+  signal?: AbortSignal,
 ): Promise<AssetMetadata> {
-  return await uploadNativeFile({ ...file, projectId }, onBytes, { path: `/assets/${encodeURIComponent(assetId)}/original`, method: 'PUT' });
+  return await uploadNativeFile({ ...file, projectId }, onBytes, { path: `/assets/${encodeURIComponent(assetId)}/original`, method: 'PUT' }, signal);
 }

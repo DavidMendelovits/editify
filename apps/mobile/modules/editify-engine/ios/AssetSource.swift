@@ -227,7 +227,7 @@ extension AssetSource {
   /// Writes a PHAsset's original resource (the file Photos keeps, never an edited render)
   /// to a new file under the temporary folder, never downloading, for an upload the server
   /// is missing (plan OV1, "upload clips X"). The caller removes the file afterwards.
-  static func exportOriginal(_ ref: String) async throws -> (url: URL, bytes: Int64) {
+  static func exportOriginal(_ ref: String) async throws -> (url: URL, bytes: Int64, name: String) {
     guard hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { throw NotFound(ref: ref) }
     let resources = PHAssetResource.assetResources(for: asset)
     // `.video` / `.photo` / `.audio` are the originals; the `fullSize…` types are Photos edits.
@@ -243,12 +243,18 @@ extension AssetSource {
     let target = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext.isEmpty ? "mov" : ext)
     let options = PHAssetResourceRequestOptions()
     options.isNetworkAccessAllowed = false
-    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-      PHAssetResourceManager.default().writeData(for: resource, toFile: target, options: options) { error in
-        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+    do {
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        PHAssetResourceManager.default().writeData(for: resource, toFile: target, options: options) { error in
+          if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+        }
       }
+    } catch {
+      // A failed write can leave a partial file behind; nobody else knows its name.
+      try? FileManager.default.removeItem(at: target)
+      throw error
     }
     let bytes = ((try? FileManager.default.attributesOfItem(atPath: target.path))?[.size] as? NSNumber)?.int64Value ?? 0
-    return (target, bytes)
+    return (target, bytes, resource.originalFilename)
   }
 }

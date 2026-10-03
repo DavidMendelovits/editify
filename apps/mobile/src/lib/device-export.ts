@@ -282,8 +282,29 @@ function joinNames(names: string[]): string {
 
 // ─── Uploading what the server is missing (OV1) ───
 
-/** Sends one original to PUT /assets/:id/original. `uri` is a file:// URI. */
-export type UploadOriginal = (assetId: string, uri: string, onBytes: (sent: number, expected: number) => void) => Promise<void>;
+/** One original as this iPhone holds it: a file:// URI, its real file name and media type. */
+export interface OriginalFile { assetId: string; uri: string; name: string; mimeType?: string }
+
+/** Sends one original to PUT /assets/:id/original; aborting `signal` cancels the transfer. */
+export type UploadOriginal = (file: OriginalFile, onBytes: (sent: number, expected: number) => void, signal?: AbortSignal) => Promise<void>;
+
+const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  mov: 'video/quicktime', mp4: 'video/mp4', m4v: 'video/x-m4v', webm: 'video/webm',
+  m4a: 'audio/mp4', aac: 'audio/aac', mp3: 'audio/mpeg', wav: 'audio/wav', caf: 'audio/x-caf', aif: 'audio/aiff', aiff: 'audio/aiff',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', heic: 'image/heic', webp: 'image/webp',
+};
+
+/** The media type a file name's extension says, or undefined for one this table doesn't know. */
+export function mimeTypeOf(name: string): string | undefined {
+  const extension = /\.([A-Za-z0-9]+)$/.exec(name)?.[1]?.toLowerCase();
+  return extension ? MIME_BY_EXTENSION[extension] : undefined;
+}
+
+/** The name an app copy was imported under: its file name without the copy's "<uuid>-" prefix. */
+export function copyFileName(uri: string): string {
+  const base = decodeURIComponent(uri.slice(uri.lastIndexOf('/') + 1));
+  return base.replace(/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}-/, '') || base;
+}
 
 export interface UploadMissingArgs {
   clips: readonly UploadClip[];
@@ -329,20 +350,23 @@ export async function uploadMissing(args: UploadMissingArgs): Promise<UploadMiss
       try {
         let media: ResolvedMedia = await resolveMedia({ id: clip.assetId, kind: clip.kind }, deps, { purpose: 'export' });
         if (media.state === 'icloud') media = await downloadMedia(media, deps, args.signal ? { signal: args.signal } : {});
-        let uri: string;
+        let file: OriginalFile;
         if (media.state === 'file') {
-          uri = media.ref;
+          const name = copyFileName(media.ref);
+          file = { assetId: clip.assetId, uri: media.ref, name, ...withMime(name) };
         } else if (media.state === 'local') {
-          temporary = (await deps.native.exportOriginal(media.ref)).uri;
-          uri = temporary;
+          const written = await deps.native.exportOriginal(media.ref);
+          temporary = written.uri;
+          const name = written.name || copyFileName(written.uri);
+          file = { assetId: clip.assetId, uri: written.uri, name, ...withMime(name) };
         } else {
           throw new Error(media.state === 'changed' ? 'It changed in Photos' : media.state === 'icloud' ? 'Waiting for iCloud' : 'It isn\'t on this iPhone');
         }
-        await args.upload(clip.assetId, uri, (bytes, expected) => {
+        await args.upload(file, (bytes, expected) => {
           sent[index] = bytes;
           if (expected > 0) sizes[index] = expected;
           report();
-        });
+        }, args.signal);
         result.uploaded.push(clip.assetId);
       } catch (error) {
         result.failed.push({ assetId: clip.assetId, name: clip.name, error: error instanceof Error ? error.message : String(error) });
@@ -358,6 +382,11 @@ export async function uploadMissing(args: UploadMissingArgs): Promise<UploadMiss
     lease.release();
   }
   return result;
+}
+
+function withMime(name: string): { mimeType?: string } {
+  const mimeType = mimeTypeOf(name);
+  return mimeType ? { mimeType } : {};
 }
 
 // ─── State ───

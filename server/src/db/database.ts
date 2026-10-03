@@ -241,6 +241,8 @@ function migrate(database: EditifyDatabase): void {
   // render so a queued or recovered job renders exactly it. NULL: the stored project.
   if (!renderColumns.some((column) => column.name === 'snapshot_json')) {
     database.exec('ALTER TABLE renders ADD COLUMN snapshot_json TEXT');
+  }
+  if (!renderColumns.some((column) => column.name === 'snapshot_hash')) {
     database.exec('ALTER TABLE renders ADD COLUMN snapshot_hash TEXT');
   }
 

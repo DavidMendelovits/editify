@@ -8,7 +8,7 @@ import { Button } from '../../../src/components/Button';
 import { Screen } from '../../../src/components/Screen';
 import { EditifyEngine } from '../../../modules/editify-engine';
 import { renderSnapshot, type RenderSnapshot } from '@editify/shared';
-import { api, IS_LOCAL_API, rebaseServerUrl, uploadOriginal, type RenderRecord } from '../../../src/lib/api';
+import { api, ApiError, IS_LOCAL_API, rebaseServerUrl, uploadOriginal, type RenderRecord } from '../../../src/lib/api';
 import {
   buildExportPlan, exportOnDevice, exportStateLabel, isTerminal, projectAssetRefs, routeExport, serverRenderable, serverRouteLine, STARTING,
   uploadMissing, type DeviceExportView, type ExportChoices, type ExportRoute, type ServerCheck, type UploadClip, type UploadOriginal,
@@ -102,6 +102,13 @@ export default function ExportScreen() {
       { text: 'Stop and leave', style: 'destructive', onPress: () => { abort.current?.abort(); navigation.dispatch(data.action); } },
     ]);
   });
+  // Uploading clips for a server render: leaving cancels the transfer, so ask first too.
+  usePreventRemove(Boolean(uploading), ({ data }) => {
+    Alert.alert('Leaving stops the upload', 'The clips upload while this screen is open.', [
+      { text: 'Keep uploading', style: 'cancel' },
+      { text: 'Stop and leave', style: 'destructive', onPress: () => { abort.current?.abort(); navigation.dispatch(data.action); } },
+    ]);
+  });
 
   const renderOnServer = (note: string | null): void => {
     setServerNote(note);
@@ -114,16 +121,28 @@ export default function ExportScreen() {
       setServerError(`This project can't be sent for rendering: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    start.mutate(snapshot, { onSettled: () => { busy.current = false; } });
+    start.mutate(snapshot, {
+      onSettled: () => { busy.current = false; },
+      onError: (error) => {
+        // The check couldn't run earlier (offline) and the server found originals missing:
+        // route again, which offers the upload instead of an error.
+        if (error instanceof ApiError && error.status === 409 && error.code === 'missing') {
+          start.reset();
+          setServerNote(null);
+          void route.refetch();
+        }
+      },
+    });
   };
-  const sendOriginal: UploadOriginal = async (assetId, uri, onBytes) => {
-    const asset = assets.data?.find((item) => item.id === assetId);
-    await uploadOriginal(assetId, id, { uri, name: asset?.originalName ?? `${assetId}.mov`, ...(asset?.mimeType ? { mimeType: asset.mimeType } : {}) }, onBytes);
+  const sendOriginal: UploadOriginal = async (file, onBytes, signal) => {
+    // The registry's file name and type; the server's record only when the name says nothing.
+    const mimeType = file.mimeType ?? assets.data?.find((item) => item.id === file.assetId)?.mimeType;
+    await uploadOriginal(file.assetId, id, { uri: file.uri, name: file.name, ...(mimeType ? { mimeType } : {}) }, onBytes, signal);
   };
   /** Uploads only the clips the server is missing, then routes again: ready renders at once. */
   const uploadThenRender = async (clips: UploadClip[]): Promise<void> => {
     const deps = await localMedia();
-    if (!deps) return;
+    if (!deps) { busy.current = false; return; }
     const controller = new AbortController();
     abort.current = controller;
     setServerError(null);
@@ -131,7 +150,9 @@ export default function ExportScreen() {
     track('export_upload_started', String(clips.length));
     try {
       const result = await uploadMissing({ clips, deps, upload: sendOriginal, onProgress: setUploading, signal: controller.signal });
-      if (result.failed.length > 0) {
+      if (controller.signal.aborted) {
+        setServerError('Upload cancelled.');
+      } else if (result.failed.length > 0) {
         const first = result.failed[0]!;
         setServerError(`Couldn't upload ${first.name}: ${first.error}`);
       }
@@ -238,6 +259,7 @@ export default function ExportScreen() {
       </View>
       {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || Boolean(uploading) || blocked || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{renderLabel}</Button>}
       {!renderId && !device && (serverNote ?? routeLine) && <Text testID="export-route" style={styles.note}>{serverNote ?? routeLine}</Text>}
+      {uploading && <Button secondary style={styles.downloadButton} onPress={() => abort.current?.abort()}>cancel upload</Button>}
       {serverError && <Text style={styles.error}>{serverError}</Text>}
       {device && <DeviceExportCard view={device} onCancel={() => abort.current?.abort()} onRetry={() => setDevice(undefined)} />}
       {renderId && serverNote && <Text style={styles.note}>{serverNote}</Text>}

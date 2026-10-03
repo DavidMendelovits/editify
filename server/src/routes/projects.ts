@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import {
-  assetAvailabilityRequestSchema, newProjectSchema, operationBatchSchema, projectHash, renderRequestSchema, syncAudioRequestSchema,
-  type AssetAvailabilityResponse, type RenderSnapshot,
+  assetAvailabilityRequestSchema, newProjectSchema, operationBatchSchema, PLAN_LIMITS, projectHash, renderRequestSchema, syncAudioRequestSchema,
+  type AssetAvailabilityResponse, type Project, type RenderSnapshot,
 } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import { assetIds, type ProjectStore } from '../db/project-store.js';
 import { assetAvailability, idsWith } from '../services/asset-availability.js';
-import { OperationError } from '../operations/apply.js';
+import { OperationError, applyBatch, assertNoNewVideoOverlap } from '../operations/apply.js';
 import {
   SILENCE_DEFAULTS,
   audibleWindows,
@@ -25,6 +25,10 @@ import { SYNC_BODY_LIMIT } from './sync.js';
 
 /** A render request carries at most one project document, capped like a sync push. */
 export const RENDER_BODY_LIMIT = SYNC_BODY_LIMIT;
+/** 1000 ids of up to 128 characters, with room to spare. */
+const AVAILABILITY_BODY_LIMIT = 256 * 1024;
+/** A snapshot is replayed with no ops; nothing may mint an id. */
+const noNewIds = { newId: (): string => { throw new OperationError('A snapshot carries every id'); } };
 
 export function registerProjectRoutes(
   app: FastifyInstance,
@@ -127,7 +131,7 @@ export function registerProjectRoutes(
    * phone offers a server render only when it can succeed, or names the clips to upload.
    * Only answers for this user: another account's asset is `forbidden`, never described.
    */
-  app.post<{ Params: { id: string } }>('/projects/:id/assets/availability', async (request, reply) => {
+  app.post<{ Params: { id: string } }>('/projects/:id/assets/availability', { bodyLimit: AVAILABILITY_BODY_LIMIT }, async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
     const { assetIds: ids } = assetAvailabilityRequestSchema.parse(request.body);
@@ -136,37 +140,53 @@ export function registerProjectRoutes(
     return response;
   });
 
+  type SnapshotCheck = { ok: true; snapshot: RenderSnapshot } | { ok: false; status: number; body: Record<string, unknown> };
+
   /**
-   * Checks a snapshot before it is queued: the document is this project's at `revision`,
-   * hashes to `hash`, and every asset it names is this user's (or the sound library) with
-   * its original on the server. An owned asset the project never linked is linked here,
-   * so the render's project scoping (RenderPlan MEDIA) resolves it. Answers the refusal,
-   * or null when the snapshot can be rendered.
+   * Checks a snapshot before it is queued, and answers the document to render:
+   * - normalized the way a sync create is (applyBatch with no ops: schema defaults, the
+   *   duration derived from the clips, never the client's), then hashed: `hash` must match
+   *   (renderSnapshot on the phone normalizes the same way);
+   * - this project's, at `revision`, no longer than PLAN_LIMITS.durationSec, and adding no
+   *   video overlap the stored project doesn't already have;
+   * - naming only this user's assets (or the sound library) with their originals here.
+   * An owned asset the project never linked is linked, so the render's project scoping
+   * (RenderPlan MEDIA) resolves it.
    */
-  async function refuseSnapshot(projectId: string, snapshot: RenderSnapshot, userId: string | undefined): Promise<{ status: number; body: Record<string, unknown> } | null> {
-    if (snapshot.project.id !== projectId) return { status: 400, body: { error: 'The snapshot is of another project', code: 'project' } };
-    if (snapshot.project.version !== snapshot.revision) {
-      return { status: 400, body: { error: 'The snapshot revision does not match its document', code: 'revision' } };
+  async function checkSnapshot(stored: Project, sent: RenderSnapshot, userId: string | undefined): Promise<SnapshotCheck> {
+    const refuse = (status: number, error: string, code: string, extra: Record<string, unknown> = {}): SnapshotCheck => (
+      { ok: false, status, body: { error, code, ...extra } }
+    );
+    if (sent.project.id !== stored.id) return refuse(400, 'The snapshot is of another project', 'project');
+    if (sent.project.version !== sent.revision) return refuse(400, 'The snapshot revision does not match its document', 'revision');
+    let project: Project;
+    try {
+      project = { ...applyBatch(sent.project, [], noNewIds), version: sent.revision };
+      assertNoNewVideoOverlap(stored, project);
+    } catch (error) {
+      if (!(error instanceof OperationError)) throw error;
+      return refuse(400, error.message, 'invalid');
     }
-    if (projectHash(snapshot.project) !== snapshot.hash) {
-      return { status: 400, body: { error: 'The snapshot does not match its hash', code: 'hash' } };
-    }
-    const availability = await assetAvailability(assets, assetIds(snapshot.project), userId);
+    if (projectHash(project) !== sent.hash) return refuse(400, 'The snapshot does not match its hash', 'hash');
+    if (project.duration > PLAN_LIMITS.durationSec) return refuse(400, 'The timeline is longer than 4 hours', 'too_long');
+    const availability = await assetAvailability(assets, assetIds(project), userId);
     const forbidden = idsWith(availability, 'forbidden');
-    if (forbidden.length) return { status: 403, body: { error: 'The snapshot uses media from another account', code: 'forbidden', assetIds: forbidden } };
+    if (forbidden.length) return refuse(403, 'The snapshot uses media from another account', 'forbidden', { assetIds: forbidden });
     const missing = idsWith(availability, 'missing');
-    if (missing.length) return { status: 409, body: { error: 'Some originals are not on the server', code: 'missing', assetIds: missing } };
-    for (const id of availability.keys()) if (!assets.linkedOrSound(projectId, id)) assets.link(projectId, id);
-    return null;
+    if (missing.length) return refuse(409, 'Some originals are not on the server', 'missing', { assetIds: missing });
+    for (const id of availability.keys()) if (!assets.linkedOrSound(stored.id, id)) assets.link(stored.id, id);
+    return { ok: true, snapshot: { ...sent, project } };
   }
 
   app.post<{ Params: { id: string } }>('/projects/:id/render', { bodyLimit: RENDER_BODY_LIMIT }, async (request, reply) => {
     const project = projects.get(request.params.id, request.userId);
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
-    const { resolution: requested, hdr, loudness, snapshot } = renderRequestSchema.parse(request.body ?? {});
-    if (snapshot) {
-      const refused = await refuseSnapshot(project.id, snapshot, request.userId);
-      if (refused) return await reply.code(refused.status).send(refused.body);
+    const { resolution: requested, hdr, loudness, snapshot: sent } = renderRequestSchema.parse(request.body ?? {});
+    let snapshot: RenderSnapshot | undefined;
+    if (sent) {
+      const checked = await checkSnapshot(project, sent, request.userId);
+      if (!checked.ok) return await reply.code(checked.status).send(checked.body);
+      snapshot = checked.snapshot;
     }
     // A 4K encode can run the single 4 GB server out of memory, but shipped app
     // builds still offer 4K, so rejecting it would surface as an error. Export
