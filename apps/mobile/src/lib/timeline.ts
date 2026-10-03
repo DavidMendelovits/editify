@@ -1,5 +1,5 @@
 import type { Clip, Project, Track } from '@editify/shared';
-import { clipTimelineDuration, deriveProjectDuration } from '@editify/shared';
+import { clipTimelineDuration } from '@editify/shared';
 
 /** Shortest timeline duration a manual trim is allowed to leave behind. */
 export const MIN_CLIP_DURATION = 0.2;
@@ -302,37 +302,6 @@ export function captionRows(clips: readonly Clip[]): { rows: CaptionRow[]; rowCo
     rows.push({ clip, row, overlapping: row > 0 });
   }
   return { rows, rowCount: Math.max(1, rowEnds.length) };
-}
-
-/** Optimistic edit: replaces one clip's fields and re-derives the project duration. */
-export function patchClip(project: Project, clipId: string, patch: Partial<Clip>): Project {
-  const tracks = project.tracks.map((track) => ({
-    ...track,
-    clips: track.clips.map((clip) => (clip.id === clipId ? { ...clip, ...patch } : clip)),
-  }));
-  return { ...project, tracks, duration: deriveProjectDuration({ tracks }) };
-}
-
-/** Optimistic edit for a `set_clip_properties` batch of start moves. */
-export function patchStarts(project: Project, updates: ReadonlyArray<{ clipId: string; start: number }>): Project {
-  const byId = new Map(updates.map((update) => [update.clipId, update.start]));
-  const tracks = project.tracks.map((track) => ({
-    ...track,
-    clips: track.clips.map((clip) => {
-      const start = byId.get(clip.id);
-      return start === undefined ? clip : { ...clip, start };
-    }),
-  }));
-  return { ...project, tracks, duration: deriveProjectDuration({ tracks }) };
-}
-
-/** Optimistic removal of a clip from whichever track holds it. */
-export function removeClip(project: Project, clipId: string): Project {
-  const tracks = project.tracks.map((track) => ({
-    ...track,
-    clips: track.clips.filter((clip) => clip.id !== clipId),
-  }));
-  return { ...project, tracks, duration: deriveProjectDuration({ tracks }) };
 }
 
 /**

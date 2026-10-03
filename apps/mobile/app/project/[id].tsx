@@ -23,6 +23,7 @@ import { Timeline } from '../../src/components/editor/Timeline';
 import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
+import { optimisticProject, withClientIds } from '../../src/lib/optimistic';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
@@ -41,9 +42,12 @@ const WIDE_BREAKPOINT = 1024;
 const NATIVE_DRIVER = Platform.OS !== 'web';
 
 interface ApplyVariables {
+  /**
+   * Painted before the round trip with the shared edit rules (optimisticProject),
+   * rolled back by a refetch on error. Every id must already be explicit
+   * (withClientIds), so the paint and the server's answer name the same clips.
+   */
   ops: Operation[];
-  /** Paints the expected result before the round trip; rolled back by a refetch on error. */
-  optimistic?: (project: Project) => Project;
   /**
    * Apply against this version instead of the freshest one. Set for edits
    * planned elsewhere (a sync measurement), so a change that landed while they
@@ -143,10 +147,12 @@ export default function EditorScreen() {
       opChain.current = run;
       return run;
     },
-    onMutate: ({ optimistic }: ApplyVariables) => {
-      if (!optimistic) return;
+    onMutate: ({ ops }: ApplyVariables) => {
       const current = queryClient.getQueryData<Project>(['project', id]);
-      if (current) queryClient.setQueryData(['project', id], { ...optimistic(current), version: current.version });
+      // Nothing painted when the rules refuse the batch (or it is an undo):
+      // the server's answer decides, and its error surfaces as before.
+      const painted = current && optimisticProject(current, ops);
+      if (painted) queryClient.setQueryData(['project', id], painted);
     },
     onSuccess: (updated) => queryClient.setQueryData(['project', id], updated),
     onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
@@ -348,11 +354,11 @@ export default function EditorScreen() {
    * never rejects, so fire-and-forget callers can ignore it. The mutation's
    * own onError already refetches and surfaces the failure.
    */
-  function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): Promise<boolean> {
+  function applyOps(ops: Operation[]): Promise<boolean> {
     // One line per edit batch, so a report can show what the user did by hand
     // right before they hit a wall (or a crash).
     track('edit', ops.map((op) => op.type).join(','));
-    return apply.mutateAsync(optimistic ? { ops, optimistic } : { ops }).then(() => true, () => false);
+    return apply.mutateAsync({ ops: withClientIds(ops) }).then(() => true, () => false);
   }
 
   const round3 = (value: number): number => Math.round(value * 1000) / 1000;
@@ -417,7 +423,7 @@ export default function EditorScreen() {
       track('audio_sync', auto ? 'auto' : 'manual');
       // Against the measured version: an edit made while measuring is a 409
       // ("the project changed underneath this edit"), not a misplaced memo.
-      await apply.mutateAsync({ ops: result.ops, baseVersion: result.version });
+      await apply.mutateAsync({ ops: withClientIds(result.ops), baseVersion: result.version });
       setSync({ clipId, busy: false, message: describeSync(result) });
     } catch (error) {
       // An import-time attempt stays quiet: an older server without /sync, or
