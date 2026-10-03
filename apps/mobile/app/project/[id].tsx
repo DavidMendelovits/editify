@@ -95,7 +95,18 @@ export default function EditorScreen() {
   // Covers the gap between the chat mutation resolving and the history refetch.
   const [latestTrace, setLatestTrace] = useState<AgentTraceStep[]>();
 
-  const projectQuery = useQuery({ queryKey: ['project', id], queryFn: () => api.getProject(id), enabled: Boolean(id) });
+  // The cache always shows the server's last answer plus every batch still in
+  // flight, painted in order; see OptimisticLedger for the rollback rule. Every
+  // server document, this fetch included, goes through it, so a late response
+  // cannot replace a newer one.
+  const ledgerRef = useRef<OptimisticLedger | null>(null);
+  if (!ledgerRef.current) ledgerRef.current = new OptimisticLedger();
+  const ledger = ledgerRef.current;
+  const projectQuery = useQuery({
+    queryKey: ['project', id],
+    queryFn: async () => ledger.confirm(await api.getProject(id)),
+    enabled: Boolean(id),
+  });
   const chatQuery = useQuery({ queryKey: ['chat', id], queryFn: () => api.getChat(id), enabled: Boolean(id) });
   // Drives the ↶ / ↷ buttons. Refetched after every edit — including the ones
   // the agent applies — so the controls always match the server's log.
@@ -134,11 +145,6 @@ export default function EditorScreen() {
   // one and reads the freshest doc from the cache, so a burst of quick edits
   // (stepper taps, rapid imports) no longer races itself into 409s.
   const opChain = useRef<Promise<unknown>>(Promise.resolve());
-  // The cache always shows the server's last answer plus every batch still in
-  // flight, painted in order; see OptimisticLedger for the rollback rule.
-  const ledgerRef = useRef<OptimisticLedger | null>(null);
-  if (!ledgerRef.current) ledgerRef.current = new OptimisticLedger();
-  const ledger = ledgerRef.current;
   const apply = useMutation({
     // `batch` is the same object onMutate and onError receive: the ledger's key.
     mutationFn: (batch: ApplyVariables) => {
@@ -199,11 +205,13 @@ export default function EditorScreen() {
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
       await queryClient.invalidateQueries({ queryKey: ['history', id] });
     },
+    onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
   });
   const sendChat = useMutation({
     mutationFn: (message: string) => api.chat(id, message),
     onMutate: (message: string) => { track('chat_message'); setOptimisticMessage(message); setLatestTrace(undefined); },
     onSuccess: async (response) => {
+      // Not on opChain: an edit may have landed since, and confirm keeps the newer doc.
       queryClient.setQueryData(['project', id], ledger.confirm(response.doc));
       setLatestTrace(response.trace ?? []);
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });

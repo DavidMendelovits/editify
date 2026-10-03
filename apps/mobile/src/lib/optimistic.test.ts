@@ -129,6 +129,34 @@ describe('OptimisticLedger', () => {
     expect(ledger.reject(quiet)).toEqual(undone);
   });
 
+  it('ignores a document older than the one it holds (a late fetch or chat answer)', () => {
+    const ledger = new OptimisticLedger();
+    const server = editFixture();
+    ledger.begin(server, quiet);
+    const answer = serverEcho(server, quiet.ops);
+    ledger.confirm(answer, quiet);
+    ledger.begin(answer, fast);
+    // A GET that left before the answer landed: still the old version.
+    const shown = ledger.confirm(server);
+    expect([volume(shown), speed(shown), shown.version]).toEqual([0.2, 2, answer.version]);
+    expect(ledger.reject(fast)).toEqual(answer);
+  });
+
+  it('rebases pending paints onto a newer document that arrives from outside', () => {
+    const ledger = new OptimisticLedger();
+    const server = editFixture();
+    ledger.begin(server, quiet);
+    // The agent moved the memo while the batch was in flight.
+    const agent = serverEcho(server, [{ type: 'move_clip', params: { clipId: 'memo', start: 3 } }]);
+    const shown = ledger.confirm(agent);
+    expect([volume(shown), shown.tracks[1]?.clips[0]?.start, shown.version]).toEqual([0.2, 3, agent.version]);
+    // Also when the newer document reached the cache directly: the next begin adopts it.
+    const other = new OptimisticLedger();
+    other.begin(server, quiet);
+    const next = other.begin(agent, fast);
+    expect([volume(next), speed(next), next.tracks[1]?.clips[0]?.start, next.version]).toEqual([0.2, 2, 3, agent.version]);
+  });
+
   it('has nothing to roll back for a batch it never painted', () => {
     expect(new OptimisticLedger().reject(quiet)).toBeUndefined();
   });

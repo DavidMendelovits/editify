@@ -11,13 +11,20 @@ import { previewBatch, type Operation, type Project } from '@editify/shared';
  * rolls that paint back.
  */
 
+/** Batches already warned about: repaint replays a refused batch on every settle. */
+const warned = new WeakSet<readonly Operation[]>();
+
 /** The paint for `ops` on `current`, or undefined when there is nothing safe to paint. */
 export function optimisticProject(current: Project, ops: readonly Operation[]): Project | undefined {
   try {
     return previewBatch(current, ops);
   } catch (error) {
-    // Expected for undo and for edits the server will refuse; its answer decides.
-    if (typeof __DEV__ !== 'undefined' && __DEV__) console.warn('[optimistic] not painted:', error);
+    // Undo/redo, or a batch the rules or the overlap check refuse: nothing is
+    // painted, and the server's answer (applied or refused) decides.
+    if (typeof __DEV__ !== 'undefined' && __DEV__ && !warned.has(ops)) {
+      warned.add(ops);
+      console.warn('[optimistic] not painted:', error);
+    }
     return undefined;
   }
 }
@@ -43,6 +50,12 @@ export function repaint(confirmed: Project, pending: readonly PendingBatch[]): P
  * and the rest are repainted onto the last confirmed document. So an offline
  * failure leaves no phantom edit behind, and an earlier batch's answer does
  * not wipe a later batch's paint.
+ *
+ * Every server document goes through `confirm` (the project fetch, op
+ * answers, undo, revert, chat). Versions only go up on the server, so a
+ * document older than the one held (a late fetch, a chat answer overtaken by
+ * an edit) is ignored: otherwise the next batch would send a stale base
+ * version and 409.
  */
 export class OptimisticLedger {
   private confirmed: Project | undefined;
@@ -50,18 +63,18 @@ export class OptimisticLedger {
 
   /** A new batch: `cached` is what the screen shows now. Returns what to show next. */
   begin(cached: Project, batch: PendingBatch): Project {
-    // With nothing in flight the cache is the server's document (a fetch, a
-    // chat turn or an undo may have replaced it since the last confirm).
-    if (this.pending.length === 0 || !this.confirmed) this.confirmed = cached;
+    // Paints keep the confirmed version, so a newer cached version is a server
+    // document that reached the cache without passing through confirm.
+    if (!this.confirmed || cached.version > this.confirmed.version) this.confirmed = cached;
     this.pending.push(batch);
     return repaint(this.confirmed, this.pending);
   }
 
   /** The server's answer: for `batch`, or for a write outside the ledger (undo, revert, chat). */
   confirm(doc: Project, batch?: PendingBatch): Project {
-    this.confirmed = doc;
+    if (!this.confirmed || doc.version >= this.confirmed.version) this.confirmed = doc;
     if (batch) this.pending = this.pending.filter((entry) => entry !== batch);
-    return repaint(doc, this.pending);
+    return repaint(this.confirmed, this.pending);
   }
 
   /** The server refused `batch`. Undefined when it was never painted (nothing to roll back). */
