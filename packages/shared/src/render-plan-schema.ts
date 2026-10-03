@@ -49,8 +49,12 @@ import { calloutSchema } from './packets.js';
  *   exact (each start is bit-for-bit the previous end), and the last segment
  *   ends exactly at `duration`. The builder quantizes BOTH edges of every clip
  *   with one function, planFrameAt(t, fps) = floor(t * fps + 1e-6): a clip on
- *   [start, end) covers frames [planFrameAt(start), planFrameAt(end)), and the
- *   duration is planFrameCount's whole frames. Legacy render.ts computes
+ *   [start, end) covers frames [planFrameAt(start), planFrameAt(end)). The
+ *   duration uses the same rule: duration = planFrameAt(project end) / fps,
+ *   at least one frame when the project has any length, so a clip ending on
+ *   the project's end never leaves a trailing background frame (an off-grid
+ *   end such as 12.345 s at 30 fps ends on frame 370, not 371). Legacy
+ *   render.ts computes
  *   trunc(t / (1 / fps)), which lands one frame early on exact frame times
  *   (61/30 gives frame 60): an intended divergence. Where a quantized end
  *   would ask for source past the asset's end, the builder ends the playing
@@ -84,6 +88,26 @@ import { calloutSchema } from './packets.js';
  * master and plain 100% white in an SDR one. The composite is then encoded to
  * `color`.
  *
+ * Working-space scale: linear 1.0 is the 203-nit reference white (an HLG
+ * signal of 0.75, PQ at 203 cd/m2, sRGB and BT.709 white all decode to 1.0;
+ * the HLG nominal peak of 1000 cd/m2 is 1000 / 203 = 4.926).
+ *
+ * SDR TONE CURVE. In an `sdr` plan, every HDR source (HLG or PQ transfer) is
+ * tone mapped BEFORE blending, per channel, on its linear BT.2020 values at
+ * that scale, with knee k = 0.8:
+ *   y = v                                    for v <= k
+ *   y = k + (1 - k) * e / ((1 - k) + e)      for v > k, where e = v - k
+ * a Reinhard shoulder approaching 1.0: reference white (1.0) lands at 0.9 and
+ * the HLG peak (4.926) at 0.99. SDR sources and graphics are never tone
+ * mapped. This is the device curve (EditifyCompositor.sdrCurve); the server
+ * uses ffmpeg tonemap=hable with npl=100 today and must adopt this curve in
+ * P6. Changing the curve later is a `requires` feature, since an older
+ * executor would draw the old one.
+ *
+ * HLG OUTPUT. An `hlg` plan encodes the working space to BT.2100 HLG (1.0 to
+ * signal 0.75). Values above the HLG peak (4.926 linear, for example from a
+ * brighter PQ source) clip per channel at 4.926.
+ *
  * DRAW ORDER, bottom to top: `background`, the current segment's video layers
  * by ascending `z`, the overlays on screen by ascending `z`, the captions on
  * screen by ascending `lane`. Video layers always sit below overlays, and
@@ -93,6 +117,8 @@ import { calloutSchema } from './packets.js';
  * An `assetRef` names a source, never a location. The device's media ladder
  * (local original, proxy, server copy) resolves it; the plan does not. GIF
  * frame delays under 2 cs play as 10 cs, as browsers and ffmpeg do.
+ * B-roll overlays are picture only; the v1 builder gives them no sound (legacy
+ * parity: render.ts maps no b-roll audio).
  * SECURITY: a plan is untrusted input. Any executor or server route resolves
  * every `assetRef.id` and `raster.id` ONLY within the requesting user's own
  * assets (the same scoping as the asset routes), never by bare id, or a plan
@@ -118,6 +144,9 @@ import { calloutSchema } from './packets.js';
  *   timeline t; that is a bug the plan fixes, an intended P6 divergence.)
  * - One clip may produce several audio entries (a clip split by a hold, a
  *   looped bed): entry ids are unique, `clipId` repeats.
+ * - Content never makes the builder throw: a caption too big for the caps
+ *   shrinks further and says so in `fitted.overflow`, and a word longer than
+ *   PLAN_LIMITS.textChars is hard-broken across lines.
  */
 
 /** Plans whose `version` differs are refused outright: there is no migration between versions. */
@@ -338,7 +367,7 @@ function planSchemas(mode: UnknownKeys) {
    * `srcStart + (t - overlay.start) * speed`; with `loop` it wraps modulo the
    * media's duration (GIFs), without it the last frame holds once the source
    * runs out. A still image ignores all three. B-roll overlays are picture
-   * only: their sound, if any, is an `audio` entry.
+   * only; the v1 builder gives them no sound (legacy parity).
    */
   const overlayMedia = obj({
     assetRef,
@@ -413,6 +442,10 @@ function planSchemas(mode: UnknownKeys) {
    * - `raster` (emoji and callout only): an uploaded PNG of the finished box
    *   content, stretched to the box, for an executor that cannot draw the
    *   payload (no Apple Color Emoji on Linux). It must show the same pixels.
+   *   The v1 builder never emits one. When a server executor needs it, the
+   *   device draws it with its own OverlayGraphics (the same code that draws
+   *   the payload on the phone) and uploads it with the render snapshot (T8),
+   *   so the server's output matches the device's.
    */
   const overlay = obj({
     /** The document clip id. */
@@ -484,6 +517,15 @@ function planSchemas(mode: UnknownKeys) {
    * from the font tables, emoji widths from a table, OV7). The executor draws
    * `text` starting at pen position (x, y) with the font's kerning on and
    * ligatures off, and never re-wraps or re-centres it.
+   *
+   * Vertical metrics are the face's OS/2 winAscent and winDescent, as libass
+   * uses them. Lines sit one CELL apart, cell = sizePx x (winAscent +
+   * winDescent) / unitsPerEm, and a line's cell spans [y - winAscent x sizePx
+   * / unitsPerEm, y + winDescent x sizePx / unitsPerEm]. Do not bound a line
+   * with CTFontGetAscent/Descent: those are the hhea values (0.968 / 0.251 em
+   * for Montserrat-Bold) and glyphs reach winAscent (1.109 em). Size a
+   * caption bitmap from the cells plus stroke and shadow, or from the glyph
+   * path bounds.
    */
   const captionLine = obj({
     text,
@@ -525,12 +567,25 @@ function planSchemas(mode: UnknownKeys) {
     lane: z.number().int().min(0),
     /** The bundled face: captionFaceFor(captionStyle.font). */
     font: planFontFaceSchema,
-    /** Final font size (em) in output pixels, after any shrink-to-fit. */
+    /**
+     * The Core Text font size in output pixels (CTFont size = sizePx), after
+     * any shrink-to-fit. Emoji fall back to Apple Color Emoji at the same
+     * size and advance exactly 1 em. This is NOT the ASS Fontsize, which
+     * libass treats as the cell height: sizePx = Fontsize x unitsPerEm /
+     * (winAscent + winDescent) x fitted.scale (1000 / 1562 for
+     * Montserrat-Bold), and an ASS writer sets \fs = sizePx x (winAscent +
+     * winDescent) / unitsPerEm.
+     */
     sizePx: size,
     color: hexColor,
     /**
-     * Outline around every glyph, drawn under the fill, extending strokePx
-     * outward, with ROUND joins (libass outlines are round).
+     * Outline around every glyph, drawn under the fill: a Core Graphics stroke
+     * of the glyph outlines with line width 2 x strokePx (so it reaches
+     * strokePx outside the glyph) and ROUND joins (libass outlines are round).
+     *
+     * Emoji in a caption are colour glyphs: they are never stroked and never
+     * recoloured by `color` or `emphasisColor`; their shadow is their own
+     * alpha silhouette.
      */
     strokeColor: hexColor,
     strokePx: z.number().finite().min(0),
@@ -543,11 +598,14 @@ function planSchemas(mode: UnknownKeys) {
      */
     shadow: obj({ color: hexColor, opacity: unit, offsetPx: z.number().finite().min(0) }).optional(),
     /**
-     * A rounded backing box behind each line: horizontally [x - padPx,
-     * x + width + padPx]; vertically from baseline - ascender to baseline +
-     * descender, with ascender/descender the face's `hhea` table values
-     * scaled to sizePx (descender as a positive distance), grown by padPx.
-     * Absent means no box.
+     * A rounded backing box behind each line, like libass BorderStyle 3: the
+     * line's cell (see captionLine: OS/2 winAscent / winDescent) horizontally
+     * [x - padPx, x + width + padPx] and vertically grown by padPx. The
+     * boxes of one caption are filled as ONE union at `opacity`, so where two
+     * lines' boxes overlap the colour does not double. (libass fills per line,
+     * so a P6 ASS writer doubles the overlap: an accepted difference.) Absent
+     * means no box; the v1 builder emits none, since the document style has
+     * no box.
      */
     box: obj({
       color: hexColor,
@@ -565,8 +623,27 @@ function planSchemas(mode: UnknownKeys) {
      * Overflow receipt (OV7): the caption did not fit at its styled size, so
      * the layout shrank it by `scale` (sizePx already includes it). Never an
      * ellipsis. `shrunk: false` always has scale 1.
+     * - `overflow: true`: even shrunk to the smallest normal step (0.25) it
+     *   did not fit three lines, so it shrank further, up to the PLAN_LIMITS
+     *   caps (12 lines, 500 characters, 200 words a line), and words longer
+     *   than PLAN_LIMITS.textChars were hard-broken. Text past the caps is
+     *   the only thing ever dropped, and only then.
+     * - `approximate: true`: some text is in a script the bundled face does
+     *   not cover (Greek, Thai, Hebrew, Arabic, CJK...). Core Text draws it in
+     *   a system fallback face, and the layout measured it with a fallback
+     *   width (1 em for Han, Kana and Hangul, 0.6 em otherwise), so its
+     *   widths and wrap points are estimates. Right-to-left lines (Hebrew,
+     *   Arabic) are also laid out as one run: their karaoke words do not
+     *   light one by one; the whole line switches at once, at the caption
+     *   start (or with the last word before it, after earlier lines).
+     * The builder omits both rather than writing false.
      */
-    fitted: obj({ shrunk: z.boolean(), scale: z.number().finite().positive().max(1) }),
+    fitted: obj({
+      shrunk: z.boolean(),
+      scale: z.number().finite().positive().max(1),
+      overflow: z.boolean().optional(),
+      approximate: z.boolean().optional(),
+    }),
   }).superRefine((item, ctx) => {
     if (!(item.end > item.start)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `caption end ${item.end} must be after its start ${item.start}`, path: ['end'] });
@@ -646,8 +723,12 @@ function planSchemas(mode: UnknownKeys) {
     in: seconds,
     out: seconds,
     speed: speedSchema,
-    /** Linear amplitude keys, absolute timeline seconds inside the entry's span. At least one. */
-    gainKeys: z.array(obj({ t: seconds, gain: z.number().finite().min(0).max(4) })).min(1).max(PLAN_LIMITS.keys),
+    /**
+     * Linear amplitude keys, absolute timeline seconds inside the entry's
+     * span. At least one. At most 1: the document volume is 0 to 1 and
+     * AVAudioMix cannot amplify; loudness gain happens on the master.
+     */
+    gainKeys: z.array(obj({ t: seconds, gain: z.number().finite().min(0).max(1) })).min(1).max(PLAN_LIMITS.keys),
     fadeIn: audioFade,
     fadeOut: audioFade,
   }).superRefine((entry, ctx) => {
