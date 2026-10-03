@@ -3,6 +3,7 @@ export {
   OperationError,
   applyBatch,
   applyOperation,
+  assertNoNewVideoOverlap,
   findVideoOverlaps,
   mergeTimeRanges,
   overlapKey,

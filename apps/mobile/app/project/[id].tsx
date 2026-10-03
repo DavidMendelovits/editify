@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
+import { withExplicitIds, type AssetMetadata, type LibrarySound, type Operation, type Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
 import { Button } from '../../src/components/Button';
 import { EditSummaryPanel } from '../../src/components/EditSummaryPanel';
@@ -23,7 +23,7 @@ import { Timeline } from '../../src/components/editor/Timeline';
 import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
-import { optimisticProject, withClientIds } from '../../src/lib/optimistic';
+import { OptimisticLedger } from '../../src/lib/optimistic';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
@@ -43,9 +43,9 @@ const NATIVE_DRIVER = Platform.OS !== 'web';
 
 interface ApplyVariables {
   /**
-   * Painted before the round trip with the shared edit rules (optimisticProject),
-   * rolled back by a refetch on error. Every id must already be explicit
-   * (withClientIds), so the paint and the server's answer name the same clips.
+   * Painted before the round trip with the shared edit rules and rolled back if
+   * the server refuses them (OptimisticLedger). Every id must already be
+   * explicit (withExplicitIds), so the paint and the answer name the same clips.
    */
   ops: Operation[];
   /**
@@ -134,28 +134,37 @@ export default function EditorScreen() {
   // one and reads the freshest doc from the cache, so a burst of quick edits
   // (stepper taps, rapid imports) no longer races itself into 409s.
   const opChain = useRef<Promise<unknown>>(Promise.resolve());
+  // The cache always shows the server's last answer plus every batch still in
+  // flight, painted in order; see OptimisticLedger for the rollback rule.
+  const ledgerRef = useRef<OptimisticLedger | null>(null);
+  if (!ledgerRef.current) ledgerRef.current = new OptimisticLedger();
+  const ledger = ledgerRef.current;
   const apply = useMutation({
-    mutationFn: ({ ops, baseVersion }: ApplyVariables) => {
+    // `batch` is the same object onMutate and onError receive: the ledger's key.
+    mutationFn: (batch: ApplyVariables) => {
       const run = opChain.current.catch(() => undefined).then(async () => {
         const current = queryClient.getQueryData<Project>(['project', id]);
         if (!current) throw new Error('Project is still loading');
-        const updated = await api.applyOps(current.id, ops, baseVersion ?? current.version);
-        // Written here, not just in onSuccess, so the next queued batch sees it.
-        queryClient.setQueryData(['project', id], updated);
+        const updated = await api.applyOps(current.id, batch.ops, batch.baseVersion ?? current.version);
+        // Written here, not in onSuccess, so the next queued batch sees it.
+        queryClient.setQueryData(['project', id], ledger.confirm(updated, batch));
         return updated;
       });
       opChain.current = run;
       return run;
     },
-    onMutate: ({ ops }: ApplyVariables) => {
+    onMutate: (batch: ApplyVariables) => {
       const current = queryClient.getQueryData<Project>(['project', id]);
-      // Nothing painted when the rules refuse the batch (or it is an undo):
-      // the server's answer decides, and its error surfaces as before.
-      const painted = current && optimisticProject(current, ops);
-      if (painted) queryClient.setQueryData(['project', id], painted);
+      // A batch the rules refuse (or an undo) paints nothing: the server's
+      // answer decides, and its error surfaces as before.
+      if (current) queryClient.setQueryData(['project', id], ledger.begin(current, batch));
     },
-    onSuccess: (updated) => queryClient.setQueryData(['project', id], updated),
-    onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
+    onError: async (_error, batch) => {
+      // Roll the paint back first: offline, the refetch below fails too.
+      const restored = ledger.reject(batch);
+      if (restored) queryClient.setQueryData(['project', id], restored);
+      await queryClient.invalidateQueries({ queryKey: ['project', id] });
+    },
     onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['history', id] }); },
   });
 
@@ -168,7 +177,7 @@ export default function EditorScreen() {
         const updated = direction === 'undo'
           ? await api.undo(current.id, current.version)
           : await api.redo(current.id, current.version);
-        queryClient.setQueryData(['project', id], updated);
+        queryClient.setQueryData(['project', id], ledger.confirm(updated));
         return updated;
       });
       opChain.current = run;
@@ -186,7 +195,7 @@ export default function EditorScreen() {
       return run;
     },
     onSuccess: async (doc: Project) => {
-      queryClient.setQueryData(['project', id], doc);
+      queryClient.setQueryData(['project', id], ledger.confirm(doc));
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
       await queryClient.invalidateQueries({ queryKey: ['history', id] });
     },
@@ -195,7 +204,7 @@ export default function EditorScreen() {
     mutationFn: (message: string) => api.chat(id, message),
     onMutate: (message: string) => { track('chat_message'); setOptimisticMessage(message); setLatestTrace(undefined); },
     onSuccess: async (response) => {
-      queryClient.setQueryData(['project', id], response.doc);
+      queryClient.setQueryData(['project', id], ledger.confirm(response.doc));
       setLatestTrace(response.trace ?? []);
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
       await queryClient.invalidateQueries({ queryKey: ['history', id] });
@@ -358,7 +367,7 @@ export default function EditorScreen() {
     // One line per edit batch, so a report can show what the user did by hand
     // right before they hit a wall (or a crash).
     track('edit', ops.map((op) => op.type).join(','));
-    return apply.mutateAsync({ ops: withClientIds(ops) }).then(() => true, () => false);
+    return apply.mutateAsync({ ops: withExplicitIds(ops) }).then(() => true, () => false);
   }
 
   const round3 = (value: number): number => Math.round(value * 1000) / 1000;
@@ -423,7 +432,7 @@ export default function EditorScreen() {
       track('audio_sync', auto ? 'auto' : 'manual');
       // Against the measured version: an edit made while measuring is a 409
       // ("the project changed underneath this edit"), not a misplaced memo.
-      await apply.mutateAsync({ ops: withClientIds(result.ops), baseVersion: result.version });
+      await apply.mutateAsync({ ops: withExplicitIds(result.ops), baseVersion: result.version });
       setSync({ clipId, busy: false, message: describeSync(result) });
     } catch (error) {
       // An import-time attempt stays quiet: an older server without /sync, or

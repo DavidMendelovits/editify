@@ -5,6 +5,7 @@
  *
  *   applyOperation(project, op)      one op: clone, apply, validate
  *   applyBatch(project, ops)         many ops: clone once, apply all, validate once
+ *   previewBatch(project, ops)       the phone's optimistic paint of a batch
  */
 import {
   clipTimelineDuration,
@@ -15,6 +16,7 @@ import {
   type Clip,
   type Operation,
   type Project,
+  operationSchema,
   type Track,
 } from './index.js';
 
@@ -124,7 +126,8 @@ export interface ApplyOptions {
   newId?: () => string;
 }
 
-function randomId(): string {
+/** A random id. `crypto.randomUUID` is not in every Hermes build, hence the fallback. */
+export function randomId(): string {
   const crypto = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
   return crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -372,4 +375,60 @@ export function findVideoOverlaps(project: Project): ClipOverlap[] {
     }
   }
   return overlaps;
+}
+
+/**
+ * A video track shows one picture at a time, so two clips sharing timeline time
+ * there is corruption, not an edit. Only a *newly* introduced pair throws: a
+ * project that already overlaps has to stay editable so it can be repaired.
+ */
+export function assertNoNewVideoOverlap(before: Project, after: Project): void {
+  const existing = new Set(findVideoOverlaps(before).map(overlapKey));
+  const introduced = findVideoOverlaps(after).find((overlap) => !existing.has(overlapKey(overlap)));
+  if (!introduced) return;
+  const [first, second] = introduced.clipIds;
+  // Rounded: float ends read as 2.5999999999999996s, which is noise to whoever
+  // (the user or the model) has to act on the message.
+  const second3 = (value: number): string => `${Number(value.toFixed(3))}s`;
+  throw new OperationError(
+    `Clips ${first} and ${second} would overlap on video track ${introduced.trackId} from ${second3(introduced.start)} to ${second3(introduced.end)}; video clips cannot share timeline time`,
+  );
+}
+
+/**
+ * Names every id the server would otherwise mint (today only the right half of
+ * a `split_clip`), so a batch painted on the phone and the same batch applied
+ * by the server produce the same clips.
+ */
+export function withExplicitIds(operations: readonly Operation[], newId: () => string = randomId): Operation[] {
+  return operations.map((operation) => (operation.type === 'split_clip' && !operation.params.newClipId
+    ? { ...operation, params: { ...operation.params, newClipId: newId() } }
+    : operation));
+}
+
+/**
+ * What the server will answer for an ordinary batch (ProjectStore.applyOperations),
+ * for painting it before the round trip (decision 5A). Throws where the server
+ * would refuse: a rule (OperationError), an undo/redo/revert, an invalid result,
+ * or a new video overlap. Keeps `current.version`, which a queued request reads
+ * as its base version.
+ *
+ * It skips checks only the server can make (asset grants, a stale base
+ * version), so a paint can still be refused; the caller rolls it back then.
+ *
+ * Every id must already be explicit (withExplicitIds): an id minted here would
+ * not be the server's, so that throws too rather than paint a wrong clip id.
+ *
+ * Cost: one clone, one schema parse of the project and two overlap scans per
+ * call. If a big batch (a 190-op caption pass) is slow on Hermes, cut the
+ * operationSchema pass first, then the overlap scans (the server still runs
+ * both), before touching applyBatch.
+ */
+export function previewBatch(current: Project, operations: readonly Operation[]): Project {
+  const parsed = operations.map((operation) => operationSchema.parse(operation));
+  const next = applyBatch(current, parsed, {
+    newId: () => { throw new OperationError('Preview ops must carry explicit ids (withExplicitIds)'); },
+  });
+  assertNoNewVideoOverlap(current, next);
+  return { ...next, version: current.version };
 }

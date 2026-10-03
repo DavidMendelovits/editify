@@ -1,54 +1,73 @@
-import {
-  applyBatch,
-  findVideoOverlaps,
-  operationSchema,
-  overlapKey,
-  type Operation,
-  type Project,
-} from '@editify/shared';
+import { previewBatch, type Operation, type Project } from '@editify/shared';
 
 /**
  * Optimistic edits (decision 5A): the phone paints the result of the same
- * `applyBatch` the server runs, so the paint and the server's answer agree on
- * ripple, crossfade edges and everything else, instead of a second rulebook.
+ * edit rules the server runs (`previewBatch` from @editify/shared), so the
+ * paint and the server's answer agree on ripple, crossfade edges and the rest.
+ * Ids must be explicit before a batch is painted or sent (`withExplicitIds`).
+ *
+ * The paint skips checks only the server can make (asset grants, a stale base
+ * version), so the server can still refuse a painted batch: the ledger below
+ * rolls that paint back.
  */
 
-/** A fresh id. `crypto.randomUUID` is not in every Hermes build, hence the fallback. */
-export function clientId(): string {
-  const crypto = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
-  return crypto?.randomUUID?.() ?? `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/**
- * Names every id the server would otherwise mint (today only the right half of
- * a `split_clip`), so the batch sent and the batch painted produce the same
- * clips and the server's echo does not swap ids under the selection.
- */
-export function withClientIds(ops: readonly Operation[], newId: () => string = clientId): Operation[] {
-  return ops.map((op) => (op.type === 'split_clip' && !op.params.newClipId
-    ? { ...op, params: { ...op.params, newClipId: newId() } }
-    : op));
-}
-
-/**
- * What the server will answer for `ops` on `current`, or undefined when there
- * is nothing safe to paint: the batch breaks a rule (an OperationError, a
- * history op such as undo, an invalid result) or would introduce a video
- * overlap the server rejects. The server's answer then decides, as before.
- * Keeps `current.version`: the queued request reads it as its base version.
- */
+/** The paint for `ops` on `current`, or undefined when there is nothing safe to paint. */
 export function optimisticProject(current: Project, ops: readonly Operation[]): Project | undefined {
   try {
-    const parsed = ops.map((op) => operationSchema.parse(op));
-    const next = applyBatch(current, parsed, {
-      // withClientIds already named every new clip; a minted id here would not
-      // match the server's, so refuse to paint rather than flash a wrong id.
-      newId: () => { throw new Error('Optimistic ops must carry explicit ids'); },
-    });
-    const existing = new Set(findVideoOverlaps(current).map(overlapKey));
-    if (findVideoOverlaps(next).some((overlap) => !existing.has(overlapKey(overlap)))) return undefined;
-    return { ...next, version: current.version };
-  } catch {
+    return previewBatch(current, ops);
+  } catch (error) {
+    // Expected for undo and for edits the server will refuse; its answer decides.
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.warn('[optimistic] not painted:', error);
     return undefined;
+  }
+}
+
+/** One batch on its way to the server. Compared by identity. */
+export interface PendingBatch { readonly ops: readonly Operation[] }
+
+/**
+ * The last document the server confirmed with every pending batch painted on
+ * top, oldest first. A batch whose paint is refused is skipped, not fatal.
+ */
+export function repaint(confirmed: Project, pending: readonly PendingBatch[]): Project {
+  return pending.reduce((doc, batch) => optimisticProject(doc, batch.ops) ?? doc, confirmed);
+}
+
+/**
+ * Tracks what the server last confirmed and which batches are still painted on
+ * top of it, so the screen can always be redrawn as confirmed + pending.
+ *
+ * Rule: a batch settling (either way) never discards another batch's paint.
+ * On success the server's document becomes the base and the batches still in
+ * flight are repainted onto it; on failure the failed batch's paint is dropped
+ * and the rest are repainted onto the last confirmed document. So an offline
+ * failure leaves no phantom edit behind, and an earlier batch's answer does
+ * not wipe a later batch's paint.
+ */
+export class OptimisticLedger {
+  private confirmed: Project | undefined;
+  private pending: PendingBatch[] = [];
+
+  /** A new batch: `cached` is what the screen shows now. Returns what to show next. */
+  begin(cached: Project, batch: PendingBatch): Project {
+    // With nothing in flight the cache is the server's document (a fetch, a
+    // chat turn or an undo may have replaced it since the last confirm).
+    if (this.pending.length === 0 || !this.confirmed) this.confirmed = cached;
+    this.pending.push(batch);
+    return repaint(this.confirmed, this.pending);
+  }
+
+  /** The server's answer: for `batch`, or for a write outside the ledger (undo, revert, chat). */
+  confirm(doc: Project, batch?: PendingBatch): Project {
+    this.confirmed = doc;
+    if (batch) this.pending = this.pending.filter((entry) => entry !== batch);
+    return repaint(doc, this.pending);
+  }
+
+  /** The server refused `batch`. Undefined when it was never painted (nothing to roll back). */
+  reject(batch: PendingBatch): Project | undefined {
+    if (!this.pending.includes(batch) || !this.confirmed) return undefined;
+    this.pending = this.pending.filter((entry) => entry !== batch);
+    return repaint(this.confirmed, this.pending);
   }
 }
