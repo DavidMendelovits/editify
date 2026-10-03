@@ -86,8 +86,8 @@ export function registerProjectRoutes(
     if (!project) return await reply.code(404).send({ error: 'Project not found' });
     const track = project.tracks.find((candidate) => candidate.kind === 'video');
     if (!track) return await reply.code(404).send({ error: 'Project has no video track' });
-    const timeline = buildTimelineTranscript(project, (assetId) => transcripts.get(assetId));
-    const transcribed = audibleWindows(project, (assetId) => Boolean(transcripts.get(assetId))).length > 0;
+    const timeline = buildTimelineTranscript(project, (assetId) => transcripts.getForTimeline(assetId));
+    const transcribed = audibleWindows(project, (assetId) => Boolean(transcripts.getForTimeline(assetId))).length > 0;
     const fillers = planFillerRanges(project, timeline.words);
     // Measuring must never fail the whole answer: an asset whose energy has not
     // been analysed yet needs ffmpeg, and filler counts are still useful without it.

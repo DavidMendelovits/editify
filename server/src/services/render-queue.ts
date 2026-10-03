@@ -3,7 +3,7 @@ import type { ProjectStore } from '../db/project-store.js';
 import type { RenderRecord, RenderStore } from '../db/render-store.js';
 import type { HdrHandling } from '../media/color.js';
 import { renderProject } from '../media/render.js';
-import { withMediaSlot } from './media-slots.js';
+import { slotMediaJob } from './media-jobs.js';
 import { runRenderQa, type LoudnessMode } from './render-qa.js';
 
 export class RenderQueue {
@@ -72,7 +72,7 @@ export class RenderQueue {
         try {
           // Queued renders stay serial here; the shared pool additionally keeps
           // this one from stacking on top of two import encodes.
-          const outputPath = await withMediaSlot(`render ${id}`, () =>
+          const outputPath = await slotMediaJob('render', { projectId: project.id, renderId: id }, `render ${id}`, () =>
             renderProject(project, record.resolution, id, this.assets, this.hdrById.get(id) ?? 'sdr'));
           // QA runs before 'done' because normalizing rewrites the file a client would download.
           // A QA failure is reported on the record, never as a failed render.

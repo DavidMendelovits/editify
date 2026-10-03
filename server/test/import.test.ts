@@ -3,6 +3,7 @@ import { buildApp } from '../src/app.js';
 import { AssetStore } from '../src/db/asset-store.js';
 import { createDatabase } from '../src/db/database.js';
 import { TranscriptStore } from '../src/db/transcript-store.js';
+import { mediaSlots } from '../src/services/media-slots.js';
 
 describe('local media import', () => {
   it('rejects path traversal', async () => {
@@ -66,6 +67,40 @@ describe('local media import', () => {
     assets.setStatus('fresh', 'ready', { proxyPath: '/other/proxy.mp4', thumbnailPath: '/other/thumb.jpg' });
     expect(assets.get('fresh')).toMatchObject({ status: 'ready', proxyPath: '/other/proxy.mp4' });
     await app.close();
+  });
+});
+
+describe('duplicate server import', () => {
+  // Re-importing a file already in the library answers at once and lets a
+  // missing transcript catch up in the background lane, once, however often
+  // the import is repeated.
+  it('queues one background transcription for a known file instead of re-encoding it', async () => {
+    const database = createDatabase(':memory:');
+    new AssetStore(database).insert({
+      id: 'dup', originalName: 'dup.mp4', mimeType: 'video/mp4', duration: 1,
+      width: 100, height: 100, fps: 30, hasAudio: true,
+      originalPath: '/not/read/dup.mp4', proxyPath: '/not/read-proxy.mp4', thumbnailPath: '/not/read.jpg',
+      originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: new Date(0).toISOString(),
+    });
+    const app = await buildApp({ database });
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    // Both slots busy, so the transcription stays queued where the test can see it
+    // (and is cancelled below before it could spawn a real Whisper).
+    const blockers = Array.from({ length: mediaSlots.capacity }, (_, index) => mediaSlots.run(`render ${index}`, () => held));
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await app.inject({ method: 'POST', url: '/assets/import', payload: { name: 'dup.mp4' } });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ id: 'dup' });
+      }
+      expect(mediaSlots.queued()).toEqual(['transcribe dup']);
+      expect(mediaSlots.cancel('transcribe dup', new Error('test over'))).toBe(true);
+    } finally {
+      release();
+      await Promise.all(blockers);
+      await app.close();
+    }
   });
 });
 
