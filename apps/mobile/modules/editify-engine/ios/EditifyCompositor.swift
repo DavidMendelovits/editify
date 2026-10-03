@@ -376,18 +376,13 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   private let generationLock = NSLock()
   /// Under generationLock. A remote source whose bytes stopped arriving (a dropped connection,
   /// a 5xx, a refused token) shows up only here: measured on macOS, AVFoundation stops asking
-  /// for frames (the picture freezes, the clock runs on), or asks and hands over no source frame.
-  nonisolated(unsafe) private var missing = 0
+  /// for frames (the picture freezes, the clock runs on). (A nil source frame is no such sign:
+  /// a video track shorter than the span the plan plays hands over none, every time.)
   nonisolated(unsafe) private var composedUpTo = -1.0
 
-  /// Source frames the instructions expected and AVFoundation didn't hand over, so far.
-  var missingSourceFrames: Int {
-    generationLock.lock(); defer { generationLock.unlock() }
-    return missing
-  }
-
-  /// The latest composition time asked for, in seconds (-1: none yet). Requests run ahead of the
-  /// clock while sources flow; PlanPlayer reads a clock past it as starvation.
+  /// The latest composition time asked for since the last seek or rebuild, in seconds (-1: none
+  /// yet). Requests run ahead of the clock while sources flow; PlanPlayer reads a clock past it
+  /// as starvation, and a paused seek that lands without it as a frame not drawn yet.
   var composedUpToSeconds: Double {
     generationLock.lock(); defer { generationLock.unlock() }
     return composedUpTo
@@ -450,17 +445,7 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
       do {
         let state = instruction.state
         let t = state.timelineSeconds(request.compositionTime)
-        var absent = 0
-        let image = try FrameRenderer.compose(instruction, at: t) { id in
-          let frame = request.sourceFrame(byTrackID: id)
-          if frame == nil { absent += 1 }
-          return frame
-        }
-        if absent > 0 {
-          generationLock.lock()
-          missing += absent
-          generationLock.unlock()
-        }
+        let image = try FrameRenderer.compose(instruction, at: t) { request.sourceFrame(byTrackID: $0) }
         PlanColorPipeline.tag(output, state.plan.color)
         let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(output), height: CVPixelBufferGetHeight(output))
         // A render task, waited on, so a failed render (the GPU refused, say, with the app

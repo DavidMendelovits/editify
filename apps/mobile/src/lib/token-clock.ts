@@ -9,12 +9,27 @@
  * the device only when the server leaves it out, and GoTrue's token response includes it, so it
  * is server time too and their difference is ~0. Only TOKEN_REFRESHED counts: a SIGNED_IN can
  * replay a stored session issued long ago, and an offset over 10 minutes is taken as that kind
- * of misreading, not a clock. Unknown until the first refresh (native assumes 0).
+ * of misreading, not a clock.
+ *
+ * Latency only ever adds to a sample, so the offset is the smallest of the last few. A sample
+ * more than 60 s from it (a slow refresh, a stray reading) is held back, and taken (starting the
+ * samples over) only when the next one agrees with it within 5 s: the device clock really moved.
+ *
+ * Before the first refresh the offset is unknown and native uses 0: a deadline off by the skew.
+ * Its 30 s lead covers a skew under 30 s; past that, the starvation watch (the clock running
+ * past the compositor) is the backstop once reads are refused.
  */
 
 const MAX_OFFSET_S = 600;
 
-let offset: number | undefined;
+const KEEP = 5;
+const JUMP_S = 60;
+const AGREE_S = 5;
+
+/** Recent accepted samples (device − server, seconds), newest last. */
+let samples: number[] = [];
+/** A sample that jumped: taken if the next one agrees with it. */
+let held: number | undefined;
 
 /** A JWT's claims, or null for anything that isn't one (a shared token). */
 export function jwtClaims(token: string): { iat?: number; exp?: number } | null {
@@ -44,15 +59,28 @@ export function offsetAtIssue(token: string, receivedAtMs: number): number | und
 export function noteAuthEvent(event: string, accessToken: string | undefined, nowMs: number = Date.now()): void {
   if (event !== 'TOKEN_REFRESHED' || !accessToken) return;
   const measured = offsetAtIssue(accessToken, nowMs);
-  if (measured !== undefined) offset = measured;
+  if (measured === undefined) return;
+  const current = tokenClockOffset();
+  if (current === undefined || Math.abs(measured - current) <= JUMP_S) {
+    held = undefined;
+    samples = [...samples, measured].slice(-KEEP);
+    return;
+  }
+  if (held !== undefined && Math.abs(measured - held) <= AGREE_S) {
+    samples = [held, measured];
+    held = undefined;
+    return;
+  }
+  held = measured;
 }
 
-/** The last measured offset, or undefined before the first refresh. */
+/** The smallest recent sample (latency only inflates them), or undefined before the first refresh. */
 export function tokenClockOffset(): number | undefined {
-  return offset;
+  return samples.length > 0 ? Math.min(...samples) : undefined;
 }
 
 /** Tests only. */
 export function resetTokenClock(): void {
-  offset = undefined;
+  samples = [];
+  held = undefined;
 }

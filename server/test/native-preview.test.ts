@@ -70,7 +70,13 @@ interface Report {
     backgroundPark: { accepted: boolean; itemWhileBackgrounded: boolean; appliedWhileBackgrounded: number; item: boolean; timeKept: boolean; appliedAfterResume: number };
     teardown: { applied: number; item: boolean };
   };
-  pausedDrag60: { sent: number; applied: number; refreshedFrames: number; refreshIntervalMs: Stats; stillAtTime: boolean; finalAtLast?: Vec };
+  pausedDrag60: {
+    sent: number; applied: number; refreshedFrames: number; refreshIntervalMs: Stats; stillAtTime: boolean; finalAtLast?: Vec;
+    lastDrawn: boolean; lastDrawnAfterMs: number;
+  };
+  pausedSeekAhead: { rightWithinMs: number; seeksLanded: number; samples: string[] };
+  transientLog: { paused: { sameItem: boolean; reconnects: number; stalls: number }; playing: { sameItem: boolean; reconnects: number; buffered: boolean; playing: boolean } };
+  shortPicture: { pictureEnd: number; soundEnd: number; ended: boolean; reconnects: number; expired: number; errors: number };
   proxySwap: { first: string; second: string; proxyCode: number; reloaded: boolean; othersKept: boolean; originalCompare: Compare };
   renderCap: { scale4k: number; scale4kInView: number };
   serverCopies: {
@@ -352,6 +358,27 @@ describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
     expect(paused.applied).toBeGreaterThan(0);
     expect(paused.refreshedFrames).toBeGreaterThan(paused.sent / 6);
     expect(Math.min(...paused.finalAtLast!)).toBeGreaterThan(0.95);
+    // The last coalesced update is drawn with no settling plan (a lenient bound for a slow VM).
+    expect(paused.lastDrawn).toBe(true);
+    expect(paused.lastDrawnAfterMs).toBeLessThan(5000);
+  });
+
+  it('shows the right frame after a paused exact seek into remote bytes still arriving, with no re-seek from outside', () => {
+    const ahead = report.pausedSeekAhead;
+    expect(ahead.rightWithinMs, ahead.samples.join(' | ')).toBeGreaterThan(0);
+    expect(ahead.rightWithinMs).toBeLessThan(10_000);
+  });
+
+  it('takes one transient error-log entry as a reason to watch, not to reload', () => {
+    const { paused, playing } = report.transientLog;
+    expect(paused).toEqual({ sameItem: true, reconnects: 0, stalls: 0 });
+    expect(playing).toEqual({ sameItem: true, reconnects: 0, buffered: true, playing: true });
+  });
+
+  it('plays a remote clip whose picture ends before its sound at a quarter speed without a reconnect', () => {
+    const short = report.shortPicture;
+    expect(short.pictureEnd).toBeLessThan(short.soundEnd);
+    expect(short).toMatchObject({ ended: true, reconnects: 0, expired: 0, errors: 0 });
   });
 
   it('reloads only the asset whose proxy was replaced by its original', () => {

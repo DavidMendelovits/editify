@@ -24,6 +24,25 @@ describe('the media token clock', () => {
     expect(tokenClockOffset()).toBe(45);
   });
 
+  it('keeps the smallest recent sample, and takes a jump only when the next sample agrees', () => {
+    const at = (iat: number, deviceSeconds: number): void => noteAuthEvent('TOKEN_REFRESHED', jwt({ iat, exp: iat + 3600 }), deviceSeconds * 1000);
+    at(1_700_000_000, 1_700_000_000 - 20 + 0.4);
+    at(1_700_003_600, 1_700_003_600 - 20 + 2.5); // a slow refresh
+    at(1_700_007_200, 1_700_007_200 - 20 + 0.1);
+    expect(tokenClockOffset()).toBeCloseTo(-19.9, 3);
+    // One reading 90 s off: held back.
+    at(1_700_010_800, 1_700_010_800 + 70);
+    expect(tokenClockOffset()).toBeCloseTo(-19.9, 3);
+    // Back in line: the stray one is dropped.
+    at(1_700_014_400, 1_700_014_400 - 19.5);
+    expect(tokenClockOffset()).toBeCloseTo(-19.9, 3);
+    // The device clock really moved 2 minutes: two samples in a row agree, and they win.
+    at(1_700_018_000, 1_700_018_000 + 100.3);
+    expect(tokenClockOffset()).toBeCloseTo(-19.9, 3);
+    at(1_700_021_600, 1_700_021_600 + 100.1);
+    expect(tokenClockOffset()).toBeCloseTo(100.1, 3);
+  });
+
   it('ignores replayed sessions, absurd offsets and tokens without iat', () => {
     const issuedLongAgo = jwt({ iat: 1_700_000_000, exp: 1_700_003_600 });
     noteAuthEvent('SIGNED_IN', issuedLongAgo, (1_700_000_000 + 2_000) * 1000);

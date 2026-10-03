@@ -53,10 +53,11 @@ import CoreImage
 ///
 /// Silent drops (a dropped connection, a 5xx, a session revoked on the server): measured on
 /// macOS, AVFoundation stops asking the compositor for frames (the picture freezes while the
-/// clock runs on) and reports nothing else. While playing remote sources, the clock running
-/// past the compositor's latest request (or source frames handed over missing) for
-/// `starveWindow` (buffering shows at once), or a 5xx / network error in the error log, is a
-/// reconnect: every remote source reloaded and the item rebuilt at the same time, retried
+/// clock runs on) and reports nothing else. While playing remote sources (and the host says
+/// the picture is on screen: `canWatch`), the clock running past the compositor's latest
+/// request for `starveWindow` is a reconnect (buffering shows as soon as it starts; a 5xx or
+/// network error in the error log only starts that window early, AVFoundation often recovers
+/// from one by itself): every remote source reloaded and the item rebuilt at the same time, retried
 /// after `reconnectDelays` while the server stays out of reach. Reconnecting natively recovers
 /// best: the URLs are fine, the connection isn't, and AVFoundation never asks again on its
 /// own. Out of attempts ─▶ the failure policy above (`.mediaExpired`, then `.error`).
@@ -74,7 +75,9 @@ import CoreImage
 /// harness's local server shows on a Mac.
 ///
 /// Stalls: remote sources wait to minimize stalling; any stall reports buffering
-/// and playback resumes once the item can keep up.
+/// and playback resumes once the item can keep up. A paused exact seek on remote sources that
+/// lands without the compositor having been asked for its frame is seeked again when the item
+/// can keep up or a second later (at most three times): it must not rest on an older frame.
 ///
 /// The player owns one CaptionRenderer, one PlanMediaCache and one bitmap cache for
 /// its life, so caption bitmaps, decoded stills and sticker bitmaps survive rebuilds.
@@ -195,9 +198,20 @@ final class PlanPlayer {
   private var reconnectWork: DispatchWorkItem?
   /// The next apply rebuilds with every remote source reloaded (a reconnect).
   private var reloadRemote = false
-  /// The missing-frame watch on the item playing: the compositor's count at the last tick, when
-  /// it began growing (nil: not growing), and when it last grew.
-  private var starve: (item: ObjectIdentifier?, count: Int, since: CFAbsoluteTime?, grew: CFAbsoluteTime) = (nil, 0, nil, 0)
+  /// The starvation watch on the item playing: when the clock began running past the compositor
+  /// (nil: it isn't), and when it last did.
+  private var starve: (item: ObjectIdentifier?, since: CFAbsoluteTime?, grew: CFAbsoluteTime) = (nil, nil, 0)
+  /// The host's say on whether frames are being drawn at all (EditifyPlayerView: the layer has a
+  /// size and is ready for display). An undrawn picture asks for no frames, which is no drop.
+  var canWatch: () -> Bool = { true }
+  /// A paused exact seek on remote sources that landed without its frame being asked of the
+  /// compositor: seeked once more when the item can keep up, or after `verifyDelay`.
+  private var unverifiedSeek: CMTime?
+  /// Re-seeks left for the current seek (a frame that never gets asked for, past the last one,
+  /// say, doesn't re-seek forever).
+  private var verifyAttempts = 0
+  private var reseeking = false
+  static let verifyDelay: TimeInterval = 1
   /// Reconnects so far (the harness reads it).
   private(set) var reconnectCount = 0
   private let fonts: PlanFonts
@@ -646,6 +660,7 @@ final class PlanPlayer {
   func play() {
     guard !torndown else { return }
     wantsPlay = true
+    unverifiedSeek = nil
     resumeIfReady()
   }
 
@@ -667,37 +682,38 @@ final class PlanPlayer {
 
   // MARK: Silent drops
 
-  /// On the 30 Hz clock while playing remote sources: starving (the clock `starveLag` past the
-  /// latest frame the compositor was asked for, or source frames going missing) for
-  /// `starveWindow` is a silent drop. Buffering shows as soon as it starts.
+  /// On the 30 Hz clock while playing remote sources: the clock `starveLag` past the latest frame
+  /// the compositor was asked for, for `starveWindow`, is a silent drop.
   private func watchStarvation() {
-    guard wantsPlay, !seeking, chase == nil, let item = player.currentItem, let compositor = item.customVideoCompositor as? EditifyCompositor,
-          currentRefs.values.contains(where: Self.isRemote) else { return }
+    guard wantsPlay, !seeking, chase == nil, canWatch(), let item = player.currentItem,
+          let compositor = item.customVideoCompositor as? EditifyCompositor, currentRefs.values.contains(where: Self.isRemote) else { return }
     let now = CFAbsoluteTimeGetCurrent()
-    let count = compositor.missingSourceFrames
     let composed = compositor.composedUpToSeconds
     guard starve.item == ObjectIdentifier(item) else {
-      starve = (ObjectIdentifier(item), count, nil, now)
+      starve = (ObjectIdentifier(item), nil, now)
       return
     }
-    let starving = count > starve.count || (composed >= 0 && currentTime - composed > Self.starveLag)
-    starve.count = count
-    if starving {
+    if composed >= 0, currentTime - composed > Self.starveLag {
       starve.grew = now
-      if starve.since == nil {
-        starve.since = now
-        setBuffering(true)
-      }
+      startStarving(now)
       if let since = starve.since, now - since >= Self.starveWindow, reconnectWork == nil, !reloadRemote {
         starve.since = nil
         reconnect("the media stopped arriving")
       }
-    } else if starve.since != nil {
+    } else if starve.since != nil, now - starve.grew > Self.starveLag {
       starve.since = nil
       setBuffering(false)
-    } else if reconnectWork == nil, !reloadRemote, now - starve.grew > Self.cleanPlayback {
+    } else if starve.since == nil, reconnectWork == nil, !reloadRemote, now - starve.grew > Self.cleanPlayback {
       reconnects = 0
     }
+  }
+
+  /// The starvation window opens (buffering shows); the watch decides whether it ends in a reconnect.
+  private func startStarving(_ now: CFAbsoluteTime) {
+    guard starve.since == nil else { return }
+    starve.since = now
+    starve.grew = now
+    setBuffering(true)
   }
 
   /// One reconnect attempt (after its delay): every remote source reloaded, the item rebuilt at
@@ -742,6 +758,8 @@ final class PlanPlayer {
       target = duration
     }
     chase = (target, exact)
+    unverifiedSeek = nil
+    if !reseeking { verifyAttempts = 0 }
     if !seeking { startSeek() }
   }
 
@@ -766,10 +784,36 @@ final class PlanPlayer {
             return
           }
           self.onEvent?(.time(self.currentTime, playing: self.wantsPlay))
+          self.verifyPausedSeek(target.time, exact: target.exact)
           self.resumeIfReady()
         }
       }
     }
+  }
+
+  /// A paused exact seek on remote sources can land before the frame's bytes arrived, without the
+  /// compositor having been asked for that frame. Then it is seeked once more: when the item can
+  /// keep up, or after `verifyDelay`, whichever comes first (a newer seek or play cancels it).
+  private func verifyPausedSeek(_ time: CMTime, exact: Bool) {
+    unverifiedSeek = nil
+    guard !wantsPlay, exact, currentRefs.values.contains(where: Self.isRemote), let item = player.currentItem,
+          let compositor = item.customVideoCompositor as? EditifyCompositor, let built else { return }
+    let halfFrame = 0.5 / Double(built.plan.fps)
+    let lastFrame = Double(max(0, built.plan.frameCount - 1)) / Double(built.plan.fps)
+    guard verifyAttempts < 3, time.seconds <= lastFrame + halfFrame, compositor.composedUpToSeconds + halfFrame < time.seconds else { return }
+    verifyAttempts += 1
+    unverifiedSeek = time
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.verifyDelay) { [weak self] in
+      MainActor.assumeIsolated { self?.reseekUnverified() }
+    }
+  }
+
+  private func reseekUnverified() {
+    guard let time = unverifiedSeek, !torndown, !wantsPlay, !seeking, chase == nil else { return }
+    unverifiedSeek = nil
+    reseeking = true
+    seek(to: time.seconds, exact: true)
+    reseeking = false
   }
 
   private func resumeIfReady() {
@@ -800,6 +844,7 @@ final class PlanPlayer {
   /// (without waiting to minimize stalls, a stalled player stays stopped).
   private func likelyToKeepUpChanged(_ item: AVPlayerItem) {
     guard item === player.currentItem, item.isPlaybackLikelyToKeepUp else { return }
+    reseekUnverified()
     if player.rate == 0 { setBuffering(false) }
     resumeIfReady()
   }
@@ -894,12 +939,13 @@ final class PlanPlayer {
 
   /// An error-log entry on a plan with remote sources. Refused (a token): an item failure, so the
   /// policy rebuilds on a newer URL held or asks JS for fresh media. Transient (5xx, the network
-  /// gone): a reconnect, as for a silent drop.
+  /// gone): buffering and the starvation window, nothing more on its own.
   private func errorLogged(_ item: AVPlayerItem, _ kind: ErrorLogKind, _ message: String) {
     guard item === player.currentItem, currentRefs.values.contains(where: Self.isRemote) else { return }
     switch kind {
     case .tokenRefused: itemFailed(item, "the server refused the media (\(message))")
-    case .transient: if reconnectWork == nil, !reloadRemote { reconnect("the media stopped arriving (\(message))") }
+    // Only opens the starvation window while playing: the clock running past the compositor decides.
+    case .transient: if wantsPlay, player.rate != 0 { startStarving(CFAbsoluteTimeGetCurrent()) }
     case .other: break
     }
   }
@@ -941,6 +987,12 @@ final class PlanPlayer {
       return
     }
     onEvent?(.error(message))
+  }
+
+  /// The parity harness's stand-in for an error-log entry on the current item.
+  func simulateErrorLog(_ kind: ErrorLogKind) {
+    guard let item = player.currentItem else { return }
+    errorLogged(item, kind, "simulated")
   }
 
   /// The parity harness's stand-in for a GPU refusal: the current item fails.

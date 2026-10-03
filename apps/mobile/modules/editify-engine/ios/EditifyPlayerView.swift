@@ -51,6 +51,11 @@ final class EditifyPlayerView: ExpoView {
     layer.addSublayer(playerLayer)
     core.onEvent = { [weak self] event in self?.dispatch(event) }
     core.onInstalled = { media in temps.retain(only: Set(media.images.values)) }
+    // No size, or nothing on screen yet: no frames are drawn, which is not a drop.
+    core.canWatch = { [weak self] in
+      guard let self else { return false }
+      return !self.playerLayer.bounds.isEmpty && self.playerLayer.isReadyForDisplay
+    }
     let center = NotificationCenter.default
     // The compositor renders on the GPU, which iOS refuses to a backgrounded app: nothing renders until it returns.
     observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in

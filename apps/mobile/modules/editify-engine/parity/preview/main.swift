@@ -384,14 +384,19 @@ final class Rig {
     return (buffer, (CFAbsoluteTimeGetCurrent() - started) * 1000)
   }
 
+  /// The next frame the output vends for `time` itself. (hasNewPixelBuffer is also true for an
+  /// older frame still queued, such as the one on screen when the player paused; on a slow VM
+  /// that one can still be waiting when a seek lands. Its display time tells them apart.)
   func newFrame(at time: CMTime, timeout: Double = 15) async -> CVPixelBuffer? {
     guard let output else { return nil }
     var found: CVPixelBuffer?
     _ = await until(timeout) {
       guard output.hasNewPixelBuffer(forItemTime: time) else { return false }
-      var shown = CMTime.zero
-      found = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &shown)
-      return found != nil
+      var shown = CMTime.invalid
+      guard let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &shown) else { return false }
+      guard shown.isValid, abs(shown.seconds - time.seconds) < 1.0 / 120 else { return false }
+      found = buffer
+      return true
     }
     return found
   }
@@ -1018,6 +1023,111 @@ func run() async throws -> [String: Any] {
     server.stop()
   }
 
+  // MARK: A paused exact seek into remote bytes still on their way
+  do {
+    watchdog.step("http: paused seek ahead of the bytes")
+    // Slower than the clip's bitrate: the bytes for the frame sought arrive seconds after the seek.
+    let server = try MediaServer(bytesPerSecond: 16 << 10)
+    let port = try server.start()
+    let path = "/assets/asset-talk/proxy.mov"
+    server.serve(path, file: URL(string: mediaRefs["asset-talk"]!)!)
+    var refs = mediaRefs
+    refs["asset-talk"] = "http://127.0.0.1:\(port)\(path)?k=\(server.token(expiresIn: 600))"
+    let rig = Rig()
+    try await rig.apply(try decode(try fixture("overlays"), revision: 1, buildSeq: 1), media: refs)
+    let k = 100
+    let target = CMTime(value: CMTimeValue(k), timescale: 30)
+    let landed = rig.seeksLanded
+    let started = CFAbsoluteTimeGetCurrent()
+    rig.player.seek(to: target.seconds, exact: true)
+    try await rig.expect("the paused seek landed") { rig.seeksLanded > landed }
+    var samples: [String] = []
+    var rightAt: Double?
+    var lastSample = 0.0
+    _ = await rig.until(12) {
+      let now = CFAbsoluteTimeGetCurrent() - started
+      guard now - lastSample > 0.25, let output = rig.output else { return false }
+      lastSample = now
+      guard let buffer = output.copyPixelBuffer(forItemTime: target, itemTimeForDisplay: nil) else { return false }
+      let shown = decodeCode(pixels(buffer, space: workingSpace))
+      samples.append(String(format: "%.2f %d", now, shown))
+      if shown == k, rightAt == nil { rightAt = now }
+      return rightAt != nil
+    }
+    report["pausedSeekAhead"] = [
+      "rightWithinMs": rightAt.map { $0 * 1000 } ?? -1, "samples": samples, "seeksLanded": rig.seeksLanded - landed,
+      "time": rig.player.currentTime,
+    ] as [String: Any]
+    rig.player.teardown()
+    server.stop()
+  }
+
+  // MARK: A remote clip whose picture ends before its sound, played at a quarter speed
+  do {
+    watchdog.step("http: short video track at 0.25x")
+    // asset-talk cut to 0.85 s of picture and 1.2 s of sound: the plan plays 1 s of it over 4 s,
+    // so the last 0.6 s of the timeline is past the picture (the builder holds its last frame).
+    let talk = AVURLAsset(url: URL(string: mediaRefs["asset-talk"]!)!)
+    let composition = AVMutableComposition()
+    let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+    try video.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(value: 85, timescale: 100)), of: try await talk.loadTracks(withMediaType: .video).first!, at: .zero)
+    let sound = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+    try sound.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(value: 120, timescale: 100)), of: try await talk.loadTracks(withMediaType: .audio).first!, at: .zero)
+    let short = work.appendingPathComponent("asset-short.mov")
+    try? FileManager.default.removeItem(at: short)
+    guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else { throw HarnessError("no passthrough export") }
+    try await export.export(to: short, as: .mov)
+    let shortAsset = AVURLAsset(url: short)
+    let pictureEnd = try await shortAsset.loadTracks(withMediaType: .video).first!.load(.timeRange).end.seconds
+    let soundEnd = try await shortAsset.loadTracks(withMediaType: .audio).first!.load(.timeRange).end.seconds
+
+    let server = try MediaServer()
+    let port = try server.start()
+    server.serve("/assets/asset-short/proxy.mov", file: short)
+    var refs = mediaRefs
+    refs["asset-short"] = "http://127.0.0.1:\(port)/assets/asset-short/proxy.mov?k=\(server.token(expiresIn: 600))"
+    var plan = try fixture("overlays")
+    edit(&plan, ["video", "segments", 0, "layers", 0, "assetRef", "id"], "asset-short")
+    edit(&plan, ["video", "segments", 0, "layers", 0, "speed"], 0.25)
+    edit(&plan, ["audio"], [] as [Any])
+    let rig = Rig()
+    try await rig.apply(try decode(plan, revision: 1, buildSeq: 1), media: refs)
+    _ = try await rig.frame(at: 0, fps: 30)
+    rig.player.play()
+    let ended = await rig.until(12) { rig.ends > 0 }
+    report["shortPicture"] = [
+      "pictureEnd": pictureEnd, "soundEnd": soundEnd, "ended": ended, "reconnects": rig.player.reconnectCount,
+      "expired": rig.expired.count, "errors": rig.errors.count,
+    ] as [String: Any]
+    rig.player.teardown()
+    server.stop()
+  }
+
+  // MARK: A transient error-log entry AVFoundation recovers from by itself
+  do {
+    watchdog.step("transient error-log entry")
+    let rig = Rig()
+    try await rig.apply(try decode(try fixture("overlays"), revision: 1, buildSeq: 1), media: serverCopy(token: "t1"))
+    _ = try await rig.frame(at: 20, fps: 30)
+    // Paused: nothing at all.
+    let item = rig.player.player.currentItem
+    rig.player.simulateErrorLog(.transient)
+    try? await Task.sleep(nanoseconds: 700_000_000)
+    let paused: [String: Any] = ["sameItem": rig.player.player.currentItem === item, "reconnects": rig.player.reconnectCount, "stalls": rig.stalls]
+    // Playing with frames still flowing: buffering shows, then clears; no reconnect.
+    rig.player.play()
+    try await rig.expect("playing") { rig.player.player.rate > 0 && rig.player.currentTime > 0.8 }
+    let stallsBefore = rig.stalls
+    rig.player.simulateErrorLog(.transient)
+    try? await Task.sleep(nanoseconds: 1_000_000_000)
+    let playing: [String: Any] = [
+      "sameItem": rig.player.player.currentItem === item, "reconnects": rig.player.reconnectCount,
+      "buffered": rig.stalls > stallsBefore, "playing": rig.player.player.rate > 0 || rig.ends > 0,
+    ]
+    report["transientLog"] = ["paused": paused, "playing": playing] as [String: Any]
+    rig.player.teardown()
+  }
+
   // MARK: A server whose clock runs 20 s ahead (a phone's clock 20 s behind)
   do {
     watchdog.step("http: skewed clock")
@@ -1181,6 +1291,7 @@ func run() async throws -> [String: Any] {
     let startWall = CFAbsoluteTimeGetCurrent()
     var nextSend = startWall
     var lastY = 120.0
+    var latest: CVPixelBuffer?
     while CFAbsoluteTimeGetCurrent() - startWall < 1 {
       if CFAbsoluteTimeGetCurrent() >= nextSend {
         var plan = base
@@ -1190,25 +1301,27 @@ func run() async throws -> [String: Any] {
         sent += 1
         nextSend += 1.0 / 60
       }
-      if output.hasNewPixelBuffer(forItemTime: time), output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) != nil {
+      if output.hasNewPixelBuffer(forItemTime: time), let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) {
         refreshed.append(CFAbsoluteTimeGetCurrent())
+        latest = buffer
       }
       try? await Task.sleep(nanoseconds: 1_000_000)
     }
     try await rig.expect("the last paused drag plan applied") { rig.applied.last?.buildSeq == buildSeq }
-    // On a slow VM the last plan's own redraw may still be on its way (or was already taken in the
-    // loop): the property is that the paused frame ends up showing the last box. The same box once
-    // more redraws it, and that frame is waited for.
-    var settle = base
-    edit(&settle, ["overlays", 0, "box", "y"], lastY)
-    let landed = rig.seeksLanded
-    try await rig.apply(try decode(settle, revision: 1, buildSeq: next()))
-    try await rig.expect("the settling redraw landed") { rig.seeksLanded > landed }
-    let final = await rig.newFrame(at: time, timeout: 10)
+    // The last coalesced update is drawn eventually, with no settling plan: the newest frame vended
+    // (in the loop or after it, within a lenient 5 s for a slow VM) shows the last box.
+    let lastBox = { (frame: CVPixelBuffer?) in frame.map { linear($0, 55, lastY - 40).min()! > 0.95 } ?? false }
+    let drawnBy = CFAbsoluteTimeGetCurrent()
+    let lastDrawn = await rig.until(5) {
+      if output.hasNewPixelBuffer(forItemTime: time), let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) { latest = buffer }
+      return lastBox(latest)
+    }
+    let final = latest
     let intervals = zip(refreshed, refreshed.dropFirst()).map { ($1 - $0) * 1000 }
     var entry: [String: Any] = [
       "sent": sent, "applied": rig.applied.count - appliedBefore, "refreshedFrames": refreshed.count,
       "refreshIntervalMs": stats(intervals), "lastY": lastY, "stillAtTime": abs(rig.player.currentTime - Double(k) / 30) < 1e-3,
+      "lastDrawn": lastDrawn, "lastDrawnAfterMs": (CFAbsoluteTimeGetCurrent() - drawnBy) * 1000,
     ]
     // The logo's white patch (centre -35, -40) at the last box sent.
     if let final { entry["finalAtLast"] = linear(final, 55, lastY - 40) }
