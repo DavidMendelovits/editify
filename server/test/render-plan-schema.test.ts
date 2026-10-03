@@ -9,6 +9,8 @@ import {
   DEFAULT_CAPTION_FONT,
   parseRenderPlanForExecutor,
   PLAN_FONT_FACES,
+  PLAN_LIMITS,
+  planFrameAt,
   planFrameCount,
   renderPlanSchema,
   UnsupportedPlanError,
@@ -257,6 +259,42 @@ describe('invalid render plans', () => {
   });
 });
 
+describe('hostile plans', () => {
+  it('caps the frame size at 3840 x 2160 either way round', () => {
+    expect(issues({ ...planFrom('crossfade'), size: { w: 3840, h: 2160 } })).toEqual([]);
+    expect(issues({ ...planFrom('crossfade'), size: { w: 2160, h: 3840 } })).toEqual([]);
+    expect(issues({ ...planFrom('crossfade'), size: { w: 3840, h: 3840 } })).toEqual(['size: the shorter side must be at most 2160 px']);
+    expect(issues({ ...planFrom('crossfade'), size: { w: 8192, h: 1080 } })).toEqual(['size.w: Number must be less than or equal to 3840']);
+  });
+
+  it('caps text, ids, requires and array lengths', () => {
+    const long = planFrom('captions-multi-lane');
+    long.captions[0]!.lines[0]!.text = 'A'.repeat(PLAN_LIMITS.textChars + 1);
+    expect(issues(long)).toEqual(['captions.0.lines.0.text: String must contain at most 500 character(s)']);
+
+    const many = { ...planFrom('crossfade'), requires: Array.from({ length: PLAN_LIMITS.requires + 1 }, (_unused, index) => `f${index}`) };
+    expect(issues(many)).toContain('requires: Array must contain at most 32 element(s)');
+
+    const crowded = planFrom('overlays');
+    crowded.video.segments[0]!.layers = Array.from({ length: PLAN_LIMITS.layersPerSegment + 1 }, (_unused, index) => ({ ...crowded.video.segments[0]!.layers[0]!, z: index }));
+    expect(issues(crowded)).toEqual(['video.segments.0.layers: Array must contain at most 32 element(s)']);
+
+    expect(issues({ ...planFrom('empty-project'), duration: PLAN_LIMITS.durationSec + 1 })).toContain('duration: Number must be less than or equal to 14400');
+  });
+
+  it('keeps the unsupported-feature message bounded', () => {
+    const plan = { ...planFrom('crossfade'), requires: Array.from({ length: 20 }, () => 'x'.repeat(1000)) };
+    let message = '';
+    try {
+      parseRenderPlanForExecutor(plan);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/and 15 more$/);
+    expect(message.length).toBeLessThan(500);
+  });
+});
+
 describe('executor parsing', () => {
   it('ignores unknown non-critical keys', () => {
     const plan = { ...planFrom('crossfade'), addedInV1_1: true, overlays: [{ ...planFrom('overlays').overlays[0]!, glow: 0.4 }] };
@@ -271,6 +309,14 @@ describe('executor parsing', () => {
     plan.overlays[0] = { ...plan.overlays[0]!, kind: 'lottie' as never };
     expect(() => parseRenderPlanForExecutor(plan)).toThrow(UnsupportedPlanError);
     expect(() => parseRenderPlanForExecutor(plan)).toThrow('overlay-kind-lottie');
+  });
+
+  it('quantizes times to frames with floor(t * fps + 1e-6), exact frame times included', () => {
+    // Legacy Math.trunc(t / (1 / fps)) gives 60 here: one frame early.
+    expect(planFrameAt(61 / 30, 30)).toBe(61);
+    expect(planFrameAt(2.2, 30)).toBe(66);
+    expect(planFrameAt(2.21, 30)).toBe(66);
+    expect(planFrameAt(0, 30)).toBe(0);
   });
 
   it('counts output frames as ceil(duration * fps - 1e-6)', () => {

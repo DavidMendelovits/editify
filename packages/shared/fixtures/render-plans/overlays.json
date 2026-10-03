@@ -1,5 +1,5 @@
 {
-  "description": "Every overlay kind over one video layer, each rotated except the logo: image sticker, looping GIF, emoji fitted to its box, a check callout resolved to card, vector glyph and label (with a PNG raster for executors that cannot draw it), and a picture-in-picture b-roll clip, stacked by z.",
+  "description": "Every overlay kind over one video layer, each rotated except the logo: image sticker, looping GIF, emoji fitted to its box (Apple Color Emoji advance 1.17 em, ascent 0.95 em, descent 0.27 em: 85.5 px, baseline 87.6), a centred check callout resolved to card, vector glyph and label (with a PNG raster for executors that cannot draw it), and a picture-in-picture b-roll clip, stacked by z.",
   "plan": {
     "version": 1,
     "requires": [],
@@ -114,7 +114,7 @@
           "text": "🔥",
           "sizePx": 85.5,
           "x": 0,
-          "y": 92,
+          "y": 87.6,
           "width": 100
         }
       },
@@ -127,7 +127,7 @@
         "box": {
           "x": 180,
           "y": 480,
-          "w": 260,
+          "w": 190,
           "h": 64,
           "rotationDeg": -4
         },
@@ -136,7 +136,7 @@
           "card": {
             "x": 0,
             "y": 0,
-            "w": 260,
+            "w": 190,
             "h": 64,
             "radiusPx": 13,
             "color": "#14141BF2"

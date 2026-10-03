@@ -22,7 +22,7 @@ import { calloutSchema } from './packets.js';
  *   curve, a new enum value) is a feature and goes in `requires`.
  * - Executors ignore unknown keys: a new optional, non-critical field must not
  *   break an older executor. TS executors parse with
- *   parseRenderPlanForExecutor() (renderPlanExecutorSchema strips unknown
+ *   parseRenderPlanForExecutor(), which checks `requires` and then strips unknown
  *   keys); Swift decodes with Codable, which ignores them by default.
  * - renderPlanSchema is strict (unknown keys and unknown features fail). It is
  *   for the builder's self-check and for tests, never for an executor.
@@ -32,7 +32,10 @@ import { calloutSchema } from './packets.js';
  * drops any plan that is not strictly newer. `revision` is the project
  * revision the plan was built from; `buildSeq` increases with every build on
  * the device (a rebuild for a new media resolution or a new target keeps the
- * revision and bumps buildSeq).
+ * revision and bumps buildSeq). buildSeq is per JS/player session, not
+ * persisted: it restarts with the app. So an executor resets its ordering when
+ * a new player instance (or a new export) receives its first plan, and only
+ * orders the plans that one instance receives.
  *
  * TIME AND FRAMES
  * - Seconds on the output timeline, from 0 to `duration`. A span [start, end)
@@ -44,9 +47,16 @@ import { calloutSchema } from './packets.js';
  *   executors refuse to export it, and a preview shows only the background.
  * - Segment boundaries sit on the frame grid (multiples of 1 / fps), joins are
  *   exact (each start is bit-for-bit the previous end), and the last segment
- *   ends exactly at `duration`. The builder quantizes clip starts to the grid
- *   and rounds the duration up to whole frames. Legacy render.ts already shows
- *   a clip from frame trunc(start * fps), so this matches it on purpose.
+ *   ends exactly at `duration`. The builder quantizes BOTH edges of every clip
+ *   with one function, planFrameAt(t, fps) = floor(t * fps + 1e-6): a clip on
+ *   [start, end) covers frames [planFrameAt(start), planFrameAt(end)), and the
+ *   duration is planFrameCount's whole frames. Legacy render.ts computes
+ *   trunc(t / (1 / fps)), which lands one frame early on exact frame times
+ *   (61/30 gives frame 60): an intended divergence. Where a quantized end
+ *   would ask for source past the asset's end, the builder ends the playing
+ *   segment there and covers the remainder with a `hold`, never with frames
+ *   the asset does not have. Audio `at` keeps the exact, unquantized time, so
+ *   a clip's sound may sit up to one frame off its picture, as in legacy.
  * - Sampling: a layer or timed overlay whose source time at t is s shows the
  *   latest source frame with presentation time <= s + 1e-6. Always, not only
  *   for holds.
@@ -83,6 +93,15 @@ import { calloutSchema } from './packets.js';
  * An `assetRef` names a source, never a location. The device's media ladder
  * (local original, proxy, server copy) resolves it; the plan does not. GIF
  * frame delays under 2 cs play as 10 cs, as browsers and ffmpeg do.
+ * SECURITY: a plan is untrusted input. Any executor or server route resolves
+ * every `assetRef.id` and `raster.id` ONLY within the requesting user's own
+ * assets (the same scoping as the asset routes), never by bare id, or a plan
+ * becomes a way to read someone else's media (IDOR).
+ *
+ * LIMITS
+ * Every string, array and size is capped (PLAN_LIMITS) so a hostile plan
+ * cannot make a server parse or render unbounded work. The caps sit well
+ * above anything the builder emits for a real edit.
  *
  * WHAT THE PLAN OWNS
  * The plan's size, fps, colour and loudness win. exportProject() options
@@ -113,6 +132,35 @@ export const RENDER_PLAN_FEATURES: readonly string[] = [];
 /** Float slack for comparing builder-computed times (key bounds, frame grid). */
 export const RENDER_PLAN_EPSILON = 1e-6;
 
+/**
+ * Hard caps on a plan. Generous on purpose: they bound hostile input, not
+ * real edits. There is no project-level duration cap in the document today,
+ * so `durationSec` is the plan's own ceiling (4 hours).
+ */
+export const PLAN_LIMITS = {
+  /** Longest side in pixels (4K UHD). */
+  longSidePx: 3840,
+  /** Shorter side in pixels: 3840 x 2160 either way round, never 3840 x 3840. */
+  shortSidePx: 2160,
+  durationSec: 4 * 60 * 60,
+  /** Any one piece of text: a caption line, a word, a label, an emoji run. */
+  textChars: 500,
+  /** Ids, revs, feature names. */
+  idChars: 128,
+  requires: 32,
+  segments: 20_000,
+  layersPerSegment: 32,
+  /** Per key array: a per-frame zoom sample over a 10-minute clip at 60 fps fits. */
+  keys: 50_000,
+  overlays: 2_000,
+  captions: 10_000,
+  linesPerCaption: 12,
+  wordsPerLine: 200,
+  audio: 2_000,
+} as const;
+
+const id = z.string().min(1).max(PLAN_LIMITS.idChars);
+const text = z.string().min(1).max(PLAN_LIMITS.textChars);
 const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'expected a #RRGGBB colour');
 const hexColorWithAlpha = z.string().regex(/^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/, 'expected a #RRGGBB or #RRGGBBAA colour');
 const seconds = z.number().finite().min(0);
@@ -131,7 +179,7 @@ function planSchemas(mode: UnknownKeys) {
 
   const assetRef = obj({
     /** The document's `clip.assetId`. */
-    id: z.string().min(1),
+    id,
     kind: z.enum(['video', 'audio', 'image']),
   });
 
@@ -189,7 +237,7 @@ function planSchemas(mode: UnknownKeys) {
    */
   const videoLayer = obj({
     /** The document clip this layer draws: for selection handles and diagnostics, never for timing. */
-    clipId: z.string().min(1),
+    clipId: id,
     /** Index of the clip's track among the project's video tracks, in document order (0 = first). */
     trackIndex: z.number().int().min(0),
     /**
@@ -204,20 +252,20 @@ function planSchemas(mode: UnknownKeys) {
     srcStart: seconds,
     speed: speedSchema,
     /** At least one key. One key is a static pose. */
-    cropKeys: z.array(cropKey).min(1),
+    cropKeys: z.array(cropKey).min(1).max(PLAN_LIMITS.keys),
     /**
      * Layer alpha, multiplied in (in linear light) before the layer is
      * composited over what is below it: a crossfade fades the incoming layer
      * from 0 to 1 over the outgoing one. Empty means fully opaque.
      */
-    opacityKeys: z.array(unitKey),
+    opacityKeys: z.array(unitKey).max(PLAN_LIMITS.keys),
     /**
      * Fade toward black while staying opaque, as ffmpeg's `fade` without
      * alpha but in linear light: pixel = source * (1 - value). A dip to black
      * ramps the outgoing layer 0 to 1 and the incoming one 1 to 0. Empty means
      * no dimming.
      */
-    dimKeys: z.array(unitKey),
+    dimKeys: z.array(unitKey).max(PLAN_LIMITS.keys),
     /**
      * Freeze-frame: the layer shows the single source frame sampled at
      * `frameAt` (source seconds, by the sampling rule) for the whole segment,
@@ -238,7 +286,7 @@ function planSchemas(mode: UnknownKeys) {
     start: seconds,
     end: seconds,
     /** N layers, any number of video tracks overlapping. */
-    layers: z.array(videoLayer),
+    layers: z.array(videoLayer).max(PLAN_LIMITS.layersPerSegment),
   }).superRefine((segment, ctx) => {
     if (!(segment.end > segment.start)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `segment end ${segment.end} must be after its start ${segment.start}`, path: ['end'] });
@@ -320,7 +368,7 @@ function planSchemas(mode: UnknownKeys) {
     card: obj({ ...rect, radiusPx: z.number().finite().min(0), color: hexColorWithAlpha }),
     glyph: obj({ shape: z.enum(['check', 'cross']), ...rect, strokePx: size, color: hexColor }).optional(),
     label: obj({
-      text: z.string().min(1),
+      text,
       font: planFontFaceSchema,
       sizePx: size,
       x: pixels,
@@ -347,7 +395,7 @@ function planSchemas(mode: UnknownKeys) {
    * Apple Color Emoji draw the overlay's `raster` instead.
    */
   const emoji = obj({
-    text: z.string().min(1),
+    text,
     sizePx: size,
     x: pixels,
     y: pixels,
@@ -368,7 +416,7 @@ function planSchemas(mode: UnknownKeys) {
    */
   const overlay = obj({
     /** The document clip id. */
-    id: z.string().min(1),
+    id,
     kind: z.enum(['image', 'gif', 'emoji', 'callout', 'broll']),
     /** Stacking among overlays: higher draws on top. Unique across the plan. */
     z: z.number().int(),
@@ -424,7 +472,7 @@ function planSchemas(mode: UnknownKeys) {
    * animation and the ASS durations; v1 executors do not draw with it.
    */
   const captionWord = obj({
-    w: z.string().min(1),
+    w: text,
     s: seconds,
     e: seconds,
     /** Pen x where the word starts, in output pixels (same space as the line's x). */
@@ -438,7 +486,7 @@ function planSchemas(mode: UnknownKeys) {
    * ligatures off, and never re-wraps or re-centres it.
    */
   const captionLine = obj({
-    text: z.string().min(1),
+    text,
     /** Pen x of the first glyph (left edge of the advance box), output pixels. */
     x: pixels,
     /** The BASELINE, in output pixels from the top: not the line's top or centre. */
@@ -449,19 +497,19 @@ function planSchemas(mode: UnknownKeys) {
      * Karaoke only. When present the line is drawn word by word, each word at
      * its own `x`, and the words joined by single spaces equal `text`.
      */
-    words: z.array(captionWord).min(1).optional(),
+    words: z.array(captionWord).min(1).max(PLAN_LIMITS.wordsPerLine).optional(),
   });
 
   const caption = obj({
     /** The document clip id. */
-    id: z.string().min(1),
+    id,
     /**
      * Content + style revision: a stable hash of everything that changes the
      * caption's pixels (text, words, style, layout). The CaptionRenderer's
      * cache key is (id, rev, sung-word count, scale), so any visible change
      * must change `rev` (OV10).
      */
-    rev: z.string().min(1),
+    rev: id,
     /**
      * Timeline span, after lane overlap trimming (ass.ts: a lane's previous
      * caption ends where the next starts). The builder drops a caption that
@@ -512,7 +560,7 @@ function planSchemas(mode: UnknownKeys) {
      * drawing executor ignores this; the ASS writer uses it for `\an`.
      */
     align: z.enum(['left', 'center', 'right']),
-    lines: z.array(captionLine).min(1),
+    lines: z.array(captionLine).min(1).max(PLAN_LIMITS.linesPerCaption),
     /**
      * Overflow receipt (OV7): the caption did not fit at its styled size, so
      * the layout shrank it by `scale` (sizePx already includes it). Never an
@@ -589,9 +637,9 @@ function planSchemas(mode: UnknownKeys) {
    */
   const audioEntry = obj({
     /** Unique among audio entries. */
-    id: z.string().min(1),
+    id,
     /** The document clip this sound comes from; one clip may give several entries. */
-    clipId: z.string().min(1),
+    clipId: id,
     /** A `video` asset (its own sound) or an `audio` asset. */
     assetRef,
     at: seconds,
@@ -599,7 +647,7 @@ function planSchemas(mode: UnknownKeys) {
     out: seconds,
     speed: speedSchema,
     /** Linear amplitude keys, absolute timeline seconds inside the entry's span. At least one. */
-    gainKeys: z.array(obj({ t: seconds, gain: z.number().finite().min(0).max(4) })).min(1),
+    gainKeys: z.array(obj({ t: seconds, gain: z.number().finite().min(0).max(4) })).min(1).max(PLAN_LIMITS.keys),
     fadeIn: audioFade,
     fadeOut: audioFade,
   }).superRefine((entry, ctx) => {
@@ -622,19 +670,20 @@ function planSchemas(mode: UnknownKeys) {
   });
 
   /**
-   * Master loudness (8A), executable exactly as server/src/services/render-qa.ts
-   * does it today. With `targetLufs` set:
+   * Master loudness (8A). The gain rule is server/src/services/render-qa.ts's;
+   * the limiter is always on. With `targetLufs` set:
    * 1. Measure the mix's integrated loudness I (EBU R128).
-   * 2. No gain and no limiter when I <= silentBelowLufs (nothing to
-   *    normalize) or |I - targetLufs| <= deadbandLu (close enough).
-   * 3. Otherwise apply one gain of (targetLufs - I) dB, rounded to 0.1 dB,
-   *    then a look-ahead peak limiter at limiterCeilingDb (video delayed to
-   *    match the limiter's latency on the device).
+   * 2. Gain: none when I <= silentBelowLufs (nothing to normalize) or
+   *    |I - targetLufs| <= deadbandLu (close enough); otherwise one gain of
+   *    (targetLufs - I) dB, rounded to 0.1 dB.
+   * 3. Limiter: always, whether or not step 2 applied gain, a look-ahead peak
+   *    limiter at limiterCeilingDb (video delayed to match its latency on the
+   *    device). Legacy render-qa.ts limits only when it applies gain, so an
+   *    in-deadband master with hot peaks now gets limited: intended.
    * `truePeakLimitDb` is the acceptance limit for the finished file's true
    * peak (a QA warning above it, a test failure in CI), not a processing
    * setting: the ceiling sits under it for inter-sample headroom.
-   * `targetLufs: null` turns all of it off: no measurement-driven gain, no
-   * limiter.
+   * `targetLufs: null` turns all of it off: no gain, no limiter.
    */
   const loudness = obj({
     targetLufs: z.number().finite().max(0).nullable(),
@@ -651,19 +700,21 @@ function planSchemas(mode: UnknownKeys) {
   const plan = obj({
     version: z.literal(RENDER_PLAN_VERSION),
     /** Critical features beyond v1 that the executor must support (see SCHEMA EVOLUTION). Empty in v1. */
-    requires: z.array(z.string().min(1)),
+    requires: z.array(id).max(PLAN_LIMITS.requires),
     /** The project revision this plan was built from (OV10, OV1 snapshot key). */
     revision: z.number().int().min(0),
-    /** Monotonic build counter: plans order by (revision, buildSeq). */
+    /** Monotonic build counter for this JS/player session: plans order by (revision, buildSeq). */
     buildSeq: z.number().int().min(0),
-    /** Output frame in pixels. Even, for 4:2:0 encoding. */
+    /** Output frame in pixels: at most PLAN_LIMITS.longSidePx by PLAN_LIMITS.shortSidePx, either orientation. */
     size: obj({
-      w: z.number().int().positive().multipleOf(2),
-      h: z.number().int().positive().multipleOf(2),
+      w: z.number().int().positive().multipleOf(2).max(PLAN_LIMITS.longSidePx),
+      h: z.number().int().positive().multipleOf(2).max(PLAN_LIMITS.longSidePx),
+    }).refine((frame) => Math.min(frame.w, frame.h) <= PLAN_LIMITS.shortSidePx, {
+      message: `the shorter side must be at most ${PLAN_LIMITS.shortSidePx} px`,
     }),
     fps: z.number().int().min(1).max(120),
     /** Output length in seconds, a whole number of frames. 0 only for a plan with nothing on it. */
-    duration: seconds,
+    duration: seconds.max(PLAN_LIMITS.durationSec),
     /**
      * Output encoding (4A + OV6). `sdr`: BT.709 SDR, H.264 High 8-bit; HDR
      * sources are tone mapped. `hlg`: BT.2020 HLG, HEVC Main10. Compositing
@@ -673,10 +724,10 @@ function planSchemas(mode: UnknownKeys) {
     /** Fills the frame under every layer (render.ts BASE_COLOR #0B0B0F). */
     background: hexColor,
     loudness,
-    video: obj({ segments: z.array(videoSegment) }),
-    overlays: z.array(overlay),
-    captions: z.array(caption),
-    audio: z.array(audioEntry),
+    video: obj({ segments: z.array(videoSegment).max(PLAN_LIMITS.segments) }),
+    overlays: z.array(overlay).max(PLAN_LIMITS.overlays),
+    captions: z.array(caption).max(PLAN_LIMITS.captions),
+    audio: z.array(audioEntry).max(PLAN_LIMITS.audio),
   }).superRefine((value, ctx) => {
     const { duration, fps } = value;
     const within = (end: number): boolean => end <= duration + RENDER_PLAN_EPSILON;
@@ -738,7 +789,11 @@ function planSchemas(mode: UnknownKeys) {
     });
     checkUniqueIds(value.captions, ctx, 'captions');
     const byLane = new Map<number, number[]>();
-    value.captions.forEach((item, index) => byLane.set(item.lane, [...(byLane.get(item.lane) ?? []), index]));
+    value.captions.forEach((item, index) => {
+      const lane = byLane.get(item.lane);
+      if (lane) lane.push(index);
+      else byLane.set(item.lane, [index]);
+    });
     for (const indexes of byLane.values()) {
       const ordered = [...indexes].sort((left, right) => value.captions[left]!.start - value.captions[right]!.start);
       for (let at = 1; at < ordered.length; at += 1) {
@@ -774,8 +829,12 @@ const lenient = planSchemas('strip');
 
 /** Strict: unknown keys and unknown required features fail. For the builder's self-check and tests. */
 export const renderPlanSchema = strict.plan;
-/** For executors: unknown keys are stripped, `requires` is left to parseRenderPlanForExecutor. */
-export const renderPlanExecutorSchema = lenient.plan;
+/**
+ * The stripping parse behind parseRenderPlanForExecutor. Unchecked: it does
+ * not look at `requires`, so executors call parseRenderPlanForExecutor, never
+ * this directly.
+ */
+export const renderPlanExecutorSchemaUnchecked = lenient.plan;
 
 export const planAssetRefSchema = strict.assetRef;
 export const planCropKeySchema = strict.cropKey;
@@ -814,8 +873,14 @@ export type PlanLoudness = z.infer<typeof planLoudnessSchema>;
 
 /** Thrown when a plan needs a feature this executor does not draw. */
 export class UnsupportedPlanError extends Error {
-  constructor(readonly missing: readonly string[]) {
-    super(`This renderer cannot draw a plan that requires: ${missing.join(', ')}`);
+  readonly missing: readonly string[];
+
+  constructor(missing: readonly string[]) {
+    // Bounded: the names come from untrusted input and end up in logs and responses.
+    const shown = missing.slice(0, 5).map((feature) => (feature.length > 64 ? `${feature.slice(0, 64)}...` : feature));
+    const more = missing.length > shown.length ? ` and ${missing.length - shown.length} more` : '';
+    super(`This renderer cannot draw a plan that requires: ${shown.join(', ')}${more}`);
+    this.missing = missing.slice(0, PLAN_LIMITS.requires);
     this.name = 'UnsupportedPlanError';
   }
 }
@@ -826,15 +891,23 @@ export class UnsupportedPlanError extends Error {
  * name rather than a parse error, then parse ignoring unknown keys.
  */
 export function parseRenderPlanForExecutor(input: unknown, supported: readonly string[] = RENDER_PLAN_FEATURES): RenderPlan {
-  const head = z.object({ requires: z.array(z.string()) }).safeParse(input);
+  const head = z.object({ requires: z.array(z.string()).max(PLAN_LIMITS.requires) }).safeParse(input);
   const missing = head.success ? head.data.requires.filter((feature) => !supported.includes(feature)) : [];
   if (missing.length > 0) throw new UnsupportedPlanError(missing);
-  return renderPlanExecutorSchema.parse(input);
+  return renderPlanExecutorSchemaUnchecked.parse(input);
 }
 
 /** Timeline second an audio entry stops playing. */
 export function audioEntryEnd(entry: Pick<PlanAudioEntry, 'at' | 'in' | 'out' | 'speed'>): number {
   return entry.at + (entry.out - entry.in) / entry.speed;
+}
+
+/**
+ * The frame a timeline time falls on: floor(t * fps + 1e-6). The builder
+ * quantizes both edges of every clip with it (see TIME AND FRAMES).
+ */
+export function planFrameAt(t: number, fps: number): number {
+  return Math.floor(t * fps + RENDER_PLAN_EPSILON);
 }
 
 /** Output frames a plan renders: ceil(duration * fps - 1e-6). */
