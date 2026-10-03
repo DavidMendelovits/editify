@@ -69,8 +69,15 @@ function assInlineColor(hex: string): string {
   return `&H${assColor(hex).slice(4)}&`;
 }
 
+/**
+ * libass has no backslash escape (`\\` is not one): a backslash followed by
+ * n, N or h would become a line break or hard space. A WORD JOINER (U+2060,
+ * zero width, no line break) after each backslash keeps it literal.
+ */
+export const ASS_BACKSLASH = '\\\u2060';
+
 function assText(text: string): string {
-  return text.replaceAll('\\', '\\\\').replaceAll('{', '\\{').replaceAll('}', '\\}').replace(/\r?\n/g, '\\N');
+  return text.replaceAll('\\', ASS_BACKSLASH).replaceAll('{', '\\{').replaceAll('}', '\\}').replace(/\r?\n/g, '\\N');
 }
 
 function karaokeText(clip: Clip): string | undefined {
