@@ -519,3 +519,4 @@ export * from './safezone.js';
 export * from './sync.js';
 export * from './sync-plan.js';
 export * from './proposal.js';
+export * from './project-sync.js';

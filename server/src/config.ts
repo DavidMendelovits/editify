@@ -15,3 +15,10 @@ export const databasePath = process.env.DATABASE_PATH ?? join(dataRoot, 'editify
 export const port = Number(process.env.PORT ?? 3001);
 export const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`;
 export const supabaseUrl = process.env.SUPABASE_URL;
+/**
+ * Postgres for project sync and the cross-machine agent-turn lock (decision
+ * 4A). Unset: the /sync routes answer 503 and the lock is per process. In
+ * production, Supabase's session-mode pooler (port 5432), since the turn lock
+ * is a session-level advisory lock.
+ */
+export const databaseUrl = process.env.DATABASE_URL || undefined;

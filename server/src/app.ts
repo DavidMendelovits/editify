@@ -4,7 +4,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { registerAuth, type AuthOptions } from './auth.js';
-import { supabaseUrl } from './config.js';
+import { databaseUrl as configuredDatabaseUrl, supabaseUrl } from './config.js';
 import { EDITING_PRESETS } from '@editify/shared';
 import { ZodError } from 'zod';
 import { createProvider, type ToolProvider } from './agent/providers.js';
@@ -13,6 +13,8 @@ import { AssetStore } from './db/asset-store.js';
 import { ChatStore } from './db/chat-store.js';
 import { createDatabase, type EditifyDatabase } from './db/database.js';
 import { InsightStore } from './db/insight-store.js';
+import { createPgPool, PgSyncStore } from './db/pg-sync-store.js';
+import { PgTurnLock } from './db/pg-turn-lock.js';
 import { AssetAccessError, ProjectStore, VersionConflictError } from './db/project-store.js';
 import { RenderStore } from './db/render-store.js';
 import { ReportStore } from './db/report-store.js';
@@ -27,6 +29,7 @@ import { isLegalRoute, registerLegalRoutes } from './routes/legal.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerRenderRoutes } from './routes/renders.js';
 import { registerStyleRoutes } from './routes/style.js';
+import { registerSyncRoutes } from './routes/sync.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { ensureSoundLibrary } from './media/sound-library.js';
 import { RenderQueue } from './services/render-queue.js';
@@ -46,6 +49,8 @@ export interface AppOptions {
   logger?: boolean;
   /** Tests sign their own JWTs: a Supabase URL for the issuer and a local key set. */
   auth?: Pick<AuthOptions, 'supabaseUrl' | 'jwks'>;
+  /** Postgres for project sync; defaults to DATABASE_URL, and null turns it off. */
+  databaseUrl?: string | null;
 }
 
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
@@ -60,6 +65,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     try { done(null, body ? JSON.parse(body) : {}); } catch (error) { done(error as Error, undefined); }
   });
   const database = options.database ?? createDatabase();
+  const databaseUrl = options.databaseUrl === undefined ? configuredDatabaseUrl : options.databaseUrl ?? undefined;
+  const pgPool = databaseUrl ? createPgPool(databaseUrl) : undefined;
   const projects = new ProjectStore(database);
   const assets = new AssetStore(database);
   const renders = new RenderStore(database);
@@ -124,7 +131,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
-  registerAgentTurnRoutes(app, agent);
+  registerAgentTurnRoutes(app, agent, pgPool ? { lock: new PgTurnLock(pgPool) } : {});
+  registerSyncRoutes(app, pgPool ? new PgSyncStore(pgPool) : undefined);
   registerTelemetryRoutes(app, telemetry);
 
   app.setErrorHandler(async (error, _request, reply) => {
@@ -149,7 +157,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return await reply.code(500).send({ error: error instanceof Error ? error.message : 'Internal server error' });
   });
 
-  app.addHook('onClose', async () => { database.close(); });
+  app.addHook('onClose', async () => {
+    database.close();
+    await pgPool?.end();
+  });
   return app;
 }
 
