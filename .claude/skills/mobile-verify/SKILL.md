@@ -44,7 +44,9 @@ node $S/profile.mjs --timings timings.json --log server.ndjson [--chat chat.json
 - Requests with `via=replay` in the url are the replay's own polling: counted apart, never as the app's
 - Person time is the editing flow only; the export (tap + render wait, steps tagged `export`/`render`) is shown beside it. Render speed uses the server's encode time when the log has it
 - `chat.json`: `GET /projects/:id/chat`, for the agent's trace
-- `apps/mobile/e2e/standup-replay.mjs --record --review` does all of this (and exports 1080p at the end; `--skip-render` to skip)
+- `apps/mobile/e2e/standup-replay.mjs --record --review` does all of this and exports 1080p at the end. `--export device` (default) taps export in the UI and, when every clip is on the phone, waits on the device card (no server polling), reading the LUFS, pre-encode true peak and x realtime it shows; if the screen routes to the server it falls back to the server render. `--export server` is the old API render, `both` adds the server render as a comparison (in neither total), `none` (or `--skip-render`) skips it
+- Device and server renders sit side by side in a Render speed table, with the server baseline: the newest earlier stand-up review with a done server render at that resolution, or `--server-baseline 0.88`
+- Warm runs copy the newest cold-run registry rows (same media, matched by duration) to the fixture asset ids in the app's `local-media.db`, so the device path is offered; run a cold replay on that simulator first
 - Tests: `node --test .claude/skills/mobile-verify/scripts/test/*.test.mjs`
 
 ## Moment kinds

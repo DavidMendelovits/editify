@@ -69,6 +69,58 @@ export const HARNESS_QUERY = /[?&]via=replay(?:&|$)/;
 /** Export steps (the tap and the render wait) sit outside the comparable person time. */
 const EXPORT_TAGS = new Set(['export', 'render']);
 const isExport = (step) => EXPORT_TAGS.has(step.tag);
+/** A second export run only to compare paths (the server render after a device one): in neither total. */
+const isCompare = (step) => step.tag === 'compare';
+
+/** A server render: the replay's wall clock, and the server's own encode time when its job is logged. */
+function serverRender(r, renderJobs, str) {
+  const job = (r?.id ? renderJobs.find((j) => j.renderId === r.id) : undefined) ?? renderJobs.at(-1) ?? null;
+  let status = r?.status ?? (job ? (job.ok ? 'done' : 'error') : 'unknown');
+  if (job && !job.ok) status = 'error';
+  const output = r?.projectSeconds ?? r?.outputSeconds ?? null;
+  const wallSeconds = Number.isFinite(r?.seconds) ? r.seconds : null;
+  // The server's own encode time is the cleaner speed; wall clock adds polling and queueing.
+  const serverSeconds = job?.ok ? job.ms / 1000 : null;
+  const basisSeconds = serverSeconds ?? wallSeconds;
+  const fast = status === 'done' && output > 0 && basisSeconds > 0;
+  return {
+    path: 'server', id: r?.id ?? job?.renderId ?? null, resolution: r?.resolution ?? null, status, ...(r?.error ? { error: str(r.error, 300) } : {}),
+    ...(r?.note ? { note: str(r.note, 300) } : {}),
+    seconds: round(wallSeconds), serverSeconds: round(serverSeconds), queueMs: job ? job.waitMs : null, outputSeconds: round(output),
+    speedBasis: fast ? (serverSeconds != null ? 'server' : 'wall') : null,
+    xRealtime: fast ? round(output / basisSeconds) : null,
+    secondsPerOutputMinute: fast ? round(basisSeconds / (output / 60), 1) : null,
+    wallXRealtime: status === 'done' && output > 0 && wallSeconds > 0 ? round(output / wallSeconds) : null,
+  };
+}
+
+/**
+ * An on-device render: timed from the export tap to the card's done state (it covers
+ * preparing clips, the loudness pass, writing and saving), plus what the card showed
+ * (the app's own x realtime, LUFS, true peak) and the state changes seen while polling.
+ */
+function deviceRender(r) {
+  const str = (value, max = 120) => String(value).slice(0, max);
+  const num = (value) => (Number.isFinite(value) ? value : null);
+  const output = num(r.projectSeconds ?? r.outputSeconds);
+  const wallSeconds = num(r.seconds);
+  const done = r.status === 'done' && output > 0 && wallSeconds > 0;
+  const shown = r.shown ?? {};
+  return {
+    path: 'device', id: r.id ? str(r.id) : null, resolution: r.resolution ? str(r.resolution, 16) : null, status: str(r.status ?? 'unknown', 16),
+    ...(r.error ? { error: str(r.error, 300) } : {}),
+    seconds: round(wallSeconds), serverSeconds: null, queueMs: null, outputSeconds: round(output),
+    speedBasis: done ? 'wall' : null,
+    xRealtime: done ? round(output / wallSeconds) : null,
+    secondsPerOutputMinute: done ? round(wallSeconds / (output / 60), 1) : null,
+    wallXRealtime: done ? round(output / wallSeconds) : null,
+    shown: {
+      xRealtime: round(num(shown.xRealtime)), lufs: round(num(shown.lufs), 1), silent: shown.silent === true,
+      truePeakPreEncode: round(num(shown.truePeakPreEncode), 1), peakMemMB: round(num(shown.peakMemMB), 0), label: shown.label ? str(shown.label, 60) : null,
+    },
+    states: (Array.isArray(r.states) ? r.states : []).slice(0, 200).map((s) => ({ state: str(s?.state, 40), at: round(num(s?.at)) })),
+  };
+}
 
 /**
  * @param {{ timings: object, logText?: string, chat?: Array<object> }} input
@@ -160,6 +212,7 @@ export function buildProfile({ timings, logText = '', chat = null }) {
     if (s.note) out.note = s.note;
     if (s.tag) out.tag = s.tag;
     if (isExport(s)) out.export = true;
+    if (isCompare(s)) out.compare = true;
     if (s.kind !== 'wait') return out;
     const during = startedIn(requests, s);
     const routeCounts = Object.create(null);
@@ -191,29 +244,19 @@ export function buildProfile({ timings, logText = '', chat = null }) {
   const pollingDuringWaits = waitSteps.reduce((t, s) => t + (s.requests?.count ?? 0), 0);
   const harnessDuringWaits = waitSteps.reduce((t, s) => t + (s.requests?.harness ?? 0), 0);
 
-  // ── render ────────────────────────────────────────────────────────────────
-  let render = null;
-  const r = timings.render ?? null;
+  // ── renders ───────────────────────────────────────────────────────────────
+  // `timings.renders` lists every export of the run: the device path (the phone renders,
+  // timed from the tap to the card's done state) and/or the server path (POST /render
+  // until done, matched with its media job). Older timings have one server `render`.
+  // `profile.render` stays the primary one (the first) for the home card and old pages.
   const renderJobs = jobs.filter((j) => j.job === 'render');
-  if (r || renderJobs.length) {
-    const job = (r?.id ? renderJobs.find((j) => j.renderId === r.id) : undefined) ?? renderJobs.at(-1) ?? null;
-    let status = r?.status ?? (job ? (job.ok ? 'done' : 'error') : 'unknown');
-    if (job && !job.ok) status = 'error';
-    const output = r?.projectSeconds ?? r?.outputSeconds ?? null;
-    const wallSeconds = Number.isFinite(r?.seconds) ? r.seconds : null;
-    // The server's own encode time is the cleaner speed; wall clock adds polling and queueing.
-    const serverSeconds = job?.ok ? job.ms / 1000 : null;
-    const basisSeconds = serverSeconds ?? wallSeconds;
-    const fast = status === 'done' && output > 0 && basisSeconds > 0;
-    render = {
-      id: r?.id ?? job?.renderId ?? null, resolution: r?.resolution ?? null, status, ...(r?.error ? { error: str(r.error, 300) } : {}),
-      seconds: round(wallSeconds), serverSeconds: round(serverSeconds), queueMs: job ? job.waitMs : null, outputSeconds: round(output),
-      speedBasis: fast ? (serverSeconds != null ? 'server' : 'wall') : null,
-      xRealtime: fast ? round(output / basisSeconds) : null,
-      secondsPerOutputMinute: fast ? round(basisSeconds / (output / 60), 1) : null,
-      wallXRealtime: status === 'done' && output > 0 && wallSeconds > 0 ? round(output / wallSeconds) : null,
-    };
-  }
+  const inputs = Array.isArray(timings.renders) && timings.renders.length ? timings.renders : timings.render ? [timings.render] : renderJobs.length ? [{}] : [];
+  const renders = inputs.map((r) => (r.path === 'device' ? deviceRender(r) : serverRender(r, renderJobs, str)));
+  const render = renders[0] ?? null;
+  const b = timings.baseline;
+  const baseline = b && Number.isFinite(b.xRealtime)
+    ? { path: str(b.path ?? 'server', 16), xRealtime: round(b.xRealtime), resolution: b.resolution ? str(b.resolution, 16) : null, source: b.source ? str(b.source, 200) : null }
+    : null;
 
   // ── agent turn ────────────────────────────────────────────────────────────
   let agent = null;
@@ -249,7 +292,8 @@ export function buildProfile({ timings, logText = '', chat = null }) {
   // ── totals ────────────────────────────────────────────────────────────────
   // Person time covers the editing flow only, so it stays comparable with runs
   // that never exported; the export (tap + render wait) is reported beside it.
-  const sum = (kind, field, phase) => steps.filter((s) => s.kind === kind && (phase === undefined || isExport(s) === phase)).reduce((t, s) => t + (s[field] ?? 0), 0);
+  const sum = (kind, field, phase) => steps.filter((s) => s.kind === kind && !isCompare(s) && (phase === undefined || isExport(s) === phase)).reduce((t, s) => t + (s[field] ?? 0), 0);
+  const compareSeconds = steps.filter(isCompare).reduce((t, s) => t + (s.seconds ?? 0), 0);
   const productWaitSeconds = sum('wait', 'seconds', false);
   const humanEstimateSeconds = sum('human', 'humanSeconds', false);
   const renderWaitSeconds = sum('wait', 'seconds', true);
@@ -265,7 +309,9 @@ export function buildProfile({ timings, logText = '', chat = null }) {
     exportPersonSeconds: round(exportPersonSeconds),
     automationSeconds: round(automationSeconds),
     // Setup and glue outside any step: server start, app launch, marks, sleeps.
-    automationOverheadSeconds: round(Math.max(0, runSeconds - productWaitSeconds - renderWaitSeconds - automationSeconds)),
+    automationOverheadSeconds: round(Math.max(0, runSeconds - productWaitSeconds - renderWaitSeconds - automationSeconds - compareSeconds)),
+    // A comparison export (the server render after a device one): in neither person nor export time.
+    compareSeconds: round(compareSeconds),
     // Server processes only when the server reports them (media jobs).
     serverBusySeconds: hasMediaJobs ? round(unionSeconds(jobs.map((j) => [j.start, j.end]))) : null,
     requestBusySeconds: round(requestBusySeconds),
@@ -295,6 +341,8 @@ export function buildProfile({ timings, logText = '', chat = null }) {
       timeline: timed(requests).map((r) => ({ method: r.method, route: r.route, status: r.status, start: round(r.start, 3), end: round(r.end, 3), ms: round(r.ms, 1) })),
     },
     render,
+    renders,
+    baseline,
     agent,
   };
 }

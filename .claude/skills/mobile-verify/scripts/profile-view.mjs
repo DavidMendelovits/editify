@@ -57,6 +57,54 @@ export const PROFILE_CSS = `
 .profile code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
 @media (max-width:600px){.bars,.gantt{grid-template-columns:64px 1fr}.callouts{grid-template-columns:repeat(2,minmax(0,1fr))}.callout .big{font-size:19px}.gantt .axis span:nth-child(even){display:none}}`;
 
+/** Every export of the run (older profiles have only `render`). */
+const rendersOf = (p) => (Array.isArray(p.renders) && p.renders.length ? p.renders : p.render ? [p.render] : []);
+const pathName = (r) => (r.path === 'device' ? 'Device render' : 'Server render');
+
+function renderCard(r, named, baseline) {
+  const label = named ? pathName(r) : 'Render speed';
+  if (r.status !== 'done') {
+    return [named ? pathName(r) : 'Render', r.status === 'error' || r.status === 'failed' ? 'failed' : r.status, [r.resolution, r.seconds != null ? `after ${dur(r.seconds)}` : null, r.error, r.note].filter(Boolean).join(' · ')];
+  }
+  const speed = r.xRealtime != null ? `${r.xRealtime.toFixed(2)}x realtime` : dur(r.serverSeconds ?? r.seconds);
+  if (r.path === 'device') {
+    const shown = r.shown ?? {};
+    const vs = baseline?.xRealtime && r.xRealtime ? `${(r.xRealtime / baseline.xRealtime).toFixed(1)}x the server's ${baseline.xRealtime.toFixed(2)}x` : null;
+    const sub = [r.resolution, `tap to done ${dur(r.seconds)}`, r.outputSeconds != null ? `${dur(r.outputSeconds)} of output` : null,
+      shown.xRealtime != null ? `app shows ${shown.xRealtime.toFixed(1)}x` : null, vs].filter(Boolean).join(' · ');
+    return [label, speed, sub];
+  }
+  const basis = r.speedBasis === 'server' ? `server encode ${dur(r.serverSeconds)}` : r.speedBasis === 'wall' ? `wall clock ${dur(r.seconds)}` : null;
+  const sub = [r.resolution, r.secondsPerOutputMinute != null ? `${dur(r.secondsPerOutputMinute)} per output minute` : null,
+    r.outputSeconds != null ? `${dur(r.outputSeconds)} of output` : null, basis,
+    r.speedBasis === 'server' && r.seconds != null ? `waited ${dur(r.seconds)}` : null,
+    r.queueMs ? `queued ${ms(r.queueMs)}` : null, r.note].filter(Boolean).join(' · ');
+  return [label, speed, sub];
+}
+
+/** Device vs server render speed (this run, and the server baseline from an earlier run). */
+function renderTable(p) {
+  const renders = rendersOf(p);
+  if (!renders.some((r) => r.path === 'device') && !p.baseline) return '';
+  const x = (value) => (value == null ? 'n/a' : `${value.toFixed(2)}x`);
+  const rows = renders.map((r) => {
+    const shown = r.shown ?? {};
+    const audio = r.path !== 'device' ? '' : [shown.silent ? 'silent' : shown.lufs != null ? `${shown.lufs.toFixed(1)} LUFS` : null,
+      shown.truePeakPreEncode != null ? `${shown.truePeakPreEncode.toFixed(1)} dBTP pre-encode` : null].filter(Boolean).join(' · ');
+    const memory = r.path === 'device' ? (shown.peakMemMB != null ? `${shown.peakMemMB} MB` : 'not shown') : '';
+    const took = r.path === 'device' ? `${dur(r.seconds)} tap to done` : r.speedBasis === 'server' ? `${dur(r.serverSeconds)} encode (waited ${dur(r.seconds)})` : dur(r.seconds);
+    return `<tr><td><b>${esc(pathName(r))}</b> <span class="muted">this run</span></td><td>${esc(r.resolution ?? '')}</td><td>${r.status === 'done' ? '' : `<span class="kind issue">${esc(r.status)}</span>`}</td><td class="n"><b>${esc(x(r.xRealtime))}</b></td><td class="n">${esc(took)}</td><td class="n">${r.secondsPerOutputMinute != null ? esc(dur(r.secondsPerOutputMinute)) : 'n/a'}</td><td>${esc(audio)}</td><td class="n">${esc(memory)}</td></tr>`;
+  });
+  if (p.baseline) {
+    const b = p.baseline;
+    rows.push(`<tr><td><b>${esc(b.path === 'device' ? 'Device render' : 'Server render')}</b> <span class="muted">earlier run${b.source ? ` (${esc(b.source)})` : ''}</span></td><td>${esc(b.resolution ?? '')}</td><td></td><td class="n"><b>${esc(x(b.xRealtime))}</b></td><td class="n">n/a</td><td class="n">${b.xRealtime ? esc(dur(60 / b.xRealtime)) : 'n/a'}</td><td></td><td></td></tr>`);
+  }
+  const states = renders.find((r) => r.path === 'device' && r.states?.length)?.states ?? [];
+  const stateLine = states.length ? `<p class="muted" style="font-size:12px">Device card states (seconds after the tap): ${states.map((s) => `${esc(s.state)} ${esc(dur(s.at))}`).join(' → ')}</p>` : '';
+  return `<h3>Render speed</h3><div class="tablewrap"><table><tr><th>Path</th><th>Resolution</th><th>Status</th><th class="n">x realtime</th><th class="n">Took</th><th class="n">Per output minute</th><th>Audio (shown)</th><th class="n">Peak memory</th></tr>${rows.join('')}</table></div>
+<p class="muted" style="font-size:12px">Device speed is the replay's clock from the export tap to the card's done state (preparing clips, the loudness pass, writing, saving). Server speed is the server's own encode time when its job is logged.</p>${stateLine}`;
+}
+
 function callouts(p) {
   const t = p.totals;
   const cards = [];
@@ -66,20 +114,7 @@ function callouts(p) {
     ? `server busy ${dur(t.serverBusySeconds)}`
     : t.requestBusySeconds != null ? `requests in flight ${dur(t.requestBusySeconds)}; background work not logged` : 'no server log';
   cards.push(['Product waits', dur(t.productWaitSeconds), serverLine]);
-  if (p.render) {
-    const r = p.render;
-    if (r.status !== 'done') {
-      cards.push(['Render', r.status === 'error' ? 'failed' : r.status, [r.resolution, r.seconds != null ? `after ${dur(r.seconds)}` : null, r.error].filter(Boolean).join(' · ')]);
-    } else {
-      const speed = r.xRealtime != null ? `${r.xRealtime.toFixed(2)}x realtime` : dur(r.serverSeconds ?? r.seconds);
-      const basis = r.speedBasis === 'server' ? `server encode ${dur(r.serverSeconds)}` : r.speedBasis === 'wall' ? `wall clock ${dur(r.seconds)}` : null;
-      const sub = [r.resolution, r.secondsPerOutputMinute != null ? `${dur(r.secondsPerOutputMinute)} per output minute` : null,
-        r.outputSeconds != null ? `${dur(r.outputSeconds)} of output` : null, basis,
-        r.speedBasis === 'server' && r.seconds != null ? `waited ${dur(r.seconds)}` : null,
-        r.queueMs ? `queued ${ms(r.queueMs)}` : null].filter(Boolean).join(' · ');
-      cards.push(['Render speed', speed, sub]);
-    }
-  }
+  for (const r of rendersOf(p)) cards.push(renderCard(r, rendersOf(p).length > 1 || r.path === 'device', p.baseline));
   if (p.agent) {
     const a = p.agent;
     const sub = a.toolCalls != null
@@ -109,7 +144,7 @@ function timeline(p) {
   const width = (a, b) => Math.max(0.15, pct(Math.max(0, b) - Math.max(0, a), end)).toFixed(2);
   const block = (cls, a, b, title) => `<b class="${cls}" style="left:${at(a)}%;width:${width(a, b)}%" title="${esc(title)}"></b>`;
   const rows = [];
-  rows.push(['Person', p.steps.map((s) => block(s.kind === 'wait' ? (s.export ? 'render' : 'wait') : 'human', s.start, s.end,
+  rows.push(['Person', p.steps.map((s) => block(s.kind === 'wait' ? (s.export || s.compare ? 'render' : 'wait') : 'human', s.start, s.end,
     `${s.name}: ${dur(s.seconds)}${s.kind === 'human' && s.humanSeconds != null ? ` (a person ~${dur(s.humanSeconds)})` : ''}`)).join('')]);
   const byJob = new Map();
   for (const j of p.jobs) { if (!byJob.has(j.job)) byJob.set(j.job, []); byJob.get(j.job).push(j); }
@@ -137,7 +172,7 @@ function waitsTable(p) {
     ? '<tr><th>Wait</th><th class="n">Took</th><th class="n">Server busy</th><th class="n">Queued</th><th class="n">Idle</th><th class="n">Requests</th></tr>'
     : '<tr><th>Wait</th><th class="n">Took</th><th class="n">Requests in flight</th><th class="n">Requests</th><th>Most polled</th></tr>';
   const body = waits.map((s) => {
-    const label = `<b>${esc(s.name)}</b>${s.export ? '<span class="muted"> (export)</span>' : ''}`
+    const label = `<b>${esc(s.name)}</b>${s.export ? '<span class="muted"> (export)</span>' : s.compare ? '<span class="muted"> (comparison, not in any total)</span>' : ''}`
       + (s.uncovered ? '<span class="flag" title="No request was in flight for most of this wait; the server does not log its background jobs">background work not logged</span>' : '');
     const top = Object.entries(s.requests?.byRoute ?? {}).sort((a, b) => b[1] - a[1])[0];
     const subs = (s.jobs ?? []).map((j) => `<tr class="sub"><td>${esc(j.job)}${j.assetId ? ` <code>${esc(shortId(j.assetId))}</code>` : ''}${j.ok ? '' : ' <span class="kind issue">failed</span>'}</td><td class="n">${esc(ms(j.ms))}</td><td class="n">${esc(dur(j.overlapSeconds))} in this wait</td><td class="n">${j.waitMs ? esc(ms(j.waitMs)) : ''}</td><td></td><td></td></tr>`);
@@ -165,6 +200,7 @@ export function profileSection(p) {
   return `<section class="profile" id="profile"><h2>Profile</h2>
 <div class="muted">Where this run's time went: a person's time is human estimates plus product waits; server work comes from the server log.</div>${notes}
 ${callouts(p)}
+${renderTable(p)}
 <h3>Where the time went</h3>${stackedBars(p)}
 <h3>Timeline</h3>${timeline(p)}
 <h3>User waits</h3>${waitsTable(p)}
@@ -176,6 +212,12 @@ ${callouts(p)}
 export function profileChips(p) {
   if (!p?.totals) return '';
   const chips = [`<span class="chip" title="person time">person ~${esc(dur(p.totals.personSeconds))}</span>`];
-  if (p.render?.xRealtime != null) chips.push(`<span class="chip" title="render speed">render ${esc(p.render.xRealtime.toFixed(1))}x</span>`);
+  const renders = rendersOf(p);
+  const named = renders.length > 1 || renders.some((r) => r.path === 'device');
+  for (const r of renders) {
+    if (r.xRealtime == null) continue;
+    const name = named ? (r.path === 'device' ? 'device' : 'server') : 'render';
+    chips.push(`<span class="chip" title="${esc(named ? pathName(r) : 'render speed')}">${name} ${esc(r.xRealtime.toFixed(1))}x</span>`);
+  }
   return chips.join('');
 }
