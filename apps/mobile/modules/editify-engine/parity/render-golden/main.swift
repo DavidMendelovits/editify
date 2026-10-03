@@ -42,6 +42,11 @@ struct Manifest: Decodable {
     let channelTones: [Double]?
     /// Video: per-frame durations in 1/600 s, cycled (variable frame rate).
     let frameDurations600: [Int]?
+    /// Video: the writer session starts here, so the track's edit list maps
+    /// track time 0 to this media time (a non-zero edit start).
+    let editStart: Double?
+    /// PNG: a solid sRGB colour (instead of the oriented logo pattern).
+    let solid: [Double]?
   }
   struct GifFrame: Decodable { let rgb: [Double]; let delayCs: Int }
   struct Probe: Decodable { let name: String; let x: Double; let y: Double; let r: Int? }
@@ -233,7 +238,7 @@ func writeVideo(_ media: Manifest.Media, to url: URL) throws -> String {
       audioInput = audio
     }
     guard writer.startWriting() else { throw HarnessError("startWriting \(codec): \(writer.error?.localizedDescription ?? "?")") }
-    writer.startSession(atSourceTime: .zero)
+    writer.startSession(atSourceTime: CMTime(seconds: media.editStart ?? 0, preferredTimescale: 600_000))
     let group = DispatchGroup()
     var failure: Error?
     group.enter()
@@ -336,8 +341,17 @@ func cgImage(_ image: CIImage, width: Int, height: Int) -> CGImage {
 /// The logo, upright: 100 x 160, top half red, bottom half blue, a white square
 /// top-left. Stored rotated with EXIF orientation 6 (rotate 90 clockwise to view).
 func writeLogo(_ media: Manifest.Media, to url: URL) throws {
-  let w = 100.0, h = 160.0
   let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+  if let solid = media.solid {
+    let w = media.w ?? 100, h = media.h ?? 100
+    let image = CIImage(color: CIColor(red: solid[0], green: solid[1], blue: solid[2], alpha: 1, colorSpace: srgb)!)
+      .cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
+    guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw HarnessError("png destination") }
+    CGImageDestinationAddImage(destination, cgImage(image, width: w, height: h), nil)
+    guard CGImageDestinationFinalize(destination) else { throw HarnessError("png write") }
+    return
+  }
+  let w = 100.0, h = 160.0
   func fill(_ r: CGRect, _ c: [CGFloat]) -> CIImage { CIImage(color: CIColor(red: c[0], green: c[1], blue: c[2], alpha: 1, colorSpace: srgb)!).cropped(to: r) }
   var upright = fill(CGRect(x: 0, y: 0, width: w, height: h / 2), [0, 0.2, 1])
     .composited(over: fill(CGRect(x: 0, y: h / 2, width: w, height: h / 2), [1, 0.1, 0.1]))
@@ -421,7 +435,8 @@ for (id, media) in manifest.media.sorted(by: { $0.key < $1.key }) {
 let resolver = PlanAssetResolver(
   asset: { ref in
     guard ref.kind != .image, let url = mediaFiles[ref.id] else { throw HarnessError("no \(ref.kind.rawValue) asset \(ref.id)") }
-    return AVURLAsset(url: url)
+    // Precise timing, as the resolver contract requires (holds snap to real frame timestamps).
+    return AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
   },
   imageFile: { ref in
     guard ref.kind == .image, let url = mediaFiles[ref.id] else { throw HarnessError("no image asset \(ref.id)") }
@@ -472,6 +487,9 @@ func readFrame(_ built: BuiltPlan, frame k: Int) throws -> CVPixelBuffer {
   return buffer
 }
 
+/// Samples the last readMix dropped past the plan's end.
+var lastOvershoot = 0
+
 /// The stereo mix as left and right channels.
 func readMix(_ built: BuiltPlan) throws -> (left: [Float], right: [Float]) {
   let reader = try AVAssetReader(asset: built.composition)
@@ -484,26 +502,21 @@ func readMix(_ built: BuiltPlan) throws -> (left: [Float], right: [Float]) {
   reader.add(output)
   guard reader.startReading() else { throw HarnessError("audio reader: \(reader.error?.localizedDescription ?? "?")") }
   var left: [Float] = [], right: [Float] = []
-  // Place every buffer by its PTS and keep [0, duration): time-pitch processing
-  // emits a tail past the end, which T7's writer must drop the same way.
-  let total = Int((built.composition.duration.seconds * 48_000).rounded())
-  left = [Float](repeating: 0, count: total)
-  right = [Float](repeating: 0, count: total)
-  var written = 0
-  while let sample = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(sample) {
+  // PlanMixTrim drops what time-pitch emits past the plan's end; the rest is
+  // contiguous, so samples append in order.
+  let end = built.composition.duration
+  var overshoot = 0
+  while let raw = output.copyNextSampleBuffer() {
+    overshoot += CMSampleBufferGetNumSamples(raw)
+    guard let sample = PlanMixTrim.trim(raw, end: end), let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+    overshoot -= CMSampleBufferGetNumSamples(sample)
     let length = CMBlockBufferGetDataLength(block)
     var bytes = [Float](repeating: 0, count: length / 4)
     _ = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
-    let first = Int((CMSampleBufferGetPresentationTimeStamp(sample).seconds * 48_000).rounded())
     var index = 0
-    while index + 1 < bytes.count {
-      let at = first + index / 2
-      if at >= 0, at < total { left[at] = bytes[index]; right[at] = bytes[index + 1]; written = max(written, at + 1) }
-      index += 2
-    }
+    while index + 1 < bytes.count { left.append(bytes[index]); right.append(bytes[index + 1]); index += 2 }
   }
-  left = Array(left.prefix(written))
-  right = Array(right.prefix(written))
+  lastOvershoot = overshoot
   guard reader.status != .failed else { throw HarnessError("audio reader: \(reader.error?.localizedDescription ?? "?")") }
   return (left, right)
 }
@@ -751,6 +764,8 @@ let sharedOptions = PlanBuildOptions(fonts: fonts, captions: CaptionRenderer(fon
 let basePlan = try fixturePlan("overlays")
 let firstMedia = try await PlanBuilder.prepare(basePlan, resolver: resolver)
 let first = try PlanBuilder.assemble(basePlan, media: firstMedia, options: sharedOptions)
+let decodedAtBuild = sharedMedia.cachedImages
+_ = try readFrame(first, frame: 40)  // stills and a GIF frame decode now, at draw time
 let decodedAfterFirst = sharedMedia.cachedImages
 let zoomed = try fixturePlan("overlays") {
   edit(&$0, ["video", "segments", 0, "layers", 0, "cropKeys", 0, "scale"], 1.2)
@@ -762,6 +777,7 @@ let moved = try fixturePlan("overlays") {
   edit(&$0, ["audio", 0, "gainKeys", 0, "t"], 0.5)
 }
 let updated = try PlanBuilder.update(first, to: zoomed, options: sharedOptions)
+if let updated { _ = try readFrame(updated, frame: 40) }
 let notUpdated = try PlanBuilder.update(first, to: moved, options: sharedOptions)
 let secondMedia = try await PlanBuilder.prepare(moved, resolver: resolver, reusing: firstMedia)
 _ = try PlanBuilder.assemble(moved, media: secondMedia, options: sharedOptions)
@@ -771,8 +787,51 @@ checks["rebuild"] = [
   "newVideoComposition": updated.map { $0.videoComposition !== first.videoComposition } ?? false,
   "structuralEditRefused": notUpdated == nil,
   "assetsReused": secondMedia.videos["asset-talk"]?.asset === firstMedia.videos["asset-talk"]?.asset,
+  "noDecodeAtBuild": decodedAtBuild == 0,
   "imagesDecodedOnce": decodedAfterFirst > 0 && sharedMedia.cachedImages == decodedAfterFirst,
 ]
+// A new image overlay in a parameter-only edit draws (update takes the freshly prepared media).
+let withNewSticker = try fixturePlan("overlays") { plan in
+  var overlays = plan["overlays"] as! [[String: Any]]
+  overlays.append(["id": "sticker-new", "kind": "image", "z": 10, "start": 0, "end": 4,
+                   "box": ["x": 300, "y": 560, "w": 60, "h": 60, "rotationDeg": 0],
+                   "media": ["assetRef": ["id": "asset-logo-2", "kind": "image"], "srcStart": 0, "speed": 1]])
+  plan["overlays"] = overlays
+}
+let newStickerMedia = try await PlanBuilder.prepare(withNewSticker, resolver: resolver, reusing: firstMedia)
+let staleUpdate = try PlanBuilder.update(first, to: withNewSticker, options: sharedOptions)
+let freshUpdate = try PlanBuilder.update(first, to: withNewSticker, media: newStickerMedia, options: sharedOptions)
+var stickerProbe: [Double] = []
+if let freshUpdate {
+  let sticker = pixels(try readFrame(freshUpdate, frame: 0), space: workingSpace).at(300, 560)
+  stickerProbe = sticker.map(Double.init)
+}
+// A proxy swapped for its original under the same id reloads, and the old composition is not reused.
+let swapped = try await PlanBuilder.prepare(basePlan, resolver: resolver, reusing: firstMedia, invalidating: ["asset-talk"], cache: sharedMedia)
+checks["update"] = [
+  "withoutNewMediaRefused": staleUpdate == nil,
+  "withNewMediaUpdates": freshUpdate != nil,
+  "newStickerLinear": stickerProbe,
+  "invalidatedReloads": swapped.videos["asset-talk"]?.asset !== firstMedia.videos["asset-talk"]?.asset,
+  "invalidatedKeepsOthers": swapped.videos["asset-city"]?.asset === firstMedia.videos["asset-city"]?.asset,
+  "updateAfterSwapRefused": (try PlanBuilder.update(first, to: basePlan, media: swapped, options: sharedOptions)) == nil,
+]
+// Fifty stills, each drawn at its own size, under a 2 MB image budget: decodes happen at draw time and the cache stays capped.
+let manyStills = try fixturePlan("overlays") { plan in
+  plan["overlays"] = (0..<50).map { (index: Int) -> [String: Any] in
+    let side = 40 + 4 * index
+    return ["id": "still-\(index)", "kind": "image", "z": index, "start": 0, "end": 4,
+            "box": ["x": 30 + (index % 10) * 33, "y": 60 + (index / 10) * 120, "w": side, "h": side, "rotationDeg": 0],
+            "media": ["assetRef": ["id": "asset-big", "kind": "image"], "srcStart": 0, "speed": 1]]
+  }
+}
+let smallCache = PlanMediaCache(budgetBytes: 2 << 20)
+let manyBuilt = try PlanBuilder.assemble(manyStills, media: try await PlanBuilder.prepare(manyStills, resolver: resolver),
+                                         options: PlanBuildOptions(fonts: fonts, media: smallCache))
+let cachedBeforeDraw = smallCache.cachedImages
+_ = try readFrame(manyBuilt, frame: 0)
+checks["stillBudget"] = ["cachedBeforeDraw": cachedBeforeDraw, "bytes": smallCache.cachedBytes, "budget": smallCache.budgetBytes,
+                         "entries": smallCache.cachedImages]
 checks["sdrCurve"] = ["0.18": PlanColorPipeline.sdrCurve(0.18), "1": PlanColorPipeline.sdrCurve(1), "2": PlanColorPipeline.sdrCurve(2)]
 report["checks"] = checks
 var renders: [[String: Any]] = []
@@ -853,6 +912,20 @@ for render in manifest.renders {
       result["golden"] = file
       if let mine = readPNG(rendered), let theirs = readPNG(golden) {
         result["compare"] = compare(mine, theirs)
+        if mine.width == theirs.width, mine.height == theirs.height, mine.rgb != theirs.rgb {
+          // |rendered - golden| x 4, for inspecting a failure from CI's artifact.
+          var data = [Float](repeating: 1, count: mine.width * mine.height * 4)
+          for pixel in 0..<(mine.width * mine.height) {
+            for channel in 0..<3 {
+              let delta: Float = abs(mine.rgb[pixel * 3 + channel] - theirs.rgb[pixel * 3 + channel])
+              data[pixel * 4 + channel] = min(1, delta * 4)
+            }
+          }
+          let diff = Pixels(width: mine.width, height: mine.height, data: data)
+          let diffs = outDir.appendingPathComponent("diffs")
+          try FileManager.default.createDirectory(at: diffs, withIntermediateDirectories: true)
+          try writePNG(diff, downscale: 1, sixteenBit: false, to: diffs.appendingPathComponent(file))
+        }
       } else {
         result["compare"] = ["missingGolden": true]
       }
@@ -877,7 +950,7 @@ for render in manifest.renders {
       leftWindows[window.name] = lefts
       rightWindows[window.name] = rights
     }
-    entry["audio"] = ["samples": mix.count, "windows": windows, "left": leftWindows, "right": rightWindows]
+    entry["audio"] = ["samples": mix.count, "overshootDropped": lastOvershoot, "windows": windows, "left": leftWindows, "right": rightWindows]
   }
   renders.append(entry)
 }

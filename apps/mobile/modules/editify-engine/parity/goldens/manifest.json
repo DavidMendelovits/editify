@@ -194,6 +194,40 @@
     0.05
    ],
    "toneHz": 262
+  },
+  "asset-logo-2": {
+   "kind": "png",
+   "w": 60,
+   "h": 60,
+   "solid": [
+    0,
+    1,
+    0
+   ]
+  },
+  "asset-big": {
+   "kind": "png",
+   "w": 1000,
+   "h": 1000,
+   "solid": [
+    0.9,
+    0.5,
+    0.1
+   ]
+  },
+  "asset-edit": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 5,
+   "base": [
+    0.1,
+    0.1,
+    0.1
+   ],
+   "editStart": 1.0083333333
   }
  },
  "renders": [
@@ -1095,6 +1129,30 @@
   {
    "name": "hold-vfr",
    "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/hold-vfr.json",
+   "frames": [],
+   "sequential": true
+  },
+  {
+   "name": "fast-audio-end",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/fast-audio-end.json",
+   "frames": [],
+   "audio": {
+    "windows": [
+     {
+      "name": "fast",
+      "from": 1.2,
+      "to": 1.9
+     }
+    ],
+    "tones": [
+     220,
+     440
+    ]
+   }
+  },
+  {
+   "name": "hold-edit",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/hold-edit.json",
    "frames": [],
    "sequential": true
   }

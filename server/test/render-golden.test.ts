@@ -19,6 +19,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * Needs swiftc (macOS). Elsewhere it skips, except where REQUIRE_SWIFT=1
  * (the macOS CI `engine` job): there a missing toolchain fails.
  * Re-bless after an intended visual change: UPDATE_GOLDENS=1 npx vitest run test/render-golden.test.ts
+ * (writes straight into parity/goldens; review the PNGs, then commit).
+ *
+ * Re-bless from CI: the goldens were blessed on a local Mac (macOS 27, Xcode
+ * 26.6) and CI runs macos-26, so a first CI run may need its own. With
+ * GOLDEN_OUT_DIR set, the rendered PNGs (named exactly like the goldens) and
+ * diffs/ (|rendered - golden| x 4) stay there; the engine job uploads that
+ * directory as the `render-goldens` artifact when it fails. To adopt CI's
+ * frames: download the artifact, copy its top-level *.png (not diffs/) over
+ * apps/mobile/modules/editify-engine/parity/goldens/, check them by eye, commit.
  *
  * Golden tolerance, on PNGs of the ENCODED output (8-bit SDR, 16-bit HLG;
  * 1080x1920 plans compared at half size): per-channel mean absolute
@@ -57,6 +66,7 @@ interface Render {
   audioEdits?: Array<{ end: number; edits: number; scaled: number; carrier: boolean }>;
   audio?: {
     samples: number;
+    overshootDropped: number;
     windows: Record<string, Record<string, number>>;
     left: Record<string, Record<string, number>>;
     right: Record<string, Record<string, number>>;
@@ -70,6 +80,8 @@ interface Report {
 
 let dir: string | undefined;
 let report: Report;
+/** Kept after the run when set (CI uploads it on failure). */
+const keepOut = process.env.GOLDEN_OUT_DIR;
 
 beforeAll(() => {
   if (!swiftAvailable) return;
@@ -78,7 +90,7 @@ beforeAll(() => {
   const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath']
     .map((name) => join(engine, 'ios', `${name}.swift`));
   execFileSync('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, join(engine, 'parity/render-golden/main.swift'), '-o', binary]);
-  const args = [join(goldens, 'manifest.json'), root, join(dir, 'work'), join(dir, 'out'), ...(bless ? ['--bless'] : [])];
+  const args = [join(goldens, 'manifest.json'), root, join(dir, 'work'), keepOut ?? join(dir, 'out'), ...(bless ? ['--bless'] : [])];
   report = JSON.parse(execFileSync(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20 })) as Report;
 }, 600000);
 
@@ -167,13 +179,17 @@ describe.skipIf(!swiftAvailable)('render goldens (EditifyCompositor on macOS)', 
       if (item.audio) expect(item.audio.samples, item.name).toBe(Math.round(plan.duration * 48000));
     }
     expect(render('trailing-carrier').audio!.samples).toBe(144000);
+    // A 2x entry ending at the plan's end: time-pitch emits past the end, PlanMixTrim drops it.
+    expect(render('fast-audio-end').audio!.samples).toBe(96000);
+    expect(render('fast-audio-end').audio!.overshootDropped).toBeGreaterThan(0);
+    expect(tone('fast-audio-end', 'fast', 220)).toBeCloseTo(0.25, 2);
     expect(render('mixed-color-hlg').audio!.samples).toBe(96000);
   });
 
   it('time-scales audio only for speed != 1, and back-to-back entries do not split each other', () => {
     for (const item of report.renders) {
       const scaled = (item.audioEdits ?? []).reduce((sum, edit) => sum + edit.scaled, 0);
-      expect(scaled, item.name).toBe(item.name === 'speed-2x' ? 1 : 0);
+      expect(scaled, item.name).toBe(['speed-2x', 'fast-audio-end'].includes(item.name) ? 1 : 0);
     }
     // a (0-1 s) and b (1-2 s) share one track as two whole edits ending at 2 s; the carrier fills 2-3 s.
     const edits = render('trailing-carrier').audioEdits!;
@@ -201,6 +217,8 @@ describe.skipIf(!swiftAvailable)('render goldens (EditifyCompositor on macOS)', 
     });
     // VFR holds: frame 10 at its exact PTS; 50 us before frame 20's PTS shows frame 19 for the whole segment.
     expect(render('hold-vfr').sequentialCodes).toEqual([...Array(30).fill(10), ...Array(30).fill(19)]);
+    // A source whose edit list starts mid-frame (track 0 = media 1.008 s): holds map track time through it.
+    expect(render('hold-edit').sequentialCodes).toEqual([...Array(30).fill(46), ...Array(30).fill(45)]);
   });
 
   it('downmixes 5.1 to stereo per BS.775 through the default mix output', () => {
@@ -222,8 +240,26 @@ describe.skipIf(!swiftAvailable)('render goldens (EditifyCompositor on macOS)', 
       newVideoComposition: true,
       structuralEditRefused: true,
       assetsReused: true,
+      noDecodeAtBuild: true,
       imagesDecodedOnce: true,
     });
+    const update = report.checks.update as Record<string, unknown>;
+    expect(update).toMatchObject({
+      withoutNewMediaRefused: true,
+      withNewMediaUpdates: true,
+      invalidatedReloads: true,
+      invalidatedKeepsOthers: true,
+      updateAfterSwapRefused: true,
+    });
+    // The new green sticker draws (green dominant in linear light).
+    const sticker = update.newStickerLinear as number[];
+    expect(sticker[1]).toBeGreaterThan(0.8);
+    expect(Math.max(sticker[0]!, sticker[2]!)).toBeLessThan(0.4);
+    // Fifty stills at fifty sizes under a 2 MB budget: nothing decoded at build, the cache stays capped.
+    const budget = report.checks.stillBudget as { cachedBeforeDraw: number; bytes: number; budget: number; entries: number };
+    expect(budget.cachedBeforeDraw).toBe(0);
+    expect(budget.bytes).toBeLessThanOrEqual(budget.budget);
+    expect(budget.entries).toBeLessThan(50);
     // Stills decode at the size drawn: the 100 x 160 logo asked for 25 px fits in 25 x 40, upright.
     expect(report.media['asset-logo']).toMatchObject({ downsampled: [25, 40] });
   });

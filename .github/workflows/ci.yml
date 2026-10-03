@@ -97,7 +97,19 @@ jobs:
         if: needs.changes.outputs.engine == 'true'
         run: npx vitest run test/render-golden.test.ts
         working-directory: server
-        env: { REQUIRE_SWIFT: '1' }
+        env:
+          REQUIRE_SWIFT: '1'
+          GOLDEN_OUT_DIR: ${{ runner.temp }}/render-goldens
+      # The rendered frames (named like the goldens) and diffs/. To adopt
+      # them: download, copy the top-level *.png over
+      # apps/mobile/modules/editify-engine/parity/goldens/, commit.
+      - name: Upload rendered goldens
+        if: failure() && needs.changes.outputs.engine == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-goldens
+          path: ${{ runner.temp }}/render-goldens
+          if-no-files-found: ignore
   deploy:
     needs: [check, engine]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

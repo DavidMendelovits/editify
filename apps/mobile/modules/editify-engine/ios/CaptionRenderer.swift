@@ -191,7 +191,15 @@ final class ByteLRU<Key: Hashable, Value>: @unchecked Sendable {
     }
   }
 
-  func removeAll() {
+  func removeAll(where shouldRemove: (Key) -> Bool) {
+    lock.lock(); defer { lock.unlock() }
+    for (key, entry) in entries where shouldRemove(key) {
+      bytes -= entry.bytes
+      entries.removeValue(forKey: key)
+    }
+  }
+
+    func removeAll() {
     lock.lock(); defer { lock.unlock() }
     entries.removeAll()
     bytes = 0

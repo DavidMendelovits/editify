@@ -44,7 +44,8 @@ struct ResolvedLayer {
   enum Source {
     /// A composition video track and the EXIF orientation that turns its stored frames upright.
     case track(CMPersistentTrackID, CGImagePropertyOrientation)
-    case still(CIImage)
+    /// Decoded at draw time through the plan's media cache, longest side at most `longSide`.
+    case still(URL, longSide: Int)
   }
 
   let source: Source
@@ -74,7 +75,8 @@ struct ResolvedLayer {
 
 struct ResolvedOverlay {
   enum Content {
-    case still(CIImage)
+    /// Decoded at draw time through the plan's media cache, longest side at most `longSide`.
+    case still(URL, longSide: Int)
     /// Frames decode lazily, their longest side at most `longSide`.
     case gif(PlanGif, longSide: Int)
     case broll(CMPersistentTrackID, CGImagePropertyOrientation)
@@ -261,8 +263,8 @@ enum FrameRenderer {
       case .track(let id, let orientation):
         guard let buffer = sourceFrame(id) else { continue }
         upright = PlanColorPipeline.source(buffer, output: plan.color).oriented(orientation)
-      case .still(let still):
-        upright = still
+      case .still(let url, let longSide):
+        upright = try state.media.image(url, longSide: longSide)
       }
       let frame = upright.transformed(by: CGAffineTransform(translationX: -upright.extent.minX, y: -upright.extent.minY))
       let zoom = PlanKeys.value(at: t, times: layer.cropTimes, values: layer.cropScale, empty: 1)
@@ -296,8 +298,8 @@ enum FrameRenderer {
       // Content in box-local Core Image space: the unrotated box spans (0, 0) to (w, h), y up.
       var content: CIImage
       switch item.content {
-      case .still(let still):
-        content = stretch(still, to: CGSize(width: boxWidth, height: boxHeight))
+      case .still(let url, let longSide):
+        content = stretch(try state.media.image(url, longSide: longSide), to: CGSize(width: boxWidth, height: boxHeight))
       case .gif(let gif, let longSide):
         guard let media = item.overlay.media else { continue }
         let time = media.srcStart + (t - item.overlay.start) * media.speed
@@ -365,11 +367,12 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   }()
 
   private let renderQueue = DispatchQueue(label: "editify.compositor")
-  private var renderContext: AVVideoCompositionRenderContext?
+  /// Read and written only on renderQueue.
+  nonisolated(unsafe) private var renderContext: AVVideoCompositionRenderContext?
   /// Bumped by cancelAllPendingVideoCompositionRequests: a request queued
   /// under an older generation finishes cancelled instead of rendering (a
   /// seek or a rebuild drops the backlog at once, as in Apple's AVCustomEdit).
-  private var generation = 0
+  nonisolated(unsafe) private var generation = 0  // under generationLock
   private let generationLock = NSLock()
 
   let supportsHDRSourceFrames = true

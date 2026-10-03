@@ -40,6 +40,9 @@ struct PlanImageInfo {
 /// 2 cs play as 10 cs, as browsers and ffmpeg do (schema: MEDIA).
 struct PlanGif {
   let url: URL
+  /// Kept open: every frame decodes from this one source (ImageIO reuses the
+  /// previous frame when composing the next instead of re-reading the file).
+  let source: CGImageSource
   let info: PlanImageInfo
   /// Start time of each frame within one loop, and the loop length.
   let starts: [Double]
@@ -62,7 +65,7 @@ struct PlanGif {
       clock += clampedDelay(delay)
     }
     guard !starts.isEmpty else { throw PlanImageUnreadable(name: url.lastPathComponent) }
-    return PlanGif(url: url, info: info, starts: starts, total: clock)
+    return PlanGif(url: url, source: source, info: info, starts: starts, total: clock)
   }
 
   /// The frame index showing at media time `time` (the latest frame starting at or before it).
@@ -95,6 +98,8 @@ final class PlanMediaCache: @unchecked Sendable {
   init(budgetBytes: Int = 96 << 20) { images = ByteLRU(budget: budgetBytes) }
 
   var cachedImages: Int { images.count }
+  var cachedBytes: Int { images.bytes }
+  var budgetBytes: Int { images.budget }
 
   func info(_ url: URL) throws -> PlanImageInfo {
     lock.lock(); defer { lock.unlock() }
@@ -105,7 +110,16 @@ final class PlanMediaCache: @unchecked Sendable {
     return info
   }
 
-  func gif(_ url: URL) throws -> PlanGif {
+  /// Drops everything decoded from `url` (its file changed under the same path).
+  func forget(_ url: URL) {
+    lock.lock()
+    infos[url.path] = nil
+    gifs[url.path] = nil
+    lock.unlock()
+    images.removeAll { $0.path == url.path }
+  }
+
+    func gif(_ url: URL) throws -> PlanGif {
     lock.lock()
     if let cached = gifs[url.path] { lock.unlock(); return cached }
     lock.unlock()
@@ -119,7 +133,10 @@ final class PlanMediaCache: @unchecked Sendable {
   func image(_ url: URL, index: Int = 0, longSide: Int) throws -> CIImage {
     let key = Key(path: url.path, index: index, longSide: longSide)
     if let cached = images.value(for: key) { return cached }
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+    lock.lock()
+    let open = gifs[url.path]?.source
+    lock.unlock()
+    guard let source = open ?? CGImageSourceCreateWithURL(url as CFURL, nil),
           let decoded = CGImageSourceCreateThumbnailAtIndex(source, index, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -132,6 +149,7 @@ final class PlanMediaCache: @unchecked Sendable {
     images.insert(image, bytes: decoded.bytesPerRow * decoded.height, for: key)
     return image
   }
+
 }
 
 /// Emoji and callout payloads drawn into box-local bitmaps (box-local pixels:
