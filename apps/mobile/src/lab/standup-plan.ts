@@ -10,7 +10,9 @@
  * The variant picks the target:
  *   writer-60s-4k30   2160 x 3840, 30 fps; HLG when the source is HDR (HEVC Main10), else SDR
  *   writer-60s-1080   1080 x 1920, 30 fps, SDR (H.264 High): what the stand-up replay exports
- *   preview1080, render1080-plan   1080 x 1920 SDR, the preview's size cap
+ *   preview1080, render1080-plan   1080 x 1920 SDR, the preview's size cap, built as the native
+ *                    preview builds its plans (buildPreviewPlan: kind preview, no loudness pass,
+ *                    no self-check)
  */
 import { buildRenderPlan, exportPlanSize, type Clip, type PlanAssetInfo, type Project, type RenderPlan } from '@editify/shared';
 
@@ -87,13 +89,19 @@ export function labPlanTarget(variant: string, source: Pick<LabSource, 'color'>)
   return { size: exportPlanSize('9:16', variant.includes('720') ? '720p' : '1080p'), color: 'sdr' };
 }
 
+/** The variants the native preview's player runs (S5, S1 on the plan); the rest are exports. */
+export function isPreviewVariant(variant: string): boolean {
+  return variant === 'preview1080' || variant.endsWith('-plan');
+}
+
 export function standupLabPlan(source: LabSource, variant: string, buildSeq = 1): RenderPlan {
   const info: PlanAssetInfo = {
     kind: 'video', width: source.width, height: source.height, duration: source.duration, hasAudio: source.hasAudio,
     ...(source.rotation ? { rotation: source.rotation } : {}),
   };
   const target = labPlanTarget(variant, source);
-  return buildRenderPlan(standupLabProject(source), { kind: 'export', ...target, loudness: true }, {
-    revision: 1, buildSeq, assetInfo: (id) => (id === LAB_ASSET_ID ? info : undefined),
+  const preview = isPreviewVariant(variant);
+  return buildRenderPlan(standupLabProject(source), { kind: preview ? 'preview' : 'export', ...target, loudness: !preview }, {
+    revision: 1, buildSeq, assetInfo: (id) => (id === LAB_ASSET_ID ? info : undefined), selfCheck: !preview,
   });
 }

@@ -22,6 +22,32 @@ enum LabPlan {
   }
 
   static func round2(_ value: Double) -> Double { (value * 100).rounded() / 100 }
+
+  /// A percentile of compositor times, or null when no frame was timed (never `percentile`'s -1,
+  /// which would read as a fast compositor).
+  static func ms(_ values: [Double], _ p: Double) -> Any {
+    values.isEmpty ? NSNull() : round2(percentile(values, p))
+  }
+}
+
+/// The lab's progress to JS at ExportCenter's rate (ExportThrottle: every phase change, else at
+/// most per 1% and 10 times a second), so a lab export adds no bridge load production doesn't.
+final class LabProgressThrottle: @unchecked Sendable {
+  private let lock = NSLock()
+  private var lastState: String?
+  private var lastProgress = -1.0
+  private var lastSent = Date.distantPast
+
+  func shouldSend(state: String, progress: Double) -> Bool {
+    lock.withLock {
+      guard ExportThrottle.shouldSend(state: state, progress: progress, lastState: lastState, lastProgress: lastProgress,
+                                      sinceLast: Date().timeIntervalSince(lastSent)) else { return false }
+      lastState = state
+      lastProgress = progress
+      lastSent = Date()
+      return true
+    }
+  }
 }
 
 /// S4: export the plan with PlanExporter (what exportProject runs, minus the Photos save).
@@ -38,21 +64,19 @@ struct WriterSpike: Spike {
     defer { try? FileManager.default.removeItem(at: output) }
 
     CompositorTiming.begin()
-    let stats: PlanExportStats
-    do {
-      stats = try await PlanExporter.export(plan, resolver: LabPlan.resolver(media), to: output, progress: { phase, value in
-        // resolving 0-2%, measuring 2-10%, writing 10-100%.
-        switch phase {
-        case .resolving: progress(value * 0.02)
-        case .measuring: progress(0.02 + value * 0.08)
-        case .writing: progress(0.1 + value * 0.9)
-        }
-        sampler.sample()
-      })
-    } catch {
-      _ = CompositorTiming.end()
-      throw error
-    }
+    // However the run ends (a throw, a cancel), timing is off again afterwards.
+    defer { _ = CompositorTiming.end() }
+    let throttle = LabProgressThrottle()
+    let stats = try await PlanExporter.export(plan, resolver: LabPlan.resolver(media), to: output, progress: { phase, value in
+      guard throttle.shouldSend(state: phase.rawValue, progress: value) else { return }
+      // resolving 0-2%, measuring 2-10%, writing 10-100%.
+      switch phase {
+      case .resolving: progress(value * 0.02)
+      case .measuring: progress(0.02 + value * 0.08)
+      case .writing: progress(0.1 + value * 0.9)
+      }
+      sampler.sample()
+    })
     let compositor = CompositorTiming.end()
     sampler.note(memMB: stats.peakMemMB)
 
@@ -80,8 +104,10 @@ struct WriterSpike: Spike {
       "writeSeconds": LabPlan.round2(stats.writeSeconds),
       "videoMbps": LabPlan.round2(Double(stats.videoBitrate) / 1e6),
       "outputMB": LabPlan.round2(Double(stats.bytes) / 1_048_576),
-      "compositorMsP50": LabPlan.round2(percentile(compositor, 0.5)),
-      "compositorMsP95": LabPlan.round2(percentile(compositor, 0.95)),
+      "compositedFrames": compositor.count,
+      "compositorMsP50": LabPlan.ms(compositor, 0.5),
+      "compositorMsP95": LabPlan.ms(compositor, 0.95),
+      "hlg": hlg,
       "source": params["via"] as? String ?? "photos",
       "limiterOn": stats.limiterOn,
       "gainDb": LabPlan.round2(stats.gainDb),
@@ -132,7 +158,8 @@ struct FileTags {
 /// composited frames, so the number is decode + compositor, not UIKit.
 ///
 ///   msPerFrame / msPerFrameP95: the compositor's time per frame, request picked up to GPU
-///     render finished (CompositorTiming), p50 / p95 over every frame played
+///     render finished (CompositorTiming), p50 / p95 over every frame played; a run that
+///     composited no frame throws instead of reporting a time
 ///   fpsSustained, fpsWorst1s, framesMissed (frames the plan's fps owed that never arrived)
 ///   visualMatch: the preview's frame at `matchAt` (default 12.2 s: inside a crossfade, under
 ///     a sticker and a karaoke caption) against the export path's frame at the same time
@@ -156,7 +183,10 @@ struct PlanPreviewSpike: Spike {
     progress(0.02)
 
     CompositorTiming.begin()
+    // However the run ends (a throw, a cancel), timing is off and the display link stopped.
+    defer { _ = CompositorTiming.end() }
     rig.meter.start()
+    defer { rig.meter.stop() }
     rig.player.play()
     let started = ContinuousClock.now
     while millis(since: started) < seconds * 1000 {
@@ -167,14 +197,16 @@ struct PlanPreviewSpike: Spike {
     rig.player.pause()
     rig.meter.stop()
     let compositor = CompositorTiming.end()
+    // Nothing timed means nothing was measured: a row, not a pass by default.
+    guard !compositor.isEmpty else { throw SpikeError(message: "\(spike): the compositor drew no frames in \(Int(seconds)) s (\(rig.errors.joined(separator: "; ")))") }
     let elapsed = millis(since: started) / 1000
     let dropped = rig.item?.accessLog()?.events.reduce(0) { $0 + $1.numberOfDroppedVideoFrames } ?? -1
     let owed = Int((elapsed * Double(plan.fps)).rounded())
 
     var metrics: [String: Any] = [
-      "msPerFrame": LabPlan.round2(percentile(compositor, 0.5)),
-      "msPerFrameP95": LabPlan.round2(percentile(compositor, 0.95)),
-      "msPerFrameMax": LabPlan.round2(compositor.max() ?? -1),
+      "msPerFrame": LabPlan.ms(compositor, 0.5),
+      "msPerFrameP95": LabPlan.ms(compositor, 0.95),
+      "msPerFrameMax": LabPlan.ms(compositor, 1),
       "compositedFrames": compositor.count,
       "fpsSustained": LabPlan.round2(Double(rig.meter.frames) / elapsed),
       "fpsWorst1s": LabPlan.round2(rig.meter.worstWindowFps.isFinite ? rig.meter.worstWindowFps : 0),

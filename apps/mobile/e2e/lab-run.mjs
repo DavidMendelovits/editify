@@ -3,8 +3,9 @@
 // spike's rows in Documents/lab/results.jsonl, and judges them with src/lab/evaluate.ts.
 // The app must be a build with EXPO_PUBLIC_LAB=1 (a Release build for decision-grade rows).
 //
-//   node apps/mobile/e2e/lab-run.mjs --spike "S4 · Export" --spike "S5 · Native preview" \
-//        [--memo] [--lag 59.424] [--seconds 20] [--record --review --title "..." --summary "..."]
+//   node apps/mobile/e2e/lab-run.mjs --spike "S4 · Export 1080 SDR#3" --spike "S5 · Native preview#3" \
+//        [--memo] [--lag 59.424] [--s5-seconds 20] [--s1-seconds 600]
+//        [--record --review --title "..." --summary "..." --slug lab-...]
 //        [--device "iPhone 17 Pro Max"]            simulator (default), rows read from its container
 //        [--udid <devicectl id>]                    a physical iPhone (agent-device --device <udid>, its
 //                                                   XCTest runner signed: agent-device help physical-device);
@@ -12,15 +13,20 @@
 //
 //   --spike  the start of a lab button's label (repeatable, run in order); every variant the
 //            button lists runs RUNS_REQUIRED times inside the app. Append "#<rows>" (e.g.
-//            "S4 · Export#6": two variants x 3 runs) to wait for exactly that many rows; the
-//            busy line sits below the fold, so without it the runner can move on early
+//            "S11 · Analyzers one by one#15": five variants x 3 runs) to wait for exactly that
+//            many rows; the busy line sits below the fold, so without it the runner can move on
+//            early. Buttons today: "S4 · Export 4K30 HLG", "S4 · Export 1080 SDR",
+//            "S5 · Native preview", "S1 · Preview fps, stand-up plan", "S6 · Photos refs",
+//            "S11 · Analyzers, ready" (each one variant: #3)
+//   --s5-seconds / --s1-seconds  fill the lab's S5 and S1-plan duration fields (each spike
+//            reads only its own; empty: 20 s and 600 s, and S1 under 590 s can't pass)
 //   --memo   also pick the stand-up memo from Files (S11); --lag fills the expected lag
 //
 //   open editify://lab ─▶ pick the clip (Photos) [─▶ memo (Files)] ─▶ per spike: tap, wait for
 //   its rows ─▶ results.jsonl (this session's rows) ─▶ evaluate ─▶ results.html (+ S5 frames)
 //   ─(--record --review)─▶ review page with the results under the video
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +36,12 @@ const mobile = resolve(here, '..');
 const repo = resolve(mobile, '../..');
 const S = join(repo, '.claude/skills/mobile-verify/scripts');
 const args = process.argv.slice(2);
-const opt = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const opt = (name) => {
+  if (!args.includes(name)) return undefined;
+  const value = args[args.indexOf(name) + 1];
+  if (value === undefined || value.startsWith('--')) throw new Error(`${name} needs a value`);
+  return value;
+};
 const many = (name) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
 const spikes = many('--spike');
 if (!spikes.length) throw new Error('--spike "<button label start>" is required');
@@ -57,20 +68,32 @@ const mark = (label, kind = 'step', note) => {
 const simUdid = PHONE ? null : Object.values(JSON.parse(execFileSync('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], { encoding: 'utf8' })).devices)
   .flat().find((d) => d.name === DEVICE)?.udid;
 if (!PHONE && !simUdid) throw new Error(`no booted simulator named ${DEVICE}`);
+// Phone: each poll copies to a fresh path (whether devicectl overwrites an existing destination
+// is not something to rely on), and a failed or partial copy keeps the last good content, so a
+// flaky USB poll never makes rows "disappear". Not yet run against a phone.
+let phoneCopies = 0;
+let lastGood = '';
 function readResults() {
   if (PHONE) {
-    const local = join(out, 'phone-results.jsonl');
+    phoneCopies += 1;
+    const local = join(out, `phone-results-${phoneCopies}.jsonl`);
     try {
       execFileSync('xcrun', ['devicectl', 'device', 'copy', 'from', '--device', PHONE, '--domain-type', 'appDataContainer', '--domain-identifier', BUNDLE,
         '--source', 'Documents/lab/results.jsonl', '--destination', local], { stdio: 'ignore' });
-      return readFileSync(local, 'utf8');
-    } catch { return ''; }
+      const text = readFileSync(local, 'utf8');
+      rmSync(local, { force: true });
+      // The file only grows (append-only JSONL): a shorter copy is a partial read.
+      if (text.length >= lastGood.length) lastGood = text;
+    } catch { /* keep lastGood */ }
+    return lastGood;
   }
   const container = execFileSync('xcrun', ['simctl', 'get_app_container', simUdid, BUNDLE, 'data'], { encoding: 'utf8' }).trim();
   const file = join(container, 'Documents/lab/results.jsonl');
   return existsSync(file) ? readFileSync(file, 'utf8') : '';
 }
-const sessionRows = () => readResults().split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)).filter((r) => !r.startedAt || r.startedAt >= startedAt.slice(0, 19));
+/** Complete JSONL lines only: a copy can end mid-line. */
+const sessionRows = () => readResults().split('\n').filter((l) => l.trim()).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
+  .filter((r) => !r.startedAt || r.startedAt >= startedAt.slice(0, 19));
 function labFile(name) {
   if (PHONE) {
     const local = join(out, name);
@@ -86,13 +109,8 @@ function labFile(name) {
 }
 
 // ── open the lab ──
-try {
-  const listed = JSON.parse(execFileSync('agent-device', ['session', 'list', '--json'], { encoding: 'utf8' }));
-  for (const session of listed.data?.sessions ?? []) {
-    const name = session.name ?? session.session ?? session.id;
-    if (name) try { execFileSync('agent-device', ['close', '--session', name], { stdio: 'ignore' }); } catch {}
-  }
-} catch {}
+// Only this runner's own session: other agents' sessions (their sims, phones) are left alone.
+tryAd('close');
 const target = ['--device', PHONE ?? DEVICE];
 ad('open', BUNDLE, '--platform', 'ios', ...target, '--relaunch');
 const video = join(out, 'flow.mp4');
@@ -146,7 +164,9 @@ if (args.includes('--memo')) {
   mark('Picked the voice memo from Files');
   if (opt('--lag')) { ad('fill', 'label="Expected memo lag in seconds"', opt('--lag')); mark(`Expected lag ${opt('--lag')} s`); }
 }
-if (opt('--seconds')) { ad('fill', 'label="Preview seconds"', opt('--seconds')); mark(`Preview seconds: ${opt('--seconds')}`); }
+if (args.includes('--seconds')) throw new Error('--seconds is gone: use --s5-seconds and/or --s1-seconds');
+if (opt('--s5-seconds')) { ad('fill', 'label="S5 seconds"', opt('--s5-seconds')); mark(`S5 seconds: ${opt('--s5-seconds')}`); }
+if (opt('--s1-seconds')) { ad('fill', 'label="S1 plan seconds"', opt('--s1-seconds')); mark(`S1 plan seconds: ${opt('--s1-seconds')}`); }
 // The decimal pad has no return key, and while it is up the ScrollView spends the next tap on
 // dismissing it (a button tapped then never fires): tap the title first.
 tryAd('keyboard', 'dismiss');
@@ -176,7 +196,7 @@ for (const spec of spikes) {
         [headline, `mem ${row.memPeakMB} MB`, row.note].filter(Boolean).join(' · '));
       idleSince = Date.now();
     }
-    seen = rows.length;
+    seen = Math.max(seen, rows.length);
     const screen = tryAd('snapshot') ?? '';
     // The busy line ("S4 writer-60s-1080 run 2/3 41%") is gone once the button's last run ends.
     const busy = /run \d\/\d/.test(screen);
@@ -193,10 +213,10 @@ tryAd('close');
 // ── judge ──
 const rows = sessionRows();
 writeFileSync(join(out, 'results.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
-const judged = JSON.parse(execFileSync('npx', ['tsx', '-e', `
+const { runsRequired: RUNS, groups: judged } = JSON.parse(execFileSync('npx', ['tsx', '-e', `
   import { readFileSync } from 'node:fs';
-  import { evaluate, parseRows } from './src/lab/evaluate.ts';
-  console.log(JSON.stringify(evaluate(parseRows(readFileSync(${JSON.stringify(join(out, 'results.jsonl'))}, 'utf8')))));
+  import { evaluate, parseRows, RUNS_REQUIRED } from './src/lab/evaluate.ts';
+  console.log(JSON.stringify({ runsRequired: RUNS_REQUIRED, groups: evaluate(parseRows(readFileSync(${JSON.stringify(join(out, 'results.jsonl'))}, 'utf8'))) }));
 `], { cwd: mobile, encoding: 'utf8' }));
 writeFileSync(join(out, 'verdicts.json'), JSON.stringify(judged, null, 2));
 
@@ -207,7 +227,7 @@ const median = (values) => { const s = values.filter((v) => typeof v === 'number
 const CONTEXT = {
   S1: ['fpsSustained', 'fpsWorst1s', 'framesMissed', 'msPerFrame', 'msPerFrameP95', 'seconds'],
   S4: ['xRealtime', 'width', 'color', 'codec', 'profile', 'transfer', 'compositorMsP50', 'compositorMsP95', 'measureSeconds', 'writeSeconds', 'videoMbps', 'lufsIn', 'lufsOut', 'truePeakPreEncode', 'gainDb'],
-  S5: ['msPerFrameP95', 'msPerFrameMax', 'fpsSustained', 'framesMissed', 'droppedFrames', 'visualDiff', 'applyMs'],
+  S5: ['compositedFrames', 'msPerFrameP95', 'msPerFrameMax', 'visualDiffMaxChannel', 'fpsSustained', 'framesMissed', 'droppedFrames', 'visualDiff', 'applyMs'],
   S11: ['readySeconds', 'readyRealtimeFactor'],
 };
 const okRows = (g) => rows.filter((r) => r.status === 'ok' && r.spike === g.spike && r.variant === g.variant);
@@ -238,7 +258,7 @@ if (s5) {
 const device = rows[0] ? `${rows[0].device}, iOS ${rows[0].ios}, ${rows[0].config}` : '-';
 const html = `<section id="lab" style="padding:16px;max-width:1200px">
 <style>#lab td,#lab th{border-bottom:1px solid var(--border);padding:6px 8px;vertical-align:top;text-align:left}#lab .ok{color:#3fb950}#lab .warn{color:#d29922}#lab .bad{color:#f85149}</style>
-<h2 style="font-size:16px">Lab results: median / worst of ${rows.length ? 3 : 0} runs (${esc(device)})</h2>
+<h2 style="font-size:16px">Lab results: median / worst over each group's ok runs (Runs column; ${RUNS} needed) (${esc(device)})</h2>
 ${opt('--note') ? `<p class="muted">${esc(opt('--note'))}</p>` : ''}
 <table style="border-collapse:collapse;width:100%;font-size:14px"><thead><tr><th>Spike</th><th>Variant</th><th>Runs</th><th>Verdict</th><th>Gate: median / worst (target)</th><th>Context (medians)</th><th>Problems</th></tr></thead><tbody>${tableRows}</tbody></table>
 ${frames}

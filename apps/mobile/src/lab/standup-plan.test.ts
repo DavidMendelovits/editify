@@ -22,6 +22,28 @@ describe('the lab stand-up cut', () => {
     expect(plan.loudness.targetLufs).toBe(-16);
   });
 
+  it('times the words of each karaoke block inside its 3 s slot, in order, on the plan timeline', () => {
+    const plan = standupLabPlan(SOURCE, 'writer-60s-1080');
+    plan.captions.forEach((caption, index) => {
+      expect(caption.start).toBeCloseTo(index * 3, 6);
+      const words = caption.lines.flatMap((line) => line.words ?? []);
+      expect(words.length).toBeGreaterThanOrEqual(4);
+      // The first word lights when the block appears (document times are relative to words[0].s).
+      expect(words[0]!.s).toBeCloseTo(caption.start, 3);
+      for (let i = 1; i < words.length; i += 1) expect(words[i]!.s).toBeGreaterThan(words[i - 1]!.s);
+      expect(words.at(-1)!.e).toBeLessThanOrEqual(caption.end + 1e-6);
+      expect(caption.end).toBeLessThanOrEqual((index + 1) * 3);
+    });
+  });
+
+  it('builds the preview variants as the native preview does: kind preview, no loudness pass', () => {
+    const preview = standupLabPlan(SOURCE, 'preview1080');
+    expect(preview.size).toEqual({ w: 1080, h: 1920 });
+    expect(preview.loudness.targetLufs).toBeNull();
+    expect(standupLabPlan(SOURCE, 'render1080-plan').loudness.targetLufs).toBeNull();
+    expect(standupLabPlan(SOURCE, 'writer-60s-1080').loudness.targetLufs).toBe(-16);
+  });
+
   it('picks size and colour from the variant: 4K keeps an HDR source HDR, 1080 and preview are SDR', () => {
     expect(labPlanTarget('writer-60s-4k30', SOURCE)).toEqual({ size: { w: 2160, h: 3840 }, color: 'hlg' });
     expect(labPlanTarget('writer-60s-4k30', { color: 'sdr' })).toEqual({ size: { w: 2160, h: 3840 }, color: 'sdr' });

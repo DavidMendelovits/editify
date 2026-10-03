@@ -24,7 +24,8 @@ const LAB_ENABLED = process.env.EXPO_PUBLIC_LAB === '1' && EditifyEngine !== nul
  * got 59.43, the coarse cell, because its fine stage didn't lock. Enter 59.424.
  */
 /** `localFile`: the picker's own copy of the local clip, used when PhotoKit can't open the PHAsset (see localRef). */
-type Slot = 'local' | 'localFile' | 'icloud' | 'memo' | 'expectedLag' | 'seconds';
+/** `s5Seconds` / `s1Seconds`: how long S5 and S1-on-the-plan play; each spike reads only its own (empty: 20 and 600). */
+type Slot = 'local' | 'localFile' | 'icloud' | 'memo' | 'expectedLag' | 's5Seconds' | 's1Seconds';
 type Slots = Partial<Record<Slot, string>>;
 type Params = Record<string, unknown> | string;
 
@@ -72,10 +73,12 @@ async function planParams(slots: Slots, variant: string): Promise<Params> {
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-  const seconds = Number(slots.seconds);
+  // Each preview spike has its own duration field, so a short S5 run never shortens S1's window.
+  const field = variant === 'preview1080' ? slots.s5Seconds : variant.endsWith('-plan') ? slots.s1Seconds : undefined;
+  const seconds = Number(field);
   return {
     plan: JSON.stringify(plan), media: { [LAB_ASSET_ID]: ref }, via: ref.startsWith('file://') ? 'app-copy' : 'photos',
-    ...(slots.seconds?.trim() && Number.isFinite(seconds) && seconds > 0 ? { seconds } : {}),
+    ...(field?.trim() && Number.isFinite(seconds) && seconds > 0 ? { seconds } : {}),
   };
 }
 
@@ -133,7 +136,16 @@ export default function LabScreen() {
     const id = result.assets?.[0]?.assetId;
     const uri = result.assets?.[0]?.uri;
     // assetId is the PHAsset localIdentifier; it is null without full library access.
-    if (id) setSlots((current) => ({ ...current, [slot]: id, ...(slot === 'local' && uri ? { localFile: uri } : {}) }));
+    // A re-pick replaces the app copy too: without a uri the old clip's copy must not linger.
+    if (!id) return;
+    setSlots((current) => {
+      const next: Slots = { ...current, [slot]: id };
+      if (slot === 'local') {
+        if (uri) next.localFile = uri;
+        else delete next.localFile;
+      }
+      return next;
+    });
   }
 
   async function runAll(spike: (typeof SPIKES)[number]) {
@@ -186,12 +198,21 @@ export default function LabScreen() {
       <View style={styles.row}>
         <TextInput
           style={styles.input}
-          value={slots.seconds ?? ''}
-          onChangeText={(text) => setSlots((current) => ({ ...current, seconds: text }))}
+          value={slots.s5Seconds ?? ''}
+          onChangeText={(text) => setSlots((current) => ({ ...current, s5Seconds: text }))}
           keyboardType="decimal-pad"
-          placeholder="Preview seconds (S1 600, S5 20)"
+          placeholder="S5 seconds (20)"
           placeholderTextColor={colors.muted}
-          accessibilityLabel="Preview seconds"
+          accessibilityLabel="S5 seconds"
+        />
+        <TextInput
+          style={styles.input}
+          value={slots.s1Seconds ?? ''}
+          onChangeText={(text) => setSlots((current) => ({ ...current, s1Seconds: text }))}
+          keyboardType="decimal-pad"
+          placeholder="S1 plan seconds (600)"
+          placeholderTextColor={colors.muted}
+          accessibilityLabel="S1 plan seconds"
         />
       </View>
 

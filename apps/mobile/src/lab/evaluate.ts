@@ -50,7 +50,9 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
     { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
   ], also: [
     // P7 (5B): the same gate on the finished renderer, PlanPlayer playing the lab's stand-up cut.
+    // Sustained means the S1 window: a run shorter than ~10 min can't pass.
     { variant: 'render1080-plan', checks: [
+      { metric: 'seconds', op: '>=', value: 590 },
       { metric: 'fpsSustained', op: '>=', value: 29.5 },
       { metric: 'thermalEnd', op: '<=', value: 'fair' },
       { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
@@ -66,6 +68,8 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
   ] },
   // S4 and S5 run PlanExporter and PlanPlayer on the lab's stand-up cut (src/lab/standup-plan.ts).
   S4: { variant: 'writer-60s-4k30', checks: [
+    // The 4K gate is about the HLG master (HEVC Main10): an SDR source's 4K plan doesn't count.
+    { metric: 'hlg', op: '==', value: true },
     { metric: 'exportSeconds', op: '<', value: 30 },
     { metric: 'tagsCorrect', op: '==', value: true },
     { metric: 'fpsKept', op: '==', value: true },
@@ -79,10 +83,17 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
       { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
     ] },
   ] },
-  // msPerFrame: the compositor's p50 per frame (msPerFrameP95 is reported beside it).
+  // msPerFrame: the compositor's p50 per frame. Its p95 must stay under 8 ms (twice the p50
+  // budget): a preview whose median is fine but whose tail is slow still drops frames. At least
+  // 300 composited frames (10 s at 30 fps), so a run that timed nothing can't pass. visualMatch
+  // is the mean difference (< 3/255); the worst channel may differ by at most 40/255, so one
+  // badly drawn region can't hide in a good mean.
   S5: { variant: 'preview1080', checks: [
+    { metric: 'compositedFrames', op: '>=', value: 300 },
     { metric: 'msPerFrame', op: '<', value: 4 },
+    { metric: 'msPerFrameP95', op: '<', value: 8 },
     { metric: 'visualMatch', op: '==', value: true },
+    { metric: 'visualDiffMaxChannel', op: '<=', value: 40 },
     { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
   ] },
   S6: { variant: 'photos', checks: [
@@ -149,11 +160,27 @@ export interface GroupResult {
   problems: string[];
 }
 
-/** Environment fields double as metrics so thresholds can name them uniformly. */
+/**
+ * Environment fields double as metrics so thresholds can name them uniformly. A metric the
+ * device reported as null (nothing was measured) counts as missing, never as a value.
+ */
 function metricOf(row: LabRow, metric: string): MetricValue | undefined {
   if (metric === 'memPeakMB') return row.memPeakMB;
   if (metric === 'thermalEnd') return row.thermalEnd;
-  return row.metrics[metric];
+  return row.metrics[metric] ?? undefined;
+}
+
+/**
+ * Rows S1/S4/S5 ran on the picker's app copy instead of the Photos original (metrics.source,
+ * set when PhotoKit could not open the PHAsset): the media path differs from production, so
+ * like a Debug build they can make a group borderline at best, never a go.
+ */
+function appCopyRuns(rows: LabRow[]): string[] {
+  // Informational strings (source, codec) ride along in metrics untyped; only this reads one.
+  const sourceOf = (row: LabRow): unknown => (row.metrics as Record<string, unknown>).source;
+  return rows
+    .filter((row) => typeof sourceOf(row) === 'string' && sourceOf(row) !== 'photos')
+    .map((row) => `run ${row.run} read the picker's app copy (${String(sourceOf(row))}), not the Photos original; not decision-grade`);
 }
 
 function rank(value: MetricValue): number {
@@ -198,9 +225,10 @@ export function evaluate(rows: LabRow[]): GroupResult[] {
     const spikeRule = THRESHOLDS[spike];
     const rule = [spikeRule, ...(spikeRule.also ?? [])].find((arm) => arm.variant === variant) ?? spikeRule;
     const ok = groupRows.filter((row) => row.status === 'ok');
-    const problems = groupRows
-      .filter((row) => row.config !== 'Release')
-      .map((row) => `run ${row.run} is a ${row.config} build; numbers are not decision-grade`);
+    const problems = [
+      ...groupRows.filter((row) => row.config !== 'Release').map((row) => `run ${row.run} is a ${row.config} build; numbers are not decision-grade`),
+      ...appCopyRuns(groupRows.filter((row) => row.status === 'ok')),
+    ];
     const base = { device, spike, variant, runs: ok.length, problems };
 
     // Only the arm named in the threshold gets a verdict; other arms are context.
