@@ -1,7 +1,7 @@
 import AVFoundation
 import ExpoModulesCore
 
-/// The on-device engine. Three surfaces:
+/// The on-device engine. Four surfaces:
 ///   - capability lab: each `runSpike` call is one run: Sampler begin → spike → one
 ///     JSONL row, which is also returned to JS for display.
 ///   - analyzers (plan P2): direct calls that return a part result
@@ -9,6 +9,8 @@ import ExpoModulesCore
 ///     them per asset and reports through `analysisStatus` events.
 ///   - export (plan P4): `exportProject` renders a RenderPlan on the phone
 ///     (ExportCenter, PlanExporter) and reports through `exportState` events.
+///   - native preview (plan P5): the EditifyPlayerView view (PlanPlayer), driven
+///     through its ref.
 public class EditifyEngineModule: Module {
   /// This instance's JS context (see EngineContext): set before any JS call can arrive.
   private var contextEpoch = 0
@@ -281,6 +283,62 @@ public class EditifyEngineModule: Module {
     /// Deletes a file under the media root by its relative path.
     Function("removeMedia") { (path: String) in
       MediaStore.remove(relative: path)
+    }
+
+    // MARK: Native preview (plan P5, 6A + OV10)
+
+    /// True in binaries that have EditifyPlayerView: JS checks it before rendering the view, so an
+    /// OTA update on an older binary keeps PreviewPlayer instead of a missing native view.
+    Function("nativePreviewAvailable") { true }
+
+    View(EditifyPlayerView.self) {
+      Events("onTime", "onReady", "onStall", "onEnded", "onError", "onPlan")
+
+      /// The app's API origin (EXPO_PUBLIC_API_URL): remote media must come from it.
+      Prop("apiOrigin") { (view: EditifyPlayerView, origin: String?) in
+        view.apiOrigin.url = origin.flatMap(URL.init(string:))
+      }
+
+      /// A RenderPlan v1 (JSON, built for the view's size) and its media map {assetId: ref from
+      /// resolveMedia 'preview'}. Decoded and checked here, off the main thread (the check resolves
+      /// file symlinks on disk); only the hand-over runs on it. {accepted: false} when its
+      /// (revision, buildSeq) is not newer than the last one this view accepted. How it was
+      /// applied (in place or rebuilt) arrives as onPlan. Rejects a bad plan or media map.
+      /// `options` (optional): `mediaRetry` (JS resolved the media again after onError
+      /// 'mediaExpired'; only such a plan is native's retry) and `tokenClockOffset` (seconds this
+      /// device's clock runs ahead of the auth server's, for media-token deadlines).
+      AsyncFunction("setPlan") { (view: EditifyPlayerView, planJson: String, media: [String: Any], options: [String: Any]?) async throws -> [String: Any] in
+        let plan: RenderPlan
+        do { plan = try RenderPlan.decode(Data(planJson.utf8)) } catch { throw PreviewMedia.Rejected(message: error.localizedDescription) }
+        let refs = try PreviewMedia.validate(media, for: plan, origin: view.apiOrigin.url)
+        let mediaRetry = options?["mediaRetry"] as? Bool ?? false
+        let offset = (options?["tokenClockOffset"] as? NSNumber)?.doubleValue
+        let accepted = await MainActor.run { view.setPlan(plan, media: refs, mediaRetry: mediaRetry, tokenClockOffset: offset) }
+        return ["accepted": accepted]
+      }
+
+      // The transport runs in call order on the main queue (FIFO): a pause sent after a play
+      // can never land first.
+      AsyncFunction("play") { (view: EditifyPlayerView) in
+        MainActor.assumeIsolated { view.play() }
+      }.runOnQueue(.main)
+
+      AsyncFunction("pause") { (view: EditifyPlayerView) in
+        MainActor.assumeIsolated { view.pause() }
+      }.runOnQueue(.main)
+
+      /// Seeks coalesce natively (one in flight, the newest queued): a scrub can call this per frame.
+      AsyncFunction("seek") { (view: EditifyPlayerView, time: Double, exact: Bool) in
+        MainActor.assumeIsolated { view.seek(time, exact: exact) }
+      }.runOnQueue(.main)
+
+      AsyncFunction("setMuted") { (view: EditifyPlayerView, muted: Bool) in
+        MainActor.assumeIsolated { view.setMuted(muted) }
+      }.runOnQueue(.main)
+
+      AsyncFunction("currentTime") { (view: EditifyPlayerView) -> Double in
+        MainActor.assumeIsolated { view.currentTime }
+      }.runOnQueue(.main)
     }
   }
 

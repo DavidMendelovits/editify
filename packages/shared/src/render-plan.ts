@@ -687,6 +687,38 @@ function calloutOverlay(clip: Clip, callout: NonNullable<Clip['callout']>, text:
   return { box, callout: payload };
 }
 
+/**
+ * One overlay clip's kind, box and payload at an output size: what `overlays`
+ * emits for it, minus id, z and timing. Exported so a preview can redraw a
+ * sticker being dragged by patching only its overlay (a parameter-only plan
+ * update) and land exactly where the next full build puts it. `info` is the
+ * clip's asset (required for media stickers); undefined when the clip draws nothing.
+ */
+export function planOverlayLayout(clip: Clip, width: number, height: number, info?: PlanAssetInfo): Omit<PlanOverlay, 'id' | 'z' | 'start' | 'end'> | undefined {
+  if (clip.assetId) {
+    if (!info) throw new RenderPlanBuildError(`Asset ${clip.assetId} referenced by clip ${clip.id} is unknown`);
+    const source = upright(info);
+    const aspect = source.width > 0 && source.height > 0 ? source.height / source.width : 1;
+    if (info.kind === 'video') {
+      // Intended divergence: legacy looped b-roll from its source start; the plan trims it like a clip.
+      return {
+        kind: 'broll',
+        box: overlayBox(clip, width, height, aspect),
+        media: { assetRef: { id: clip.assetId, kind: 'video' }, srcStart: round6(clip.in), speed: clip.speed ?? 1, loop: false },
+      };
+    }
+    if (info.kind === 'image') {
+      return info.animated
+        ? { kind: 'gif', box: overlayBox(clip, width, height, aspect), media: { assetRef: { id: clip.assetId, kind: 'image' }, srcStart: 0, speed: 1, loop: true } }
+        : { kind: 'image', box: overlayBox(clip, width, height, aspect), media: { assetRef: { id: clip.assetId, kind: 'image' }, srcStart: 0, speed: 1 } };
+    }
+    return undefined;
+  }
+  if (clip.text && clip.callout) return { kind: 'callout', ...calloutOverlay(clip, clip.callout, clip.text, width, height) };
+  if (clip.text) return { kind: 'emoji', ...emojiOverlay(clip, clip.text, width, height) };
+  return undefined;
+}
+
 function overlays(project: Project, width: number, height: number, duration: number, info: (clip: Clip) => PlanAssetInfo): PlanOverlay[] {
   const out: PlanOverlay[] = [];
   let z = 0;
@@ -695,28 +727,7 @@ function overlays(project: Project, width: number, height: number, duration: num
     for (const clip of sortedClips(track.clips)) {
       const start = round6(clip.start);
       const end = round6(Math.min(clip.start + clipTimelineDuration(clip), duration));
-      let item: Omit<PlanOverlay, 'id' | 'z' | 'start' | 'end'> | undefined;
-      if (clip.assetId) {
-        const media = info(clip);
-        const source = upright(media);
-        const aspect = source.width > 0 && source.height > 0 ? source.height / source.width : 1;
-        if (media.kind === 'video') {
-          // Intended divergence: legacy looped b-roll from its source start; the plan trims it like a clip.
-          item = {
-            kind: 'broll',
-            box: overlayBox(clip, width, height, aspect),
-            media: { assetRef: { id: clip.assetId, kind: 'video' }, srcStart: round6(clip.in), speed: clip.speed ?? 1, loop: false },
-          };
-        } else if (media.kind === 'image') {
-          item = media.animated
-            ? { kind: 'gif', box: overlayBox(clip, width, height, aspect), media: { assetRef: { id: clip.assetId, kind: 'image' }, srcStart: 0, speed: 1, loop: true } }
-            : { kind: 'image', box: overlayBox(clip, width, height, aspect), media: { assetRef: { id: clip.assetId, kind: 'image' }, srcStart: 0, speed: 1 } };
-        }
-      } else if (clip.text && clip.callout) {
-        item = { kind: 'callout', ...calloutOverlay(clip, clip.callout, clip.text, width, height) };
-      } else if (clip.text) {
-        item = { kind: 'emoji', ...emojiOverlay(clip, clip.text, width, height) };
-      }
+      const item = planOverlayLayout(clip, width, height, clip.assetId ? info(clip) : undefined);
       if (!item || !(end > start)) continue;
       out.push({ id: clip.id, z, start, end, ...item } as PlanOverlay);
       z += 1;

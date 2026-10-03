@@ -12,6 +12,7 @@ import { LIBRARY_ROOT, MediaLibrary } from '../../src/components/MediaLibrary';
 import { Screen } from '../../src/components/Screen';
 import { ChatDock } from '../../src/components/editor/ChatDock';
 import { PreviewPlayer } from '../../src/components/editor/PreviewPlayer';
+import { NativePreview } from '../../src/components/editor/NativePreview';
 import { SoundSheet } from '../../src/components/editor/SoundSheet';
 import { StickerSheet } from '../../src/components/editor/StickerSheet';
 import { CleanupSheet } from '../../src/components/editor/CleanupSheet';
@@ -23,6 +24,8 @@ import { Timeline } from '../../src/components/editor/Timeline';
 import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { useEngineActivity } from '../../src/lib/engine-activity';
+import { NATIVE_PREVIEW_FLAG, previewRoute } from '../../src/lib/native-preview';
+import { editifyPlayerView } from '../../modules/editify-engine';
 import { api } from '../../src/lib/api';
 import { OptimisticLedger } from '../../src/lib/optimistic';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
@@ -31,6 +34,7 @@ import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProg
 import type { ImportProgress } from '../../src/lib/upload-progress';
 import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
 import { isAudioOnly } from '../../src/lib/media';
+import { playheadStart } from '../../src/lib/timeline';
 import { describeSync } from '../../src/lib/sync-messages';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { setReportContext, track } from '../../src/lib/telemetry';
@@ -133,10 +137,14 @@ export default function EditorScreen() {
   });
   const assets: Record<string, AssetMetadata | undefined> = assetsQuery.data ?? {};
 
+  // The native preview (plan P5) behind the `nativePreview` flag, iOS only; web, the flag
+  // off, or a native failure on this screen keep PreviewPlayer.
+  const [nativeFellBack, setNativeFellBack] = useState(false);
+  const previewKind = previewRoute({ platform: Platform.OS, flag: NATIVE_PREVIEW_FLAG, hasView: NATIVE_PREVIEW_FLAG && editifyPlayerView() !== null, fellBack: nativeFellBack });
   // `clock` is an external store, not state: the playhead ticks at ~60Hz and
   // only the components that draw it subscribe, so this screen does not
-  // re-render during playback.
-  const { clock, playing, seek, toggle, stop } = usePlayback(project?.duration ?? 0);
+  // re-render during playback. With the native preview its player is the clock.
+  const { clock, playing, seek, toggle, stop, follow } = usePlayback(project?.duration ?? 0, { external: previewKind === 'native' });
   // Proxy encodes and heavy analyzers yield to playback and scrubbing.
   useEngineActivity('playback', playing || scrubbing);
   const lastAssistantId = useMemo(
@@ -500,7 +508,8 @@ export default function EditorScreen() {
           ...(content.callout
             ? { text: content.callout.text, callout: { variant: content.callout.variant } }
             : content.asset ? { assetId: content.asset.id } : { text: content.emoji ?? '★' }),
-          start: round3(clock.get()),
+          // On the frame on screen, so a paused preview draws it at once.
+          start: playheadStart(clock.get(), project?.fps ?? 30),
           in: 0,
           out: 3,
           // Callout cards read as text, so they land wider than a sticker.
@@ -718,18 +727,40 @@ export default function EditorScreen() {
               the screen outright, wide mode the whole column above the timeline
               (the library and insights move to the dock column there). */}
           <View style={wide ? { height: layout.previewHeight } : { height: previewHeight }}>
-            <PreviewPlayer
-              project={project}
-              assets={assets}
-              clock={clock}
-              playing={playing}
-              scrubbing={scrubbing}
-              selectedId={selectedId}
-              onTogglePlay={toggle}
-              onSeek={(time) => { stop(); seek(time); }}
-              onSelect={setSelectedId}
-              onApply={applyOps}
-            />
+            {previewKind === 'native' ? (
+              <NativePreview
+                project={project}
+                assets={assets}
+                clock={clock}
+                playing={playing}
+                scrubbing={scrubbing}
+                selectedId={selectedId}
+                onTogglePlay={toggle}
+                onSeek={(time) => { stop(); seek(time); }}
+                onSelect={setSelectedId}
+                onApply={applyOps}
+                onTimeUpdate={follow}
+                onEnded={stop}
+                onUnavailable={(reason) => {
+                  track('native_preview_fallback', reason);
+                  stop();
+                  setNativeFellBack(true);
+                }}
+              />
+            ) : (
+              <PreviewPlayer
+                project={project}
+                assets={assets}
+                clock={clock}
+                playing={playing}
+                scrubbing={scrubbing}
+                selectedId={selectedId}
+                onTogglePlay={toggle}
+                onSeek={(time) => { stop(); seek(time); }}
+                onSelect={setSelectedId}
+                onApply={applyOps}
+              />
+            )}
           </View>
           {!wide && library}
           {wide && (

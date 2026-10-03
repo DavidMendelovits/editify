@@ -42,7 +42,8 @@ jobs:
   # The engine's macOS checks: the Swift AudioSync port held to sync.ts
   # (decision 1A, server/test/sync-parity.test.ts), the renderer's golden
   # frames (plan 9A, server/test/render-golden.test.ts) and the on-device
-  # export (plan P4, server/test/device-export.test.ts). They need swiftc, so
+  # export (plan P4, server/test/device-export.test.ts) and the native preview
+  # (plan P5, server/test/native-preview.test.ts). They need swiftc, so
   # they run on macOS, and only when a change could break them (macOS minutes
   # cost ~10x Linux): the engine, the render plan, caption fonts and layout,
   # the fixtures and goldens, the server's media code.
@@ -57,7 +58,7 @@ jobs:
         run: |
           base="${{ github.event.pull_request.base.sha || github.event.before }}"
           if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then echo "engine=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/(sync\.ts|render-plan|caption-)|packages/shared/fixtures/render-plans/|server/fonts/|server/src/media/|server/test/(sync-parity\.test\.ts|render-golden\.test\.ts|device-export\.test\.ts|helpers/sync-fixtures\.ts|helpers/rotated-plan\.ts|media-pipeline\.test\.ts)|\.github/workflows/ci\.yml)'; then
+          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/(sync\.ts|render-plan|caption-)|packages/shared/fixtures/render-plans/|server/fonts/|server/src/media/|server/test/(sync-parity\.test\.ts|render-golden\.test\.ts|device-export\.test\.ts|native-preview\.test\.ts|helpers/sync-fixtures\.ts|helpers/rotated-plan\.ts|media-pipeline\.test\.ts)|\.github/workflows/ci\.yml)'; then
             echo "engine=true" >> "$GITHUB_OUTPUT"; else echo "engine=false" >> "$GITHUB_OUTPUT"; fi
   # Always runs, so deploy and preview can depend on it: a change that touches
   # none of the engine paths reports success without spinning up macOS.
@@ -106,6 +107,14 @@ jobs:
       - name: On-device export (PlanExporter, loudness, A/V sync)
         if: needs.changes.outputs.engine == 'true'
         run: npx vitest run test/device-export.test.ts
+        working-directory: server
+        env:
+          REQUIRE_SWIFT: '1'
+      # The native preview (plan P5): PlanPlayer's AVPlayer at exact seeks against the
+      # goldens, in-place parameter updates, rebuilds, ordering, 60 Hz drags, audio continuity.
+      - name: Native preview (PlanPlayer, OV10)
+        if: needs.changes.outputs.engine == 'true'
+        run: npx vitest run test/native-preview.test.ts
         working-directory: server
         env:
           REQUIRE_SWIFT: '1'
