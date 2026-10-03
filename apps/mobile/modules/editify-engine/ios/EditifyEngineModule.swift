@@ -10,6 +10,8 @@ import ExpoModulesCore
 public class EditifyEngineModule: Module {
   /// This instance's JS context (see EngineContext): set before any JS call can arrive.
   private var contextEpoch = 0
+  /// 0 means OnCreate hasn't run: send no epoch rather than one older than every context.
+  private var epochForCalls: Int? { contextEpoch == 0 ? nil : contextEpoch }
 
   public func definition() -> ModuleDefinition {
     Name("EditifyEngine")
@@ -22,7 +24,7 @@ public class EditifyEngineModule: Module {
       self.contextEpoch = epoch
       let emit: AnalysisScheduler.Emit = { [weak self] event, body in self?.sendEvent(event, body) }
       Task {
-        await AnalysisScheduler.shared.setEmitter(emit)
+        await AnalysisScheduler.shared.setEmitter(emit, epoch: epoch)
         // The scheduler outlives a JS reload; the new context starts with playback stopped.
         // Idempotent per epoch, so landing after this context's own calls changes nothing.
         await AnalysisScheduler.shared.reset(epoch: epoch)
@@ -132,11 +134,11 @@ public class EditifyEngineModule: Module {
     }
 
     AsyncFunction("setPlaybackActive") { (active: Bool) async in
-      await AnalysisScheduler.shared.setPlaybackActive(active, epoch: self.contextEpoch)
+      await AnalysisScheduler.shared.setPlaybackActive(active, epoch: self.epochForCalls)
     }
 
     AsyncFunction("setFocusAsset") { (assetId: String?) async in
-      await AnalysisScheduler.shared.setFocus(assetId, epoch: self.contextEpoch)
+      await AnalysisScheduler.shared.setFocus(assetId, epoch: self.epochForCalls)
     }
 
     AsyncFunction("cancelAnalysis") { (assetId: String) async in

@@ -36,7 +36,11 @@ export interface SyncState {
 export interface DeviceAnalysisState {
   assets: Record<string, Partial<Record<NativeAnalysisPart, PartState>>>;
   syncs: SyncState[];
-  /** Per asset, the newest native revision applied (events and getAnalysis snapshots). */
+  /**
+   * Per asset, the newest native revision applied (events and getAnalysis snapshots).
+   * Never persist these: native revisions restart at 0 in every app process, so a stored
+   * value would make the next session's events look stale.
+   */
   revisions: Record<string, number>;
 }
 

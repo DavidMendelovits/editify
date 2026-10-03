@@ -418,10 +418,17 @@ enum Analyzers {
         done += batch.count
         progress?(Double(done) / Double(max(1, times.count)))
       }
-      // Vision failing on every frame is a broken detector, not a clip without faces
-      // (the simulator's GPU path does this: "Could not create inference context").
-      if decoded > 0, visionFailures == decoded {
-        return .failed(version, "Vision could not read any frame: \(lastVisionError?.localizedDescription ?? "unknown error")")
+      // No frame decoded, or Vision failing on every frame, is a broken source or detector,
+      // not a clip without faces.
+      if !times.isEmpty, decoded == 0 {
+        return .failed(version, "Could not decode any frame of the video")
+      }
+      if !times.isEmpty, visionFailures == decoded {
+        let message = "Vision could not read any frame: \(lastVisionError?.localizedDescription ?? "unknown error")"
+        // No inference context (seen on the simulator's GPU path) means this device can't
+        // run the detector: retry elsewhere or later, not a fault in the clip.
+        if let lastVisionError, isMissingInferenceContext(lastVisionError) { return .unavailable(version, message) }
+        return .failed(version, message)
       }
       // The generator may hand frames back out of request order.
       samples.sort { ($0[0] as? Double ?? 0) < ($1[0] as? Double ?? 0) }
@@ -436,6 +443,12 @@ enum Analyzers {
     } catch {
       return .failed(version, error)
     }
+  }
+
+  private static func isMissingInferenceContext(_ error: Error) -> Bool {
+    let ns = error as NSError
+    return ns.domain == VNErrorDomain && ns.code == VNErrorCode.internalError.rawValue
+      && ns.localizedDescription.localizedCaseInsensitiveContains("inference context")
   }
 
   /// One face sample from one frame (blocking: runs on the analysis queue), plus

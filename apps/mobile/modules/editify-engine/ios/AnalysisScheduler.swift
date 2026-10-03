@@ -71,13 +71,17 @@ actor AnalysisScheduler {
   private var lastProgress: [String: Double] = [:]
   private var revisions: [String: Int] = [:]
   private var epoch = 0
+  private var emitterEpoch = 0
   private var emit: Emit?
   private var thermalObserver: NSObjectProtocol?
 
   /// Decoded 8 kHz audio kept for sync/energy; ~32 MB is about 17 minutes of audio.
   private static let pcmBudgetSamples = 8_000_000
 
-  func setEmitter(_ emit: Emit?) {
+  /// `epoch`: the module instance's context; an older instance can't replace a newer one's emitter.
+  func setEmitter(_ emit: Emit?, epoch caller: Int) {
+    guard caller >= emitterEpoch else { return }
+    emitterEpoch = caller
     self.emit = emit
     if thermalObserver == nil {
       thermalObserver = NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { _ in
@@ -124,7 +128,7 @@ actor AnalysisScheduler {
   /// `epoch`: the calling JS context's (nil for native callers such as lab spikes).
   func setPlaybackActive(_ active: Bool, epoch caller: Int? = nil) {
     if let caller {
-      adopt(caller)
+      if adopt(caller) { emitState() }
       guard caller == epoch else { return }
     }
     guard playbackActive != active else { return }
@@ -135,7 +139,7 @@ actor AnalysisScheduler {
   /// The asset on screen jumps the queue in both lanes (it does not preempt a running part).
   func setFocus(_ assetId: String?, epoch caller: Int? = nil) {
     if let caller {
-      adopt(caller)
+      if adopt(caller) { emitState() }
       guard caller == epoch else { return }
     }
     focus = assetId
@@ -305,6 +309,8 @@ actor AnalysisScheduler {
     // Progress hops here on its own task: a late tick from a finished or cancelled part is ignored.
     guard isCurrent(job), let current = running[job.part.heavy]?.job, current.seq == job.seq else { return }
     if job.part.heavy, phase == nil {
+      // Ticks hop here on separate tasks and can arrive out of order; never step backwards.
+      guard fraction >= heavyFraction else { return }
       heavyStep = max(heavyStep, fraction - heavyFraction)
       heavyFraction = fraction
     }

@@ -94,9 +94,11 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
   // ran a 295 s set in about 8 s (37x); a phone at 5x still has a 5-minute set ready in
   // a minute. Every analyzer must come back ready (the words model installed) and faces
   // must find a face (a detector failing every frame reads as "no faces"). Sync must
-  // match a reference lag for a real memo pair (`syncParity`: 2 ms when the fine stage
-  // locked, one 10 ms coarse cell when it didn't); a self-check (no memo) aligns
-  // sample-identical audio, so it can't pass.
+  // fine-lock and land within 2 ms of a fine-locked reference for a real memo pair
+  // (stand-up pair: 59.424); a self-check (no memo) aligns sample-identical audio, so it
+  // can't pass. Known divergence to investigate, not to absorb here: on the stand-up pair
+  // the same Swift code fine-locks on the simulator (score 4.17) but not on macOS
+  // (3.44, under the 4.0 lock score), where it falls back to the 10 ms coarse cell.
   S11: { variant: 'pipeline', checks: [
     { metric: 'readyRealtimeFactor', op: '>=', value: 5 },
     { metric: 'wordsReady', op: '==', value: true },
@@ -104,6 +106,7 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
     { metric: 'facesReady', op: '==', value: true },
     { metric: 'facesFound', op: '==', value: true },
     { metric: 'syncSelfCheck', op: '==', value: false },
+    { metric: 'syncFineLocked', op: '==', value: true },
     { metric: 'syncParity', op: '==', value: true },
     { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
     { metric: 'thermalEnd', op: '<=', value: 'fair' },

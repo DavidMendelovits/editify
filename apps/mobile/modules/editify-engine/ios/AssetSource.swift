@@ -39,7 +39,8 @@ enum AssetSource {
     let request = PhotosRequest()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
-        request.begin(continuation)
+        // Already cancelled: resumed with CancellationError, no request issued.
+        guard request.begin(continuation) else { return }
         let id = PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, info in
           if let avAsset { return request.finish(.success(avAsset)) }
           if (info?[PHImageCancelledKey] as? Bool) == true { return request.finish(.failure(CancellationError())) }
@@ -80,13 +81,16 @@ private final class PhotosRequest: @unchecked Sendable {
   private var continuation: CheckedContinuation<AVAsset, Error>?
   private var cancelled = false
 
-  func begin(_ continuation: CheckedContinuation<AVAsset, Error>) {
+  /// False when the task was already cancelled (the continuation is resumed here, and
+  /// no request should be issued).
+  func begin(_ continuation: CheckedContinuation<AVAsset, Error>) -> Bool {
     let cancelNow = lock.withLock { () -> Bool in
       if cancelled { return true }
       self.continuation = continuation
       return false
     }
     if cancelNow { continuation.resume(throwing: CancellationError()) }
+    return !cancelNow
   }
 
   func finish(_ result: Result<AVAsset, Error>) {

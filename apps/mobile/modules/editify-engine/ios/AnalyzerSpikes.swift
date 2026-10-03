@@ -14,8 +14,10 @@ import UniformTypeIdentifiers
 /// Sync's answer is checked against a known lag:
 ///   - with a memo: params.expectedLag, a reference measurement of that pair (stand-up
 ///     pair: 59.424 s from the server's ffmpeg + sync.ts, fine stage locked). This is the
-///     verdict arm. `syncParity`: within 2 ms when the phone's fine stage locked, else
-///     within one 10 ms coarse cell (a coarse-only answer can't be closer than that).
+///     verdict arm, which also requires `syncFineLocked`. `syncParity`: within 2 ms when the
+///     phone's fine stage locked, else within one 10 ms coarse cell (recorded for context;
+///     a coarse-only answer can't be closer than that). Known divergence: on the stand-up
+///     pair the simulator fine-locks (score 4.17) and macOS doesn't (3.44 < 4.0).
 ///   - without: a 60 s excerpt of the clip's own audio cut at 30 s (lag 30 s). That only
 ///     proves the code path, since the excerpt is sample-identical, so the row says
 ///     `syncSelfCheck` and the evaluator won't pass it.
