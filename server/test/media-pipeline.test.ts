@@ -73,7 +73,11 @@ describe.skipIf(!required && (!hasSwift || !hasFfmpeg))('device proxy pipeline a
     const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macos15.0`;
     execFileSync('xcrun', ['swiftc', '-O', '-target', target, ...sources, join(engine, 'parity/media-pipeline/main.swift'), '-o', binary]);
     const run = spawnSync(binary, [clips, join(dir, 'scratch')], { encoding: 'utf8' });
-    expect(run.stderr).toBe('');
+    expect(run.status).toBe(0);
+    // GitHub's virtualized macOS runners log a paravirtual GPU driver probe on
+    // stderr; anything else there is a real failure.
+    const stderr = run.stderr.split('\n').filter((line) => line && !/^IOServiceMatchingfailed for: /.test(line));
+    expect(stderr).toEqual([]);
     expect(run.stdout.trim()).toBe('ok');
   }, 240000);
 });
