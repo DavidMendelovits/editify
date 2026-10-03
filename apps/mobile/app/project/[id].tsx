@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AssetMetadata, LibrarySound, Operation, Project } from '@editify/shared';
+import { withExplicitIds, type AssetMetadata, type LibrarySound, type Operation, type Project } from '@editify/shared';
 import { Brand } from '../../src/components/Brand';
 import { Button } from '../../src/components/Button';
 import { EditSummaryPanel } from '../../src/components/EditSummaryPanel';
@@ -23,6 +23,7 @@ import { Timeline } from '../../src/components/editor/Timeline';
 import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { api } from '../../src/lib/api';
+import { OptimisticLedger } from '../../src/lib/optimistic';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
@@ -41,9 +42,12 @@ const WIDE_BREAKPOINT = 1024;
 const NATIVE_DRIVER = Platform.OS !== 'web';
 
 interface ApplyVariables {
+  /**
+   * Painted before the round trip with the shared edit rules and rolled back if
+   * the server refuses them (OptimisticLedger). Every id must already be
+   * explicit (withExplicitIds), so the paint and the answer name the same clips.
+   */
   ops: Operation[];
-  /** Paints the expected result before the round trip; rolled back by a refetch on error. */
-  optimistic?: (project: Project) => Project;
   /**
    * Apply against this version instead of the freshest one. Set for edits
    * planned elsewhere (a sync measurement), so a change that landed while they
@@ -91,7 +95,18 @@ export default function EditorScreen() {
   // Covers the gap between the chat mutation resolving and the history refetch.
   const [latestTrace, setLatestTrace] = useState<AgentTraceStep[]>();
 
-  const projectQuery = useQuery({ queryKey: ['project', id], queryFn: () => api.getProject(id), enabled: Boolean(id) });
+  // The cache always shows the server's last answer plus every batch still in
+  // flight, painted in order; see OptimisticLedger for the rollback rule. Every
+  // server document, this fetch included, goes through it, so a late response
+  // cannot replace a newer one.
+  const ledgerRef = useRef<OptimisticLedger | null>(null);
+  if (!ledgerRef.current) ledgerRef.current = new OptimisticLedger();
+  const ledger = ledgerRef.current;
+  const projectQuery = useQuery({
+    queryKey: ['project', id],
+    queryFn: async () => ledger.confirm(await api.getProject(id)),
+    enabled: Boolean(id),
+  });
   const chatQuery = useQuery({ queryKey: ['chat', id], queryFn: () => api.getChat(id), enabled: Boolean(id) });
   // Drives the ↶ / ↷ buttons. Refetched after every edit — including the ones
   // the agent applies — so the controls always match the server's log.
@@ -131,25 +146,31 @@ export default function EditorScreen() {
   // (stepper taps, rapid imports) no longer races itself into 409s.
   const opChain = useRef<Promise<unknown>>(Promise.resolve());
   const apply = useMutation({
-    mutationFn: ({ ops, baseVersion }: ApplyVariables) => {
+    // `batch` is the same object onMutate and onError receive: the ledger's key.
+    mutationFn: (batch: ApplyVariables) => {
       const run = opChain.current.catch(() => undefined).then(async () => {
         const current = queryClient.getQueryData<Project>(['project', id]);
         if (!current) throw new Error('Project is still loading');
-        const updated = await api.applyOps(current.id, ops, baseVersion ?? current.version);
-        // Written here, not just in onSuccess, so the next queued batch sees it.
-        queryClient.setQueryData(['project', id], updated);
+        const updated = await api.applyOps(current.id, batch.ops, batch.baseVersion ?? current.version);
+        // Written here, not in onSuccess, so the next queued batch sees it.
+        queryClient.setQueryData(['project', id], ledger.confirm(updated, batch));
         return updated;
       });
       opChain.current = run;
       return run;
     },
-    onMutate: ({ optimistic }: ApplyVariables) => {
-      if (!optimistic) return;
+    onMutate: (batch: ApplyVariables) => {
       const current = queryClient.getQueryData<Project>(['project', id]);
-      if (current) queryClient.setQueryData(['project', id], { ...optimistic(current), version: current.version });
+      // A batch the rules refuse (or an undo) paints nothing: the server's
+      // answer decides, and its error surfaces as before.
+      if (current) queryClient.setQueryData(['project', id], ledger.begin(current, batch));
     },
-    onSuccess: (updated) => queryClient.setQueryData(['project', id], updated),
-    onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
+    onError: async (_error, batch) => {
+      // Roll the paint back first: offline, the refetch below fails too.
+      const restored = ledger.reject(batch);
+      if (restored) queryClient.setQueryData(['project', id], restored);
+      await queryClient.invalidateQueries({ queryKey: ['project', id] });
+    },
     onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['history', id] }); },
   });
 
@@ -162,7 +183,7 @@ export default function EditorScreen() {
         const updated = direction === 'undo'
           ? await api.undo(current.id, current.version)
           : await api.redo(current.id, current.version);
-        queryClient.setQueryData(['project', id], updated);
+        queryClient.setQueryData(['project', id], ledger.confirm(updated));
         return updated;
       });
       opChain.current = run;
@@ -180,16 +201,18 @@ export default function EditorScreen() {
       return run;
     },
     onSuccess: async (doc: Project) => {
-      queryClient.setQueryData(['project', id], doc);
+      queryClient.setQueryData(['project', id], ledger.confirm(doc));
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
       await queryClient.invalidateQueries({ queryKey: ['history', id] });
     },
+    onError: async () => { await queryClient.invalidateQueries({ queryKey: ['project', id] }); },
   });
   const sendChat = useMutation({
     mutationFn: (message: string) => api.chat(id, message),
     onMutate: (message: string) => { track('chat_message'); setOptimisticMessage(message); setLatestTrace(undefined); },
     onSuccess: async (response) => {
-      queryClient.setQueryData(['project', id], response.doc);
+      // Not on opChain: an edit may have landed since, and confirm keeps the newer doc.
+      queryClient.setQueryData(['project', id], ledger.confirm(response.doc));
       setLatestTrace(response.trace ?? []);
       await queryClient.invalidateQueries({ queryKey: ['chat', id] });
       await queryClient.invalidateQueries({ queryKey: ['history', id] });
@@ -348,11 +371,11 @@ export default function EditorScreen() {
    * never rejects, so fire-and-forget callers can ignore it. The mutation's
    * own onError already refetches and surfaces the failure.
    */
-  function applyOps(ops: Operation[], optimistic?: (current: Project) => Project): Promise<boolean> {
+  function applyOps(ops: Operation[]): Promise<boolean> {
     // One line per edit batch, so a report can show what the user did by hand
     // right before they hit a wall (or a crash).
     track('edit', ops.map((op) => op.type).join(','));
-    return apply.mutateAsync(optimistic ? { ops, optimistic } : { ops }).then(() => true, () => false);
+    return apply.mutateAsync({ ops: withExplicitIds(ops) }).then(() => true, () => false);
   }
 
   const round3 = (value: number): number => Math.round(value * 1000) / 1000;
@@ -417,7 +440,7 @@ export default function EditorScreen() {
       track('audio_sync', auto ? 'auto' : 'manual');
       // Against the measured version: an edit made while measuring is a 409
       // ("the project changed underneath this edit"), not a misplaced memo.
-      await apply.mutateAsync({ ops: result.ops, baseVersion: result.version });
+      await apply.mutateAsync({ ops: withExplicitIds(result.ops), baseVersion: result.version });
       setSync({ clipId, busy: false, message: describeSync(result) });
     } catch (error) {
       // An import-time attempt stays quiet: an older server without /sync, or

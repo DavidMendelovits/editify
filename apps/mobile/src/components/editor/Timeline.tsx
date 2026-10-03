@@ -13,7 +13,7 @@ import type { ImportProgress } from '../../lib/upload-progress';
 import {
   CAPTION_ROW_HEIGHT, LANE_GUTTER, MAX_PX_PER_SEC, MIN_PX_PER_SEC, SNAP_PX, VIDEO_LANE_HEIGHT,
   beatTargets, bulkMoveUpdates, captionRows, clampStart, clipEnd, clipRangeBetween, closeGapUpdates, findClip,
-  formatTimecode, patchClip, patchStarts, removeClip, snapTargets, snapTime, sortClips, tickStep, trackOfClip,
+  formatTimecode, snapTargets, snapTime, sortClips, tickStep, trackOfClip,
   trimInPreview, trimOutPreview,
 } from '../../lib/timeline';
 
@@ -34,8 +34,8 @@ interface Props {
   /** Ruler grab / release — the preview swaps to filmstrip posters in between. */
   onScrub: (scrubbing: boolean) => void;
   onSelect: (clipId: string | undefined) => void;
-  /** Applies ops on the server; `optimistic` paints the result before the round trip. */
-  onApply: (ops: Operation[], optimistic?: (project: Project) => Project) => void;
+  /** Applies ops on the server, painting the shared rules' result before the round trip. */
+  onApply: (ops: Operation[]) => void;
   /** Import from the Files app / file browser. */
   onImport: () => void;
   /** Import from the Photos library (camera roll). */
@@ -291,7 +291,7 @@ export function Timeline({
       const ops: Operation[] = track.kind === 'caption'
         ? updates.map((update) => ({ type: 'update_caption', params: update }))
         : [{ type: 'set_clip_properties', params: { updates } }];
-      onApply(ops, (current) => patchStarts(current, updates));
+      onApply(ops);
       return;
     }
 
@@ -306,7 +306,7 @@ export function Timeline({
     if (Math.abs(trim.start - clip.start) > 1e-6) {
       ops.push({ type: 'set_clip_properties', params: { updates: [{ clipId: clip.id, start: round6(trim.start) }] } });
     }
-    onApply(ops, (current) => patchClip(current, clip.id, { in: trim.in, out: trim.out, start: trim.start }));
+    onApply(ops);
   }
 
   /**
@@ -435,16 +435,13 @@ export function Timeline({
         : { type: 'remove_clip', params: { clipId } }];
     });
     if (ops.length === 0) return;
-    onApply(ops, (current) => selectedIds.reduce((next, clipId) => removeClip(next, clipId), current));
+    onApply(ops);
     setMulti({ anchor: undefined, ids: [] });
     onSelect(undefined);
   }
   function closeGaps(): void {
     if (!videoTrack || gapUpdates.length === 0) return;
-    onApply(
-      [{ type: 'set_clip_properties', params: { updates: gapUpdates } }],
-      (current) => patchStarts(current, gapUpdates),
-    );
+    onApply([{ type: 'set_clip_properties', params: { updates: gapUpdates } }]);
   }
   function zoom(factor: number): void {
     setPxPerSec((current) => clampZoom(current * factor));
@@ -644,10 +641,7 @@ export function Timeline({
         pending={pending}
         {...(selected && syncs?.[selected.id] ? { sync: syncs[selected.id] } : {})}
         {...(selected && selectedTrack?.kind === 'audio' && selected.assetId ? { onSync: () => onSyncAudio(selected.id) } : {})}
-        onApply={(ops, patch, extra) => onApply(ops, (current) => {
-          const patched = selected ? patchClip(current, selected.id, patch) : current;
-          return (extra ?? []).reduce((next, entry) => patchClip(next, entry.clipId, entry.patch), patched);
-        })}
+        onApply={onApply}
       />
       {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
     </View>

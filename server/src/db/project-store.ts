@@ -10,31 +10,16 @@ import {
 } from '@editify/shared';
 import { AssetStore } from './asset-store.js';
 import type { EditifyDatabase } from './database.js';
-import { applyOperation, findVideoOverlaps, overlapKey, OperationError } from '../operations/apply.js';
+import { applyOperation, assertNoNewVideoOverlap, OperationError } from '../operations/apply.js';
+
+// Moved to @editify/shared so the phone's optimistic paint refuses the same overlaps.
+export { assertNoNewVideoOverlap };
 
 export class VersionConflictError extends Error {
   constructor(public readonly expected: number, public readonly actual: number) {
     super(`Version conflict: expected ${expected}, current version is ${actual}`);
     this.name = 'VersionConflictError';
   }
-}
-
-/**
- * A video track shows one picture at a time, so two clips sharing timeline time
- * there is corruption, not an edit. Only a *newly* introduced pair throws: a
- * project that already overlaps has to stay editable so it can be repaired.
- */
-export function assertNoNewVideoOverlap(before: Project, after: Project): void {
-  const existing = new Set(findVideoOverlaps(before).map(overlapKey));
-  const introduced = findVideoOverlaps(after).find((overlap) => !existing.has(overlapKey(overlap)));
-  if (!introduced) return;
-  const [first, second] = introduced.clipIds;
-  // Rounded: float ends read as 2.5999999999999996s, which is noise to whoever
-  // (the user or the model) has to act on the message.
-  const second3 = (value: number): string => `${Number(value.toFixed(3))}s`;
-  throw new OperationError(
-    `Clips ${first} and ${second} would overlap on video track ${introduced.trackId} from ${second3(introduced.start)} to ${second3(introduced.end)}; video clips cannot share timeline time`,
-  );
 }
 
 /** Raised when an edit references media the project was never given. */

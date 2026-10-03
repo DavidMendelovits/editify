@@ -9,7 +9,7 @@ import { clipTimelineDuration } from '@editify/shared';
 import { assetFilmstripUrl, assetOriginalUrl, assetProxyUrl, assetThumbUrl } from '../../lib/api';
 import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
-import { FILMSTRIP_TILES, anchorIndexAtSorted, clipEnd, clipIndexAtSorted, formatTimecode, removeClip, sortClips, visibleIdsAt } from '../../lib/timeline';
+import { FILMSTRIP_TILES, anchorIndexAtSorted, clipEnd, clipIndexAtSorted, formatTimecode, sortClips, visibleIdsAt } from '../../lib/timeline';
 import { usePlayhead, usePlayheadSelector, type PlayheadClock } from './usePlayback';
 
 const ASPECT: Record<Project['format'], number> = { '9:16': 9 / 16, '1:1': 1, '16:9': 16 / 9 };
@@ -64,8 +64,8 @@ interface Props {
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
   onSelect: (clipId: string | undefined) => void;
-  /** Commits ops (sticker repositioning) with an optimistic patch. */
-  onApply: (ops: Operation[], optimistic?: (project: Project) => Project) => void;
+  /** Commits ops (sticker repositioning); the editor paints them before the round trip. */
+  onApply: (ops: Operation[]) => void;
 }
 
 /**
@@ -866,16 +866,7 @@ function Sticker({ clip, asset, stage, selected, onSelect, onApply }: {
       const current = latest.current;
       const next = dragPlacement(current.placement, gesture.dx, gesture.dy, current.stage);
       if (Math.abs(gesture.dx) < 3 && Math.abs(gesture.dy) < 3) return; // tap = select only
-      onApplyRef.current(
-        [{ type: 'set_overlay', params: { clipId: current.clip.id, overlay: next } }],
-        (project) => ({
-          ...project,
-          tracks: project.tracks.map((track) => ({
-            ...track,
-            clips: track.clips.map((candidate) => (candidate.id === current.clip.id ? { ...candidate, overlay: next } : candidate)),
-          })),
-        }),
-      );
+      onApplyRef.current([{ type: 'set_overlay', params: { clipId: current.clip.id, overlay: next } }]);
     },
     onPanResponderTerminate: () => setDrag(undefined),
   })).current;
@@ -894,22 +885,13 @@ function Sticker({ clip, asset, stage, selected, onSelect, onApply }: {
       const current = latest.current;
       const next = { ...current.placement, ...gripShape(current.placement, gesture.dx, gesture.dy, current.stage) };
       if (next.width === current.placement.width && next.rotation === current.placement.rotation) return;
-      onApplyRef.current(
-        [{ type: 'set_overlay', params: { clipId: current.clip.id, overlay: next } }],
-        (project) => ({
-          ...project,
-          tracks: project.tracks.map((track) => ({
-            ...track,
-            clips: track.clips.map((candidate) => (candidate.id === current.clip.id ? { ...candidate, overlay: next } : candidate)),
-          })),
-        }),
-      );
+      onApplyRef.current([{ type: 'set_overlay', params: { clipId: current.clip.id, overlay: next } }]);
     },
     onPanResponderTerminate: () => setShape(undefined),
   })).current;
 
   function removeSelf(): void {
-    onApply([{ type: 'remove_clip', params: { clipId: clip.id } }], (current) => removeClip(current, clip.id));
+    onApply([{ type: 'remove_clip', params: { clipId: clip.id } }]);
     onSelect(undefined);
   }
 

@@ -63,14 +63,14 @@ interface Props {
   /** Present for audio clips: line this clip up under the video by its sound. */
   onSync?: () => void;
   sync?: SyncState;
-  /** `extra` carries the optimistic patch for clips other than the selected one. */
-  onApply: (ops: Operation[], patch: Partial<Clip>, extra?: Array<{ clipId: string; patch: Partial<Clip> }>) => void;
+  /** Commits ops; the editor paints them with the shared edit rules before the round trip. */
+  onApply: (ops: Operation[]) => void;
 }
 
 /**
  * Selection strip under the lanes: read-only geometry plus the properties
  * worth nudging by hand — speed/volume/zoom for media clips, size/rotation
- * for stickers. Every control commits one operation with an optimistic patch.
+ * for stickers. Every control commits one operation, painted optimistically.
  */
 export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sync, onApply }: Props) {
   if (!clip) {
@@ -91,12 +91,12 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sy
     const current = index >= 0 ? index : Math.max(0, fallback);
     const next = SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, current + direction))];
     if (next === undefined || next === speed) return;
-    onApply([{ type: 'set_speed', params: { clipId: clip.id, speed: next } }], { speed: next });
+    onApply([{ type: 'set_speed', params: { clipId: clip.id, speed: next } }]);
   };
   const stepVolume = (direction: -1 | 1): void => {
     const next = Math.round(Math.max(0, Math.min(1, volume + direction * VOLUME_STEP)) * 100) / 100;
     if (next === volume) return;
-    onApply([{ type: 'set_volume', params: { clipId: clip.id, volume: next } }], { volume: next });
+    onApply([{ type: 'set_volume', params: { clipId: clip.id, volume: next } }]);
   };
 
   const activeZoom = ZOOM_PRESETS.find((preset) => sameTransform(clip.transform, preset.from)
@@ -106,24 +106,18 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sy
     const params = preset.to
       ? { clipId: clip.id, transform: preset.from, transformEnd: preset.to }
       : { clipId: clip.id, transform: preset.from };
-    const patch: Partial<Clip> = { transform: preset.from };
-    // `set_transform` without transformEnd clears the zoom server-side; mirror
-    // that optimistically (undefined removes it from the patched clip).
-    (patch as Record<string, unknown>).transformEnd = preset.to;
-    onApply([{ type: 'set_transform', params }], patch);
+    // `set_transform` without transformEnd clears the zoom.
+    onApply([{ type: 'set_transform', params }]);
   };
 
   const transition = clip.transition;
   const applyTransition = (next: ClipTransition | null): void => {
-    // `null` clears it server-side; `undefined` does the same to the patched
-    // clip, which the exact-optional type needs the cast to express.
-    const patch: Partial<Clip> = {};
-    (patch as Record<string, unknown>).transition = next ?? undefined;
-    onApply([{ type: 'set_transition', params: { clipId: clip.id, transition: next } }], patch);
+    // `null` clears it.
+    onApply([{ type: 'set_transition', params: { clipId: clip.id, transition: next } }]);
   };
 
   const applyText = (text: string): void => {
-    onApply([{ type: 'update_caption', params: { clipId: clip.id, text } }], { text });
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, text } }]);
   };
 
   // `anchorPct` outranks `position` in both the preview overlay and the ASS
@@ -133,14 +127,14 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sy
   const applyCaptionPosition = (position: CaptionStyle['position']): void => {
     const { anchorPct: _anchorPct, ...rest } = clip.style ?? {};
     const style = { ...rest, position } as CaptionStyle;
-    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }], { style });
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }]);
   };
 
   // `update_caption` REPLACES the style object, so every edit merges onto the
   // clip's own style — that is what carries `words`, the karaoke timings.
   const applyCaptionStyle = (patch: Partial<CaptionStyle>): void => {
     const style = { ...clip.style, ...patch } as CaptionStyle;
-    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }], { style });
+    onApply([{ type: 'update_caption', params: { clipId: clip.id, style } }]);
   };
 
   // `size` is pixels at a 1080-wide frame while `sizePct` is a share of frame
@@ -163,18 +157,13 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sy
   const captionSiblings = captionClips ?? [];
   const applyCaptionStyleToAll = (): void => {
     const { words: _words, anchorPct: _anchorPct, ...shared } = clip.style ?? {};
-    const ops: Operation[] = [];
-    const extra: Array<{ clipId: string; patch: Partial<Clip> }> = [];
-    let selectedPatch: Partial<Clip> = {};
-    for (const caption of captionSiblings) {
+    const ops = captionSiblings.map((caption): Operation => {
       const words = caption.style?.words;
       const style = { ...shared, ...(words ? { words } : {}) } as CaptionStyle;
-      ops.push({ type: 'update_caption', params: { clipId: caption.id, style } });
-      if (caption.id === clip.id) selectedPatch = { style };
-      else extra.push({ clipId: caption.id, patch: { style } });
-    }
+      return { type: 'update_caption', params: { clipId: caption.id, style } };
+    });
     if (ops.length === 0) return;
-    onApply(ops, selectedPatch, extra);
+    onApply(ops);
   };
 
   const placement = clip.overlay ?? { x: 0.5, y: 0.35, width: 0.28, rotation: 0 };
@@ -183,7 +172,7 @@ export function Inspector({ clip, asset, kind, captionClips, pending, onSync, sy
       ? { ...placement, width: clamp(placement.width + direction * STICKER_SIZE_STEP, 0.06, 0.9) }
       : { ...placement, rotation: clampRotation(placement.rotation + direction * STICKER_ROTATION_STEP) };
     if (next.width === placement.width && next.rotation === placement.rotation) return;
-    onApply([{ type: 'set_overlay', params: { clipId: clip.id, overlay: next } }], { overlay: next });
+    onApply([{ type: 'set_overlay', params: { clipId: clip.id, overlay: next } }]);
   };
 
   return (
