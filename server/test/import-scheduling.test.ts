@@ -50,7 +50,7 @@ let assets: AssetStore;
 let faces: FaceService;
 
 function whisper(ms: number) {
-  return vi.fn(async (path: string) => {
+  return vi.fn(async (path: string, _options?: { lane?: 'foreground' | 'background' }) => {
     const id = path.split('/').pop()?.replace('.mp4', '') ?? '';
     timeline.events.push(`whisper:start ${id}`);
     timeline.peak = Math.max(timeline.peak, mediaSlots.active().length);
@@ -73,9 +73,9 @@ function insertAsset(id: string): StoredAsset {
   });
 }
 
-function startImport(transcripts: TranscriptService, id: string): { asset: StoredAsset; done: Promise<void> } {
+function startImport(transcripts: TranscriptService, id: string, probed = probe): { asset: StoredAsset; done: Promise<void> } {
   const asset = insertAsset(id);
-  queueAssetWork(quiet, assets, transcripts, asset, probe, faces);
+  queueAssetWork(quiet, assets, transcripts, asset, probed, faces);
   return { asset, done: pendingAssetWork.get(id) as Promise<void> };
 }
 
@@ -163,7 +163,7 @@ describe('import scheduling', () => {
     expect(runner).toHaveBeenCalledTimes(1);
   });
 
-  it('promotes an import transcription someone asks for out of the background lane', async () => {
+  it('joins a queued import transcription someone asks for, and promotes it out of the background lane', async () => {
     const runner = whisper(5);
     const transcripts = service(runner);
     let release!: () => void;
@@ -177,17 +177,76 @@ describe('import scheduling', () => {
     expect(mediaSlots.queued()).toEqual(['import first', 'import second', 'transcribe second', 'transcribe first']);
 
     release();
-    await Promise.all([...blockers, first.done, second.done, asked]);
+    const [, , , , joined] = await Promise.all([...blockers, first.done, second.done, asked]);
+    expect(joined).toEqual(transcripts.get('second'));
     expect(runner).toHaveBeenCalledTimes(2);
+    // The promoted run started as a foreground run, so it got the full CPU.
+    const lanes = Object.fromEntries(runner.mock.calls.map(([path, options]) => [path.split('/').pop(), options?.lane]));
+    expect(lanes).toEqual({ 'second.mp4': 'foreground', 'first.mp4': 'background' });
   });
 
-  it('still transcribes a clip whose encode failed, and marks the row as an error', async () => {
-    timeline.proxyFails.add('bad');
+  it('promotes the transcriptions a timeline reader misses during a multi-clip batch, without waiting', async () => {
     const runner = whisper(5);
     const transcripts = service(runner);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const blockers = Array.from({ length: mediaSlots.capacity }, (_, index) => mediaSlots.run(`render ${index}`, () => held));
+    const imports = ['a', 'b', 'c'].map((id) => startImport(transcripts, id));
+    expect(mediaSlots.queued()).toEqual(['import a', 'import b', 'import c', 'transcribe a', 'transcribe b', 'transcribe c']);
+
+    // What get_timeline_transcript / remove_words / cleanup do: a plain read.
+    // Clip c is on the timeline; its transcript is not there yet.
+    expect(transcripts.getForTimeline('c')).toBeUndefined();
+    expect(mediaSlots.queued()).toEqual(['import a', 'import b', 'import c', 'transcribe c', 'transcribe a', 'transcribe b']);
+    // A second miss does not shuffle it again.
+    transcripts.getForTimeline('c');
+    expect(mediaSlots.queued()).toEqual(['import a', 'import b', 'import c', 'transcribe c', 'transcribe a', 'transcribe b']);
+
+    release();
+    await Promise.all([...blockers, ...imports.map((entry) => entry.done)]);
+    const order = runner.mock.calls.map(([path]) => path.split('/').pop());
+    expect(order.indexOf('c.mp4')).toBeLessThan(order.indexOf('b.mp4'));
+    expect(transcripts.getForTimeline('c')?.assetId).toBe('c');
+  });
+
+  it('gives a waiting import transcription a turn during a long batch of previews', async () => {
+    const runner = whisper(5);
+    const transcripts = service(runner);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    // One slot held by a long render, so everything below shares the other.
+    const blocker = mediaSlots.run('render long', () => held);
+    const imports = ['p1', 'p2', 'p3', 'p4', 'p5'].map((id) => startImport(transcripts, id));
+    // Two previews, then a transcription, then two more previews, and so on,
+    // instead of every preview in the batch going first.
+    await vi.waitFor(() => expect(assets.get('p5')?.status).toBe('ready'));
+    const starts = timeline.events.filter((event) => event.includes(':start'));
+    expect(starts.slice(0, 6)).toEqual([
+      'proxy:start p1', 'proxy:start p2', 'proxy:start p3', 'whisper:start p1', 'proxy:start p4', 'proxy:start p5',
+    ]);
+    release();
+    await Promise.all([blocker, ...imports.map((entry) => entry.done)]);
+  });
+
+  it('skips a queued transcription when the video cannot be decoded, but still transcribes an audio-only clip', async () => {
+    timeline.proxyFails.add('bad').add('memo');
+    const runner = whisper(5);
+    const transcripts = service(runner);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    // One slot taken, so each clip's transcription is still queued when its encode fails.
+    const blocker = mediaSlots.run('render 0', () => held);
     await startImport(transcripts, 'bad').done;
     expect(assets.get('bad')?.status).toBe('error');
+    expect(transcripts.get('bad')).toBeUndefined();
     expect(timeline.events).not.toContain('faces');
+    expect(runner).not.toHaveBeenCalled();
+
+    const memo = startImport(transcripts, 'memo', { ...probe, hasVideo: false, width: 0, height: 0 });
+    await vi.waitFor(() => expect(assets.get('memo')?.status).toBe('error'));
+    release();
+    await Promise.all([blocker, memo.done]);
+    expect(transcripts.get('memo')?.assetId).toBe('memo');
     expect(runner).toHaveBeenCalledTimes(1);
   });
 });
@@ -200,7 +259,7 @@ describe('media job log lines', () => {
     timeline.proxyMs.set('logged', 30);
     timeline.proxyFails.add('broken');
     const transcripts = service(whisper(10));
-    await Promise.all([startImport(transcripts, 'logged').done, startImport(transcripts, 'broken').done]);
+    await Promise.all(['logged', 'queued', 'broken'].map((id) => startImport(transcripts, id).done));
 
     expect(lines.every((line) => line.msg === 'media job')).toBe(true);
     const line = (job: string, assetId: string) => lines.find((entry) => entry.fields.job === job && entry.fields.assetId === assetId)?.fields;
@@ -211,10 +270,10 @@ describe('media job log lines', () => {
     }
     expect(line('proxy', 'logged')?.ms).toBeGreaterThanOrEqual(25);
     expect(line('proxy', 'broken')).toMatchObject({ job: 'proxy', assetId: 'broken', ok: false });
-    // The first import takes both free slots at once; the second import's
+    // The first import takes both free slots at once; the next import's
     // transcription waited for one of them.
     expect(line('proxy', 'logged')?.waitMs).toBeLessThan(5);
     expect(line('transcribe', 'logged')?.waitMs).toBeLessThan(5);
-    expect(line('transcribe', 'broken')?.waitMs).toBeGreaterThanOrEqual(5);
+    expect(line('transcribe', 'queued')?.waitMs).toBeGreaterThanOrEqual(5);
   });
 });

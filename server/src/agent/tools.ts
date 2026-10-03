@@ -428,7 +428,7 @@ async function captionOneClip(
     } : input.wordsPerChunk;
     // Words come from whatever is audible over this stretch: the synced memo where
     // it covers, the camera elsewhere (same selection as remove_silence).
-    const windows = audibleWindows(project, (assetId) => Boolean(ctx.transcripts.get(assetId)))
+    const windows = audibleWindows(project, (assetId) => Boolean(ctx.transcripts.getForTimeline(assetId)))
       .filter(({ clip }) => clip.start < clipEnd && clip.start + clipTimelineDuration(clip) > clipStart);
     const chunks = (windows.length ? windows : [{ clip: videoClip, assetId: videoClip.assetId }])
       .flatMap(({ clip, assetId }) => {
@@ -436,7 +436,7 @@ async function captionOneClip(
         const from = Math.max(clip.start, clipStart);
         const to = Math.min(clip.start + clipTimelineDuration(clip), clipEnd);
         const window = { ...clip, start: from, in: clip.in + (from - clip.start) * speed, out: clip.in + (to - clip.start) * speed };
-        return chunkTranscriptForClip(ctx.transcripts.get(assetId)?.words ?? transcript.words, window, chunkOptions);
+        return chunkTranscriptForClip(ctx.transcripts.getForTimeline(assetId)?.words ?? transcript.words, window, chunkOptions);
       })
       .sort((left, right) => left.start - right.start);
     const style: CaptionStyle = input.style ?? (preset ? {
@@ -491,7 +491,7 @@ async function removeWords(ctx: ToolContext, rawInput: unknown): Promise<unknown
   try {
     const input = removeWordsSchema.parse(rawInput);
     const project = requireProject(ctx);
-    const transcript = buildTimelineTranscript(project, (assetId) => ctx.transcripts.get(assetId));
+    const transcript = buildTimelineTranscript(project, (assetId) => ctx.transcripts.getForTimeline(assetId));
     const selected = new Set<number>();
     if (input.wordIndexes) {
       for (const item of input.wordIndexes) {
@@ -530,7 +530,7 @@ async function removeSilence(ctx: ToolContext, rawInput: unknown): Promise<unkno
   try {
     const input = removeSilenceSchema.parse(rawInput);
     const project = requireProject(ctx);
-    const timeline = buildTimelineTranscript(project, (assetId) => ctx.transcripts.get(assetId));
+    const timeline = buildTimelineTranscript(project, (assetId) => ctx.transcripts.getForTimeline(assetId));
     const { rangesByTrack, gapsCut, gapsProtected } = await planSilenceRanges(project, timeline.words, silenceSources(ctx.assets, ctx.transcripts), input);
     const operations = rippleOnce(project, rangesByTrack);
     const removedSec = unionRanges(rangesByTrack).reduce((total, range) => total + range.end - range.start, 0);
@@ -1106,7 +1106,7 @@ export function createToolRegistry(): ToolDef[] {
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
         emptyInputSchema.parse(input);
-        const timeline = buildTimelineTranscript(requireProject(ctx), (assetId) => ctx.transcripts.get(assetId));
+        const timeline = buildTimelineTranscript(requireProject(ctx), (assetId) => ctx.transcripts.getForTimeline(assetId));
         return { words: timeline.rows, segments: timeline.segments };
       },
     },

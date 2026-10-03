@@ -14,6 +14,9 @@ export interface MediaJobIds {
  * `{ msg: 'media job', job, assetId?, projectId?, renderId?, ms, waitMs, ok }`.
  * `ms` is the job's own wall time; `waitMs` is how long it queued for its turn
  * (a media slot, or the sync service's own one-at-a-time queue), 0 if none.
+ * An import's thumbnail (and colour sidecar) is made by the same ffmpeg pass as
+ * its proxy, so its time is folded into `proxy`; `thumbnail` lines only come
+ * from regenerating a stale thumbnail on request.
  */
 export interface MediaJobLine extends MediaJobIds {
   job: MediaJobKind;
@@ -35,6 +38,11 @@ let logger: MediaJobLogger | undefined;
  */
 export function setMediaJobLogger(next: MediaJobLogger | undefined): void {
   logger = next;
+}
+
+/** Unsets `owner`'s logger (an app closing), leaving a newer app's in place. */
+export function clearMediaJobLogger(owner: MediaJobLogger): void {
+  if (logger === owner) logger = undefined;
 }
 
 function logJob(line: MediaJobLine): void {

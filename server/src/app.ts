@@ -38,7 +38,7 @@ import { StyleService } from './services/style-service.js';
 import { StyleAnalyzerRegistry } from './style/registry.js';
 import { ReproService } from './services/repro-service.js';
 import { TelemetryService } from './services/telemetry-service.js';
-import { setMediaJobLogger } from './services/media-jobs.js';
+import { clearMediaJobLogger, setMediaJobLogger } from './services/media-jobs.js';
 import { TranscriptService } from './services/transcript-service.js';
 
 export interface AppOptions {
@@ -52,6 +52,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 20 * 1024 * 1024 });
   // Background jobs (renders, Whisper, encodes) run without a request: they log through this.
   setMediaJobLogger(app.log);
+  app.addHook('onClose', async () => clearMediaJobLogger(app.log));
   // The client sends `Content-Type: application/json` on every request, body or
   // not, and fastify's default parser 500s on an empty one. Bodyless POST/DELETE
   // (select, duplicate, delete) are ordinary calls — read them as `{}`.

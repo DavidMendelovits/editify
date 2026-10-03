@@ -5,7 +5,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * something a person is looking at: an import's preview, a render, a
  * transcript the agent asked for. Background work is what an import starts on
  * its own (its transcription) so it is ready before anyone asks. A free slot
- * goes to the oldest foreground waiter first, then the oldest background one.
+ * goes to the oldest foreground waiter first, except that waiting background
+ * work gets every third grant (`FOREGROUND_TURNS`) so it cannot starve.
  */
 export type SlotLane = 'foreground' | 'background';
 
@@ -13,10 +14,23 @@ export interface SlotOptions {
   lane?: SlotLane;
 }
 
-interface Waiter {
+interface Grant {
   label: string;
-  start: () => void;
+  lane: SlotLane;
 }
+
+interface Waiter {
+  grant: Grant;
+  start: () => void;
+  cancel: (error: Error) => void;
+}
+
+/**
+ * While background work waits, it gets a slot after at most this many
+ * foreground grants in a row, so a long batch of previews cannot hold every
+ * import's transcription back until the whole batch has encoded.
+ */
+const FOREGROUND_TURNS = 2;
 
 /**
  * One pool for every CPU and memory heavy media job: import encodes, renders
@@ -24,6 +38,10 @@ interface Waiter {
  * eat a core and a gigabyte on its own, so they share one small limit instead
  * of each path guessing at its own. The lanes only reorder who waits; they
  * never let more than `capacity` jobs run.
+ *
+ * Background jobs never hold more than `capacity - 1` slots at once (at least
+ * one), so a preview or render that arrives waits on at most one Whisper run,
+ * never on a slot pool full of them.
  *
  * Rule: a single async chain never holds two slots. Nesting acquires would
  * deadlock as soon as every slot is held by a job waiting for a second one.
@@ -35,11 +53,17 @@ interface Waiter {
  */
 export class MediaSlots {
   private readonly holding = new AsyncLocalStorage<string>();
-  private readonly running: string[] = [];
+  private readonly running: Grant[] = [];
   private readonly waiting: Waiter[] = [];
   private readonly background: Waiter[] = [];
+  /** Foreground grants made in a row while background work was waiting. */
+  private foregroundStreak = 0;
 
   constructor(readonly capacity: number) {}
+
+  private get backgroundLimit(): number {
+    return Math.max(1, this.capacity - 1);
+  }
 
   /** Whether the calling async chain already holds a slot. */
   held(): boolean {
@@ -48,21 +72,21 @@ export class MediaSlots {
 
   /** Labels of the jobs holding a slot right now, oldest first. */
   active(): readonly string[] {
-    return [...this.running];
+    return this.running.map((grant) => grant.label);
   }
 
-  /** Labels of the jobs waiting for a slot, in the order they will get one. */
+  /** Labels of the jobs waiting for a slot: foreground first, then background. */
   queued(): readonly string[] {
-    return [...this.waiting, ...this.background].map((waiter) => waiter.label);
+    return [...this.waiting, ...this.background].map((waiter) => waiter.grant.label);
   }
 
   async run<T>(label: string, job: () => Promise<T>, options: SlotOptions = {}): Promise<T> {
     if (this.held()) return await job();
-    await this.acquire(label, options.lane ?? 'foreground');
+    const grant = await this.acquire({ label, lane: options.lane ?? 'foreground' });
     try {
       return await this.holding.run(label, job);
     } finally {
-      this.release(label);
+      this.release(grant);
     }
   }
 
@@ -76,33 +100,76 @@ export class MediaSlots {
 
   /**
    * Moves a background waiter to the back of the foreground queue: someone is
-   * now waiting on it. Returns false when it already started or never queued.
+   * now waiting on it, so it no longer counts against the background cap.
+   * Returns false when it already started or never queued.
    */
   promote(label: string): boolean {
-    const index = this.background.findIndex((waiter) => waiter.label === label);
-    if (index < 0) return false;
-    const [waiter] = this.background.splice(index, 1);
-    this.waiting.push(waiter as Waiter);
+    const waiter = this.takeBackground(label);
+    if (!waiter) return false;
+    waiter.grant.lane = 'foreground';
+    this.waiting.push(waiter);
+    this.grantFreeSlots();
     return true;
   }
 
-  private async acquire(label: string, lane: SlotLane): Promise<void> {
-    if (this.running.length < this.capacity) {
-      this.running.push(label);
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      (lane === 'background' ? this.background : this.waiting).push({ label, start: resolve });
-    });
+  /**
+   * Drops a background waiter before it starts; its `run` rejects with
+   * `error`. A promoted job is foreground (someone wants it) and is kept.
+   */
+  cancel(label: string, error: Error): boolean {
+    const waiter = this.takeBackground(label);
+    waiter?.cancel(error);
+    return waiter !== undefined;
   }
 
-  private release(label: string): void {
-    this.running.splice(this.running.indexOf(label), 1);
-    // Hand the slot straight to the next waiter so a newcomer cannot jump the queue.
-    const next = this.waiting.shift() ?? this.background.shift();
-    if (!next) return;
-    this.running.push(next.label);
-    next.start();
+  private takeBackground(label: string): Waiter | undefined {
+    const index = this.background.findIndex((waiter) => waiter.grant.label === label);
+    return index < 0 ? undefined : this.background.splice(index, 1)[0];
+  }
+
+  private canStart(lane: SlotLane): boolean {
+    if (this.running.length >= this.capacity) return false;
+    if (lane === 'foreground') return true;
+    return this.running.filter((grant) => grant.lane === 'background').length < this.backgroundLimit;
+  }
+
+  private async acquire(grant: Grant): Promise<Grant> {
+    // Waiters that could start were started on the last release, so a free
+    // slot here means nobody eligible is ahead of this job.
+    if (this.canStart(grant.lane)) {
+      this.running.push(grant);
+      return grant;
+    }
+    await new Promise<void>((start, cancel) => {
+      (grant.lane === 'background' ? this.background : this.waiting).push({ grant, start, cancel });
+    });
+    return grant;
+  }
+
+  private release(grant: Grant): void {
+    this.running.splice(this.running.indexOf(grant), 1);
+    this.grantFreeSlots();
+  }
+
+  /** Hands free slots straight to waiters, so a newcomer cannot jump the queue. */
+  private grantFreeSlots(): void {
+    while (this.running.length < this.capacity) {
+      const next = this.nextWaiter();
+      if (!next) return;
+      this.running.push(next.grant);
+      next.start();
+    }
+  }
+
+  private nextWaiter(): Waiter | undefined {
+    const backgroundReady = this.background.length > 0 && this.canStart('background');
+    if (backgroundReady && (this.waiting.length === 0 || this.foregroundStreak >= FOREGROUND_TURNS)) {
+      this.foregroundStreak = 0;
+      return this.background.shift();
+    }
+    const next = this.waiting.shift();
+    if (next && this.background.length > 0) this.foregroundStreak += 1;
+    return next;
   }
 }
 

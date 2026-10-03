@@ -141,7 +141,7 @@ describe('media slot pool', () => {
     expect(mediaSlots.active()).toEqual([]);
   });
 
-  it('serves every waiting foreground job before a waiting background one', async () => {
+  it('prefers waiting foreground jobs over waiting background ones', async () => {
     const slots = new MediaSlots(1);
     const order: string[] = [];
     const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
@@ -156,6 +156,55 @@ describe('media slot pool', () => {
       job('render', 'foreground'),
     ]);
     expect(order).toEqual(['running', 'proxy', 'render', 'transcribe early', 'transcribe late']);
+  });
+
+  it('gives waiting background work every third grant, so a run of foreground jobs cannot starve it', async () => {
+    const slots = new MediaSlots(1);
+    const order: string[] = [];
+    const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
+      order.push(label);
+      await delay(2);
+    }, { lane });
+    await Promise.all([
+      job('running', 'foreground'),
+      job('transcribe', 'background'),
+      ...['p1', 'p2', 'p3', 'p4'].map((label) => job(label, 'foreground')),
+    ]);
+    expect(order).toEqual(['running', 'p1', 'p2', 'transcribe', 'p3', 'p4']);
+  });
+
+  it('keeps one slot out of background hands, so a new preview never waits behind two Whispers', async () => {
+    const slots = new MediaSlots(2);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const whispers = [slots.run('transcribe a', () => held, { lane: 'background' }), slots.run('transcribe b', () => held, { lane: 'background' })];
+    expect(slots.active()).toEqual(['transcribe a']);
+    expect(slots.queued()).toEqual(['transcribe b']);
+
+    let previewRan = false;
+    await slots.run('import c', async () => { previewRan = true; });
+    expect(previewRan).toBe(true);
+    release();
+    await Promise.all(whispers);
+    expect(slots.active()).toEqual([]);
+  });
+
+  it('cancels a queued background job, but not one someone promoted', async () => {
+    const slots = new MediaSlots(1);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const running = slots.run('render', () => held);
+    const dropped = slots.run('transcribe bad', async () => 'ran', { lane: 'background' });
+    const wanted = slots.run('transcribe wanted', async () => 'ran', { lane: 'background' });
+    expect(slots.promote('transcribe wanted')).toBe(true);
+    expect(slots.cancel('transcribe wanted', new Error('nope'))).toBe(false);
+    expect(slots.cancel('transcribe bad', new Error('undecodable'))).toBe(true);
+    await expect(dropped).rejects.toThrow('undecodable');
+    expect(slots.queued()).toEqual(['transcribe wanted']);
+    release();
+    await expect(wanted).resolves.toBe('ran');
+    await running;
+    expect(slots.active()).toEqual([]);
   });
 
   it('promotes a background waiter to the back of the foreground queue', async () => {

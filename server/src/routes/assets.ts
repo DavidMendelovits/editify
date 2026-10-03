@@ -120,11 +120,15 @@ export const pendingAssetWork = new Map<string, Promise<void>>();
  * to a Whisper run" was already a reachable pair (two imports, or an import
  * plus an on-demand transcription), as was "a render next to Whisper". The
  * worst case on the 4 GB box stays a ~2 GB render plus one other job. The
- * background lane keeps previews fast: a waiting proxy (or render) always gets
- * the next free slot before a waiting import transcription, so in a batch the
- * previews finish first, and a transcript someone asks for is promoted out of
- * the background lane (`TranscriptService.transcribe`). No deadlock: the two
- * jobs are siblings started outside any slot (`detached`), neither waits on the
+ * background lane keeps previews fast: background work holds at most
+ * `capacity - 1` slots, so a preview or render waits on at most one Whisper; a
+ * waiting proxy (or render) gets a freed slot before a waiting import
+ * transcription, except that the transcription gets a turn every few grants;
+ * and a transcript someone asks for, or a timeline reader misses, is promoted
+ * out of the background lane (`TranscriptService`). Background Whisper also
+ * runs on fewer CPU threads so the encode next to it keeps the cores.
+ *
+ * No deadlock: the two jobs are siblings started outside any slot (`detached`), neither waits on the
  * other, and nothing inside a slot waits for a second one. An on-demand
  * transcription during the import joins this run through `TranscriptService`'s
  * in-flight map rather than starting a second Whisper.
@@ -150,6 +154,10 @@ export function queueAssetWork(
       } catch (error) {
         assets.setStatus(asset.id, 'error');
         log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
+        // A video ffmpeg cannot encode is unlikely to decode for Whisper either:
+        // drop its transcription if it has not started (an audio-only clip, or
+        // one someone already asked for, keeps it).
+        if (probe.hasVideo) transcripts.dropQueued(asset.id, 'Skipped: the video could not be decoded');
         return;
       }
       // Tracked now so the first caption placement doesn't wait on OpenCV.

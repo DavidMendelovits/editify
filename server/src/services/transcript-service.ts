@@ -16,14 +16,29 @@ import {
 const TRANSCRIPTION_TIMEOUT_MS = 10 * 60 * 1000;
 const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts/transcribe.py');
 
-export type TranscriptionRunner = (mediaPath: string) => Promise<TranscriptResult>;
+/** `lane` is the slot lane the run started in: background runs take fewer cores. */
+export type TranscriptionRunner = (mediaPath: string, options?: { lane?: SlotLane }) => Promise<TranscriptResult>;
 export type EnergyAnalyzer = (mediaPath: string) => Promise<EnergyAnalysis>;
 
-export function runWhisperTranscription(mediaPath: string): Promise<TranscriptResult> {
+/**
+ * CPU threads for a background (import-time) Whisper run. It usually runs
+ * next to that import's preview encode; faster-whisper's default of 4 threads
+ * would take every vCPU on the production box and slow the preview down.
+ * Foreground runs (someone is waiting) keep the default.
+ */
+const BACKGROUND_WHISPER_THREADS = '2';
+
+export function runWhisperTranscription(mediaPath: string, options: { lane?: SlotLane } = {}): Promise<TranscriptResult> {
   const python = process.env.PYTHON_BIN ?? 'python3';
   const model = process.env.WHISPER_MODEL ?? 'base';
+  const threads = options.lane === 'background'
+    ? process.env.WHISPER_BACKGROUND_THREADS ?? BACKGROUND_WHISPER_THREADS
+    : process.env.WHISPER_CPU_THREADS ?? '0';
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(python, [scriptPath, mediaPath, model], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(python, [scriptPath, mediaPath, model], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, WHISPER_CPU_THREADS: threads },
+    });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -68,6 +83,7 @@ export function runWhisperTranscription(mediaPath: string): Promise<TranscriptRe
 interface InFlightRun {
   promise: Promise<StoredTranscript>;
   label: string;
+  lane: SlotLane;
   started: boolean;
   replacedBy?: InFlightRun;
 }
@@ -87,10 +103,38 @@ export class TranscriptService {
   }
 
   /**
+   * `get` for readers of a clip someone is editing (the timeline transcript,
+   * cleanup, captions): on a miss, an import transcription still queued in the
+   * background lane is promoted, without waiting for it.
+   */
+  getForTimeline(assetId: string): StoredTranscript | undefined {
+    const stored = this.store.get(assetId);
+    if (!stored) this.promoteQueued(assetId);
+    return stored;
+  }
+
+  /**
+   * Drops an import's transcription that has not started yet, e.g. because
+   * the video could not be decoded. A run someone asked for is kept.
+   */
+  dropQueued(assetId: string, reason: string): boolean {
+    const current = this.inFlight.get(assetId);
+    if (!current || current.started) return false;
+    return this.slots.cancel(current.label, new Error(reason));
+  }
+
+  private promoteQueued(assetId: string): void {
+    const current = this.inFlight.get(assetId);
+    if (!current || current.started || current.lane === 'foreground') return;
+    current.lane = 'foreground';
+    this.slots.promote(current.label);
+  }
+
+  /**
    * `lane: 'background'` is for work nobody is waiting on yet (an import
    * transcribing its own clip): it yields the slot queue to previews and
    * renders. A foreground caller that joins such a run while it still waits
-   * for a slot promotes it, so the agent never waits behind a batch of encodes.
+   * for a slot promotes it to the foreground queue (behind what is already there).
    */
   async transcribe(asset: StoredAsset, force = false, options: { lane?: SlotLane } = {}): Promise<StoredTranscript> {
     const lane = options.lane ?? 'foreground';
@@ -104,11 +148,11 @@ export class TranscriptService {
     // at most one run stale, which beats paying for minutes of duplicate GPU.
     const current = this.inFlight.get(asset.id);
     // Except when that run is still queued for a slot and this caller already
-    // holds one (an import transcribing its own clip): joining would park a
-    // slot on a job that may be waiting for that very slot. Run it here instead,
-    // and let the queued run hand its callers over when its turn comes.
+    // holds one (any job transcribing from inside its own slot): joining would
+    // park a slot on a job that may be waiting for that very slot. Run it here
+    // instead, and let the queued run hand its callers over when its turn comes.
     if (current && (current.started || !this.slots.held())) {
-      if (!current.started && lane === 'foreground') this.slots.promote(current.label);
+      if (lane === 'foreground') this.promoteQueued(asset.id);
       return await current.promise;
     }
     const run = this.start(asset, lane);
@@ -117,13 +161,13 @@ export class TranscriptService {
   }
 
   private start(asset: StoredAsset, lane: SlotLane): InFlightRun {
-    const run = { label: `transcribe ${asset.id}`, started: false } as InFlightRun;
+    const run = { label: `transcribe ${asset.id}`, lane, started: false } as InFlightRun;
     this.inFlight.set(asset.id, run);
     const queuedAt = performance.now();
     run.promise = this.slots.run(run.label, async () => {
       if (run.replacedBy) return undefined;
       run.started = true;
-      return await this.run(asset, performance.now() - queuedAt);
+      return await this.run(asset, run.lane, performance.now() - queuedAt);
     }, { lane })
       .then((result) => result ?? (run.replacedBy as InFlightRun).promise)
       .finally(() => {
@@ -132,8 +176,8 @@ export class TranscriptService {
     return run;
   }
 
-  private async run(asset: StoredAsset, waitMs: number): Promise<StoredTranscript> {
-    const result = await timeMediaJob('transcribe', { assetId: asset.id }, () => this.runner(asset.originalPath), waitMs);
+  private async run(asset: StoredAsset, lane: SlotLane, waitMs: number): Promise<StoredTranscript> {
+    const result = await timeMediaJob('transcribe', { assetId: asset.id }, () => this.runner(asset.originalPath, { lane }), waitMs);
     try {
       return this.store.put(asset.id, result, await this.measureEnergy(asset));
     } catch {
