@@ -184,15 +184,20 @@ export async function planRenderCapabilities(): Promise<Capabilities> {
  * - each graphic the final pass blends (an ASS run of callouts, emoji or
  *   captions; a canvas of consecutive stickers; a b-roll): 0.33-0.38 GB of
  *   full-frame float colour and mask frames in flight;
- * - each sticker on a canvas: 12 MB more (its overlay's frame copies).
+ * - each sticker on a canvas: 12 MB more (its overlay's frame copies);
+ * - an animated crop (cropStage): 0.21 GB for a 1.15x punch-in, 0.56 GB for
+ *   1x to 3x with a pan, in the window drawing it. A window holds at most one
+ *   zooming segment (windows), so it is the most in any one segment that
+ *   counts.
  * The constants round those up. Everything scales with the frame's pixel
  * count. Deliberately rough: it routes a plan to the legacy renderer before
  * it can exhaust the server, it does not size a machine.
  */
-export function planRenderMemoryMb(plan: Pick<RenderPlan, 'size' | 'overlays' | 'captions'> & Partial<Pick<RenderPlan, 'color'>>): number {
+export function planRenderMemoryMb(plan: Pick<RenderPlan, 'size' | 'overlays' | 'captions'> & Partial<Pick<RenderPlan, 'color' | 'video'>>): number {
   const scale = (plan.size.w * plan.size.h) / (1080 * 1920);
   const { graphics, stickers } = planGraphics(plan);
-  return scale * ((plan.color === 'hlg' ? 1550 : 950) + 400 * graphics + 15 * stickers);
+  const zooms = Math.max(0, ...(plan.video?.segments ?? []).map(animatedCrops));
+  return scale * ((plan.color === 'hlg' ? 1550 : 950) + 400 * graphics + 15 * stickers + 650 * zooms);
 }
 
 /** How many graphics the final pass blends (grouped as renderPlan groups them) and how many stickers they hold. */
@@ -565,7 +570,18 @@ async function segmentStream(graph: Graph, segment: PlanVideoSegment, context: C
   return current;
 }
 
-/** Consecutive segments grouped so one ffmpeg opens at most a handful of sources. */
+/** Layers of a segment drawn with an animated crop (cropStage's 16-bit chain, the heaviest part of a window). */
+export function animatedCrops(segment: PlanVideoSegment): number {
+  return visibleLayers(segment).filter((layer) => layer.cropKeys.length > 1).length;
+}
+
+/**
+ * Consecutive segments grouped so one ffmpeg opens at most a handful of
+ * sources, and never two segments with animated crops: their chains' frame
+ * pools all stay allocated for the window's life (three 3x zooms in one
+ * window peaked at 2.26 GB, one at 1.48 GB), so each zooming segment starts
+ * a window of its own.
+ */
 function windows(segments: readonly PlanVideoSegment[], fps: number): PlanVideoSegment[][] {
   const MAX_INPUTS = 8;
   const MAX_FRAMES = 60 * fps;
@@ -573,18 +589,22 @@ function windows(segments: readonly PlanVideoSegment[], fps: number): PlanVideoS
   let current: PlanVideoSegment[] = [];
   let inputs = 0;
   let frames = 0;
+  let zooming = false;
   for (const segment of segments) {
     const need = segmentInputs(segment);
     const length = Math.round((segment.end - segment.start) * fps);
-    if (current.length > 0 && (inputs + need > MAX_INPUTS || frames + length > MAX_FRAMES)) {
+    const zooms = animatedCrops(segment) > 0;
+    if (current.length > 0 && (inputs + need > MAX_INPUTS || frames + length > MAX_FRAMES || (zooms && zooming))) {
       out.push(current);
       current = [];
       inputs = 0;
       frames = 0;
+      zooming = false;
     }
     current.push(segment);
     inputs += need;
     frames += length;
+    zooming ||= zooms;
   }
   if (current.length > 0) out.push(current);
   return out;

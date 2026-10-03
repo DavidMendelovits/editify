@@ -129,7 +129,17 @@ describe.skipIf(!usable)('plan render loudness on a real master', () => {
     const box = { x: 100, y: 100, w: 100, h: 100, rotationDeg: 0 };
     const sticker = (z: number): RenderPlan['overlays'][number] => ({ id: `s${z}`, kind: 'image', z, start: 0, end: 2, box, media: { assetRef: { id: 'logo', kind: 'image' }, srcStart: 0, speed: 1 } });
     const callout = (z: number): RenderPlan['overlays'][number] => ({ id: `c${z}`, kind: 'callout', z, start: 0, end: 2, box } as RenderPlan['overlays'][number]);
-    type Shape = Pick<RenderPlan, 'size' | 'color' | 'captions' | 'overlays'>;
+    type Shape = Pick<RenderPlan, 'size' | 'color' | 'captions' | 'overlays'> & Partial<Pick<RenderPlan, 'video'>>;
+    // Segments of a talking-head layer zooming 1x to 3x with a pan (the review's zoom stress).
+    const zooming = (segments: number): RenderPlan['video'] => ({
+      segments: Array.from({ length: segments }, (_, index) => ({
+        start: index, end: index + 1,
+        layers: [{
+          clipId: 'talk', trackIndex: 0, z: 0, assetRef: { id: 'talk', kind: 'video' }, srcStart: index, speed: 1, opacityKeys: [], dimKeys: [],
+          cropKeys: [{ t: index, scale: 1, x: 0, y: 0 }, { t: index + 1, scale: 3, x: 0.3, y: -0.2 }],
+        }],
+      })),
+    } as RenderPlan['video']);
     const stress = (count: number, color: RenderPlan['color'] = 'sdr'): Shape => ({ size, color, captions: [], overlays: [...Array.from({ length: count }, (_, z) => sticker(z)), callout(count)] });
     // Measured peaks (ffmpeg 9.0, 14 cores; the stress plan): no graphics 0.86 GB, 1 sticker + a callout 1.57 GB,
     // 30 stickers + a callout 1.93 GB; HLG no graphics 1.45 GB. The estimate stays above them, within ~25%.
@@ -140,6 +150,11 @@ describe.skipIf(!usable)('plan render loudness on a real master', () => {
       [stress(30), 1931],
       [{ size, color: 'hlg', captions: [], overlays: [] }, 1450],
       [stress(30, 'hlg'), 2381],
+      // Animated crops: one 3x zoom 1.50 GB, three zooming segments 1.38 GB (one window each), 30 stickers + a
+      // callout over a 3x zoom 2.57 GB.
+      [{ size, color: 'sdr', captions: [], overlays: [], video: zooming(1) }, 1503],
+      [{ size, color: 'sdr', captions: [], overlays: [], video: zooming(3) }, 1381],
+      [{ ...stress(30), video: zooming(1) }, 2566],
     ];
     for (const [plan, measured] of cases) {
       expect(planRenderMemoryMb(plan)).toBeGreaterThanOrEqual(measured);

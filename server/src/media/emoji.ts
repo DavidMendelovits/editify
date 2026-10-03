@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { mkdir, rename } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
+import { mkdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PlanEmoji } from '@editify/shared';
 import { dataRoot } from '../config.js';
@@ -83,8 +84,12 @@ export async function rasterizeEmoji(text: string): Promise<string | null> {
 
 /** Where Debian (and the runtime image) installs Noto Color Emoji; EMOJI_FONT overrides. */
 const NOTO_COLOR_EMOJI = ['/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf'];
-/** Bumped whenever the drawing below changes, so cached rasters are redrawn. */
-const NOTO_RASTER_VERSION = 1;
+/** Bumped whenever the drawing below changes, so cached rasters are redrawn (the font file's identity is in the key too). */
+const NOTO_RASTER_VERSION = 2;
+/** Largest raster side, px: the canvas resolution drops before a huge box can ask Pillow for a huge image. */
+const NOTO_RASTER_MAX_SIDE = 8192;
+/** Pillow draws a sticker in well under a second; a stuck interpreter is killed. */
+const NOTO_RASTER_TIMEOUT_MS = 15_000;
 
 const PILLOW = `
 import json, sys
@@ -94,7 +99,7 @@ if not features.check('raqm'):
     sys.exit(3)
 font = ImageFont.truetype(spec['font'], 109, layout_engine=ImageFont.Layout.RAQM)
 q = 120.0 / spec['size']
-Q = max(q, 1.0)
+Q = min(max(q, 1.0), spec['maxSide'] / max(spec['w'], spec['h']))
 r = Q / q
 canvas = Image.new('RGBA', (max(1, round(spec['w'] * Q)), max(1, round(spec['h'] * Q))), (0, 0, 0, 0))
 for cluster in spec['clusters']:
@@ -129,21 +134,32 @@ export async function rasterizePlanEmoji(emoji: PlanEmoji, box: { w: number; h: 
   if (!font) return null;
   const clusters = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(emoji.text)].map((part) => part.segment);
   if (clusters.length === 0 || !clusters.every(drawable)) return null;
+  if (!(box.w > 0 && box.h > 0 && emoji.sizePx > 0)) return null;
   const spec = {
-    font, size: emoji.sizePx, w: box.w, h: box.h, y: emoji.y,
+    font, size: emoji.sizePx, w: box.w, h: box.h, y: emoji.y, maxSide: NOTO_RASTER_MAX_SIDE,
     clusters: clusters.map((text, index) => ({ text, x: emoji.x + index * emoji.sizePx })).filter((cluster) => cluster.text !== ' '),
   };
-  const key = createHash('sha1').update(JSON.stringify({ v: NOTO_RASTER_VERSION, ...spec, font: undefined })).digest('hex');
+  const fontFile = statSync(font);
+  const key = createHash('sha1').update(JSON.stringify({ v: NOTO_RASTER_VERSION, ...spec, font: [font, fontFile.size, fontFile.mtimeMs] })).digest('hex');
   const path = join(emojiRoot, `noto-${key}.png`);
   if (existsSync(path)) return path;
   const pending = planInFlight.get(path) ?? (async () => {
     await mkdir(emojiRoot, { recursive: true });
     const partial = `${path}.${process.pid}.tmp.png`;
     try {
-      await runProcess('python3', ['-c', PILLOW, JSON.stringify({ ...spec, out: partial })]);
+      await new Promise<void>((resolve, reject) => {
+        execFile('python3', ['-c', PILLOW, JSON.stringify({ ...spec, out: partial })], { timeout: NOTO_RASTER_TIMEOUT_MS, killSignal: 'SIGKILL' },
+          (error) => (error ? reject(error) : resolve()));
+      });
       await rename(partial, path);
       return path;
-    } catch {
+    } catch (error) {
+      await rm(partial, { force: true });
+      // No sticker text in the log (the error message carries the whole command line): only its shape.
+      const failure = error as { code?: unknown; signal?: unknown; killed?: boolean };
+      console.warn('[emoji] colour raster failed; the sticker falls back to monochrome', {
+        code: failure.code, signal: failure.signal, timedOut: Boolean(failure.killed), clusters: spec.clusters.length, length: emoji.text.length,
+      });
       return null;
     }
   })().finally(() => planInFlight.delete(path));
