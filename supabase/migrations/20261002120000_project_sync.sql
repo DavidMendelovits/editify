@@ -154,3 +154,5 @@ create policy sync_receipts_select_own on public.sync_receipts
 -- explicit and survives a permissive policy added later.
 revoke all on public.sync_projects, public.sync_op_log, public.sync_receipts from anon, authenticated;
 grant select on public.sync_projects, public.sync_op_log, public.sync_receipts to authenticated;
+
+reset lock_timeout;

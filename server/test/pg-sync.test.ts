@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import pg from 'pg';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyBatch,
   projectHash,
@@ -25,6 +25,7 @@ import {
 } from '../src/db/pg-sync-store.js';
 import { PgTurnLock, turnLockKey } from '../src/db/pg-turn-lock.js';
 import { createPgPools, pgSettings, type PgPools } from '../src/db/postgres.js';
+import { withTransaction } from '../src/db/pg-sync-store.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { registerAgentTurnRoutes } from '../src/routes/agent-turn.js';
 import { registerSyncRoutes } from '../src/routes/sync.js';
@@ -155,7 +156,20 @@ describe('sync routes without DATABASE_URL', () => {
 });
 
 describe('postgres connection settings', () => {
-  const CA = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----';
+  /** A throwaway self-signed CA (openssl, EC P-256), only ever parsed. */
+  const CA = [
+    '-----BEGIN CERTIFICATE-----',
+    'MIIBjDCCATGgAwIBAgIUYLMu2l5KNHH1eWKWxYuq/+7fMeEwCgYIKoZIzj0EAwIw',
+    'GjEYMBYGA1UEAwwPZWRpdGlmeS10ZXN0LWNhMCAXDTI2MTAwMzAyMTAwOVoYDzIx',
+    'MjYwOTA5MDIxMDA5WjAaMRgwFgYDVQQDDA9lZGl0aWZ5LXRlc3QtY2EwWTATBgcq',
+    'hkjOPQIBBggqhkjOPQMBBwNCAASRngvuJMDfnzROFG7sKBbTpPqg/D9KDLZdBsT1',
+    'rfQNtB56PUhxOguJpQhkGROlc13A2mZ4MkNw4kPWRI2GySBmo1MwUTAdBgNVHQ4E',
+    'FgQUToXmuklAqJZb1Fnd5qWAp6a5yWcwHwYDVR0jBBgwFoAUToXmuklAqJZb1Fnd',
+    '5qWAp6a5yWcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNJADBGAiEAibIT',
+    'HRbMgOr1WS/RKg0cai70Y4s2ehM63eciOh+HQlwCIQCSA9GqItVdzcTW71rNTn0L',
+    'stPKHDBsynbkYDmMP9p/8w==',
+    '-----END CERTIFICATE-----',
+  ].join('\n');
   const REMOTE = 'postgresql://postgres.ref:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres';
 
   it('refuses a remote host with no CA and no explicit sslmode=no-verify', () => {
@@ -181,13 +195,47 @@ describe('postgres connection settings', () => {
     expect(pgSettings('postgresql:///editify?host=/tmp', {}).pool.ssl).toBeUndefined();
   });
 
-  it('keeps sync but not the session lock on the transaction pooler (6543)', () => {
-    const settings = pgSettings(REMOTE.replace(':5432', ':6543'), { DATABASE_CA_CERT: CA });
-    expect(settings.sessionLocks).toBe(false);
-    expect(settings.warnings.join(' ')).toMatch(/6543/);
-    const pools = createPgPools(REMOTE.replace(':5432', ':6543'), { DATABASE_CA_CERT: CA });
-    expect(pools.lock).toBeUndefined();
-    void pools.end();
+  it('parses the CA at boot, accepting one-line secrets with literal \\n and refusing a malformed one', () => {
+    const oneLine = CA.replace(/\n/g, '\\n');
+    expect(pgSettings(REMOTE, { DATABASE_CA_CERT: oneLine }).pool.ssl).toEqual({ ca: CA, rejectUnauthorized: true });
+    expect(() => pgSettings(REMOTE, { DATABASE_CA_CERT: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----' }))
+      .toThrow(/not a readable PEM certificate/);
+  });
+
+  describe('where the turn lock connects', () => {
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined); });
+    afterEach(() => { warn.mockRestore(); });
+    const warned = (): string => warn.mock.calls.map((call: unknown[]) => String(call[0])).join(' ');
+
+    it('keeps sync but turns off the session lock on the transaction pooler (6543)', async () => {
+      expect(pgSettings(REMOTE.replace(':5432', ':6543'), { DATABASE_CA_CERT: CA }).sessionLocks).toBe(false);
+      const pools = createPgPools(REMOTE.replace(':5432', ':6543'), { DATABASE_CA_CERT: CA });
+      expect(pools.lock).toBeUndefined();
+      expect(warned()).toMatch(/6543.*DATABASE_LOCK_URL/);
+      await pools.end();
+    });
+
+    it('warns when the lock goes through the session pooler, and uses DATABASE_LOCK_URL (same TLS rules) when set', async () => {
+      const pooled = createPgPools(REMOTE, { DATABASE_CA_CERT: CA });
+      expect(warned()).toMatch(/through a pooler.*DATABASE_LOCK_URL/);
+      await pooled.end();
+      warn.mockClear();
+
+      const DIRECT = 'postgresql://postgres:secret@db.ref.supabase.co:5432/postgres';
+      const direct = createPgPools(REMOTE.replace(':5432', ':6543'), { DATABASE_CA_CERT: CA, DATABASE_LOCK_URL: DIRECT });
+      expect(direct.lock).toBeDefined();
+      expect(direct.lock?.options.connectionString).toBe(DIRECT);
+      expect(direct.lock?.options.connectionTimeoutMillis).toBe(5000);
+      expect(direct.lock?.options.keepAlive).toBe(true);
+      expect(direct.sync.options.keepAlive).toBe(true);
+      expect(warned()).toBe('');
+      await direct.end();
+      expect(() => createPgPools(REMOTE, { DATABASE_CA_CERT: CA, DATABASE_LOCK_URL: 'postgresql://postgres@db.ref.supabase.co:5432/postgres' }))
+        .not.toThrow();
+      expect(() => createPgPools('postgresql://localhost/x', { DATABASE_LOCK_URL: 'postgresql://postgres@db.ref.supabase.co:5432/postgres' }))
+        .toThrow(/DATABASE_LOCK_URL points at a remote host without a CA/);
+    });
   });
 
   it('fails the boot of an app pointed at a remote database without TLS settled', async () => {
@@ -307,6 +355,44 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
       const pulled = await store.get(ALICE, project.id);
       expect(pulled?.revision).toBe(writers * each);
       expect(projectHash(replayed)).toBe(projectHash(pulled?.project as Project));
+    });
+
+    it('survives the connection dying mid-transaction and never hands that client out again', async () => {
+      const small = new pg.Pool({ connectionString: TEST_URL, max: 1 });
+      try {
+        let doomed = 0;
+        await expect(withTransaction(small, async (client) => {
+          doomed = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid ?? 0;
+          await pool.query('SELECT pg_terminate_backend($1)', [doomed]);
+          // Let the FATAL notice arrive as an 'error' event on the idle, checked-out client.
+          await new Promise((resolve) => { setTimeout(resolve, 100); });
+          await client.query('SELECT 1');
+        })).rejects.toThrow();
+        const next = await withTransaction(small, async (client) =>
+          (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid);
+        expect(next).toBeDefined();
+        expect(next).not.toBe(doomed);
+      } finally {
+        await small.end();
+      }
+    });
+
+    it('destroys a client whose query hit the client-side timeout instead of pooling it mid-query', async () => {
+      const small = new pg.Pool({ connectionString: TEST_URL, max: 1, query_timeout: 100 });
+      try {
+        let timedOut = 0;
+        await expect(withTransaction(small, async (client) => {
+          timedOut = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid ?? 0;
+          await client.query('SELECT pg_sleep(2)');
+        })).rejects.toThrow(/timeout/i);
+        const next = await withTransaction(small, async (client) =>
+          (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid);
+        expect(next).not.toBe(timedOut);
+      } finally {
+        await small.end();
+        // The destroyed connection's backend is still sleeping; end it so the database is left clean.
+        await pool.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query = 'SELECT pg_sleep(2)'");
+      }
     });
 
     it('refuses a change id reused for a different change, writing nothing', async () => {
@@ -685,13 +771,31 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
       }
     });
 
+    it('answers 503 lock_unavailable, and logs why, when the lock database cannot be reached', async () => {
+      const failed = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const unreachable = await machine(quick, { DATABASE_LOCK_URL: 'postgresql://localhost:1/nope' });
+      try {
+        const refused = await post(unreachable.app, turn('proposal-down-1', 'lock-project-down'));
+        expect(refused.statusCode).toBe(503);
+        expect(refused.json()).toMatchObject({ code: 'lock_unavailable' });
+        expect(failed.mock.calls.some((call) => String(call[0]).includes('[turn-lock] could not connect'))).toBe(true);
+      } finally {
+        failed.mockRestore();
+        await unreachable.app.close();
+        await unreachable.pools.end();
+      }
+    });
+
     it('answers 503 instead of waiting when every lock connection is in a turn, leaving /sync its own pool', async () => {
       const slow = gated();
       const small = await machine(slow.provider, { DATABASE_LOCK_POOL_MAX: '1' });
       try {
         const holding = post(small.app, turn('proposal-cap-1', 'lock-project-cap-a'));
         await slow.running;
+        const asked = Date.now();
         const refused = await post(small.app, turn('proposal-cap-2', 'lock-project-cap-b'));
+        // Refused on sight, not after the 5 s connect timeout.
+        expect(Date.now() - asked).toBeLessThan(1000);
         expect(refused.statusCode).toBe(503);
         expect(refused.json()).toMatchObject({ code: 'capacity' });
         // The sync pool is separate, so a push still goes through while the turn holds its connection.

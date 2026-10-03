@@ -10,6 +10,14 @@ export function turnLockKey(user: string, projectId: string): string {
   return createHash('sha256').update(`editify:agent-turn\u0000${user}\u0000${projectId}`).digest().readBigInt64BE(0).toString();
 }
 
+/** The lock database could not be reached (down, refused, TLS or login failure). */
+export class TurnLockUnavailableError extends Error {
+  constructor() {
+    super('AI edits are unavailable for a moment. Try again shortly.');
+    this.name = 'TurnLockUnavailableError';
+  }
+}
+
 /** Every lock-pool connection is held by a running turn: the machine is at its AI-turn capacity. */
 export class TurnCapacityError extends Error {
   constructor() {
@@ -26,20 +34,30 @@ export class TurnCapacityError extends Error {
  *
  * The held client pins one connection per in-flight turn, so this takes its
  * own small pool (db/postgres.ts) and running turns cannot starve /sync. The
- * lock needs a session: a direct or session-mode pooler connection (Supabase
- * port 5432), never the transaction pooler (6543).
+ * lock needs a session that ends when the machine does, so it must not go
+ * through a pooler: DATABASE_LOCK_URL points the lock pool at the direct host
+ * (db.<ref>.supabase.co:5432). A pooler may keep a dead machine's server
+ * connection, and the lock with it.
  */
 export class PgTurnLock implements TurnLock {
   constructor(private readonly pool: pg.Pool, private readonly maxHoldMs = MAX_TURN_HOLD_MS) {}
 
+  private full(): boolean {
+    return this.pool.totalCount >= (this.pool.options.max ?? 10) && this.pool.idleCount === 0;
+  }
+
   async tryAcquire(user: string, projectId: string): Promise<(() => Promise<void>) | undefined> {
     const key = turnLockKey(user, projectId);
+    // Full pool: refuse now rather than queue for the connect timeout.
+    if (this.full()) throw new TurnCapacityError();
     let client: pg.PoolClient;
     try {
       client = await this.pool.connect();
-    } catch {
-      // The pool's short connect timeout ran out: every lock connection is in a turn (or Postgres is down).
-      throw new TurnCapacityError();
+    } catch (error) {
+      // Still full after the wait means turns held every connection; anything else is the database.
+      if (this.full()) throw new TurnCapacityError();
+      console.error('[turn-lock] could not connect to the lock database', (error as Error).message);
+      throw new TurnLockUnavailableError();
     }
     // A checked-out client that loses its connection emits 'error'; unhandled, that crashes the process.
     const onError = (): void => undefined;

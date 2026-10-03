@@ -42,6 +42,12 @@ type Queryable = pg.Pool | pg.PoolClient;
 
 export async function withTransaction<T>(pool: pg.Pool, work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
+  // A checked-out client whose connection dies emits 'error'; unhandled, that crashes the process.
+  // The failure still surfaces as the rejected query below.
+  const onError = (): void => undefined;
+  client.on('error', onError);
+  /** Set when the connection can no longer be trusted: release(error) destroys it instead of pooling it. */
+  let broken: Error | undefined;
   try {
     await client.query('BEGIN');
     // SET LOCAL, not startup parameters: it works through any pooler mode and ends with the transaction.
@@ -51,10 +57,17 @@ export async function withTransaction<T>(pool: pg.Pool, work: (client: pg.PoolCl
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    // pg's client-side query_timeout leaves the server still working on that connection.
+    if (error instanceof Error && /timeout/i.test(error.message) && !('code' in error && error.code)) broken = error;
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      broken ??= rollbackError as Error;
+    }
     throw error;
   } finally {
-    client.release();
+    client.off('error', onError);
+    client.release(broken);
   }
 }
 
@@ -80,7 +93,12 @@ export class SyncChangeReusedError extends Error {
   }
 }
 
-/** What makes two pushes "the same change": everything but the change id itself. */
+/**
+ * What makes two pushes "the same change": everything but the change id
+ * itself. The ops are hashed after zod parsing, so a schema default added by
+ * a deploy can change the digest of an identical body: a retry that spans
+ * such a deploy gets a spurious 409 change_id_reused rather than its receipt.
+ */
 export function requestDigest(request: SyncPushRequest, operations: Operation[]): string {
   return createHash('sha256').update(canonicalJson({
     baseRevision: request.baseRevision,
