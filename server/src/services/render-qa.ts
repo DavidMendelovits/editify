@@ -31,7 +31,7 @@ interface Loudness { integrated: number | null; truePeak: number | null }
 
 export async function measureLoudness(path: string): Promise<Loudness> {
   const { stderr } = await runProcess('ffmpeg', [
-    '-hide_banner', '-nostats', '-i', path, '-vn', '-af', 'ebur128=peak=true:framelog=quiet', '-f', 'null', '-',
+    '-hide_banner', '-nostats', '-i', path, '-vn', '-af', 'ebur128=peak=true:framelog=verbose', '-f', 'null', '-',
   ]);
   return parseLoudness(stderr);
 }
