@@ -4,6 +4,7 @@
 //
 //   node apps/mobile/e2e/standup-replay.mjs [--mode cold|warm] [--record] [--review]
 //        [--export device|server|both|none] [--server-baseline 0.88|<review dir>] [--skip-render]
+//        [--build Release|Debug]   (the installed app's configuration, shown on the review page)
 //
 //   cold  empty server: pick the 4K clip from the camera roll and the memo from
 //         Files, wait for real processing (what a person waits for today)
@@ -449,7 +450,7 @@ server.kill();
 const exportPhase = (s) => s.tag === 'export' || s.tag === 'render';
 const sum = (kind, field, phase = false) => steps.filter((s) => s.kind === kind && s.tag !== 'compare' && exportPhase(s) === phase).reduce((total, s) => total + s[field], 0);
 const report = {
-  mode, at: new Date().toISOString(), startedAtMs: t0, server: { startedAtMs: serverStartedAtMs, log: 'server.ndjson' }, ...(render ? { render, renders } : {}), ...(baseline ? { baseline } : {}), exportPath, commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
+  mode, build: opt('--build') ?? null, at: new Date().toISOString(), startedAtMs: t0, server: { startedAtMs: serverStartedAtMs, log: 'server.ndjson' }, ...(render ? { render, renders } : {}), ...(baseline ? { baseline } : {}), exportPath, commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
   steps, totals: {
     runSeconds: now(), productWaitSeconds: sum('wait', 'seconds'), automationSeconds: sum('human', 'seconds') + sum('human', 'seconds', true),
     humanEstimateSeconds: sum('human', 'humanSeconds'), personSeconds: sum('human', 'humanSeconds') + sum('wait', 'seconds'),
@@ -477,7 +478,7 @@ const renderMeta = (r) => { const speed = r.profileXRealtime ?? r.xRealtime; ret
 const renderMetas = renders.map((r) => renderMeta(r) && `${r.path === 'device' ? 'device' : 'server'}=${renderMeta(r)}`).filter(Boolean);
 if (baseline) renderMetas.push(`server-baseline=${baseline.xRealtime.toFixed(2)}x`);
 if (record && args.includes('--review')) {
-  const page = execFileSync('node', [join(S, 'build-review.mjs'), '--video', video, '--moments', join(out, 'moments.json'), '--slug', `standup-replay-${mode}${renders.some((r) => r.path === 'device') ? '-device' : ''}`, '--meta', `mode=${mode}`, '--meta', `commit=${report.commit}`, '--meta', `person=~${fmt(report.totals.personSeconds)}`,
+  const page = execFileSync('node', [join(S, 'build-review.mjs'), '--video', video, '--moments', join(out, 'moments.json'), '--slug', `standup-replay-${mode}${renders.some((r) => r.path === 'device') ? '-device' : ''}`, '--meta', `mode=${mode}`, '--meta', `commit=${report.commit}`, '--meta', `person=~${fmt(report.totals.personSeconds)}`, ...(opt('--build') ? ['--meta', `build=${opt('--build')}`] : []),
     ...renderMetas.flatMap((m) => ['--meta', m]), ...(profiled ? ['--profile', profilePath] : [])], { encoding: 'utf8' }).trim();
   console.log(execFileSync(join(S, 'serve-tailnet.sh'), [dirname(page)], { encoding: 'utf8' }).trim());
 }

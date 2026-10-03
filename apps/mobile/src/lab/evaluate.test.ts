@@ -12,6 +12,13 @@ function row(overrides: Partial<LabRow> = {}): LabRow {
 }
 
 const runs = (overrides: Partial<LabRow>[]) => overrides.map((o, i) => row({ run: i + 1, ...o }));
+/** An S5 run that passes every check unless `extra` overrides a metric. */
+const preview = (msPerFrame: number, extra: Record<string, unknown> = {}): Partial<LabRow> => ({
+  spike: 'S5', variant: 'preview1080',
+  metrics: { compositedFrames: 600, msPerFrame, msPerFrameP95: msPerFrame * 1.5, visualMatch: true, visualDiffMaxChannel: 4, ...extra } as LabRow['metrics'],
+});
+/** An S1 run of the stand-up plan for the full window. */
+const plan = (fpsSustained: number): Partial<LabRow> => ({ variant: 'render1080-plan', metrics: { fpsSustained, seconds: 600 } });
 
 describe('evaluate', () => {
   it('passes a group whose median and worst runs both clear every check', () => {
@@ -54,6 +61,60 @@ describe('evaluate', () => {
     expect(evaluate(runs([leaked, leaked, held]))[0]!.verdict).toBe('no-go');
   });
 
+  it('judges the real renderer: S4 at 4K and 1080, S5 on compositor time and the visual match, S1 on the plan', () => {
+    const writer = (variant: string, exportSeconds: number, tagsCorrect = true, hlg = variant.includes('4k')) => ({
+      spike: 'S4' as const, variant, metrics: { exportSeconds, xRealtime: 60 / exportSeconds, tagsCorrect, fpsKept: true, hlg },
+    });
+    expect(evaluate(runs([writer('writer-60s-4k30', 28), writer('writer-60s-4k30', 29), writer('writer-60s-4k30', 29.5)]))[0]!.verdict).toBe('go');
+    expect(evaluate(runs([writer('writer-60s-4k30', 31), writer('writer-60s-4k30', 33), writer('writer-60s-4k30', 29)]))[0]!.verdict).toBe('no-go');
+    // The 1080 arm gets its own verdict, with the same checks.
+    const hd = evaluate(runs([writer('writer-60s-1080', 12), writer('writer-60s-1080', 13), writer('writer-60s-1080', 12, false)]))[0]!;
+    expect(hd).toMatchObject({ variant: 'writer-60s-1080', verdict: 'borderline' });
+    expect(hd.metrics.map((m) => m.metric)).toEqual(['exportSeconds', 'tagsCorrect', 'fpsKept', 'memPeakMB']);
+
+    expect(evaluate(runs([preview(2.5), preview(3), preview(3.9)]))[0]!.verdict).toBe('go');
+    expect(evaluate(runs([preview(4.2), preview(5), preview(3)]))[0]!.verdict).toBe('no-go');
+    expect(evaluate(runs([preview(2), preview(2, { visualMatch: false }), preview(2, { visualMatch: false })]))[0]!.verdict).toBe('no-go');
+
+    expect(evaluate(runs([plan(30), plan(29.9), plan(29.6)]))[0]).toMatchObject({ variant: 'render1080-plan', verdict: 'go' });
+    expect(evaluate(runs([plan(24), plan(25), plan(30)]))[0]!.verdict).toBe('no-go');
+  });
+
+  it('gates 4K on the HLG master: an SDR 4K export is no-go however fast', () => {
+    const sdr4k = { spike: 'S4' as const, variant: 'writer-60s-4k30', metrics: { exportSeconds: 20, tagsCorrect: true, fpsKept: true, hlg: false } };
+    expect(evaluate(runs([sdr4k, sdr4k, sdr4k]))[0]!.verdict).toBe('no-go');
+  });
+
+  it('never passes S5 when nothing was composited or the device reported no timing', () => {
+    // An older build reported percentile([]) = -1 for an empty run: -1 < 4 must not pass.
+    const empty = preview(-1, { compositedFrames: 0, msPerFrameP95: -1 });
+    expect(evaluate(runs([empty, empty, empty]))[0]!.verdict).toBe('no-go');
+    // null (nothing measured) counts as a missing metric.
+    const unmeasured = preview(2, { msPerFrame: null as unknown as number });
+    const result = evaluate(runs([unmeasured, unmeasured, unmeasured]))[0]!;
+    expect(result.verdict).toBe('no-go');
+    expect(result.problems).toContain('missing metric msPerFrame');
+  });
+
+  it('gates S5 on the slow tail and on the worst channel of the visual match', () => {
+    const slowTail = preview(3, { msPerFrameP95: 12 });
+    expect(evaluate(runs([slowTail, slowTail, preview(3)]))[0]!.verdict).toBe('no-go');
+    const brokenRegion = preview(3, { visualDiffMaxChannel: 90 });
+    expect(evaluate(runs([brokenRegion, brokenRegion, preview(3)]))[0]!.verdict).toBe('no-go');
+  });
+
+  it('needs ~10 min of S1 on the plan: a short run is no-go however smooth', () => {
+    const short = { variant: 'render1080-plan', metrics: { fpsSustained: 30, seconds: 120 } };
+    expect(evaluate(runs([short, short, short]))[0]!.verdict).toBe('no-go');
+  });
+
+  it("never calls runs on the picker's app copy a go", () => {
+    const copy = preview(2, { source: 'app-copy' } as Record<string, unknown>);
+    const result = evaluate(runs([copy, preview(2, { source: 'photos' } as Record<string, unknown>), preview(2)]))[0]!;
+    expect(result.verdict).toBe('borderline');
+    expect(result.problems[0]).toMatch(/run 1 read the picker's app copy/);
+  });
+
   it('needs three ok runs before judging', () => {
     const result = evaluate(runs([{}, {}]))[0]!;
     expect(result.verdict).toBe('insufficient');
@@ -87,7 +148,7 @@ describe('evaluate', () => {
 
   it('treats any false boolean as the worst value', () => {
     const s4 = (exportSeconds: number, tagsCorrect: boolean) => ({
-      spike: 'S4' as const, variant: 'writer-60s-4k30', metrics: { exportSeconds, tagsCorrect, fpsKept: true },
+      spike: 'S4' as const, variant: 'writer-60s-4k30', metrics: { exportSeconds, tagsCorrect, fpsKept: true, hlg: true },
     });
     const result = evaluate(runs([s4(20, true), s4(22, true), s4(21, false)]))[0]!;
     expect(result.metrics.find((m) => m.metric === 'tagsCorrect')).toMatchObject({ median: true, worst: false });

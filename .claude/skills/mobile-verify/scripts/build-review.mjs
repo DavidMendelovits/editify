@@ -7,6 +7,9 @@
 //     [--meta "branch=mobile-capability-lab" --meta "device=iPhone 17 Pro Max"] \
 //     [--summary "one paragraph"] [--root ~/editify-reviews] [--profile profile.json]
 //
+//   --section results.html appends that HTML fragment under the video (e.g. a lab results
+//   table; trusted input, written by our own scripts). Repeatable.
+//
 //   --profile adds a "Profile" section (profile.mjs output: time split, user
 //   waits vs server jobs, timeline, render speed, agent stats, request stats).
 //
@@ -64,6 +67,11 @@ const profilePath = one('profile');
 if (profilePath && !existsSync(profilePath)) fail(`--profile ${profilePath} does not exist`);
 const profile = profilePath ? JSON.parse(readFileSync(profilePath, 'utf8')) : null;
 if (profilePath) copyFileSync(profilePath, join(dir, 'profile.json'));
+
+const sections = many('section').map((file) => {
+  if (!existsSync(file)) fail(`--section ${file} does not exist`);
+  return readFileSync(file, 'utf8');
+});
 
 const meta = Object.fromEntries(many('meta').map((pair) => { const i = pair.indexOf('='); return [pair.slice(0, i), pair.slice(i + 1)]; }));
 const review = {
@@ -123,6 +131,7 @@ li img{width:96px;height:64px;object-fit:cover;border-radius:4px;background:#000
 <div class="keys">j / k: previous / next moment &middot; space: play / pause &middot; links like #t=12.5 open at a moment</div>
 </section><aside>${r.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}${r.profile ? '<div class="summary"><a href="#profile">Profile: where the time went &darr;</a></div>' : ''}<ol id="list"></ol></aside></main>
 ${profileSection(r.profile)}
+${sections.join('\n')}
 <script>
 const review = ${JSON.stringify({ ...r, profile: undefined }).replace(/</g, '\\u003c')};
 const v = document.getElementById('v'), list = document.getElementById('list'), tl = document.getElementById('tl'), head = document.getElementById('head');
