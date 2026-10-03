@@ -382,9 +382,9 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     const animated = withKeys([{ t: 0, scale: 1, x: 0, y: 0 }, { t: end, scale: 3, x: 0.6, y: -0.5 }]);
     const path = join(scratch, 'zoom-3x.mp4');
     await renderPlan(animated, (ref) => mediaPaths.get(ref.id), { outputPath: path, workDir: join(scratch, 'zoom-3x') });
-    // Frames on both sides of each chunk boundary (scale 1.5 at frame 22.5, 2.25 at 56.25) and the last, each
+    // Frames on both sides of each chunk boundary (chunks start at frames 23 and 58) and the last, each
     // against the static chain (one key) at that frame's pose: the convention cross-checked frame by frame.
-    for (const k of [10, 22, 23, 56, 57, 89]) {
+    for (const k of [10, 22, 23, 57, 58, 89]) {
       const p = (k / zoom.fps) / end;
       const still = withKeys([{ t: 0, scale: 1 + 2 * p, x: 0.6 * p, y: -0.5 * p }]);
       const stillPath = join(scratch, `zoom-3x-${k}.mp4`);

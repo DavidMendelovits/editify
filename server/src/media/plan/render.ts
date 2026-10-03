@@ -176,19 +176,38 @@ export async function planRenderCapabilities(): Promise<Capabilities> {
 
 /**
  * Peak resident memory of a plan render, MB, from the stress measurements
- * (ffmpeg 9, 1080 x 1920, 10 s): the windowed float pipeline with no graphics
- * peaks at about 1.75 GB (final pass ~1.3 GB, window ~0.45 GB), each sticker
- * on a canvas adds about 30 MB (its canvas overlay keeps writable frame
- * copies), and each other graphic (an ASS run, a b-roll, a sticker canvas)
- * about 100 MB of float frames in flight. Everything scales with the frame's
- * pixel count. Deliberately rough: it routes a plan to the legacy renderer
- * before it can exhaust the server, it does not size a machine.
+ * (1080 x 1920, 10 s, image stickers and a callout; ffmpeg 9.0 on a 14-core
+ * Mac, the worst case: Debian's 5.1 on 4 cores, production's, measured 10-30%
+ * lower). With the encoder's threads and lookahead capped (./color.ts):
+ * - no graphics: 0.86 GB SDR (the final pass 0.42, a window 0.45), 1.45 GB
+ *   HLG (x265 holds far more frames than x264);
+ * - each graphic the final pass blends (an ASS run of callouts, emoji or
+ *   captions; a canvas of consecutive stickers; a b-roll): 0.33-0.38 GB of
+ *   full-frame float colour and mask frames in flight;
+ * - each sticker on a canvas: 12 MB more (its overlay's frame copies).
+ * The constants round those up. Everything scales with the frame's pixel
+ * count. Deliberately rough: it routes a plan to the legacy renderer before
+ * it can exhaust the server, it does not size a machine.
  */
-export function planRenderMemoryMb(plan: Pick<RenderPlan, 'size' | 'overlays' | 'captions'>): number {
+export function planRenderMemoryMb(plan: Pick<RenderPlan, 'size' | 'overlays' | 'captions'> & Partial<Pick<RenderPlan, 'color'>>): number {
   const scale = (plan.size.w * plan.size.h) / (1080 * 1920);
-  const stickers = plan.overlays.filter((item) => item.kind === 'image' || item.kind === 'gif' || item.kind === 'emoji').length;
-  const others = plan.overlays.length - stickers + (plan.captions.length > 0 ? 1 : 0);
-  return scale * (1750 + 30 * stickers + 100 * others);
+  const { graphics, stickers } = planGraphics(plan);
+  return scale * ((plan.color === 'hlg' ? 1550 : 950) + 400 * graphics + 15 * stickers);
+}
+
+/** How many graphics the final pass blends (grouped as renderPlan groups them) and how many stickers they hold. */
+export function planGraphics(plan: Pick<RenderPlan, 'overlays' | 'captions'>): { graphics: number; stickers: number } {
+  let graphics = plan.captions.length > 0 ? 1 : 0;
+  let stickers = 0;
+  let previous: 'ass' | 'canvas' | undefined;
+  for (const overlay of [...plan.overlays].sort((left, right) => left.z - right.z)) {
+    // Emoji count as stickers (a colour raster); one that falls back to libass joins an ASS run instead.
+    const kind = overlay.kind === 'callout' ? 'ass' : overlay.kind === 'broll' ? undefined : 'canvas';
+    if (kind === 'canvas') stickers += 1;
+    if (!kind || kind !== previous) graphics += 1;
+    previous = kind;
+  }
+  return { graphics, stickers };
 }
 
 /** PLAN_RENDER_MEMORY_MB, default 3072 (the 4 GB server, with room for the API process and a legacy fallback). */
