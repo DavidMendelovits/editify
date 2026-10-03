@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { calloutSchema } from './packets.js';
+import { applyBatch } from './apply.js';
+import { projectHash } from './proposal.js';
 
 export const projectFormatSchema = z.enum(['9:16', '1:1', '16:9']);
 export type ProjectFormat = z.infer<typeof projectFormatSchema>;
@@ -397,13 +399,56 @@ export const assetDissectionSchema = z.object({
 });
 export type AssetDissection = z.infer<typeof assetDissectionSchema>;
 
+/**
+ * The server fallback (plan OV1): the phone's document at `revision`, rendered as sent
+ * instead of whatever the server holds when the job starts. `hash` is projectHash of
+ * `project`, and `project.version` equals `revision`; a mismatch is refused.
+ */
+export const renderSnapshotSchema = z.object({
+  revision: z.number().int().min(0),
+  hash: z.string().min(1).max(64),
+  project: projectSchema,
+});
+export type RenderSnapshot = z.infer<typeof renderSnapshotSchema>;
+
 export const renderRequestSchema = z.object({
   resolution: z.enum(['720p', '1080p', '4k']).default('1080p'),
   /** 'sdr' tone maps HDR sources to BT.709 so the export matches the preview. */
   hdr: z.enum(['sdr', 'hdr']).default('sdr'),
   /** 'normalize' brings the master to -16 LUFS with one gain stage and a limiter. */
   loudness: z.enum(['normalize', 'off']).default('normalize'),
+  /** Absent: the server renders its own copy of the project, as before. */
+  snapshot: renderSnapshotSchema.optional(),
 });
+
+/** Every asset id a document names, once each, in track order. */
+export function projectAssetIds(project: Project): string[] {
+  return [...new Set(project.tracks.flatMap((track) => track.clips.flatMap((clip) => clip.assetId ?? [])))];
+}
+
+/**
+ * The snapshot a server render takes: the document normalized the way the server
+ * normalizes it (applyBatch with no ops: schema defaults, the duration derived from the
+ * clips), its version as the revision, and the projectHash of that normalized document.
+ */
+export function renderSnapshot(project: Project): RenderSnapshot {
+  const normalized = { ...applyBatch(projectSchema.parse(project), []), version: project.version };
+  return { revision: normalized.version, hash: projectHash(normalized), project: normalized };
+}
+
+/**
+ * POST /projects/:id/assets/availability: whether the server holds each original.
+ * `present`: the original is on the server. `missing`: the asset is this user's but its
+ * original is gone; PUT /assets/:id/original puts it back. `absent`: the server has no
+ * such asset at all, so nothing can be uploaded under its id (it has to be imported
+ * again). `forbidden`: another account's asset.
+ */
+export const assetAvailabilityRequestSchema = z.object({
+  assetIds: z.array(z.string().min(1).max(128)).min(1).max(1000),
+}).strict();
+export const assetAvailabilitySchema = z.enum(['present', 'missing', 'absent', 'forbidden']);
+export type AssetAvailability = z.infer<typeof assetAvailabilitySchema>;
+export interface AssetAvailabilityResponse { assets: Array<{ id: string; status: AssetAvailability }> }
 
 /** What the post-render check found in a finished master. */
 export const renderQaSchema = z.object({

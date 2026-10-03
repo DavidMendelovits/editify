@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Writable } from 'node:stream';
-import type { Clip, Project } from '@editify/shared';
+import { PLAN_LIMITS, type Clip, type Project } from '@editify/shared';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { rendersRoot } from '../config.js';
 import { writeAssFile } from './ass.js';
@@ -316,6 +316,8 @@ export async function renderProject(
   assets: AssetStore,
   hdr: HdrHandling = 'sdr',
 ): Promise<string> {
+  // The plan path refuses past PLAN_LIMITS too: one bad duration must not queue days of encode.
+  if (!(project.duration <= PLAN_LIMITS.durationSec)) throw new Error('The timeline is longer than 4 hours');
   const destinationDirectory = join(rendersRoot, renderId);
   await mkdir(destinationDirectory, { recursive: true });
   const outputPath = join(destinationDirectory, 'output.mp4');

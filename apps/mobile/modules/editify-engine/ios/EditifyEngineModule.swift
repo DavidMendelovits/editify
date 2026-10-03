@@ -212,6 +212,14 @@ public class EditifyEngineModule: Module {
       return ["path": copy.path, "uri": MediaStore.url(forRelative: copy.path).absoluteString, "bytes": copy.bytes]
     }
 
+    /// A PHAsset's original written to a new temporary file {uri, bytes, name}, never downloading,
+    /// for an upload the server is missing (plan OV1). The caller removes the file.
+    AsyncFunction("exportOriginal") { (ref: String) async throws -> [String: Any] in
+      guard !ref.isEmpty, ref.count <= 2048, !ref.hasPrefix("file://") else { throw InvalidArgument(message: "exportOriginal needs a PHAsset id") }
+      let written = try await AssetSource.exportOriginal(ref)
+      return ["uri": written.url.absoluteString, "bytes": written.bytes, "name": written.name]
+    }
+
     /// Fingerprint and availability of a PHAsset id or file:// URI, without downloading from iCloud.
     AsyncFunction("probeMedia") { (ref: String) async throws -> [String: Any] in
       try await AssetSource.probe(ref, allowNetwork: false)

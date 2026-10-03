@@ -84,6 +84,7 @@ beforeEach(async () => {
     touchProxy: () => false,
     removeProxy: () => undefined,
     analyze: async () => undefined,
+    exportOriginal: async () => { throw new Error('unused'); },
   };
   state.deps = { store: createLocalMediaStore(db), native };
   state.uploads = [];

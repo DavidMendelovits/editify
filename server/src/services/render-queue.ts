@@ -1,3 +1,4 @@
+import type { Project, RenderSnapshot } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import type { ProjectStore } from '../db/project-store.js';
 import type { RenderRecord, RenderStore } from '../db/render-store.js';
@@ -27,8 +28,11 @@ export class RenderQueue {
     resolution: RenderRecord['resolution'],
     hdr: HdrHandling = 'sdr',
     loudness: LoudnessMode = 'normalize',
+    snapshot?: RenderSnapshot,
   ): RenderRecord {
-    const render = this.renders.create(projectId, resolution);
+    // A snapshot (plan OV1) is validated by the route and stored with the render, so the
+    // job renders exactly that document, even after a restart.
+    const render = this.renders.create(projectId, resolution, snapshot);
     this.hdrById.set(render.id, hdr);
     this.loudnessById.set(render.id, loudness);
     this.pending.push(render.id);
@@ -64,12 +68,19 @@ export class RenderQueue {
         const id = this.pending.shift();
         if (!id) continue;
         const record = this.renders.get(id);
-        const project = record ? this.projects.get(record.projectId) : undefined;
+        let project: Project | undefined;
+        try {
+          // A snapshot render takes the document it was sent; otherwise the stored project is
+          // read here, not at enqueue, so this is the version the file shows.
+          project = record ? this.renders.snapshotProject(id) ?? this.projects.get(record.projectId) : undefined;
+        } catch {
+          this.renders.update(id, 'error', { error: 'The project snapshot could not be read' });
+          continue;
+        }
         if (!record || !project) {
           this.renders.update(id, 'error', { error: 'Project was not found' });
           continue;
         }
-        // The project is read here, not at enqueue, so this is the version the file shows.
         this.renders.update(id, 'processing', { projectVersion: project.version });
         try {
           // Queued renders stay serial here; the shared pool additionally keeps

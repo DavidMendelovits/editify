@@ -114,6 +114,7 @@ function routes(): Array<[Method, string, unknown, number]> {
     ['GET', `/projects/${project}/chat`, undefined, 200],
     ['GET', `/projects/${project}/chat/live`, undefined, 200],
     ['POST', `/projects/${project}/chat/improve`, { message: 'make it punchy' }, 200],
+    ['POST', `/projects/${project}/assets/availability`, { assetIds: [asset] }, 200],
     ['GET', `/assets?projectId=${project}`, undefined, 200],
     ['GET', `/assets/${asset}`, undefined, 200],
     ['PATCH', `/assets/${asset}`, { label: 'Take 1' }, 200],
@@ -129,6 +130,8 @@ function routes(): Array<[Method, string, unknown, number]> {
     ['GET', `/assets/${asset}/thumb.jpg`, undefined, 200],
     ['GET', `/assets/${asset}/filmstrip.jpg`, undefined, 200],
     ['GET', `/assets/${asset}/original`, undefined, 200],
+    // Her original is already there: a retry answers 200 without reading a body.
+    ['PUT', `/assets/${asset}/original?projectId=${project}&name=clip.mp4`, {}, 200],
     ['GET', `/renders/${render}`, undefined, 200],
     ['GET', `/renders/${render}/file.mp4`, undefined, 200],
     ['GET', `/renders/${render}/contact.jpg`, undefined, 200],

@@ -227,6 +227,8 @@ interface EditifyEngineNative {
   removeProxy(assetId: string): void;
   /** Geometry of a PHAsset id or file:// URI (video track or still), never downloading; null when unreadable. */
   mediaGeometry(ref: string): Promise<NativeGeometry | null>;
+  /** A PHAsset's original resource written to a new temporary file, never downloading; the caller removes it. `name` is Photos' original file name. */
+  exportOriginal(ref: string): Promise<{ uri: string; bytes: number; name: string }>;
   /** A PHAsset id (loaded as `.original`) or file:// URI: fingerprinted when on the device, never downloaded. */
   probeMedia(ref: string): Promise<NativeProbe>;
   /** `probeMedia`, downloading an iCloud original first; `progress` events carry `requestId`. Rejects when cancelled. */

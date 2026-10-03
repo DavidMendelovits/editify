@@ -10,22 +10,30 @@
  *        │     the server's records have no rotation) ─▶ plan rebuilt with it ─▶ native
  *        │     exportProject(plan, media refs) ─▶ exportState events ─▶ exportReducer
  *        │     ─▶ done / failed / cancelled ─▶ lease released
- *        └─ any other state ─▶ lease released ─▶ server render, naming the clips that
- *              aren't on this iPhone
+ *        └─ any other state ─▶ lease released ─▶ the server path below
+ *
+ *   server path (OV1) ─▶ POST /projects/:id/assets/availability for every asset the document names
+ *     ├─ all present ─▶ 'ready': server render of the snapshot (renderSnapshot: revision + hash + document)
+ *     ├─ some missing, each one on this iPhone (app copy, Photos original, iCloud) ─▶ 'upload':
+ *     │     "Upload X and Y to export" ─▶ uploadMissing (only those, leased, temp files removed)
+ *     │     ─▶ route again ─▶ 'ready'
+ *     ├─ a missing one isn't here either (or changed in Photos), or another account's ─▶ 'blocked',
+ *     │     named plainly ("X isn't on this iPhone or the server")
+ *     └─ the check failed (offline) ─▶ 'unchecked': the render may still be asked for; the
+ *           server checks the snapshot again and names what is missing
  *
  * The lease pins the local copies for the whole run (the copy budget can't evict one
  * mid-export) and is released however the run ends, including a rejected start.
- *
- * TODO(T8): the server fallback still renders the server's copy of the project; it should
- * send a snapshot (revision + hash + plan), check the server has every original first, and
- * offer "upload clips X" when it doesn't (OV1).
  */
 import {
-  buildRenderPlan, exportPlanSize,
-  type AssetMetadata, type PlanAssetInfo, type PlanAssetRef, type PlanResolution, type Project, type RenderPlan,
+  buildRenderPlan, exportPlanSize, projectAssetIds,
+  type AssetAvailability, type AssetMetadata, type PlanAssetInfo, type PlanAssetRef, type PlanResolution, type Project, type RenderPlan,
 } from '@editify/shared';
 import type { ExportProjectOptions, ExportStateEvent, ExportStateName, NativeExportStats } from '../../modules/editify-engine';
-import { leaseMedia, mediaGeometry, mediaKindOf, resolveMedia, type MediaDeps, type MediaGeometry, type ResolvedMedia } from './local-media';
+import {
+  downloadMedia, leaseMedia, mediaGeometry, mediaKindOf, resolveMedia, type MediaDeps, type MediaGeometry, type ResolvedMedia,
+} from './local-media';
+import type { ImportProgress } from './upload-progress';
 
 /**
  * Resolutions the phone exports itself. 4K goes to the server until its memory is
@@ -104,8 +112,41 @@ export type ExportRoute =
   /**
    * `no-engine`: web, Android, a build without the engine. `plan`: the project couldn't
    * become a plan. `resolution`: not a DEVICE_EXPORT_RESOLUTIONS one. `missing`: clips aren't here.
+   * `server`: what the server holds, when it was asked (routeExport's `server` argument).
    */
-  | { kind: 'server'; why: 'no-engine' | 'plan' | 'resolution' | 'missing'; missing: MissingClip[] };
+  | { kind: 'server'; why: 'no-engine' | 'plan' | 'resolution' | 'missing'; missing: MissingClip[]; server?: ServerReadiness };
+
+/** A clip the server is missing that this iPhone can upload. */
+export interface UploadClip { assetId: string; kind: PlanAssetRef['kind']; name: string }
+
+/** A clip no server render can have: not on the server, and not uploadable from here. */
+export interface BlockedClip { assetId: string; name: string; reason: 'not-here' | 'changed' | 'absent' | 'forbidden' }
+
+/** Whether a server render of the snapshot can run (OV1). */
+export type ServerReadiness =
+  | { state: 'ready' }
+  | { state: 'upload'; clips: UploadClip[] }
+  | { state: 'blocked'; clips: BlockedClip[] }
+  /** The availability check itself failed (offline, server down); the render request rechecks. */
+  | { state: 'unchecked'; error: string };
+
+/** POST /projects/:id/assets/availability, as a status per id. */
+export type AvailabilityCheck = (assetIds: string[]) => Promise<Record<string, AssetAvailability>>;
+
+export interface ServerCheck {
+  /** Every asset the document names (the server checks the whole snapshot, not only the plan's). */
+  refs: PlanAssetRef[];
+  check: AvailabilityCheck;
+}
+
+/** Every asset the project names, with its kind from the server's record ('video' when unknown). */
+export function projectAssetRefs(project: Project, assets: readonly AssetMetadata[]): PlanAssetRef[] {
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  return projectAssetIds(project).map((id) => {
+    const asset = byId.get(id);
+    return { id, kind: asset ? mediaKindOf(asset.mimeType, asset.originalName) : 'video' };
+  });
+}
 
 function missingReason(media: Exclude<ResolvedMedia, { state: 'local' | 'file' }>): string {
   switch (media.state) {
@@ -127,6 +168,14 @@ function missingReason(media: Exclude<ResolvedMedia, { state: 'local' | 'file' }
  * asset resolves to a local original or app copy (with its geometry read on the way).
  */
 export async function routeExport(
+  plan: RenderPlan | null, deps: MediaDeps | null, nameOf: (assetId: string) => string, resolution?: PlanResolution, server?: ServerCheck,
+): Promise<ExportRoute> {
+  const route = await routeLocally(plan, deps, nameOf, resolution);
+  if (route.kind === 'device' || !server) return route;
+  return { ...route, server: await serverReadiness(server, deps, nameOf) };
+}
+
+async function routeLocally(
   plan: RenderPlan | null, deps: MediaDeps | null, nameOf: (assetId: string) => string, resolution?: PlanResolution,
 ): Promise<ExportRoute> {
   if (!deps) return { kind: 'server', why: 'no-engine', missing: [] };
@@ -150,23 +199,196 @@ export async function routeExport(
   return missing.length > 0 ? { kind: 'server', why: 'missing', missing } : { kind: 'device', media, geometry };
 }
 
-/** One short line saying why a render goes to the server; null when there is nothing to say. */
+/**
+ * What the server holds of the document's media. Missing originals this iPhone has (an app
+ * copy, a Photos original that still matches, one in iCloud) can be uploaded; one that
+ * isn't here either, changed in Photos, or belongs to another account blocks the render.
+ */
+export async function serverReadiness(server: ServerCheck, deps: MediaDeps | null, nameOf: (assetId: string) => string): Promise<ServerReadiness> {
+  if (server.refs.length === 0) return { state: 'ready' };
+  let statuses: Record<string, AssetAvailability>;
+  try {
+    statuses = await server.check(server.refs.map((ref) => ref.id));
+  } catch (error) {
+    return { state: 'unchecked', error: error instanceof Error ? error.message : String(error) };
+  }
+  const blocked: BlockedClip[] = [];
+  const uploads: UploadClip[] = [];
+  for (const ref of server.refs) {
+    // An id the answer leaves out is treated as missing: the render would refuse it.
+    const status = statuses[ref.id] ?? 'missing';
+    if (status === 'present') continue;
+    const name = nameOf(ref.id);
+    if (status === 'forbidden' || status === 'absent') {
+      // Absent: the server has no such asset, so an upload under its id has nothing to restore.
+      blocked.push({ assetId: ref.id, name, reason: status });
+      continue;
+    }
+    const local = deps ? await resolveMedia(ref, deps, { purpose: 'export' }) : null;
+    if (local && (local.state === 'file' || local.state === 'local' || local.state === 'icloud')) uploads.push({ assetId: ref.id, kind: ref.kind, name });
+    else blocked.push({ assetId: ref.id, name, reason: local?.state === 'changed' ? 'changed' : 'not-here' });
+  }
+  if (blocked.length > 0) return { state: 'blocked', clips: blocked };
+  return uploads.length > 0 ? { state: 'upload', clips: uploads } : { state: 'ready' };
+}
+
+/** Whether the server render can be asked for now (ready, or the check couldn't run). */
+export function serverRenderable(route: ExportRoute | undefined): boolean {
+  if (!route || route.kind !== 'server') return false;
+  return !route.server || route.server.state === 'ready' || route.server.state === 'unchecked';
+}
+
+/** One short line saying why a render goes to the server, or what it needs first; null when there is nothing to say. */
 export function serverRouteLine(route: ExportRoute): string | null {
+  if (route.kind === 'server' && route.server?.state === 'upload') return uploadLine(route.server.clips);
+  if (route.kind === 'server' && route.server?.state === 'blocked') return blockedLine(route.server.clips);
   if (route.kind === 'server' && route.why === 'resolution') return '4K exports render on the server for now.';
   return missingClipsLine(route);
+}
+
+/** "Upload "a" and "b" to export." */
+export function uploadLine(clips: readonly UploadClip[]): string {
+  return `Upload ${listNames(clips.map((clip) => clip.name))} to export.`;
+}
+
+/** One sentence per reason: "X isn't on this iPhone or the server." */
+export function blockedLine(clips: readonly BlockedClip[]): string {
+  const sentence = (reason: BlockedClip['reason'], one: string, many: string): string | null => {
+    const names = clips.filter((clip) => clip.reason === reason).map((clip) => clip.name);
+    if (names.length === 0) return null;
+    return `${listNames(names)} ${names.length === 1 ? one : many}.`;
+  };
+  return [
+    sentence('not-here', "isn't on this iPhone or the server", "aren't on this iPhone or the server"),
+    sentence('changed', "changed in Photos and isn't on the server", "changed in Photos and aren't on the server"),
+    sentence('absent', "isn't on the server. Import it again to export", "aren't on the server. Import them again to export"),
+    sentence('forbidden', 'belongs to another account', 'belong to another account'),
+  ].filter((line) => line !== null).join(' ');
+}
+
+function listNames(names: string[]): string {
+  return names.length <= 3 ? joinNames(names) : `${names.slice(0, 2).join(', ')} and ${names.length - 2} more`;
 }
 
 /** One short line for a server render caused by missing clips; null otherwise. */
 export function missingClipsLine(route: ExportRoute): string | null {
   if (route.kind !== 'server' || route.why !== 'missing' || route.missing.length === 0) return null;
   const names = route.missing.map((clip) => clip.name);
-  const listed = names.length <= 3 ? joinNames(names) : `${names.slice(0, 2).join(', ')} and ${names.length - 2} more`;
-  return `Renders on the server: ${listed} ${names.length === 1 ? "isn't" : "aren't"} on this iPhone.`;
+  return `Renders on the server: ${listNames(names)} ${names.length === 1 ? "isn't" : "aren't"} on this iPhone.`;
 }
 
 function joinNames(names: string[]): string {
   if (names.length <= 1) return names[0] ?? '';
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+// ─── Uploading what the server is missing (OV1) ───
+
+/** One original as this iPhone holds it: a file:// URI, its real file name and media type. */
+export interface OriginalFile { assetId: string; uri: string; name: string; mimeType?: string }
+
+/** Sends one original to PUT /assets/:id/original; aborting `signal` cancels the transfer. */
+export type UploadOriginal = (file: OriginalFile, onBytes: (sent: number, expected: number) => void, signal?: AbortSignal) => Promise<void>;
+
+const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  mov: 'video/quicktime', mp4: 'video/mp4', m4v: 'video/x-m4v', webm: 'video/webm',
+  m4a: 'audio/mp4', aac: 'audio/aac', mp3: 'audio/mpeg', wav: 'audio/wav', caf: 'audio/x-caf', aif: 'audio/aiff', aiff: 'audio/aiff',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', heic: 'image/heic', webp: 'image/webp',
+};
+
+/** The media type a file name's extension says, or undefined for one this table doesn't know. */
+export function mimeTypeOf(name: string): string | undefined {
+  const extension = /\.([A-Za-z0-9]+)$/.exec(name)?.[1]?.toLowerCase();
+  return extension ? MIME_BY_EXTENSION[extension] : undefined;
+}
+
+/** The name an app copy was imported under: its file name without the copy's "<uuid>-" prefix. */
+export function copyFileName(uri: string): string {
+  const base = decodeURIComponent(uri.slice(uri.lastIndexOf('/') + 1));
+  return base.replace(/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}-/, '') || base;
+}
+
+export interface UploadMissingArgs {
+  clips: readonly UploadClip[];
+  deps: MediaDeps;
+  upload: UploadOriginal;
+  onProgress?: (progress: ImportProgress) => void;
+  signal?: AbortSignal;
+}
+
+export interface UploadMissingResult {
+  uploaded: string[];
+  failed: Array<{ assetId: string; name: string; error: string }>;
+}
+
+/**
+ * Uploads only `clips`, one at a time, from what this iPhone holds: the app copy as it
+ * is, a Photos original written to a temporary file first (removed afterwards, however
+ * the upload ends), an iCloud one downloaded and checked first. Every clip stays leased
+ * until the last upload ends, so the copy budget can't evict one mid-upload. One failure
+ * doesn't stop the rest; aborting skips the clips not started.
+ */
+export async function uploadMissing(args: UploadMissingArgs): Promise<UploadMissingResult> {
+  const { deps } = args;
+  const lease = leaseMedia(deps, args.clips.map((clip) => clip.assetId));
+  const result: UploadMissingResult = { uploaded: [], failed: [] };
+  const sent = args.clips.map(() => 0);
+  const sizes = args.clips.map(() => 0);
+  let done = 0;
+  const report = (): void => args.onProgress?.({
+    done,
+    total: args.clips.length,
+    sentBytes: sent.reduce((sum, bytes) => sum + bytes, 0),
+    totalBytes: sizes.every((size) => size > 0) ? sizes.reduce((sum, size) => sum + size, 0) : 0,
+  });
+  try {
+    report();
+    for (const [index, clip] of args.clips.entries()) {
+      if (args.signal?.aborted) {
+        result.failed.push({ assetId: clip.assetId, name: clip.name, error: 'Cancelled' });
+        continue;
+      }
+      let temporary: string | undefined;
+      try {
+        let media: ResolvedMedia = await resolveMedia({ id: clip.assetId, kind: clip.kind }, deps, { purpose: 'export' });
+        if (media.state === 'icloud') media = await downloadMedia(media, deps, args.signal ? { signal: args.signal } : {});
+        let file: OriginalFile;
+        if (media.state === 'file') {
+          const name = copyFileName(media.ref);
+          file = { assetId: clip.assetId, uri: media.ref, name, ...withMime(name) };
+        } else if (media.state === 'local') {
+          const written = await deps.native.exportOriginal(media.ref);
+          temporary = written.uri;
+          const name = written.name || copyFileName(written.uri);
+          file = { assetId: clip.assetId, uri: written.uri, name, ...withMime(name) };
+        } else {
+          throw new Error(media.state === 'changed' ? 'It changed in Photos' : media.state === 'icloud' ? 'Waiting for iCloud' : 'It isn\'t on this iPhone');
+        }
+        await args.upload(file, (bytes, expected) => {
+          sent[index] = bytes;
+          if (expected > 0) sizes[index] = expected;
+          report();
+        }, args.signal);
+        result.uploaded.push(clip.assetId);
+      } catch (error) {
+        result.failed.push({ assetId: clip.assetId, name: clip.name, error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        if (temporary) {
+          try { deps.native.removeFile(temporary); } catch { /* a temp file the system clears anyway */ }
+        }
+        done += 1;
+        report();
+      }
+    }
+  } finally {
+    lease.release();
+  }
+  return result;
+}
+
+function withMime(name: string): { mimeType?: string } {
+  const mimeType = mimeTypeOf(name);
+  return mimeType ? { mimeType } : {};
 }
 
 // ─── State ───
@@ -255,6 +477,8 @@ export interface ExportOnDeviceArgs {
   onUpdate: (view: DeviceExportView) => void;
   /** Aborting cancels the export (queued or running). */
   signal?: AbortSignal;
+  /** Asked when the route turns out to be the server's, so the outcome says what the server holds. */
+  server?: ServerCheck;
 }
 
 /**
@@ -267,7 +491,7 @@ export async function exportOnDevice(args: ExportOnDeviceArgs): Promise<DeviceEx
   if (!draft) return { kind: 'server', route: { kind: 'server', why: 'plan', missing: [] } };
   const lease = leaseMedia(args.deps, planAssetRefs(draft).map((ref) => ref.id));
   try {
-    const route = await routeExport(draft, args.deps, args.nameOf, args.resolution);
+    const route = await routeExport(draft, args.deps, args.nameOf, args.resolution, args.server);
     if (route.kind === 'server') return { kind: 'server', route };
     // Same assets, now laid out with each one's real stored size and rotation. Never fall
     // back to the draft silently: it would lay rotated clips out sideways.
