@@ -2,7 +2,9 @@
   "description": "A 0.6 s crossfade where clip a has only 0.2 s of source past its out point: it plays that handle, then holds its last frame for the remaining 0.4 s under clip b; audio crossfades only over the real 0.2 s.",
   "plan": {
     "version": 1,
+    "requires": [],
     "revision": 5,
+    "buildSeq": 1,
     "size": {
       "w": 360,
       "h": 640
@@ -13,7 +15,10 @@
     "background": "#0B0B0F",
     "loudness": {
       "targetLufs": -16,
-      "truePeakDb": -1
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
     },
     "video": {
       "segments": [
@@ -39,7 +44,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         },
@@ -65,7 +71,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             },
             {
               "clipId": "b",
@@ -94,7 +101,8 @@
                   "t": 2.2,
                   "value": 0.333333
                 }
-              ]
+              ],
+              "dimKeys": []
             }
           ]
         },
@@ -121,6 +129,7 @@
                 }
               ],
               "opacityKeys": [],
+              "dimKeys": [],
               "hold": {
                 "frameAt": 2.166667
               }
@@ -152,7 +161,8 @@
                   "t": 2.6,
                   "value": 1
                 }
-              ]
+              ],
+              "dimKeys": []
             }
           ]
         },
@@ -178,7 +188,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         }
@@ -189,6 +200,7 @@
     "audio": [
       {
         "id": "a",
+        "clipId": "a",
         "assetRef": {
           "id": "asset-a",
           "kind": "video"
@@ -214,6 +226,7 @@
       },
       {
         "id": "b",
+        "clipId": "b",
         "assetRef": {
           "id": "asset-b",
           "kind": "video"

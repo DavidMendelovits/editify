@@ -2,7 +2,9 @@
   "description": "A two-line karaoke caption: words light in the emphasis colour at their absolute timeline start (document words were relative to words[0].s = 10.2 at clip.start 0.5).",
   "plan": {
     "version": 1,
+    "requires": [],
     "revision": 10,
+    "buildSeq": 1,
     "size": {
       "w": 1080,
       "h": 1920
@@ -13,7 +15,10 @@
     "background": "#0B0B0F",
     "loudness": {
       "targetLufs": -16,
-      "truePeakDb": -1
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
     },
     "video": {
       "segments": [
@@ -39,7 +44,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         }
@@ -122,6 +128,7 @@
     "audio": [
       {
         "id": "talk",
+        "clipId": "talk",
         "assetRef": {
           "id": "asset-talk",
           "kind": "video"

@@ -2,7 +2,9 @@
   "description": "Two caption lanes on screen at once: a bottom lane with two back-to-back captions and a top lane caption overlapping both.",
   "plan": {
     "version": 1,
+    "requires": [],
     "revision": 9,
+    "buildSeq": 1,
     "size": {
       "w": 1080,
       "h": 1920
@@ -13,7 +15,10 @@
     "background": "#0B0B0F",
     "loudness": {
       "targetLufs": -16,
-      "truePeakDb": -1
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
     },
     "video": {
       "segments": [
@@ -39,7 +44,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         }
@@ -144,6 +150,7 @@
     "audio": [
       {
         "id": "talk",
+        "clipId": "talk",
         "assetRef": {
           "id": "asset-talk",
           "kind": "video"

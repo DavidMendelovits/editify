@@ -2,7 +2,9 @@
   "description": "A caption too long for its styled 30 px at 360 wide: the layout shrank it to 24 px (scale 0.8) over three lines and flagged it, with no ellipsis.",
   "plan": {
     "version": 1,
+    "requires": [],
     "revision": 11,
+    "buildSeq": 1,
     "size": {
       "w": 360,
       "h": 640
@@ -13,7 +15,10 @@
     "background": "#0B0B0F",
     "loudness": {
       "targetLufs": -16,
-      "truePeakDb": -1
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
     },
     "video": {
       "segments": [
@@ -39,7 +44,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         }
@@ -94,6 +100,7 @@
     "audio": [
       {
         "id": "talk",
+        "clipId": "talk",
         "assetRef": {
           "id": "asset-talk",
           "kind": "video"

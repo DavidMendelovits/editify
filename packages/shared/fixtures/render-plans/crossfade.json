@@ -2,7 +2,9 @@
   "description": "A 0.5 s crossfade into clip b at 2 s: clip a borrows 0.5 s of source past its out point under b, which fades in from opacity 0; the audio swaps edge fades for linear tri-fades.",
   "plan": {
     "version": 1,
+    "requires": [],
     "revision": 3,
+    "buildSeq": 1,
     "size": {
       "w": 360,
       "h": 640
@@ -13,7 +15,10 @@
     "background": "#0B0B0F",
     "loudness": {
       "targetLufs": -16,
-      "truePeakDb": -1
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
     },
     "video": {
       "segments": [
@@ -39,7 +44,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         },
@@ -65,7 +71,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             },
             {
               "clipId": "b",
@@ -94,7 +101,8 @@
                   "t": 2.5,
                   "value": 1
                 }
-              ]
+              ],
+              "dimKeys": []
             }
           ]
         },
@@ -120,7 +128,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         }
@@ -131,6 +140,7 @@
     "audio": [
       {
         "id": "a",
+        "clipId": "a",
         "assetRef": {
           "id": "asset-a",
           "kind": "video"
@@ -156,6 +166,7 @@
       },
       {
         "id": "b",
+        "clipId": "b",
         "assetRef": {
           "id": "asset-b",
           "kind": "video"

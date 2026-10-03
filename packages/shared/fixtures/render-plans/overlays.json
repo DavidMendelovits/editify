@@ -1,8 +1,10 @@
 {
-  "description": "Every overlay kind over one video layer, each rotated except the logo: image sticker, looping GIF, emoji, check callout, and a picture-in-picture b-roll clip, stacked by z.",
+  "description": "Every overlay kind over one video layer, each rotated except the logo: image sticker, looping GIF, emoji fitted to its box, a check callout resolved to card, vector glyph and label (with a PNG raster for executors that cannot draw it), and a picture-in-picture b-roll clip, stacked by z.",
   "plan": {
     "version": 1,
+    "requires": [],
     "revision": 8,
+    "buildSeq": 1,
     "size": {
       "w": 360,
       "h": 640
@@ -13,7 +15,10 @@
     "background": "#0B0B0F",
     "loudness": {
       "targetLufs": -16,
-      "truePeakDb": -1
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
     },
     "video": {
       "segments": [
@@ -39,7 +44,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         }
@@ -104,7 +110,13 @@
           "h": 117,
           "rotationDeg": 15
         },
-        "text": "🔥"
+        "emoji": {
+          "text": "🔥",
+          "sizePx": 85.5,
+          "x": 0,
+          "y": 92,
+          "width": 100
+        }
       },
       {
         "id": "callout-check",
@@ -121,9 +133,36 @@
         },
         "callout": {
           "variant": "check",
-          "text": "Do this",
-          "color": "#39D98A",
-          "bg": "#14141BF2"
+          "card": {
+            "x": 0,
+            "y": 0,
+            "w": 260,
+            "h": 64,
+            "radiusPx": 13,
+            "color": "#14141BF2"
+          },
+          "glyph": {
+            "shape": "check",
+            "x": 17,
+            "y": 18,
+            "w": 28,
+            "h": 28,
+            "strokePx": 4,
+            "color": "#39D98A"
+          },
+          "label": {
+            "text": "Do this",
+            "font": "Montserrat-Bold",
+            "sizePx": 28,
+            "x": 55,
+            "y": 42,
+            "width": 118,
+            "color": "#FFFFFF"
+          }
+        },
+        "raster": {
+          "id": "raster-callout-check",
+          "kind": "image"
         }
       },
       {
@@ -153,6 +192,7 @@
     "audio": [
       {
         "id": "talk",
+        "clipId": "talk",
         "assetRef": {
           "id": "asset-talk",
           "kind": "video"

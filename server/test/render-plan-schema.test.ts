@@ -2,13 +2,16 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
-  CAPTION_FACES,
   CAPTION_FONT_FACE,
   CAPTION_FONTS,
+  captionFaceFor,
   captionStyleSchema,
   DEFAULT_CAPTION_FONT,
-  projectSchema,
+  parseRenderPlanForExecutor,
+  PLAN_FONT_FACES,
+  planFrameCount,
   renderPlanSchema,
+  UnsupportedPlanError,
   type RenderPlan,
 } from '@editify/shared';
 
@@ -69,15 +72,25 @@ describe('render plan fixtures', () => {
     expect(new Set(captions.map((caption) => caption.lane)).size).toBeGreaterThan(1);
     expect(plans.some((plan) => plan.color === 'hlg')).toBe(true);
     expect(plans.some((plan) => plan.audio.some((entry) => entry.gainKeys.length > 2) && plan.loudness.targetLufs !== null)).toBe(true);
+    expect(plans.flatMap((plan) => plan.overlays).some((overlay) => overlay.raster)).toBe(true);
+    expect(plans.every((plan) => plan.requires.length === 0)).toBe(true);
     expect(plans.some((plan) => plan.duration === 0 && plan.video.segments.length === 0)).toBe(true);
   });
 });
 
 describe('invalid render plans', () => {
-  it('requires a revision', () => {
+  it('requires a revision and a build sequence', () => {
     const plan: Partial<RenderPlan> = planFrom('crossfade');
     delete plan.revision;
-    expect(issues(plan)).toEqual(['revision: Required']);
+    delete plan.buildSeq;
+    expect(issues(plan)).toEqual(['revision: Required', 'buildSeq: Required']);
+  });
+
+  it('refuses required features it does not know, in the strict builder check', () => {
+    expect(issues({ ...planFrom('crossfade'), requires: ['animated-captions'] })).toEqual(['requires.0: unknown required feature "animated-captions"']);
+    const plan: Partial<RenderPlan> = planFrom('crossfade');
+    delete plan.requires;
+    expect(issues(plan)).toEqual(['requires: Required']);
   });
 
   it('refuses another version', () => {
@@ -107,12 +120,22 @@ describe('invalid render plans', () => {
     backwards.video.segments[1]!.end = 1.5;
     expect(issues(backwards)).toEqual(expect.arrayContaining([
       'video.segments.1.end: segment end 1.5 must be after its start 2',
-      'video.segments.2.start: segment 2 starts at 2.5 but the previous one ends at 1.5; segments must be contiguous',
+      'video.segments.2.start: segment 2 starts at 2.5 but the previous one ends at 1.5; joins must be exact',
     ]));
 
     const short = planFrom('crossfade');
     short.duration = 5;
     expect(issues(short)).toEqual(['video.segments.2.end: the last segment ends at 4, not at duration 5']);
+
+    // Joins are exact, not within a tolerance: a 1e-9 gap is a gap.
+    const loose = planFrom('crossfade');
+    loose.video.segments[1]!.start = 2 + 1e-9;
+    expect(issues(loose)).toEqual([expect.stringMatching(/^video\.segments\.1\.start: segment 1 starts at 2\.000000001 but the previous one ends at 2; joins must be exact/)]);
+
+    const offGrid = planFrom('crossfade');
+    offGrid.video.segments[0]!.end = 2.01;
+    offGrid.video.segments[1]!.start = 2.01;
+    expect(issues(offGrid)).toContain('video.segments.0.end: segment end 2.01 is not on the 1/30 s frame grid');
 
     const empty = planFrom('empty-project');
     empty.duration = 1;
@@ -199,11 +222,28 @@ describe('invalid render plans', () => {
     const broll = plan.overlays[4]!;
     broll.media!.assetRef.kind = 'image';
     delete plan.overlays[3]!.callout;
+    plan.overlays[0]!.raster = { id: 'raster-logo', kind: 'image' };
     expect(issues(plan)).toEqual([
+      'overlays.0.raster: a image overlay has no raster; its media is the picture',
       'overlays.2.media: a emoji overlay carries no media',
-      'overlays.3.callout: a callout overlay needs its callout',
+      'overlays.3.callout: a callout overlay needs its callout payload',
       'overlays.4.media.assetRef.kind: a broll overlay needs a video asset, not image',
     ]);
+  });
+
+  it('refuses a callout whose vector glyph does not match its variant', () => {
+    const plan = planFrom('overlays');
+    plan.overlays[3]!.callout!.glyph!.shape = 'cross';
+    expect(issues(plan)).toEqual(['overlays.3.callout.glyph: a check callout draws the check glyph']);
+    delete plan.overlays[3]!.callout!.glyph;
+    plan.overlays[3]!.callout!.variant = 'card';
+    expect(issues(plan)).toEqual([]);
+  });
+
+  it('refuses a limiter ceiling above the true-peak limit', () => {
+    const plan = planFrom('audio-duck-loudness');
+    plan.loudness.limiterCeilingDb = -0.5;
+    expect(issues(plan)).toEqual(['loudness.limiterCeilingDb: the limiter ceiling must sit at or under the true-peak limit']);
   });
 
   it('refuses anything that runs past the plan duration', () => {
@@ -217,27 +257,41 @@ describe('invalid render plans', () => {
   });
 });
 
-describe('caption style font (OV7)', () => {
-  it('is an enum of the bundled fonts, each mapped to a bundled face', () => {
+describe('executor parsing', () => {
+  it('ignores unknown non-critical keys', () => {
+    const plan = { ...planFrom('crossfade'), addedInV1_1: true, overlays: [{ ...planFrom('overlays').overlays[0]!, glow: 0.4 }] };
+    expect(issues(plan).length).toBe(2);
+    const parsed = parseRenderPlanForExecutor(plan);
+    expect(parsed).not.toHaveProperty('addedInV1_1');
+    expect(parsed.overlays[0]).not.toHaveProperty('glow');
+  });
+
+  it('refuses a plan that requires a feature it does not draw, naming it', () => {
+    const plan = { ...planFrom('overlays'), requires: ['overlay-kind-lottie'] };
+    plan.overlays[0] = { ...plan.overlays[0]!, kind: 'lottie' as never };
+    expect(() => parseRenderPlanForExecutor(plan)).toThrow(UnsupportedPlanError);
+    expect(() => parseRenderPlanForExecutor(plan)).toThrow('overlay-kind-lottie');
+  });
+
+  it('counts output frames as ceil(duration * fps - 1e-6)', () => {
+    expect(planFrameCount({ duration: 2.2, fps: 30 })).toBe(66);
+    expect(planFrameCount({ duration: 0, fps: 30 })).toBe(0);
+    expect(planFrameCount({ duration: 1.01, fps: 30 })).toBe(31);
+  });
+});
+
+describe('caption fonts (OV7)', () => {
+  it('maps every caption family to a bundled face', () => {
     expect(CAPTION_FONTS).toContain(DEFAULT_CAPTION_FONT);
-    for (const font of CAPTION_FONTS) expect(CAPTION_FACES).toContain(CAPTION_FONT_FACE[font]);
+    for (const font of CAPTION_FONTS) expect(PLAN_FONT_FACES).toContain(CAPTION_FONT_FACE[font]);
   });
 
-  it('keeps a bundled font', () => {
-    expect(captionStyleSchema.parse({ font: 'Montserrat' }).font).toBe('Montserrat');
+  it.each([['Montserrat'], ['Inter'], ['Space Grotesk'], [undefined]])('draws document font %j in Montserrat Bold', (font) => {
+    expect(captionFaceFor(font)).toBe('Montserrat-Bold');
   });
 
-  it.each([['Inter'], ['Space Grotesk'], [''], [42], [undefined]])('parses legacy font %j as the default', (font) => {
-    expect(captionStyleSchema.parse({ font }).font).toBe(DEFAULT_CAPTION_FONT);
-  });
-
-  it('still loads a project saved with a free-text caption font', () => {
-    const project = projectSchema.parse({
-      id: 'legacy', title: 'Legacy', format: '9:16', fps: 30, duration: 2, version: 3,
-      tracks: [{ id: 'captions', kind: 'caption', clips: [
-        { id: 'c', start: 0, in: 0, out: 2, text: 'HELLO', style: { font: 'Helvetica Neue', size: 52, color: '#FFFFFF', position: 'bottom', emphasis: 'bold' } },
-      ] }],
-    });
-    expect(project.tracks[0]!.clips[0]!.style!.font).toBe('Montserrat');
+  it('leaves the document field free text, so stored projects and their hashes do not change', () => {
+    expect(captionStyleSchema.parse({ font: 'Helvetica Neue' }).font).toBe('Helvetica Neue');
+    expect(captionStyleSchema.parse({}).font).toBe('Montserrat');
   });
 });

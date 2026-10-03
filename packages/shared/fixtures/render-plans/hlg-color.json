@@ -2,7 +2,9 @@
   "description": "An HLG master: one HDR clip composited in linear BT.2020 with a white caption placed at the 203-nit reference white, encoded HLG 10-bit.",
   "plan": {
     "version": 1,
+    "requires": [],
     "revision": 13,
+    "buildSeq": 1,
     "size": {
       "w": 360,
       "h": 640
@@ -13,7 +15,10 @@
     "background": "#0B0B0F",
     "loudness": {
       "targetLufs": -16,
-      "truePeakDb": -1
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
     },
     "video": {
       "segments": [
@@ -39,7 +44,8 @@
                   "y": 0
                 }
               ],
-              "opacityKeys": []
+              "opacityKeys": [],
+              "dimKeys": []
             }
           ]
         }
@@ -82,6 +88,7 @@
     "audio": [
       {
         "id": "sunset",
+        "clipId": "sunset",
         "assetRef": {
           "id": "asset-hlg",
           "kind": "video"

@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Clip, Project } from '@editify/shared';
-import { clipTimelineDuration, DEFAULT_CAPTION_STYLE } from '@editify/shared';
+import { clipTimelineDuration } from '@editify/shared';
 import { CALLOUT_ACCENT, CALLOUT_BG, CALLOUT_GLYPH } from './callout.js';
 
 export interface AssFont {
@@ -145,9 +145,9 @@ interface CaptionEvent {
 
 // Last line of defence against stacked captions: two events sharing a vertical anchor cannot
 // overlap in time. Events at different anchors (top vs bottom) legitimately coexist.
-function captionEvents(clips: Clip[], width: number, height: number, safeMargin: number): CaptionEvent[] {
+function captionEvents(clips: Clip[], fontFamily: string, width: number, height: number, safeMargin: number): CaptionEvent[] {
   const events = clips.map<CaptionEvent>((clip) => {
-    const style = clip.style ?? DEFAULT_CAPTION_STYLE;
+    const style = clip.style ?? { font: fontFamily, size: 52, color: '#FFFFFF', position: 'bottom' as const, emphasis: 'bold' as const };
     const alignment = style.anchorPct !== undefined ? 5 : style.position === 'top' ? 8 : style.position === 'center' ? 5 : 2;
     return {
       clip,
@@ -181,7 +181,7 @@ export function generateAss(
     ?? Number(process.env.SAFE_AREA_BOTTOM_PCT ?? 12);
   const safeAreaBottomPct = Number.isFinite(configuredSafeArea) ? configuredSafeArea : 12;
   const safeMargin = Math.max(0, Math.round(height * safeAreaBottomPct / 100));
-  const events = captionEvents(captionClips(project), width, height, safeMargin);
+  const events = captionEvents(captionClips(project), fontFamily, width, height, safeMargin);
   const header = [
     '[Script Info]',
     'ScriptType: v4.00+',
