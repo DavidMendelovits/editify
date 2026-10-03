@@ -21,11 +21,92 @@
 //    item is rebuilt once, a second failure reported; park drops the item and
 //    trims caches, unpark restores the time; teardown mid-build installs nothing.
 // Prints one JSON report on stdout; server/test/native-preview.test.ts asserts on it.
+//
+// Never hangs: every wait is bounded and labelled, and a watchdog thread (which needs
+// nothing from the main thread) ends the process with the step it was stuck in when a
+// step runs past its limit or the whole run past its budget. One progress line per step
+// goes to stderr. The run drives the main RunLoop itself (not dispatch_main), so
+// AVFoundation's run-loop sources and timers fire as they do in an app. On a machine with
+// no audio output device (CI VMs) the players are muted and no audio tap is attached: the
+// report says so and the audio checks skip.
 
 import AVFoundation
+import CoreAudio
 import CoreImage
 import Foundation
 import MediaToolbox
+
+// MARK: Watchdog
+
+/// Steps, their timings, and the deadline a background thread enforces with exit(3).
+final class Watchdog: @unchecked Sendable {
+  private let lock = NSLock()
+  private let started = CFAbsoluteTimeGetCurrent()
+  private var label = "start"
+  private var stepStarted = CFAbsoluteTimeGetCurrent()
+  private var deadline = CFAbsoluteTimeGetCurrent() + 120
+  private var timings: [[String: Any]] = []
+  let budget: Double
+
+  init(budget: Double) {
+    self.budget = budget
+    let thread = Thread { [self] in
+      while true {
+        Thread.sleep(forTimeInterval: 0.5)
+        check()
+      }
+    }
+    thread.stackSize = 1 << 20
+    thread.start()
+  }
+
+  static func log(_ line: String) {
+    FileHandle.standardError.write("[preview] \(line)\n".data(using: .utf8)!)
+  }
+
+  /// Ends the previous step and starts `name`, which must finish within `limit` seconds.
+  func step(_ name: String, limit: Double = 60) {
+    let now = CFAbsoluteTimeGetCurrent()
+    lock.withLock {
+      if label != "start" { timings.append(["step": label, "ms": ((now - stepStarted) * 1000).rounded()]) }
+      label = name
+      stepStarted = now
+      deadline = now + limit
+    }
+    Self.log(String(format: "+%.1fs %@", now - started, name))
+  }
+
+  func finish() -> [[String: Any]] {
+    step("done", limit: 60)
+    return lock.withLock { timings }
+  }
+
+  private func check() {
+    let now = CFAbsoluteTimeGetCurrent()
+    let (name, ran, over) = lock.withLock { (label, now - stepStarted, now > deadline || now - started > budget) }
+    guard over else { return }
+    Self.log(String(format: "TIMEOUT in step '%@' after %.1fs (step limit or the %.0fs budget): the main thread is blocked or a wait never ended", name, ran, budget))
+    exit(3)
+  }
+}
+
+/// Well under the test's hook timeout (600 s), including a slow CI VM. PREVIEW_HARNESS_BUDGET
+/// (seconds) overrides it, to check the watchdog itself.
+let watchdog = Watchdog(budget: ProcessInfo.processInfo.environment["PREVIEW_HARNESS_BUDGET"].flatMap(Double.init) ?? 300)
+watchdog.step("media", limit: 150)
+
+/// Whether this machine has an audio output device. Without one (CI VMs) AVPlayer has no
+/// audio clock to render against: the players are muted and the tap stays off.
+func hasAudioOutput() -> Bool {
+  if let forced = ProcessInfo.processInfo.environment["PREVIEW_HARNESS_AUDIO"] { return forced == "1" }
+  var device = AudioObjectID(kAudioObjectUnknown)
+  var size = UInt32(MemoryLayout<AudioObjectID>.size)
+  var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal,
+                                           mElement: kAudioObjectPropertyElementMain)
+  let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
+  return status == noErr && device != kAudioObjectUnknown
+}
+let audioDevice = hasAudioOutput()
 
 let arguments = CommandLine.arguments
 guard arguments.count >= 5 else {
@@ -207,14 +288,17 @@ final class Rig {
   init() {
     player = PlanPlayer(fonts: fonts, resolver: resolver)
     player.player.volume = 0
+    // No output device: muted, so playback runs on the host clock with no audio rendering.
+    if !audioDevice { player.setMuted(true) }
     player.onItem = { [weak self] item in
+      item.preferredForwardBufferDuration = 1
       let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
         kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
       ])
       item.add(output)
       self?.output = output
     }
-    player.onAudioMix = { [weak self] mix in if let self { attachTap(mix, log: self.tap) } }
+    player.onAudioMix = { [weak self] mix in if let self, audioDevice { attachTap(mix, log: self.tap) } }
     player.onEvent = { [weak self] event in
       guard let self else { return }
       switch event {
@@ -237,15 +321,20 @@ final class Rig {
     return condition()
   }
 
+  /// `until`, failing with `label` when it doesn't happen in time.
+  func expect(_ label: String, _ seconds: Double = 30, _ condition: () -> Bool) async throws {
+    guard await until(seconds, condition) else { throw HarnessError("timed out after \(Int(seconds)) s: \(label)") }
+  }
+
   /// Sets a plan and waits until it (or a later one) is applied and the item can play.
   @discardableResult
   func apply(_ plan: RenderPlan, media: [String: String]? = nil) async throws -> PlanPlayer.Applied {
     let before = applied.count
     guard player.setPlan(plan, media: media ?? mediaRefs) else { throw HarnessError("plan (\(plan.revision), \(plan.buildSeq)) dropped") }
-    guard await until(10, { applied.count > before }) else { throw HarnessError("plan never applied") }
+    try await expect("plan (\(plan.revision), \(plan.buildSeq)) applied") { applied.count > before }
     let result = applied.last!
     if result.mode == .failed { throw HarnessError("plan failed: \(result.error ?? "?")") }
-    guard await until(10, { player.player.currentItem?.status == .readyToPlay }) else { throw HarnessError("item never ready: \(errors)") }
+    try await expect("item readyToPlay (errors: \(errors))") { player.player.currentItem?.status == .readyToPlay }
     return result
   }
 
@@ -255,12 +344,12 @@ final class Rig {
     let started = CFAbsoluteTimeGetCurrent()
     let landed = seeksLanded
     player.seek(to: time.seconds, exact: true)
-    guard await until(10, { seeksLanded > landed }) else { throw HarnessError("seek to \(k) never landed") }
-    guard let buffer = await newFrame(at: time) else { throw HarnessError("no frame at \(k)") }
+    try await expect("seek to frame \(k) landed") { seeksLanded > landed }
+    guard let buffer = await newFrame(at: time) else { throw HarnessError("timed out: the video output vended no frame at \(k)") }
     return (buffer, (CFAbsoluteTimeGetCurrent() - started) * 1000)
   }
 
-  func newFrame(at time: CMTime, timeout: Double = 5) async -> CVPixelBuffer? {
+  func newFrame(at time: CMTime, timeout: Double = 15) async -> CVPixelBuffer? {
     guard let output else { return nil }
     var found: CVPixelBuffer?
     _ = await until(timeout) {
@@ -313,6 +402,7 @@ func run() async throws -> [String: Any] {
   var goldenReport: [[String: Any]] = []
   var seekTimes: [Double] = []
   for name in goldenRenders {
+    watchdog.step("goldens: \(name)")
     guard let render = manifest.renders.first(where: { $0.name == name }) else { throw HarnessError("no golden render \(name)") }
     let rig = Rig()
     let plan = try decode(try fixture(name), revision: 1, buildSeq: next())
@@ -336,6 +426,7 @@ func run() async throws -> [String: Any] {
 
   // MARK: Parameter-only updates, paused (OV10)
   do {
+    watchdog.step("parameter-only update (overlay box)")
     let rig = Rig()
     let base = try fixture("overlays")
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
@@ -363,6 +454,7 @@ func run() async throws -> [String: Any] {
   }
   do {
     let rig = Rig()
+    watchdog.step("parameter-only update (caption style)")
     let base = try fixture("caption-karaoke")
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
     let k = 40
@@ -388,6 +480,7 @@ func run() async throws -> [String: Any] {
 
   // MARK: Structural update (a trimmed clip): rebuild, time kept
   do {
+    watchdog.step("structural update")
     let rig = Rig()
     let base = try fixture("overlays")
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
@@ -401,7 +494,7 @@ func run() async throws -> [String: Any] {
     edit(&trimmed, ["audio", 0, "out"], 4.5)
     let landed = rig.seeksLanded
     let applied = try await rig.apply(try decode(trimmed, revision: 2, buildSeq: next()))
-    _ = await rig.until { rig.seeksLanded > landed }
+    try await rig.expect("rebuilt item seeked back") { rig.seeksLanded > landed }
     let frame = await rig.newFrame(at: CMTime(value: CMTimeValue(k), timescale: 30))
     var paused: [String: Any] = [
       "mode": applied.mode.rawValue, "newComposition": rig.player.built?.composition !== composition,
@@ -412,15 +505,15 @@ func run() async throws -> [String: Any] {
     // Again while playing: the rebuilt item resumes from where the old one was.
     rig.player.seek(to: 0.2, exact: true)
     rig.player.play()
-    _ = await rig.until(3) { rig.player.player.rate > 0 && rig.player.currentTime > 0.6 }
+    try await rig.expect("playing past 0.6 s") { rig.player.player.rate > 0 && rig.player.currentTime > 0.6 }
     let timeBefore = rig.player.currentTime
     let wallBefore = CFAbsoluteTimeGetCurrent()
     let resumed = try await rig.apply(try decode(base, revision: 3, buildSeq: next()))
-    _ = await rig.until(3) { rig.player.player.rate > 0 }
+    try await rig.expect("playing again after the rebuild") { rig.player.player.rate > 0 }
     let resumeMs = (CFAbsoluteTimeGetCurrent() - wallBefore) * 1000
     let timeAfter = rig.player.currentTime
     // The clock moves again once the new item's decoders and audio have started.
-    _ = await rig.until(3) { rig.player.currentTime > timeAfter + 0.01 }
+    try await rig.expect("the clock moving after the rebuild") { rig.player.currentTime > timeAfter + 0.01 }
     let movingMs = (CFAbsoluteTimeGetCurrent() - wallBefore) * 1000
     let movingAt = rig.player.currentTime
     try? await Task.sleep(nanoseconds: 300_000_000)
@@ -437,6 +530,7 @@ func run() async throws -> [String: Any] {
 
   // MARK: Ordering: a stale (revision, buildSeq) is dropped; a new player starts fresh
   do {
+    watchdog.step("ordering")
     let rig = Rig()
     let base = try fixture("overlays")
     try await rig.apply(try decode(base, revision: 5, buildSeq: 10))
@@ -446,11 +540,11 @@ func run() async throws -> [String: Any] {
     for (revision, seq) in offered {
       let ok = rig.player.setPlan(try decode(base, revision: revision, buildSeq: seq), media: mediaRefs)
       accepted.append(ok)
-      if ok { _ = await rig.until { rig.applied.last.map { $0.revision == revision && $0.buildSeq == seq } ?? false } }
+      if ok { try await rig.expect("plan (\(revision), \(seq)) applied") { rig.applied.last.map { $0.revision == revision && $0.buildSeq == seq } ?? false } }
     }
     let fresh = Rig()
     let freshAccepts = fresh.player.setPlan(try decode(base, revision: 1, buildSeq: 1), media: mediaRefs)
-    _ = await fresh.until { !fresh.applied.isEmpty }
+    try await fresh.expect("a new player applied its first plan") { !fresh.applied.isEmpty }
     report["ordering"] = ["accepted": accepted, "appliedAfter": rig.applied.count - appliedBefore, "newPlayerAcceptsOlder": freshAccepts]
     rig.player.teardown()
     fresh.player.teardown()
@@ -458,12 +552,13 @@ func run() async throws -> [String: Any] {
 
   // MARK: 60 Hz box updates for 2 s while playing
   do {
+    watchdog.step("60 Hz drag while playing")
     let rig = Rig()
     let base = try fixture("overlays")
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
     rig.player.seek(to: 0.2, exact: true)
     rig.player.play()
-    _ = await rig.until(3) { rig.player.player.rate > 0 }
+    try await rig.expect("playing before the drag") { rig.player.player.rate > 0 && rig.player.currentTime > 0.25 }
     try? await Task.sleep(nanoseconds: 200_000_000)
     let output = rig.output!
     var frameWalls: [Double] = []
@@ -498,7 +593,7 @@ func run() async throws -> [String: Any] {
       try? await Task.sleep(nanoseconds: 1_000_000)
     }
     let endWall = CFAbsoluteTimeGetCurrent()
-    _ = await rig.until(1) { rig.applied.last?.buildSeq == buildSeq }
+    try await rig.expect("the last drag plan applied") { rig.applied.last?.buildSeq == buildSeq }
     let played = rig.player.currentTime - startTime
     let updates = rig.applied.dropFirst(appliedBefore)
     let intervals = zip(frameWalls, frameWalls.dropFirst()).map { ($1 - $0) * 1000 }
@@ -513,6 +608,7 @@ func run() async throws -> [String: Any] {
       "audio": tapContinuity(rig.tap, from: startWall + 0.05, to: endWall),
     ] as [String: Any]
 
+    watchdog.step("audio edits while playing")
     // A burst of audio-parameter edits while playing (a gain slider): one mix swap, after the burst.
     let swapsBefore = rig.player.audioMixSwaps
     let swapWall = CFAbsoluteTimeGetCurrent()
@@ -524,7 +620,7 @@ func run() async throws -> [String: Any] {
       try? await Task.sleep(nanoseconds: 50_000_000)
     }
     let swapsDuringBurst = rig.player.audioMixSwaps - swapsBefore
-    _ = await rig.until(2) { rig.player.audioMixSwaps > swapsBefore }
+    try await rig.expect("the deferred mix swap") { rig.player.audioMixSwaps > swapsBefore }
     let swapLandedMs = (CFAbsoluteTimeGetCurrent() - swapWall) * 1000
     try? await Task.sleep(nanoseconds: 500_000_000)
     report["audioSwap"] = [
@@ -539,6 +635,7 @@ func run() async throws -> [String: Any] {
 
   // MARK: Lifecycle: background suspend, item failure retried once, parked, torn down mid-build
   do {
+    watchdog.step("lifecycle")
     let rig = Rig()
     let base = try fixture("overlays")
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
@@ -557,38 +654,41 @@ func run() async throws -> [String: Any] {
     let framesWhileSuspended = rig.output?.hasNewPixelBuffer(forItemTime: time) ?? false
     rig.player.seek(to: Double(k) / 30, exact: true)
     rig.player.resume()
-    _ = await rig.until(3) { rig.applied.count > appliedBefore }
+    try await rig.expect("the held plan applied after resume") { rig.applied.count > appliedBefore }
     let resumedFrame = await rig.newFrame(at: time)
     var suspend: [String: Any] = ["accepted": accepted, "appliedWhileSuspended": appliedWhileSuspended, "frameWhileSuspended": framesWhileSuspended,
                                   "appliedAfterResume": rig.applied.count - appliedBefore]
     if let resumedFrame { suspend["movedAfterResume"] = linear(resumedFrame, 55, 520) }
 
+    watchdog.step("lifecycle: item failure")
     // An item failure (the GPU refused a render) rebuilds once at the same time; a second is reported.
     let itemBefore = rig.player.player.currentItem
     rig.player.simulateItemFailure()
-    _ = await rig.until(3) { rig.player.player.currentItem?.status == .readyToPlay && rig.player.player.currentItem !== itemBefore }
-    _ = await rig.until(2) { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
+    try await rig.expect("the failed item rebuilt and ready") { rig.player.player.currentItem?.status == .readyToPlay && rig.player.player.currentItem !== itemBefore }
+    try await rig.expect("the rebuilt item back at its time") { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
     let rebuiltItem = rig.player.player.currentItem !== itemBefore
     let errorsAfterFirst = rig.errors.count
     let timeAfterRetry = rig.player.currentTime
     rig.player.simulateItemFailure()
-    _ = await rig.until(1) { rig.errors.count > errorsAfterFirst }
+    try await rig.expect("the second failure reported") { rig.errors.count > errorsAfterFirst }
     let failure: [String: Any] = ["rebuilt": rebuiltItem, "errorsAfterFirst": errorsAfterFirst, "timeAfterRetry": timeAfterRetry,
                                   "errorsAfterSecond": rig.errors.count]
 
+    watchdog.step("lifecycle: park")
     // Parked (the view left the window): no item, caches trimmed; back at the same time.
     let parkedTime = rig.player.currentTime
     rig.player.park()
     let parked: [String: Any] = ["item": rig.player.player.currentItem != nil, "stickerBitmaps": rig.player.graphics.count]
     rig.player.unpark()
-    _ = await rig.until(3) { rig.player.player.currentItem?.status == .readyToPlay }
-    _ = await rig.until(2) { abs(rig.player.currentTime - parkedTime) < 1e-3 }
+    try await rig.expect("the unparked item ready") { rig.player.player.currentItem?.status == .readyToPlay }
+    try await rig.expect("the unparked item back at its time") { abs(rig.player.currentTime - parkedTime) < 1e-3 }
     report["lifecycle"] = [
       "suspend": suspend, "failure": failure, "parked": parked,
       "unparked": ["item": rig.player.player.currentItem != nil, "timeKept": abs(rig.player.currentTime - parkedTime) < 1e-3] as [String: Any],
     ] as [String: Any]
     rig.player.teardown()
 
+    watchdog.step("lifecycle: teardown")
     // Torn down while a plan's sources load: nothing is installed or reported.
     let gone = Rig()
     gone.player.setPlan(try decode(base, revision: 1, buildSeq: 1), media: mediaRefs)
@@ -601,6 +701,7 @@ func run() async throws -> [String: Any] {
 
   // MARK: 60 Hz box updates for 1 s while paused: the frame keeps redrawing (OV10)
   do {
+    watchdog.step("60 Hz drag while paused")
     let rig = Rig()
     let base = try fixture("overlays")
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
@@ -630,7 +731,7 @@ func run() async throws -> [String: Any] {
       }
       try? await Task.sleep(nanoseconds: 1_000_000)
     }
-    _ = await rig.until(2) { rig.applied.last?.buildSeq == buildSeq }
+    try await rig.expect("the last paused drag plan applied") { rig.applied.last?.buildSeq == buildSeq }
     let final = await rig.newFrame(at: time, timeout: 0.5) ?? lastBuffer
     let intervals = zip(refreshed, refreshed.dropFirst()).map { ($1 - $0) * 1000 }
     var entry: [String: Any] = [
@@ -645,6 +746,7 @@ func run() async throws -> [String: Any] {
 
   // MARK: A proxy replaced by its original: only that asset reloads
   do {
+    watchdog.step("proxy replaced by its original")
     let rig = Rig()
     let plan = try fixture("overlays")
     var proxied = mediaRefs
@@ -669,6 +771,7 @@ func run() async throws -> [String: Any] {
 
   // MARK: The render cap: a 4K plan previews at no more than 1080 x 1920
   do {
+    watchdog.step("render cap")
     let rig = Rig()
     var big = try fixture("overlays")
     edit(&big, ["size"], ["w": 2160, "h": 3840])
@@ -678,9 +781,22 @@ func run() async throws -> [String: Any] {
     report["renderCap"] = ["scale4k": scale, "scale4kInView": rig.player.renderScale(for: plan)]
     rig.player.teardown()
   }
+  report["audioDevice"] = audioDevice
+  report["steps"] = watchdog.finish()
   return report
 }
 
-let report = try await run()
-let json = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
-FileHandle.standardOutput.write(json)
+// The main RunLoop runs the whole time (it also drains the main queue, where the main
+// actor's jobs run); the task ends the process.
+Task { @MainActor in
+  do {
+    let report = try await run()
+    let json = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+    FileHandle.standardOutput.write(json)
+    exit(0)
+  } catch {
+    Watchdog.log("FAILED: \(error)")
+    exit(1)
+  }
+}
+RunLoop.main.run()

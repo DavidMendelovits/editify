@@ -69,6 +69,9 @@ interface Report {
   pausedDrag60: { sent: number; applied: number; refreshedFrames: number; refreshIntervalMs: Stats; stillAtTime: boolean; finalAtLast?: Vec };
   proxySwap: { first: string; second: string; proxyCode: number; reloaded: boolean; othersKept: boolean; originalCompare: Compare };
   renderCap: { scale4k: number; scale4kInView: number };
+  /** False on a machine with no audio output device (CI VMs): muted players, no tap. */
+  audioDevice: boolean;
+  steps: Array<{ step: string; ms: number }>;
 }
 
 let dir: string | undefined;
@@ -85,7 +88,15 @@ beforeAll(async () => {
   const harness = [join(engine, 'parity/render-golden/HarnessMedia.swift'), join(engine, 'parity/preview/main.swift')];
   await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
   const args = [join(engine, 'parity/goldens/manifest.json'), root, join(dir, 'work'), join(dir, 'out')];
-  report = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20 })).stdout) as Report;
+  // The harness bounds itself (a watchdog exits with the stuck step within 300 s and prints a
+  // line per step to stderr); this timeout is the backstop under the 600 s hook.
+  try {
+    report = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, timeout: 420_000, killSignal: 'SIGKILL' })).stdout) as Report;
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr ?? '';
+    throw new Error(`preview harness failed:\n${stderr.split('\n').slice(-25).join('\n')}\n${String(error)}`);
+  }
+  console.info('native preview steps:', report.steps.map((step) => `${step.step} ${step.ms} ms`).join(', '), `| audio device: ${report.audioDevice}`);
   // The numbers a phone run is compared against (P7).
   console.info('native preview on this Mac:', JSON.stringify({
     seekToFrameMs: report.seekToFrameMs,
