@@ -23,3 +23,13 @@ export const supabaseUrl = process.env.SUPABASE_URL;
  * sizing (DATABASE_POOL_MAX, DATABASE_LOCK_POOL_MAX) are in db/postgres.ts.
  */
 export const databaseUrl = process.env.DATABASE_URL || undefined;
+
+/**
+ * RENDER_PLAN=1 (or true/on) renders exports from the shared RenderPlan
+ * (src/media/plan, plan P6) instead of legacy render.ts. Off by default;
+ * read per render, so flipping it needs no restart of the queue. Legacy
+ * stays as the rollback path until the flag defaults on.
+ */
+export function renderPlanEnabled(): boolean {
+  return /^(1|true|on|yes)$/i.test(process.env.RENDER_PLAN ?? '');
+}
