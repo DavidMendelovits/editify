@@ -114,9 +114,11 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       {/* Nesting the sheet inside the backdrop keeps tap-to-dismiss working
           without relying on pointer-event pass-through, which react-native-web
-          does not honour from styles. The inner Pressable swallows the tap. */}
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="close import sheet">
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+          does not honour from styles. The inner Pressable swallows the tap.
+          Neither wrapper is an accessibility element: an accessible Pressable
+          hides everything inside it from VoiceOver and UI automation. */}
+      <Pressable style={styles.backdrop} onPress={onClose} accessible={false}>
+        <Pressable style={styles.sheet} onPress={() => undefined} accessible={false}>
           <View style={styles.header}>
             <View style={styles.headerText}>
               <Text style={styles.title}>import media</Text>
@@ -124,7 +126,7 @@ export function ImportSheet({ projectId, visible, onClose, onImported }: Props) 
                 {pending > 0 ? `${pending} in queue · importing one at a time` : 'video and audio from this device'}
               </Text>
             </View>
-            <Pressable onPress={onClose} style={({ pressed }) => [styles.close, pressed && styles.pressed]} accessibilityRole="button">
+            <Pressable onPress={onClose} style={({ pressed }) => [styles.close, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="close import sheet">
               <Text style={styles.closeText}>×</Text>
             </Pressable>
           </View>
