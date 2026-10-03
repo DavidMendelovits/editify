@@ -429,6 +429,18 @@ describe('the server fallback (OV1)', () => {
     expect(serverRouteLine(route)).toBe("Interview changed in Photos and isn't on the server. Intro belongs to another account.");
   });
 
+  it("blocks on a clip the server has no record of, even one this iPhone holds, and says to import it again", async () => {
+    const route = await routeExport(fixture('crossfade'), await registry({}, ['media/a.mov']), nameOf, '1080p', server({ 'asset-a': 'absent', 'asset-b': 'present' }));
+    expect(route).toMatchObject({ server: { state: 'blocked', clips: [{ assetId: 'asset-a', name: 'Intro', reason: 'absent' }] } });
+    expect(serverRouteLine(route)).toBe("Intro isn't on the server. Import it again to export.");
+    expect(serverRenderable(route)).toBe(false);
+    // Even with a local copy on hand: an upload under that id would only be refused.
+    const deps = await bothLocal();
+    const both = await routeExport(fixture('crossfade'), deps, nameOf, '4k', server({ 'asset-a': 'absent', 'asset-b': 'absent' }));
+    expect(both).toMatchObject({ server: { state: 'blocked' } });
+    expect(serverRouteLine(both)).toBe("Intro and Interview aren't on the server. Import them again to export.");
+  });
+
   it('can still ask for the render when the check itself fails (the server rechecks the snapshot)', async () => {
     const failing: ServerCheck = { refs, check: async () => { throw new Error('Network request failed'); } };
     const route = await routeExport(fixture('crossfade'), await registry(), nameOf, '1080p', failing);

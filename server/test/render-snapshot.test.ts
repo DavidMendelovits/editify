@@ -240,9 +240,16 @@ describe('POST /projects/:id/render with a snapshot', () => {
         { id: 'c3', assetId: '7b0c6f7e-1d1e-4a52-9c39-1b1f3f0a9d11', start: 1, in: 0, out: 1 },
       ] }],
     };
+    // An asset the server has no row for comes first, under its own code: no upload can fix it.
     const response = await renderWith(ALICE, project.id, renderSnapshot(phone));
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toMatchObject({ code: 'missing', assetIds: ['gone-a', '7b0c6f7e-1d1e-4a52-9c39-1b1f3f0a9d11'] });
+    expect(response.json()).toMatchObject({ code: 'absent', assetIds: ['7b0c6f7e-1d1e-4a52-9c39-1b1f3f0a9d11'] });
+    // Without it, the rest are the user's own missing originals, which an upload restores.
+    const restorable: Project = { ...phone, tracks: phone.tracks.map((track) => ({ ...track, clips: track.clips.filter((clip) => clip.id !== 'c3') })) };
+    const missing = await renderWith(ALICE, project.id, renderSnapshot(restorable));
+    expect(missing.statusCode).toBe(409);
+    expect(missing.json()).toMatchObject({ code: 'missing', assetIds: ['gone-a'] });
+    expect(calls.legacy).toEqual([]);
   });
 
   it("links the user's own asset the project never linked, so the plan render can resolve it", async () => {
@@ -350,7 +357,7 @@ describe('POST /projects/:id/assets/availability', () => {
     expect(response.json()).toEqual({ assets: [
       { id: 'av-here', status: 'present' },
       { id: 'av-gone', status: 'missing' },
-      { id: 'av-never', status: 'missing' },
+      { id: 'av-never', status: 'absent' },
       { id: 'av-bobs', status: 'forbidden' },
       { id: 'sound-av-pop', status: 'present' },
     ] });

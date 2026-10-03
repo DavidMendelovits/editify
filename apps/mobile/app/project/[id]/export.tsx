@@ -124,9 +124,9 @@ export default function ExportScreen() {
     start.mutate(snapshot, {
       onSettled: () => { busy.current = false; },
       onError: (error) => {
-        // The check couldn't run earlier (offline) and the server found originals missing:
-        // route again, which offers the upload instead of an error.
-        if (error instanceof ApiError && error.status === 409 && error.code === 'missing') {
+        // The check couldn't run earlier (offline) and the server found originals missing or
+        // absent: route again, which offers the upload (or names what can't be) instead of an error.
+        if (error instanceof ApiError && error.status === 409 && (error.code === 'missing' || error.code === 'absent')) {
           start.reset();
           setServerNote(null);
           void route.refetch();

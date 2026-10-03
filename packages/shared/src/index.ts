@@ -438,14 +438,15 @@ export function renderSnapshot(project: Project): RenderSnapshot {
 
 /**
  * POST /projects/:id/assets/availability: whether the server holds each original.
- * `present`: the original is on the server. `missing`: no original there (never
- * uploaded, or removed); PUT /assets/:id/original puts it back. `forbidden`: another
- * account's asset.
+ * `present`: the original is on the server. `missing`: the asset is this user's but its
+ * original is gone; PUT /assets/:id/original puts it back. `absent`: the server has no
+ * such asset at all, so nothing can be uploaded under its id (it has to be imported
+ * again). `forbidden`: another account's asset.
  */
 export const assetAvailabilityRequestSchema = z.object({
   assetIds: z.array(z.string().min(1).max(128)).min(1).max(1000),
 }).strict();
-export const assetAvailabilitySchema = z.enum(['present', 'missing', 'forbidden']);
+export const assetAvailabilitySchema = z.enum(['present', 'missing', 'absent', 'forbidden']);
 export type AssetAvailability = z.infer<typeof assetAvailabilitySchema>;
 export interface AssetAvailabilityResponse { assets: Array<{ id: string; status: AssetAvailability }> }
 

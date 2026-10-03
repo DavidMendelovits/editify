@@ -120,7 +120,7 @@ export type ExportRoute =
 export interface UploadClip { assetId: string; kind: PlanAssetRef['kind']; name: string }
 
 /** A clip no server render can have: not on the server, and not uploadable from here. */
-export interface BlockedClip { assetId: string; name: string; reason: 'not-here' | 'changed' | 'forbidden' }
+export interface BlockedClip { assetId: string; name: string; reason: 'not-here' | 'changed' | 'absent' | 'forbidden' }
 
 /** Whether a server render of the snapshot can run (OV1). */
 export type ServerReadiness =
@@ -219,8 +219,9 @@ export async function serverReadiness(server: ServerCheck, deps: MediaDeps | nul
     const status = statuses[ref.id] ?? 'missing';
     if (status === 'present') continue;
     const name = nameOf(ref.id);
-    if (status === 'forbidden') {
-      blocked.push({ assetId: ref.id, name, reason: 'forbidden' });
+    if (status === 'forbidden' || status === 'absent') {
+      // Absent: the server has no such asset, so an upload under its id has nothing to restore.
+      blocked.push({ assetId: ref.id, name, reason: status });
       continue;
     }
     const local = deps ? await resolveMedia(ref, deps, { purpose: 'export' }) : null;
@@ -260,6 +261,7 @@ export function blockedLine(clips: readonly BlockedClip[]): string {
   return [
     sentence('not-here', "isn't on this iPhone or the server", "aren't on this iPhone or the server"),
     sentence('changed', "changed in Photos and isn't on the server", "changed in Photos and aren't on the server"),
+    sentence('absent', "isn't on the server. Import it again to export", "aren't on the server. Import them again to export"),
     sentence('forbidden', 'belongs to another account', 'belong to another account'),
   ].filter((line) => line !== null).join(' ');
 }

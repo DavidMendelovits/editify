@@ -172,6 +172,9 @@ export function registerProjectRoutes(
     const availability = await assetAvailability(assets, assetIds(project), userId);
     const forbidden = idsWith(availability, 'forbidden');
     if (forbidden.length) return refuse(403, 'The snapshot uses media from another account', 'forbidden', { assetIds: forbidden });
+    // Absent first: no upload can fix those, so the phone shouldn't be offered one.
+    const absent = idsWith(availability, 'absent');
+    if (absent.length) return refuse(409, 'Some media is not on the server; import it again', 'absent', { assetIds: absent });
     const missing = idsWith(availability, 'missing');
     if (missing.length) return refuse(409, 'Some originals are not on the server', 'missing', { assetIds: missing });
     for (const id of availability.keys()) if (!assets.linkedOrSound(stored.id, id)) assets.link(stored.id, id);
