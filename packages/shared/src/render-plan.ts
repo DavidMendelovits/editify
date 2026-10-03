@@ -1,4 +1,4 @@
-import { CAPTION_MAX_LINES, captionWords, EMOJI_ASCENT_EM, EMOJI_DESCENT_EM, fontMetrics, layoutCaption, measureEmojiRun, measureText } from './caption-layout.js';
+import { CAPTION_MAX_LINES, captionWords, reserveCaptionLayouts, EMOJI_ASCENT_EM, EMOJI_DESCENT_EM, fontMetrics, layoutCaption, measureEmojiRun, measureText } from './caption-layout.js';
 import { captionFaceFor, type PlanFontFace } from './caption-fonts.js';
 import { clipTimelineDuration, type CaptionStyle, type Clip, type Project } from './index.js';
 import {
@@ -317,6 +317,26 @@ function cropKeys(clip: Clip, info: PlanAssetInfo, width: number, height: number
   return simplifyCropKeys(keys, { width, height, coverWidth, coverHeight });
 }
 
+const cropCache = new Map<string, ValueKey[]>();
+const CROP_CACHE_SIZE = 512;
+
+/**
+ * cropKeys memoized on everything it reads, so a rebuild after an unrelated
+ * edit does not re-sample and re-simplify every long zoom. Read-only results.
+ */
+function memoCropKeys(clip: Clip, info: PlanAssetInfo, width: number, height: number, first: number, fps: number): ValueKey[] {
+  if (!clip.transformEnd) return cropKeys(clip, info, width, height, first, fps);
+  const source = upright(info);
+  const key = JSON.stringify([clip.transform ?? null, clip.transformEnd, clipTimelineDuration(clip), first, fps, width, height, source.width, source.height]);
+  let keys = cropCache.get(key);
+  if (!keys) {
+    keys = cropKeys(clip, info, width, height, first, fps);
+    cropCache.set(key, keys);
+    if (cropCache.size > CROP_CACHE_SIZE) cropCache.delete(cropCache.keys().next().value!);
+  }
+  return keys;
+}
+
 /** Per-frame samples taken for one zoom at most; past this the samples spread out. */
 const MAX_CROP_SAMPLES = 100_000;
 /** Largest drift, in output pixels, that dropping a crop key may cause. */
@@ -432,7 +452,7 @@ function videoPictures(project: Project, fps: number, width: number, height: num
       const dimOut: ValueKey[] = fadeOut ? [{ t: start + fadeOut.st, v: [0] }, { t: start + fadeOut.st + fadeOut.d, v: [1] }] : [];
       pictures.push({
         clip, info: media, trackIndex, z: stack, first, holdFrom, end, holdAt,
-        crop: cropKeys(clip, media, width, height, first, fps),
+        crop: memoCropKeys(clip, media, width, height, first, fps),
         opacity,
         dim: combineDims(dimIn, dimOut),
       });
@@ -817,9 +837,6 @@ function planCaption(
     previousStart = s;
     return { s: round6(s), e: round6(Math.max(s, clamp(clip.start + (word.e - base), event.start, event.end))) };
   });
-  // A right-to-left line is laid out as one run, so it lights as a whole: at
-  // the caption start, or with the last word sung before it.
-  let lit = event.start;
   const lines: PlanCaptionLine[] = layout.lines.map((line, lineIndex) => {
     const x = (design.width - line.width) / 2;
     const planned: PlanCaptionLine = {
@@ -829,13 +846,20 @@ function planCaption(
       width: round3(line.width * k),
     };
     if (times) {
-      const lineStart = lit;
-      planned.words = line.words.map((word) => {
-        const time = times[word.index]!;
-        const s = line.rightToLeft ? lineStart : time.s;
-        lit = Math.max(lit, s);
-        return { w: word.w, s, e: Math.max(s, time.e), x: round3((x + word.x) * k) };
-      });
+      if (line.rightToLeft || line.approximate) {
+        // Text the face does not set (right-to-left or fallback script): the
+        // layout cannot place its words, so the line is ONE karaoke word that
+        // Core Text draws as a single bidi run, lit from its first word's
+        // time to its last word's end.
+        const first = times[line.words[0]!.index]!;
+        const last = times[line.words.at(-1)!.index]!;
+        planned.words = [{ w: line.text, s: first.s, e: Math.max(first.s, last.e), x: planned.x }];
+      } else {
+        planned.words = line.words.map((word) => {
+          const time = times[word.index]!;
+          return { w: word.w, s: time.s, e: Math.max(time.s, time.e), x: round3((x + word.x) * k) };
+        });
+      }
     }
     return planned;
   });
@@ -871,6 +895,45 @@ function planCaption(
 /* ------------------------------------------------------------------------ */
 /* The plan                                                                 */
 
+/** A count for people: 2100 -> "2,100", with no locale dependency. */
+function count(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/**
+ * The plan caps (PLAN_LIMITS) bound hostile input; a real edit should never
+ * reach them, and when one does the user gets a plain reason instead of a
+ * degraded plan. Native enforces the same caps on every plan it is handed,
+ * including previews built with selfCheck: false.
+ */
+function checkProjectFits(project: Project, width: number, height: number, duration: number): void {
+  const fail = (message: string): never => {
+    throw new RenderPlanBuildError(message);
+  };
+  if (Math.max(width, height) > PLAN_LIMITS.longSidePx || Math.min(width, height) > PLAN_LIMITS.shortSidePx) {
+    fail(`The output size ${width} x ${height} is larger than ${PLAN_LIMITS.longSidePx} x ${PLAN_LIMITS.shortSidePx}.`);
+  }
+  if (duration > PLAN_LIMITS.durationSec) {
+    fail(`This edit runs ${Math.round(duration / 60)} minutes; the limit is ${PLAN_LIMITS.durationSec / 3600} hours.`);
+  }
+  const clips = (kind: Project['tracks'][number]['kind']): Clip[] => project.tracks.filter((track) => track.kind === kind).flatMap((track) => track.clips);
+  const stickers = clips('overlay').filter((clip) => clip.assetId || clip.text).length;
+  if (stickers > PLAN_LIMITS.overlays) fail(`This edit has ${count(stickers)} stickers; the limit is ${count(PLAN_LIMITS.overlays)}.`);
+  const captionCount = clips('caption').filter((clip) => clip.text).length;
+  if (captionCount > PLAN_LIMITS.captions) fail(`This edit has ${count(captionCount)} captions; the limit is ${count(PLAN_LIMITS.captions)}.`);
+}
+
+function checkSegments(segments: PlanVideoSegment[]): PlanVideoSegment[] {
+  if (segments.length > PLAN_LIMITS.segments) {
+    throw new RenderPlanBuildError(`This edit changes picture ${count(segments.length)} times; the limit is ${count(PLAN_LIMITS.segments)}.`);
+  }
+  const crowded = segments.find((segment) => segment.layers.length > PLAN_LIMITS.layersPerSegment);
+  if (crowded) {
+    throw new RenderPlanBuildError(`${crowded.layers.length} video clips overlap at ${crowded.start.toFixed(1)} s; the limit is ${PLAN_LIMITS.layersPerSegment}.`);
+  }
+  return segments;
+}
+
 /**
  * Builds RenderPlan v1 and, unless `selfCheck` is false, checks it against the
  * strict schema (throws on a builder bug rather than handing an executor a
@@ -888,6 +951,8 @@ export function buildRenderPlan(project: Project, target: PlanTarget, options: B
   // ends on the last frame; any length at all gets at least one frame.
   const totalFrames = project.duration > 0 ? Math.max(1, planFrameAt(project.duration, fps)) : 0;
   const duration = totalFrames / fps;
+
+  checkProjectFits(project, width, height, duration);
 
   const infos = new Map<string, PlanAssetInfo>();
   const info = (clip: Clip): PlanAssetInfo => {
@@ -925,6 +990,9 @@ export function buildRenderPlan(project: Project, target: PlanTarget, options: B
       if (media.hasAudio && media.kind !== 'image') sounding.push({ clip, kind: track.kind, media });
     }
   }
+  if (sounding.length > PLAN_LIMITS.audio) {
+    throw new RenderPlanBuildError(`This edit has ${count(sounding.length)} clips with sound; the limit is ${count(PLAN_LIMITS.audio)}.`);
+  }
   const duckers = sounding.filter((entry) => entry.kind === 'audio' && entry.clip.duck).map((entry) => entry.clip);
   const windows = planDuckWindows(duckers);
   const audio: PlanAudioEntry[] = [];
@@ -955,7 +1023,9 @@ export function buildRenderPlan(project: Project, target: PlanTarget, options: B
     });
   }
 
-  const captions = planCaptionLanes(project)
+  const lanes = planCaptionLanes(project);
+  reserveCaptionLayouts(lanes.length);
+  const captions = lanes
     .map((event) => ({ ...event, end: Math.min(event.end, duration) }))
     .filter((event) => event.end > event.start)
     .map((event) => planCaption(event, project.format, width))
@@ -972,7 +1042,7 @@ export function buildRenderPlan(project: Project, target: PlanTarget, options: B
     color: target.color,
     background: PLAN_BACKGROUND,
     loudness: { ...PLAN_LOUDNESS, targetLufs: target.loudness === false ? null : PLAN_LOUDNESS.targetLufs },
-    video: { segments: videoSegments(pictures, fps, totalFrames) },
+    video: { segments: checkSegments(videoSegments(pictures, fps, totalFrames)) },
     overlays: overlays(project, width, height, duration, info),
     captions,
     audio,

@@ -546,7 +546,7 @@ describe('buildRenderPlan: captions', () => {
 });
 
 describe('buildRenderPlan: caption content never throws', () => {
-  const words = (count: number) => Array.from({ length: count }, (_unused, index) => ({ w: `word${index}`, s: index * 0.2, e: index * 0.2 + 0.15 }));
+  const words = (count: number, prefix = 'w') => Array.from({ length: count }, (_unused, index) => ({ w: `${prefix}${index}`, s: index * 0.2, e: index * 0.2 + 0.15 }));
 
   it('fits a 400-word karaoke caption inside the plan caps and reports the overflow', () => {
     const many = words(400);
@@ -560,6 +560,18 @@ describe('buildRenderPlan: caption content never throws', () => {
       expect(line.words!.length).toBeLessThanOrEqual(PLAN_LIMITS.wordsPerLine);
       expect(line.width).toBeLessThanOrEqual(360 - 2 * 40 / 3 + 1e-6);
     }
+    // Never below the readable floor: 0.15 of the styled size.
+    expect(caption.fitted.scale).toBeGreaterThanOrEqual(0.15);
+  });
+
+  it('draws a caption too big for the caps at the 0.15 floor and drops only the lines past 12', () => {
+    const many = words(2000, 'transcript');
+    const plan = build(project([captions([{ id: 'k', start: 0, in: 0, out: 400, text: 'x', style: { ...style, position: 'bottom', words: many } }])]));
+    const caption = plan.captions[0]!;
+    expect(caption.fitted).toMatchObject({ shrunk: true, scale: 0.15, overflow: true });
+    expect(caption.lines).toHaveLength(PLAN_LIMITS.linesPerCaption);
+    const kept = caption.lines.flatMap((line) => line.words!.map((word) => word.w));
+    expect(kept).toEqual(many.slice(0, kept.length).map((word) => word.w));
   });
 
   it('hard-breaks a 600-character word across lines', () => {
@@ -571,15 +583,39 @@ describe('buildRenderPlan: caption content never throws', () => {
     for (const line of caption.lines) expect(line.text.length).toBeLessThanOrEqual(PLAN_LIMITS.textChars);
   });
 
-  it('marks text outside the face approximate and lights a right-to-left karaoke line at once', () => {
+  it('marks text outside the face approximate', () => {
     const greek = build(project([captions([{ id: 'g', start: 0, in: 0, out: 2, text: 'Γειά σου κόσμε' }])])).captions[0]!;
     expect(greek.fitted.approximate).toBe(true);
     const latin = build(project([captions([{ id: 'l', start: 0, in: 0, out: 2, text: 'Hello there' }])])).captions[0]!;
     expect(latin.fitted).toEqual({ shrunk: false, scale: 1 });
-    const hebrew = [{ w: 'שלום', s: 5, e: 5.4 }, { w: 'עולם', s: 5.5, e: 6 }];
-    const rtl = build(project([captions([{ id: 'h', start: 1, in: 0, out: 2, text: 'שלום עולם', style: { ...style, position: 'bottom', words: hebrew } }])])).captions[0]!;
-    expect(rtl.fitted.approximate).toBe(true);
-    expect(rtl.lines.flatMap((line) => line.words!.map((word) => word.s))).toEqual([1, 1]);
+  });
+
+  it('makes a right-to-left, mixed or fallback karaoke line one word with its own times; face lines keep their words', () => {
+    // Line 1 in the face, line 2 Hebrew, line 3 mixed Hebrew and Latin, line 4 Greek: hard to force with
+    // wrapping, so each line is a separate caption sharing the timing rules, plus one caption with two lines.
+    const timed = (list: string[], from: number) => list.map((w, index) => ({ w, s: from + index, e: from + index + 0.8 }));
+    const karaoke = (id: string, list: string[], from: number, size = 64) => ({
+      id, start: 0, in: 0, out: 20, text: list.join(' '),
+      style: { ...style, size, position: 'bottom' as const, words: timed(list, from) },
+    });
+    const plan = build(project([
+      captions([karaoke('he', ['שלום', 'עולם'], 10)], 'c1'),
+      captions([{ ...karaoke('mixed', ['Hello', 'שלום', 'world'], 10), style: { ...karaoke('mixed', ['Hello', 'שלום', 'world'], 10).style, position: 'top' as const } }], 'c2'),
+      captions([{ ...karaoke('el', ['Γειά', 'σου'], 10), style: { ...karaoke('el', ['Γειά', 'σου'], 10).style, anchorPct: 40 } }], 'c3'),
+      captions([{ ...karaoke('two', ['SINGING', 'ALONG', 'NOW', 'שלום', 'עולם', 'שלום'], 10, 120), style: { ...karaoke('two', ['SINGING', 'ALONG', 'NOW', 'שלום', 'עולם', 'שלום'], 10, 120).style, anchorPct: 60 } }], 'c4'),
+    ], { duration: 20 }));
+    const byId = new Map(plan.captions.map((caption) => [caption.id, caption]));
+    for (const id of ['he', 'mixed', 'el']) {
+      const [line] = byId.get(id)!.lines;
+      // Words relative to the first (s 10) land at clip.start 0: the line runs from its first word's start to its last word's end.
+      expect(line!.words).toEqual([{ w: line!.text, x: line!.x, s: 0, e: id === 'mixed' ? 2.8 : 1.8 }]);
+    }
+    // Two lines: the Latin line lights word by word; the mixed line is one word lit at ITS first word's
+    // time (NOW, 2 s), not the previous line's, and runs to its last word's end.
+    const two = byId.get('two')!;
+    expect(two.lines.map((line) => line.text)).toEqual(['SINGING ALONG', 'NOW שלום עולם שלום']);
+    expect(two.lines[0]!.words!.map((word) => word.s)).toEqual([0, 1]);
+    expect(two.lines[1]!.words).toEqual([{ w: 'NOW שלום עולם שלום', x: two.lines[1]!.x, s: 2, e: 5.8 }]);
   });
 
   it('never emits an empty word', () => {
@@ -628,6 +664,14 @@ describe('buildRenderPlan: whole plans', () => {
     expect(exportPlanSize('16:9', '720p')).toEqual({ w: 1280, h: 720 });
     expect(exportPlanSize('1:1', '4k')).toEqual({ w: 2160, h: 2160 });
     expect(build(project([]), { ...PREVIEW, size: { w: 393, h: 699 } }).size).toEqual({ w: 394, h: 700 });
+  });
+
+  it('refuses a project past a count cap with a reason a person can read', () => {
+    const stickers = Array.from({ length: PLAN_LIMITS.overlays + 1 }, (_unused, index): Clip => ({ id: `s${index}`, start: 0, in: 0, out: 1, text: '🔥' }));
+    expect(() => build(project([overlay(stickers)])))
+      .toThrow(new RenderPlanBuildError('This edit has 10,001 stickers; the limit is 10,000.'));
+    const stacked = Array.from({ length: PLAN_LIMITS.layersPerSegment + 1 }, (_unused, index) => video([{ id: `v${index}`, assetId: 'asset-talk', start: 0, in: 0, out: 1 }], `t${index}`));
+    expect(() => build(project(stacked))).toThrow('33 video clips overlap at 0.0 s; the limit is 32.');
   });
 
   it('skips the strict self-check on request and returns the same plan', () => {

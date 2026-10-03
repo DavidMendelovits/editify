@@ -4,13 +4,14 @@ import {
   captionWords,
   fontMetrics,
   layoutCaption,
+  measureEmojiRun,
   measureText,
   measureTextDetailed,
   planCaptionPlacements,
   type CaptionStyle,
   type Project,
 } from '@editify/shared';
-import { buildEmojiModule, EMOJI_OUTPUT_PATH, measureEmojiMetrics } from '../../packages/shared/scripts/emoji-metrics.js';
+import { compareEmojiMetrics, measureEmojiMetrics } from '../../packages/shared/scripts/emoji-metrics.js';
 import { buildMetricsModule, FONT_PATH, OUTPUT_PATH } from '../../packages/shared/scripts/font-metrics.js';
 
 /**
@@ -25,8 +26,9 @@ describe('caption font metrics', () => {
   });
 
   // Core Text exists only on macOS (and the iOS simulator, once CI has one there).
-  it.runIf(process.platform === 'darwin')('regenerates the emoji metrics from Core Text', () => {
-    expect(buildEmojiModule(measureEmojiMetrics())).toBe(readFileSync(EMOJI_OUTPUT_PATH, 'utf8'));
+  // A new font version with the same metrics is fine; changed metrics are not.
+  it.runIf(process.platform === 'darwin')('measures emoji in Core Text as the committed table says', () => {
+    expect(compareEmojiMetrics(measureEmojiMetrics()).metrics).toEqual([]);
   }, 60_000);
 
   it('reads the face\'s vertical metrics', () => {
@@ -64,7 +66,7 @@ describe('measureText', () => {
    * so. These pin the size of the error, not exactness.
    */
   it.each([
-    ['Γειά σου κόσμε', 748.21, 0.1], ['ΑΘΗΝΑ', 372.22, 0.25], ['สวัสดีครับ', 410.31, 0.1], ['ภาษาไทย ง่าย', 586.5, 0.1],
+    ['Γειά σου κόσμε', 748.21, 0.2], ['ΑΘΗΝΑ', 372.22, 0.1], ['مرحبا', 234.67, 0.1], ['สวัสดีครับ', 410.31, 0.1], ['ภาษาไทย ง่าย', 586.5, 0.1],
     ['日本語のテキスト', 794, 0.05], ['한국어', 259.5, 0.2], ['שלום עולם', 492.85, 0.1],
   ])('estimates %j and marks it approximate', (text, coreText, tolerance) => {
     const measured = measureTextDetailed(text, FACE, 100);
@@ -92,6 +94,14 @@ describe('measureText', () => {
     expect(measureText('🔥\u200dA', FACE, 100)).toBeCloseTo(100 + measureText('A', FACE, 100), 9);
     // Alone and without VS16, ❤ is text in a system face: approximate.
     expect(measureTextDetailed('❤', FACE, 100).approximate).toBe(true);
+  });
+
+  it('measures an emoji sticker run as Apple Color Emoji sets it', () => {
+    // The emoji font covers the space and digits at 1 em itself (Core Text: 300 and 400 px at 100 px).
+    expect(measureEmojiRun('🔥 🔥', FACE)).toEqual({ emoji: 2, widthEm: 3, approximate: false });
+    expect(measureEmojiRun('100🔥', FACE)).toEqual({ emoji: 1, widthEm: 4, approximate: false });
+    // Letters cascade to a system face: estimated, and said so.
+    expect(measureEmojiRun('Hi🔥', FACE)).toEqual({ emoji: 1, widthEm: 2, approximate: true });
   });
 
   it('scales linearly with the size', () => {

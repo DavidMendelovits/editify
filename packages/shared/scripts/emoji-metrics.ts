@@ -6,17 +6,18 @@
  * visible in review (plan decision OV7).
  *
  *   npx tsx packages/shared/scripts/emoji-metrics.ts          # rewrite the module
- *   npx tsx packages/shared/scripts/emoji-metrics.ts --check  # fail if it is stale
+ *   npx tsx packages/shared/scripts/emoji-metrics.ts --check  # fail if the metrics changed (a new font version alone only warns)
  *
  * Run it on macOS with Xcode's `swift`. The macOS CI engine job can run
  * --check; the OV7 corpus test should also run on the iOS 26 simulator once
  * that job has one, since iOS ships its own copy of the font.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { APPLE_COLOR_EMOJI } from '../src/caption-emoji-metrics.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FONT_PATH = resolve(here, '../../../server/fonts/Montserrat-Bold.ttf');
@@ -88,15 +89,32 @@ export function buildEmojiModule(measured: EmojiMeasurement): string {
   ].join('\n');
 }
 
+/**
+ * What changed between Core Text now and the committed table: metric
+ * differences (the layout would measure wrong) and, separately, a version
+ * change with identical metrics (worth noting, harmless).
+ */
+export function compareEmojiMetrics(measured: EmojiMeasurement): { metrics: string[]; version?: string } {
+  const now = buildEmojiModule(measured);
+  const value = (name: string): number => Number(new RegExp(`${name}: ([0-9.]+)`).exec(now)?.[1]);
+  const metrics = (['advanceEm', 'ascentEm', 'descentEm'] as const)
+    .filter((name) => value(name) !== APPLE_COLOR_EMOJI[name])
+    .map((name) => `${name} ${APPLE_COLOR_EMOJI[name]} -> ${value(name)}`);
+  return measured.version === APPLE_COLOR_EMOJI.version ? { metrics } : { metrics, version: `${APPLE_COLOR_EMOJI.version} -> ${measured.version}` };
+}
+
 function main(): void {
-  const text = buildEmojiModule(measureEmojiMetrics());
+  const measured = measureEmojiMetrics();
   if (process.argv.includes('--check')) {
-    if (readFileSync(EMOJI_OUTPUT_PATH, 'utf8') !== text) {
-      console.error(`${EMOJI_OUTPUT_PATH} is stale: run npx tsx packages/shared/scripts/emoji-metrics.ts on macOS`);
+    const { metrics, version } = compareEmojiMetrics(measured);
+    if (version) console.warn(`Apple Color Emoji version changed (${version}); the metrics ${metrics.length ? 'changed too' : 'are the same'}.`);
+    if (metrics.length > 0) {
+      console.error(`emoji metrics changed (${metrics.join(', ')}): run npx tsx packages/shared/scripts/emoji-metrics.ts on macOS`);
       process.exit(1);
     }
     return;
   }
+  const text = buildEmojiModule(measured);
   writeFileSync(EMOJI_OUTPUT_PATH, text);
   console.log('wrote packages/shared/src/caption-emoji-metrics.ts');
 }

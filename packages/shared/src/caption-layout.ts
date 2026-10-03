@@ -26,10 +26,39 @@ import { PLAN_LIMITS } from './render-plan-schema.js';
 export const EMOJI_ADVANCE_EM: number = APPLE_COLOR_EMOJI.advanceEm;
 export const EMOJI_ASCENT_EM: number = APPLE_COLOR_EMOJI.ascentEm;
 export const EMOJI_DESCENT_EM: number = APPLE_COLOR_EMOJI.descentEm;
-/** Fallback advance for Han, Kana and Hangul: the ideograph square of PingFang and Hiragino. */
+/*
+ * Fallback advances for characters the face does not cover, by script,
+ * biased toward Core Text's system faces (measured on macOS 27) so a caption
+ * shrinks no more than it has to. Captions using them are approximate.
+ */
+/** Han, Kana and Hangul: the ideograph square of PingFang and Hiragino. */
 export const FALLBACK_WIDE_EM = 1;
-/** Fallback advance for any other uncovered character (Greek, Thai, Hebrew, Arabic...): a typical proportional letter. */
+/** Greek (SF): about 0.58 em lowercase to 0.74 em capitals. */
+export const FALLBACK_GREEK_EM = 0.68;
+/** Arabic (SF Arabic, joined forms): about 0.47 em a letter, narrower in long words. */
+export const FALLBACK_ARABIC_EM = 0.43;
+/** Anything else (Thai, Hebrew, Devanagari...): a typical proportional letter. */
 export const FALLBACK_ADVANCE_EM = 0.6;
+/**
+ * Inside an emoji sticker (a run set in Apple Color Emoji): the font itself
+ * covers the space, 0-9, # and * at 1 em (Core Text: "🔥 🔥" is 3 em,
+ * "100🔥" 4 em); letters cascade to Helvetica, about 0.5 em ("Hello" is
+ * 2.28 em), and are approximate.
+ */
+export const STICKER_LETTER_EM = 0.5;
+
+function fallbackEm(code: number): number {
+  if (isWide(code)) return FALLBACK_WIDE_EM;
+  if ((code >= 0x370 && code <= 0x3ff) || (code >= 0x1f00 && code <= 0x1fff)) return FALLBACK_GREEK_EM;
+  if ((code >= 0x600 && code <= 0x6ff) || (code >= 0x750 && code <= 0x77f) || (code >= 0x8a0 && code <= 0x8ff)
+    || (code >= 0xfb50 && code <= 0xfdff) || (code >= 0xfe70 && code <= 0xfeff)) return FALLBACK_ARABIC_EM;
+  return FALLBACK_ADVANCE_EM;
+}
+
+/** Characters Apple Color Emoji itself sets at 1 em: space, digits, # and *. */
+function inEmojiFont(code: number): boolean {
+  return code === 0x20 || (code >= 0x30 && code <= 0x39) || code === 0x23 || code === 0x2a;
+}
 
 /** Text set in a face: everything in font units, ready to scale to pixels. */
 export interface FontMetrics {
@@ -227,41 +256,45 @@ function clusters(text: string, metrics: FontMetrics): Cluster[] {
     }
     if (isZeroWidth(code) || code === 0x0a || code === 0x0d) out.push({ kind: 'zero' });
     else if (metrics.advance(code) !== undefined) out.push({ kind: 'glyph', code });
-    else out.push({ kind: 'fallback', em: isWide(code) ? FALLBACK_WIDE_EM : FALLBACK_ADVANCE_EM, rtl: isRightToLeft(code) });
+    else out.push({ kind: 'fallback', em: fallbackEm(code), rtl: isRightToLeft(code) });
     index += 1;
   }
   return out;
 }
 
-interface Measured {
-  /** Pen x where each cluster starts, font units. */
-  starts: number[];
+/** A pen part-way through a run: enough state to append more text exactly as measuring the whole would. */
+interface Pen {
+  /** Advance so far, font units. */
   width: number;
+  /** The last face glyph, for the kern into the next one. */
+  previous: number | undefined;
   /** Some cluster measured with a fallback width. */
   approximate: boolean;
   /** Some cluster is right-to-left text. */
   rightToLeft: boolean;
 }
 
+const START: Pen = { width: 0, previous: undefined, approximate: false, rightToLeft: false };
+
 /**
- * Pen positions and the total advance, in font units. Kerning applies between
- * consecutive face glyphs (zero-width marks are skipped over); emoji and
- * fallback text break the kern chain, as a font change does in Core Text.
+ * Appends `text` to a pen, in font units, recording each cluster's start in
+ * `starts` when given. Kerning applies between consecutive face glyphs
+ * (zero-width marks are skipped over); emoji and fallback text break the kern
+ * chain, as a font change does in Core Text. Appending " word" to a line's
+ * pen gives exactly the pen of measuring the joined line, so greedy wrapping
+ * measures each word once.
  */
-function advancesInUnits(text: string, metrics: FontMetrics, emojiOnly = false): Measured {
+function append(from: Pen, text: string, metrics: FontMetrics, emojiOnly = false, starts?: number[]): Pen {
   const units = metrics.unitsPerEm;
-  let pen = 0;
-  let previous: number | undefined;
-  let approximate = false;
-  let rightToLeft = false;
-  const starts: number[] = [];
+  let { width: pen, previous, approximate, rightToLeft } = from;
   for (const cluster of clusters(text, metrics)) {
-    // An emoji sticker run is set in Apple Color Emoji: its other characters fall back too.
-    const drawn: Cluster = emojiOnly && cluster.kind === 'glyph'
-      ? { kind: 'fallback', em: isWide(cluster.code) ? FALLBACK_WIDE_EM : FALLBACK_ADVANCE_EM, rtl: isRightToLeft(cluster.code) }
-      : cluster;
+    let drawn: Cluster = cluster;
+    if (emojiOnly && cluster.kind === 'glyph') {
+      // An emoji sticker run is set in Apple Color Emoji: its other characters fall back.
+      drawn = inEmojiFont(cluster.code) ? { kind: 'emoji' } : { kind: 'fallback', em: isWide(cluster.code) ? FALLBACK_WIDE_EM : STICKER_LETTER_EM, rtl: isRightToLeft(cluster.code) };
+    }
     if (drawn.kind === 'glyph' && previous !== undefined) pen += metrics.kern(previous, drawn.code);
-    starts.push(pen);
+    starts?.push(pen);
     if (drawn.kind === 'glyph') {
       pen += metrics.advance(drawn.code)!;
       previous = drawn.code;
@@ -275,7 +308,17 @@ function advancesInUnits(text: string, metrics: FontMetrics, emojiOnly = false):
       previous = undefined;
     }
   }
-  return { starts, width: pen, approximate, rightToLeft };
+  return { width: pen, previous, approximate, rightToLeft };
+}
+
+interface Measured extends Pen {
+  /** Pen x where each cluster starts, font units. */
+  starts: number[];
+}
+
+function advancesInUnits(text: string, metrics: FontMetrics, emojiOnly = false): Measured {
+  const starts: number[] = [];
+  return { ...append(START, text, metrics, emojiOnly, starts), starts };
 }
 
 /** Advance width of `text` set on one line in `face` at `sizePx` (em), kerned, no ligatures. */
@@ -291,10 +334,10 @@ export function measureTextDetailed(text: string, face: PlanFontFace, sizePx: nu
 }
 
 /**
- * An emoji sticker's run, set in Apple Color Emoji: emoji clusters at their
- * table advance, and every other character at the fallback width (the
- * sticker font has no letters, so Core Text cascades to a system face; such
- * text is approximate). `face` only supplies the cluster rules.
+ * An emoji sticker's run, set in Apple Color Emoji: emoji clusters, the
+ * space, digits, # and * at 1 em, letters at STICKER_LETTER_EM (Core Text
+ * cascades them to a system face; approximate). `face` only supplies the
+ * cluster rules.
  */
 export function measureEmojiRun(text: string, face: PlanFontFace): { emoji: number; widthEm: number; approximate: boolean } {
   const metrics = fontMetrics(face);
@@ -350,9 +393,13 @@ export const CAPTION_MAX_LINES = 3;
 /** Normal shrink steps of 5%: scale = (20 - k) / 20, so every step is an exact, stable number. */
 const SHRINK_STEPS = 20;
 const MIN_SCALE_STEP = 5;
-/** Past 0.25 an overflowing caption keeps shrinking by 10% a step, down to this floor. */
-const OVERFLOW_STEP = 0.9;
-const OVERFLOW_FLOOR = 0.001;
+/**
+ * Past 0.25 an overflowing caption is bisected (in thousandths) for the
+ * largest scale that fits the plan caps, but never below this: smaller text
+ * would be unreadable, so the caption draws at 0.15 and drops the lines past
+ * PLAN_LIMITS.linesPerCaption instead, flagged.
+ */
+export const CAPTION_MIN_SCALE = 0.15;
 
 interface Piece { w: string; index: number; breakBefore: boolean }
 
@@ -388,23 +435,22 @@ function pieces(input: CaptionLayoutInput): Piece[] {
  */
 function greedy(items: readonly Piece[], toPx: number, limit: number, metrics: FontMetrics): Piece[][] {
   const lines: Piece[][] = [];
-  let text = '';
+  let chars = 0;
+  let pen = START;
   for (const item of items) {
     const current = lines.at(-1);
-    if (!current || item.breakBefore) {
-      lines.push([item]);
-      text = item.w;
-      continue;
+    if (current && !item.breakBefore && chars + 1 + item.w.length <= PLAN_LIMITS.textChars && current.length < PLAN_LIMITS.wordsPerLine) {
+      const candidate = append(pen, ` ${item.w}`, metrics);
+      if (candidate.width * toPx <= limit + 1e-9) {
+        current.push(item);
+        chars += 1 + item.w.length;
+        pen = candidate;
+        continue;
+      }
     }
-    const candidate = `${text} ${item.w}`;
-    if (candidate.length <= PLAN_LIMITS.textChars && current.length < PLAN_LIMITS.wordsPerLine
-      && advancesInUnits(candidate, metrics).width * toPx <= limit + 1e-9) {
-      current.push(item);
-      text = candidate;
-    } else {
-      lines.push([item]);
-      text = item.w;
-    }
+    lines.push([item]);
+    chars = item.w.length;
+    pen = append(START, item.w, metrics);
   }
   return lines;
 }
@@ -460,15 +506,25 @@ function finish(lines: Piece[][], toPx: number, metrics: FontMetrics): CaptionLa
 }
 
 const layoutCache = new Map<string, CaptionLayout>();
-const LAYOUT_CACHE_SIZE = 256;
+let layoutCacheSize = 256;
+
+/**
+ * Grows the layout memo to hold a whole project's captions (twice over, for
+ * the edit in flight), so a rebuild after an edit re-lays out only what
+ * changed. buildRenderPlan calls it with the caption count.
+ */
+export function reserveCaptionLayouts(captions: number): void {
+  layoutCacheSize = Math.max(layoutCacheSize, Math.min(2 * captions, 2 * PLAN_LIMITS.captions));
+}
 
 /**
  * Greedy wrap to `maxWidth`, at most `maxLines` lines, then balanced. When
  * the caption does not fit at its size it shrinks in 5% steps until it does
  * and says so (`shrunk`, `scale`): the receipt the plan carries instead of an
- * ellipsis. Past the 0.25 step it keeps shrinking toward the schema's caps
- * and sets `overflow`. Word order and text are never changed; only text past
- * PLAN_LIMITS.linesPerCaption lines at the smallest size is dropped.
+ * ellipsis. Past the 0.25 step it shrinks further, to the largest scale
+ * (not below CAPTION_MIN_SCALE) that fits the plan caps, and sets
+ * `overflow`. Word order and text are never changed; only lines past
+ * PLAN_LIMITS.linesPerCaption at the minimum scale are dropped.
  *
  * Results are memoized on the inputs (the plan rebuilds on every edit and
  * most captions do not change); treat them as read-only.
@@ -483,7 +539,7 @@ export function layoutCaption(input: CaptionLayoutInput): CaptionLayout {
   }
   const result = computeLayout(input);
   layoutCache.set(key, result);
-  if (layoutCache.size > LAYOUT_CACHE_SIZE) layoutCache.delete(layoutCache.keys().next().value!);
+  if (layoutCache.size > layoutCacheSize) layoutCache.delete(layoutCache.keys().next().value!);
   return result;
 }
 
@@ -499,13 +555,25 @@ function computeLayout(input: CaptionLayoutInput): CaptionLayout {
     if (fits(lines, toPxAt(scale), input.maxWidth, maxLines, metrics)) chosen = { scale, lines, overflow: false };
   }
   if (!chosen) {
-    let scale = MIN_SCALE_STEP / SHRINK_STEPS;
-    let lines: Piece[][] = [];
-    do {
-      scale = Math.max(OVERFLOW_FLOOR, Math.round(scale * OVERFLOW_STEP * 1e6) / 1e6);
-      lines = greedy(items, toPxAt(scale), input.maxWidth, metrics);
-    } while (!fits(lines, toPxAt(scale), input.maxWidth, PLAN_LIMITS.linesPerCaption, metrics) && scale > OVERFLOW_FLOOR);
-    chosen = { scale, lines: lines.slice(0, PLAN_LIMITS.linesPerCaption), overflow: true };
+    // Fewer lines as the scale falls, until the per-line caps stop it falling: bisect in thousandths.
+    const at = (thousandths: number): Piece[][] => greedy(items, toPxAt(thousandths / 1000), input.maxWidth, metrics);
+    const capped = (thousandths: number, lines: Piece[][]): boolean => fits(lines, toPxAt(thousandths / 1000), input.maxWidth, PLAN_LIMITS.linesPerCaption, metrics);
+    let low = Math.round(CAPTION_MIN_SCALE * 1000);
+    let high = Math.round((MIN_SCALE_STEP / SHRINK_STEPS) * 1000);
+    let lines = at(low);
+    if (capped(low, lines)) {
+      while (high - low > 1) {
+        const middle = Math.floor((low + high) / 2);
+        const trial = at(middle);
+        if (capped(middle, trial)) {
+          low = middle;
+          lines = trial;
+        } else {
+          high = middle;
+        }
+      }
+    }
+    chosen = { scale: low / 1000, lines: lines.slice(0, PLAN_LIMITS.linesPerCaption), overflow: true };
   }
   const toPx = toPxAt(chosen.scale);
   const balanced = chosen.overflow ? chosen.lines : balance(items, chosen.lines, toPx, input.maxWidth, metrics);
