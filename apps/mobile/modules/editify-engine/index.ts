@@ -45,11 +45,15 @@ export interface NativeSync {
   driftSec?: number;
   overlapSec: number;
   windows: Array<{ at: number; lag: number; score: number }>;
+  /** Whether the fine stage replaced the 10 ms coarse lag (device-only; not in the shared schema). */
+  fineLocked?: boolean;
 }
 
 export interface NativeAssetAnalysis {
   assetId: string;
   parts: Partial<Record<NativeAnalysisPart, NativePartResult>>;
+  /** The asset's change counter this snapshot reflects (matches `analysisStatus` events). */
+  revision?: number;
 }
 
 export interface AnalyzeOptions { facesFps?: number; locale?: string; allowModelDownload?: boolean; force?: boolean }
@@ -60,11 +64,12 @@ export type ProgressEvent =
   | { part: NativeAnalysisPart | 'proxy'; assetId?: string; ref?: string; fraction: number; phase?: 'download' };
 /**
  * A part's status changed. Carries no data: on `ready`, read it with `getAnalysis`.
- * `removed` means `cancelAnalysis` dropped a part that was still pending.
+ * `removed` means `cancelAnalysis` dropped a part that was still pending. `revision`
+ * counts changes per asset, so a `getAnalysis` snapshot older than an applied event can be dropped.
  */
 export type AnalysisStatusEvent =
-  | { assetId: string; part: NativeAnalysisPart; status: AnalysisPartStatus; analyzerVersion: string; error?: string; removed?: undefined }
-  | { assetId: string; part: NativeAnalysisPart; removed: true };
+  | { assetId: string; part: NativeAnalysisPart; revision?: number; status: AnalysisPartStatus; analyzerVersion: string; error?: string; removed?: undefined }
+  | { assetId: string; part: NativeAnalysisPart; revision?: number; removed: true };
 export interface AnalysisStateEvent { playbackActive: boolean; thermal: string; heavyPaused: boolean }
 
 interface EditifyEngineNative {

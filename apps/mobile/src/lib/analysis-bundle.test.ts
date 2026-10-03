@@ -86,6 +86,24 @@ describe('status events', () => {
   });
 });
 
+describe('revisions', () => {
+  it('drops a getAnalysis snapshot older than an event already applied', () => {
+    let state = applyStatusEvent(emptyAnalysisState(), { assetId: 'a', part: 'faces', revision: 3, status: 'failed', analyzerVersion: 'f1', error: 'boom' }).state;
+    state = applyAssetAnalysis(state, { assetId: 'a', revision: 2, parts: { faces: { status: 'pending', analyzerVersion: 'f1' } } });
+    expect(state.assets.a?.faces?.status).toBe('failed');
+    state = applyAssetAnalysis(state, { assetId: 'a', revision: 4, parts: { faces: { status: 'ready', analyzerVersion: 'f1', data: faces } } });
+    expect(state.assets.a?.faces?.status).toBe('ready');
+    expect(state.revisions.a).toBe(4);
+  });
+
+  it('ignores a duplicate or late event', () => {
+    const state = applyAssetAnalysis(emptyAnalysisState(), { assetId: 'a', revision: 5, parts: { words: { status: 'ready', analyzerVersion: 'w1', data: transcript } } });
+    const late = applyStatusEvent(state, { assetId: 'a', part: 'words', revision: 4, status: 'pending', analyzerVersion: 'w2' });
+    expect(late.state.assets.a?.words?.status).toBe('ready');
+    expect(late.refetch).toBe(false);
+  });
+});
+
 describe('buildAnalysisBundle', () => {
   function fullState() {
     let state = emptyAnalysisState();

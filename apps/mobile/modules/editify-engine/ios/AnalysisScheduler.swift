@@ -13,9 +13,17 @@ import Foundation
 /// (`setPlaybackActive`) or the thermal state is `.serious` or worse; light
 /// parts keep going.
 ///
-/// Events: `analysisStatus` {assetId, part, status, analyzerVersion, error?} on every
-/// change, carrying no data (on `ready`, read it with `analysis(assetId:)`), or
-/// {assetId, part, removed: true} when `cancel` drops a pending part.
+/// Events: `analysisStatus` {assetId, part, revision, status, analyzerVersion, error?} on
+/// every change, carrying no data (on `ready`, read it with `analysis(assetId:)`), or
+/// {assetId, part, revision, removed: true} when `cancel` drops a pending part.
+/// `revision` counts changes per asset; `analysis(assetId:)` reports the one it reflects,
+/// so JS can drop a snapshot older than events it already applied.
+///
+/// JS contexts: playback and focus belong to the JS context that set them. Each module
+/// instance takes a new epoch (`EngineContext.begin()`, synchronously in OnCreate) and
+/// passes it with its playback/focus calls; the first call or `reset` from a newer epoch
+/// clears what an older context left (a reload mid-scrub would otherwise hold the heavy
+/// lane forever), and calls from an older epoch are ignored.
 actor AnalysisScheduler {
   static let shared = AnalysisScheduler()
 
@@ -58,7 +66,11 @@ actor AnalysisScheduler {
   private var focus: String?
   private var playbackActive = false
   private(set) var heavyFraction = 0.0
+  /// The largest single progress step of the running heavy part (its granularity).
+  private(set) var heavyStep = 0.0
   private var lastProgress: [String: Double] = [:]
+  private var revisions: [String: Int] = [:]
+  private var epoch = 0
   private var emit: Emit?
   private var thermalObserver: NSObjectProtocol?
 
@@ -75,11 +87,20 @@ actor AnalysisScheduler {
   }
 
   /// A fresh JS context (reload, new module instance) knows nothing of the old one's
-  /// playback or focus; left as they were, a stale `playbackActive` would hold the heavy lane forever.
-  func reset() {
+  /// playback or focus; left as they were, a stale `playbackActive` would hold the heavy
+  /// lane forever. Idempotent per epoch, so it can't undo the new context's own calls.
+  func reset(epoch: Int) {
+    if adopt(epoch) { emitState() }
+  }
+
+  /// True when `epoch` is newer than the current one (its state was just cleared).
+  @discardableResult
+  private func adopt(_ incoming: Int) -> Bool {
+    guard incoming > epoch else { return false }
+    epoch = incoming
     playbackActive = false
     focus = nil
-    emitState()
+    return true
   }
 
   // MARK: - Commands from JS
@@ -100,14 +121,23 @@ actor AnalysisScheduler {
     pump()
   }
 
-  func setPlaybackActive(_ active: Bool) {
+  /// `epoch`: the calling JS context's (nil for native callers such as lab spikes).
+  func setPlaybackActive(_ active: Bool, epoch caller: Int? = nil) {
+    if let caller {
+      adopt(caller)
+      guard caller == epoch else { return }
+    }
     guard playbackActive != active else { return }
     playbackActive = active
     emitState()
   }
 
   /// The asset on screen jumps the queue in both lanes (it does not preempt a running part).
-  func setFocus(_ assetId: String?) {
+  func setFocus(_ assetId: String?, epoch caller: Int? = nil) {
+    if let caller {
+      adopt(caller)
+      guard caller == epoch else { return }
+    }
     focus = assetId
   }
 
@@ -119,8 +149,7 @@ actor AnalysisScheduler {
     for (_, entry) in running where entry.job.assetId == assetId { entry.task.cancel() }
     for (part, result) in results[assetId] ?? [:] where result.status == "pending" {
       results[assetId]?[part] = nil
-      lastProgress["\(assetId)/\(part.rawValue)"] = nil
-      emit?("analysisStatus", ["assetId": assetId, "part": part.rawValue, "removed": true])
+      emit?("analysisStatus", ["assetId": assetId, "part": part.rawValue, "revision": bump(assetId), "removed": true])
     }
     decoding[assetId]?.cancel()
     decoding[assetId] = nil
@@ -132,7 +161,7 @@ actor AnalysisScheduler {
   func analysis(assetId: String) -> [String: Any] {
     var parts: [String: Any] = [:]
     for (part, result) in results[assetId] ?? [:] { parts[part.rawValue] = result.dictionary }
-    return ["assetId": assetId, "parts": parts]
+    return ["assetId": assetId, "parts": parts, "revision": revisions[assetId, default: 0]]
   }
 
   func state() -> [String: Any] {
@@ -149,10 +178,14 @@ actor AnalysisScheduler {
   /// Sync for one memo/video pair, outside the queue (8A: sync is never queued).
   func syncPair(videoRef: String, memoRef: String, videoAssetId: String?, memoAssetId: String?) async -> PartResult {
     do {
-      async let video = cachedPCM(assetId: videoAssetId, ref: videoRef)
-      async let memo = cachedPCM(assetId: memoAssetId, ref: memoRef)
-      let (v, m) = try await (video, memo)
-      return Analyzers.sync(video: v, memo: m)
+      let pair: ([Float], [Float])
+      do {
+        pair = try await decodePair(videoRef: videoRef, memoRef: memoRef, videoAssetId: videoAssetId, memoAssetId: memoAssetId)
+      } catch is CancellationError where !Task.isCancelled {
+        // `cancel(assetId:)` stopped a shared decode this sync was waiting on, not the sync itself.
+        pair = try await decodePair(videoRef: videoRef, memoRef: memoRef, videoAssetId: videoAssetId, memoAssetId: memoAssetId)
+      }
+      return Analyzers.sync(video: pair.0, memo: pair.1)
     } catch is NoAudio {
       return .unavailable(AnalyzerVersion.sync, NoAudio().localizedDescription)
     } catch where AssetSource.isUnavailable(error) {
@@ -160,6 +193,12 @@ actor AnalysisScheduler {
     } catch {
       return .failed(AnalyzerVersion.sync, error)
     }
+  }
+
+  private func decodePair(videoRef: String, memoRef: String, videoAssetId: String?, memoAssetId: String?) async throws -> ([Float], [Float]) {
+    async let video = cachedPCM(assetId: videoAssetId, ref: videoRef)
+    async let memo = cachedPCM(assetId: memoAssetId, ref: memoRef)
+    return try await (video, memo)
   }
 
   // MARK: - Gate
@@ -204,8 +243,9 @@ actor AnalysisScheduler {
 
   private func finish(_ job: Job, _ result: PartResult) {
     running[job.part.heavy] = nil
-    if job.part.heavy { heavyFraction = 0 }
-    lastProgress["\(job.assetId)/\(job.part.rawValue)"] = nil
+    if job.part.heavy { heavyFraction = 0; heavyStep = 0 }
+    lastProgress[progressKey(job, nil)] = nil
+    lastProgress[progressKey(job, "download")] = nil
     // A cancelled job's result is dropped: `cancel` already removed its pending entry,
     // and a newer request for the same part may be queued under the new generation.
     if isCurrent(job) { record(job.assetId, job.part, result) }
@@ -264,9 +304,12 @@ actor AnalysisScheduler {
   private func progress(_ job: Job, _ fraction: Double, phase: String? = nil) {
     // Progress hops here on its own task: a late tick from a finished or cancelled part is ignored.
     guard isCurrent(job), let current = running[job.part.heavy]?.job, current.seq == job.seq else { return }
-    if job.part.heavy, phase == nil { heavyFraction = fraction }
+    if job.part.heavy, phase == nil {
+      heavyStep = max(heavyStep, fraction - heavyFraction)
+      heavyFraction = fraction
+    }
     // Whole percents only: words reports every audio chunk.
-    let key = "\(job.assetId)/\(job.part.rawValue)\(phase.map { "/\($0)" } ?? "")"
+    let key = progressKey(job, phase)
     guard fraction >= 1 || fraction - (lastProgress[key] ?? -1) >= 0.01 else { return }
     lastProgress[key] = fraction >= 1 ? nil : fraction
     var body: [String: Any] = ["assetId": job.assetId, "part": job.part.rawValue, "fraction": fraction]
@@ -274,9 +317,21 @@ actor AnalysisScheduler {
     emit?("progress", body)
   }
 
+  private func progressKey(_ job: Job, _ phase: String?) -> String {
+    "\(job.seq)\(phase.map { "/\($0)" } ?? "")"
+  }
+
+  private func bump(_ assetId: String) -> Int {
+    revisions[assetId, default: 0] += 1
+    return revisions[assetId]!
+  }
+
   private func record(_ assetId: String, _ part: Part, _ result: PartResult) {
     results[assetId, default: [:]][part] = result
-    var body: [String: Any] = ["assetId": assetId, "part": part.rawValue, "status": result.status, "analyzerVersion": result.analyzerVersion]
+    var body: [String: Any] = [
+      "assetId": assetId, "part": part.rawValue, "revision": bump(assetId),
+      "status": result.status, "analyzerVersion": result.analyzerVersion,
+    ]
     if let error = result.error { body["error"] = error }
     emit?("analysisStatus", body)
   }
@@ -293,7 +348,8 @@ actor AnalysisScheduler {
     let key = assetId ?? ref
     if let hit = pcm[key] { return hit }
     if let inFlight = decoding[key] { return try await inFlight.value }
-    let task = Task(priority: .utility) {
+    // Inherits the caller's priority: utility from a scheduler lane, the JS caller's for a direct syncPair.
+    let task = Task {
       try await Analyzers.decodeMono(try await AssetSource.load(ref, onDownload: download), progress: progress)
     }
     decoding[key] = task
@@ -318,4 +374,13 @@ actor AnalysisScheduler {
     }
     return samples
   }
+}
+
+/// JS context epochs: each module instance takes one synchronously in OnCreate and sends
+/// it with its calls, so which context is newest never depends on actor-hop ordering.
+enum EngineContext {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var value = 0
+
+  static func begin() -> Int { lock.withLock { value += 1; return value } }
 }

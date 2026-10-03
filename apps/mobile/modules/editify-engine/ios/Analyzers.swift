@@ -206,7 +206,7 @@ enum Analyzers {
         "lag": m.lag, "anchor": m.anchor, "rate": m.rate,
         // Infinity (no runner-up peak) has no JSON form; the parity runner uses the same stand-in.
         "coarseRatio": m.coarseRatio.isFinite ? m.coarseRatio : 1e308,
-        "fineScore": m.fineScore, "confident": m.confident, "overlapSec": m.overlapSec,
+        "fineScore": m.fineScore, "confident": m.confident, "overlapSec": m.overlapSec, "fineLocked": m.fineLocked,
         "windows": m.windows.map { ["at": $0.at, "lag": $0.lag, "score": $0.score] },
       ]
       if let drift = m.driftSec { measurement["driftSec"] = drift }
@@ -397,6 +397,9 @@ enum Analyzers {
       var samples: [[Any]] = []
       samples.reserveCapacity(times.count)
       var done = 0
+      var decoded = 0
+      var visionFailures = 0
+      var lastVisionError: Error?
       // Batches so the gate can hold between them without the generator running ahead.
       for batchStart in stride(from: 0, to: times.count, by: 16) {
         if let gate, await !gate() { throw CancellationError() }
@@ -407,10 +410,18 @@ enum Analyzers {
           let t = (max(0, at.seconds) * 1000).rounded() / 1000
           let image = try? result.image
           // Per frame, so the generator decodes the next frame while Vision reads this one.
-          samples.append(try await AnalysisQueue.run { detectFace(t: t, in: image) })
+          let (sample, visionError) = try await AnalysisQueue.run { detectFace(t: t, in: image) }
+          samples.append(sample)
+          if image != nil { decoded += 1 }
+          if let visionError { visionFailures += 1; lastVisionError = visionError }
         }
         done += batch.count
         progress?(Double(done) / Double(max(1, times.count)))
+      }
+      // Vision failing on every frame is a broken detector, not a clip without faces
+      // (the simulator's GPU path does this: "Could not create inference context").
+      if decoded > 0, visionFailures == decoded {
+        return .failed(version, "Vision could not read any frame: \(lastVisionError?.localizedDescription ?? "unknown error")")
       }
       // The generator may hand frames back out of request order.
       samples.sort { ($0[0] as? Double ?? 0) < ($1[0] as? Double ?? 0) }
@@ -427,20 +438,36 @@ enum Analyzers {
     }
   }
 
-  /// One face sample from one frame (blocking: runs on the analysis queue).
-  /// Several faces: the largest wins, like face_track.py. A frame Vision can't
-  /// read is a miss, not a failed track.
-  private static func detectFace(t: Double, in image: CGImage?) -> [Any] {
+  /// One face sample from one frame (blocking: runs on the analysis queue), plus
+  /// Vision's error when it couldn't read the frame. Several faces: the largest wins,
+  /// like face_track.py. One unreadable frame is a miss; `faces` fails the part only
+  /// when every frame is.
+  private static func detectFace(t: Double, in image: CGImage?) -> (sample: [Any], error: Error?) {
     autoreleasepool {
-      guard let image else { return [t, NSNull()] }
+      guard let image else { return ([t, NSNull()], nil) }
       let request = VNDetectFaceRectanglesRequest()
       // Pinned so an OS update can't silently change the boxes under one analyzerVersion.
       request.revision = VNDetectFaceRectanglesRequestRevision3
-      guard (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil,
-            let face = (request.results ?? []).max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })
-      else { return [t, NSNull()] }
+      #if targetEnvironment(simulator)
+      // The simulator's GPU path fails every frame ("Could not create inference context"); the CPU works.
+      if let stages = try? request.supportedComputeStageDevices {
+        for (stage, devices) in stages {
+          if let cpu = devices.first(where: { if case .cpu = $0 { return true } else { return false } }) {
+            request.setComputeDevice(cpu, for: stage)
+          }
+        }
+      }
+      #endif
+      do {
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+      } catch {
+        return ([t, NSNull()], error)
+      }
+      guard let face = (request.results ?? []).max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }) else {
+        return ([t, NSNull()], nil)
+      }
       let box = AnalysisMath.topLeftBox(fromVision: face.boundingBox)
-      return [t] + AnalysisMath.paddedFaceBox(x: box.x, y: box.y, width: box.width, height: box.height)
+      return ([t] + AnalysisMath.paddedFaceBox(x: box.x, y: box.y, width: box.width, height: box.height), nil)
     }
   }
 

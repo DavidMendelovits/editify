@@ -36,6 +36,8 @@ export interface SyncState {
 export interface DeviceAnalysisState {
   assets: Record<string, Partial<Record<NativeAnalysisPart, PartState>>>;
   syncs: SyncState[];
+  /** Per asset, the newest native revision applied (events and getAnalysis snapshots). */
+  revisions: Record<string, number>;
 }
 
 export interface AnalysisExtras {
@@ -44,7 +46,18 @@ export interface AnalysisExtras {
   onsetPeaks: Record<string, number[]>;
 }
 
-export const emptyAnalysisState = (): DeviceAnalysisState => ({ assets: {}, syncs: [] });
+export const emptyAnalysisState = (): DeviceAnalysisState => ({ assets: {}, syncs: [], revisions: {} });
+
+/** True when `revision` is older than what the state already reflects (stale: drop it). */
+function isStale(state: DeviceAnalysisState, assetId: string, revision: number | undefined, orEqual: boolean): boolean {
+  if (revision === undefined) return false;
+  const known = state.revisions[assetId];
+  return known !== undefined && (orEqual ? revision <= known : revision < known);
+}
+
+function withRevision(state: DeviceAnalysisState, assetId: string, revision: number | undefined): DeviceAnalysisState {
+  return revision === undefined ? state : { ...state, revisions: { ...state.revisions, [assetId]: revision } };
+}
 
 /**
  * For results that are supposed to carry data (getAnalysis, direct analyzer calls,
@@ -78,15 +91,17 @@ export function applyPartResult(state: DeviceAnalysisState, assetId: string, par
 
 /**
  * Folds a whole `getAnalysis` answer in. The native side is the source of truth:
- * parts it no longer returns (cancelled while pending) are dropped here too.
+ * parts it no longer returns (cancelled while pending) are dropped here too. A
+ * snapshot older than an event already applied for the asset is ignored.
  */
 export function applyAssetAnalysis(state: DeviceAnalysisState, analysis: NativeAssetAnalysis): DeviceAnalysisState {
+  if (isStale(state, analysis.assetId, analysis.revision, false)) return state;
   const previous = state.assets[analysis.assetId] ?? {};
   const parts: Partial<Record<NativeAnalysisPart, PartState>> = {};
   for (const [part, result] of Object.entries(analysis.parts) as Array<[NativeAnalysisPart, NativePartResult]>) {
     parts[part] = nextPartState(previous[part], result);
   }
-  return { ...state, assets: { ...state.assets, [analysis.assetId]: parts } };
+  return withRevision({ ...state, assets: { ...state.assets, [analysis.assetId]: parts } }, analysis.assetId, analysis.revision);
 }
 
 /**
@@ -95,14 +110,16 @@ export function applyAssetAnalysis(state: DeviceAnalysisState, analysis: NativeA
  * the answer in with `applyAssetAnalysis`. A `removed` event drops the part.
  */
 export function applyStatusEvent(state: DeviceAnalysisState, event: AnalysisStatusEvent): { state: DeviceAnalysisState; refetch: boolean } {
+  if (isStale(state, event.assetId, event.revision, true)) return { state, refetch: false };
+  const current = withRevision(state, event.assetId, event.revision);
   if (event.removed) {
-    const { [event.part]: _dropped, ...rest } = state.assets[event.assetId] ?? {};
-    return { state: { ...state, assets: { ...state.assets, [event.assetId]: rest } }, refetch: false };
+    const { [event.part]: _dropped, ...rest } = current.assets[event.assetId] ?? {};
+    return { state: { ...current, assets: { ...current.assets, [event.assetId]: rest } }, refetch: false };
   }
-  if (event.status === 'ready') return { state, refetch: true };
+  if (event.status === 'ready') return { state: current, refetch: true };
   const result: NativePartResult = { status: event.status, analyzerVersion: event.analyzerVersion };
   if (event.error !== undefined) result.error = event.error;
-  return { state: applyPartResult(state, event.assetId, event.part, result), refetch: false };
+  return { state: applyPartResult(current, event.assetId, event.part, result), refetch: false };
 }
 
 export function applySync(state: DeviceAnalysisState, videoAssetId: string, memoAssetId: string, result: NativePartResult<NativeSync>): DeviceAnalysisState {
@@ -143,7 +160,7 @@ export function markStale(state: DeviceAnalysisState, versions: Partial<Record<N
     stale.push({ assetId: sync.videoAssetId, part: 'sync', memoAssetId: sync.memoAssetId });
     return { videoAssetId: sync.videoAssetId, memoAssetId: sync.memoAssetId, status: 'pending' as const, analyzerVersion: versions.sync };
   });
-  return { state: { assets, syncs }, stale };
+  return { state: { assets, syncs, revisions: state.revisions }, stale };
 }
 
 type BundleAsset = AnalysisBundle['assets'][string];

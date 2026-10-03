@@ -39,19 +39,20 @@ enum AssetSource {
     let request = PhotosRequest()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
+        request.begin(continuation)
         let id = PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, info in
-          if let avAsset { return continuation.resume(returning: avAsset) }
-          if (info?[PHImageCancelledKey] as? Bool) == true { return continuation.resume(throwing: CancellationError()) }
+          if let avAsset { return request.finish(.success(avAsset)) }
+          if (info?[PHImageCancelledKey] as? Bool) == true { return request.finish(.failure(CancellationError())) }
           let error = info?[PHImageErrorKey] as? Error
           if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
-            continuation.resume(throwing: allowNetwork ? Unreachable(ref: ref, reason: error?.localizedDescription ?? "no data") : InCloud(ref: ref))
+            request.finish(.failure(allowNetwork ? Unreachable(ref: ref, reason: error?.localizedDescription ?? "no data") : InCloud(ref: ref)))
           } else if let error, isNetworkError(error) {
-            continuation.resume(throwing: Unreachable(ref: ref, reason: error.localizedDescription))
+            request.finish(.failure(Unreachable(ref: ref, reason: error.localizedDescription)))
           } else {
-            continuation.resume(throwing: error ?? NotFound(ref: ref))
+            request.finish(.failure(error ?? NotFound(ref: ref)))
           }
         }
-        request.set(id)
+        request.started(id)
       }
     } onCancel: {
       request.cancel()
@@ -69,14 +70,34 @@ enum AssetSource {
   }
 }
 
-/// The Photos request id, set after the request starts and read by a cancellation
-/// handler on another thread; a cancel that lands first is applied when the id arrives.
+/// One Photos request: its id and its continuation, resumed exactly once. A cancel
+/// resumes with CancellationError right away and then cancels the request, since
+/// Photos doesn't document calling the handler after `cancelImageRequest`; any later
+/// handler call is ignored. A cancel that lands before the id arrives is applied then.
 private final class PhotosRequest: @unchecked Sendable {
   private let lock = NSLock()
   private var id: PHImageRequestID?
+  private var continuation: CheckedContinuation<AVAsset, Error>?
   private var cancelled = false
 
-  func set(_ id: PHImageRequestID) {
+  func begin(_ continuation: CheckedContinuation<AVAsset, Error>) {
+    let cancelNow = lock.withLock { () -> Bool in
+      if cancelled { return true }
+      self.continuation = continuation
+      return false
+    }
+    if cancelNow { continuation.resume(throwing: CancellationError()) }
+  }
+
+  func finish(_ result: Result<AVAsset, Error>) {
+    let waiting = lock.withLock { () -> CheckedContinuation<AVAsset, Error>? in
+      defer { continuation = nil }
+      return continuation
+    }
+    waiting?.resume(with: result)
+  }
+
+  func started(_ id: PHImageRequestID) {
     let cancelNow = lock.withLock { () -> Bool in
       self.id = id
       return cancelled
@@ -85,10 +106,12 @@ private final class PhotosRequest: @unchecked Sendable {
   }
 
   func cancel() {
-    let id = lock.withLock { () -> PHImageRequestID? in
+    let (id, waiting) = lock.withLock { () -> (PHImageRequestID?, CheckedContinuation<AVAsset, Error>?) in
       cancelled = true
-      return self.id
+      defer { continuation = nil }
+      return (self.id, continuation)
     }
+    waiting?.resume(throwing: CancellationError())
     if let id { PHImageManager.default().cancelImageRequest(id) }
   }
 }

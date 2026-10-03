@@ -16,11 +16,13 @@ import { colors, fonts, space, type } from '../src/lib/theme';
  */
 const LAB_ENABLED = process.env.EXPO_PUBLIC_LAB === '1' && EditifyEngine !== null;
 
-/** `expectedLag`: seconds, the lag the macOS harness measured for the picked memo pair. */
+/**
+ * `expectedLag`: seconds, a reference lag for the picked memo pair; empty by default, so a
+ * pair without one can't pass the sync gate by accident. Stand-up fixture (IMG_9267 + its
+ * memo): 59.424 from the server (ffmpeg + sync.ts, fine stage locked); the macOS harness
+ * got 59.43, the coarse cell, because its fine stage didn't lock. Enter 59.424.
+ */
 type Slot = 'local' | 'icloud' | 'memo' | 'expectedLag';
-
-/** What the same Swift sync measured on a Mac for the stand-up fixture (IMG_9267 + its memo). */
-const STANDUP_PAIR_LAG = '59.43';
 
 /** Spikes the native module can run so far, with the params each needs. */
 const SPIKES: Array<{ id: SpikeId; label: string; variants?: string[]; params: (slots: Partial<Record<Slot, string>>) => Record<string, unknown> | string }> = [
@@ -47,7 +49,7 @@ function analyzerParams(slots: Partial<Record<Slot, string>>): Record<string, un
 }
 
 export default function LabScreen() {
-  const [slots, setSlots] = useState<Partial<Record<Slot, string>>>({ expectedLag: STANDUP_PAIR_LAG });
+  const [slots, setSlots] = useState<Partial<Record<Slot, string>>>({});
   const [rows, setRows] = useState<LabRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -116,7 +118,7 @@ export default function LabScreen() {
           value={slots.expectedLag ?? ''}
           onChangeText={(text) => setSlots((current) => ({ ...current, expectedLag: text }))}
           keyboardType="decimal-pad"
-          placeholder="Expected lag (s)"
+          placeholder="Expected lag (s), stand-up: 59.424"
           placeholderTextColor={colors.muted}
           accessibilityLabel="Expected memo lag in seconds"
         />

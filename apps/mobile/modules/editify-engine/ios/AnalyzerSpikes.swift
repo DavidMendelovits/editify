@@ -12,11 +12,16 @@ import UniformTypeIdentifiers
 ///   crop       renders frames through LabCompositor with an off-centre static crop into Documents/lab (OV8)
 ///
 /// Sync's answer is checked against a known lag:
-///   - with a memo: params.expectedLag, the lag the same Swift code measured for that pair
-///     on a Mac (stand-up pair: 59.43 s). This is the verdict arm: the phone must agree.
+///   - with a memo: params.expectedLag, a reference measurement of that pair (stand-up
+///     pair: 59.424 s from the server's ffmpeg + sync.ts, fine stage locked). This is the
+///     verdict arm. `syncParity`: within 2 ms when the phone's fine stage locked, else
+///     within one 10 ms coarse cell (a coarse-only answer can't be closer than that).
 ///   - without: a 60 s excerpt of the clip's own audio cut at 30 s (lag 30 s). That only
 ///     proves the code path, since the excerpt is sample-identical, so the row says
 ///     `syncSelfCheck` and the evaluator won't pass it.
+///
+/// Faces: `facesFound` is false when a clip with sampled frames got no face at all,
+/// which is how a broken detector looks (the simulator's GPU Vision path did this).
 struct AnalyzerSpike: Spike {
   func run(variant: String, params: [String: Any], sampler: Sampler, progress: @escaping (Double) -> Void) async throws -> [String: Any] {
     guard let ref = params["asset"] as? String else { throw SpikeError(message: "S11 needs params.asset") }
@@ -73,7 +78,9 @@ struct AnalyzerSpike: Spike {
           let samples = result.data?["samples"] as? [[Any]] ?? []
           metrics["facesReady"] = result.status == "ready"
           metrics["faceSamples"] = samples.count
-          metrics["faceHits"] = samples.filter { !($0.last is NSNull) }.count
+          let hits = samples.filter { !($0.last is NSNull) }.count
+          metrics["faceHits"] = hits
+          metrics["facesFound"] = samples.isEmpty || hits > 0
         }
       }
       let total = ["decode", "sync", "words", "laughter", "energy", "faces"].compactMap { metrics["\($0)Ms"] as? Double }.reduce(0, +)
@@ -108,7 +115,16 @@ struct AnalyzerSpike: Spike {
     metrics["syncConfident"] = measurement["confident"] as? Bool ?? false
     metrics["syncLag"] = measurement["lag"] as? Double ?? 0
     metrics["syncCoarseRatio"] = min(1e6, measurement["coarseRatio"] as? Double ?? 0)
-    if let expectedLag, let lag = measurement["lag"] as? Double { metrics["syncLagErrorMs"] = abs(lag - expectedLag) * 1000 }
+    let fineLocked = measurement["fineLocked"] as? Bool ?? false
+    metrics["syncFineLocked"] = fineLocked
+    metrics["syncFineScore"] = measurement["fineScore"] as? Double ?? 0
+    if let expectedLag, let lag = measurement["lag"] as? Double {
+      let errorMs = abs(lag - expectedLag) * 1000
+      let toleranceMs = fineLocked ? 2.0 : 10.0
+      metrics["syncLagErrorMs"] = errorMs
+      metrics["syncToleranceMs"] = toleranceMs
+      metrics["syncParity"] = errorMs <= toleranceMs
+    }
   }
 
   /// Queues every part, holds playback for 3 s once a heavy part is running,
@@ -135,10 +151,12 @@ struct AnalyzerSpike: Spike {
     let before = await scheduler.heavyFraction
     try await Task.sleep(for: .seconds(3))
     let after = await scheduler.heavyFraction
+    // The running part's own granularity: one more step may land after the gate closed.
+    let step = await scheduler.heavyStep
     await scheduler.setPlaybackActive(false)
-    let seconds = try await AssetSource.load(ref).load(.duration).seconds
-    let tolerance = max(0.02, 16 / max(1, seconds * 2) + 0.005)
+    let tolerance = step + 0.005
     metrics["heavyAdvancedWhilePaused"] = after - before
+    metrics["heavyStep"] = step
     metrics["pauseTolerance"] = tolerance
     metrics["pauseHeld"] = after - before <= tolerance
 
