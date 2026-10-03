@@ -51,6 +51,9 @@ enum MediaStore {
     let fileName = "\(UUID().uuidString)-\(safeName(name))"
     let target = folder.appendingPathComponent(fileName)
     try FileManager.default.copyItem(at: source, to: target)
+    // A copy keeps the source's dates; the orphan sweep ages files by modification date,
+    // so an old clip copied for an upload in progress must not look a day old already.
+    try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: target.path)
     return ("\(mediaFolder)/\(fileName)", fileSize(target) ?? 0)
   }
 

@@ -20,11 +20,13 @@ import Vision
 /// Bumped whenever an analyzer's output can change, so a stored part from an
 /// older analyzer reads as stale (decision 6A).
 enum AnalyzerVersion {
-  static let decode = "avassetreader-8k-1"
-  static let sync = "audiosync-vdsp-1"
-  static let words = "speechanalyzer-ios26-1"
-  static let laughter = "soundanalysis-v1-1"
-  static let energy = "energy-rms-50ms-1"
+  // -2: PCMChunks reads the first *enabled* audio track (it read the first track), which
+  // can change the input of every audio analyzer on files with a disabled first track.
+  static let decode = "avassetreader-8k-2"
+  static let sync = "audiosync-vdsp-2"
+  static let words = "speechanalyzer-ios26-2"
+  static let laughter = "soundanalysis-v1-2"
+  static let energy = "energy-rms-50ms-2"
   static let faces = "vision-facerect-1"
   /// Not an analyzer: the 1080p preview proxy (ProxyPipeline), versioned the same way.
   static let proxy = "writer-1080-1"

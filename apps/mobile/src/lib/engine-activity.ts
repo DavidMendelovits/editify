@@ -2,6 +2,13 @@ import { useEffect } from 'react';
 import { EditifyEngine } from '../../modules/editify-engine';
 
 /**
+ * One counter for every toggle this JS context sends: the calls aren't awaited in order,
+ * so the native side keeps the newest sequence per control and drops older ones (a late
+ * "true" must not undo the "false" that followed it). Native resets it with each new context.
+ */
+let sequence = 0;
+
+/**
  * Tells the device engine the user is playing/scrubbing, or exporting, so its heavy
  * work gets out of the way (decision 8A, OV9): words and faces pause, and a preview
  * proxy being written is cancelled and only restarted once things have been idle for
@@ -12,8 +19,10 @@ export function useEngineActivity(kind: 'playback' | 'export', active: boolean):
   useEffect(() => {
     const engine = EditifyEngine;
     if (!engine || !active) return undefined;
-    const set = (value: boolean): Promise<void> =>
-      kind === 'playback' ? engine.setPlaybackActive(value) : engine.setExportActive(value);
+    const set = (value: boolean): Promise<void> => {
+      sequence += 1;
+      return kind === 'playback' ? engine.setPlaybackActive(value, sequence) : engine.setExportActive(value, sequence);
+    };
     void set(true).catch(() => undefined);
     return () => { void set(false).catch(() => undefined); };
   }, [kind, active]);

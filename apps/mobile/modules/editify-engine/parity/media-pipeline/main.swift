@@ -214,6 +214,25 @@ do {
   failures.append("proxy store threw: \(error)")
 }
 
+// MARK: - Durable copies
+
+do {
+  MediaStore.rootOverride = scratch.appendingPathComponent("root", isDirectory: true)
+  let source = scratch.appendingPathComponent("old-clip.mov")
+  try Data(count: 64).write(to: source)
+  try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000_000)], ofItemAtPath: source.path)
+  let copy = try MediaStore.durableCopy(from: source, name: "old clip.mov")
+  let copied = MediaStore.url(forRelative: copy.path)
+  let modified = (try copied.resourceValues(forKeys: [.contentModificationDateKey])).contentModificationDate ?? .distantPast
+  check("copy: lands in media/ under a safe name (\(copy.path))", copy.path.hasPrefix("media/") && copy.path.hasSuffix("-old_clip.mov") && copy.bytes == 64)
+  check("copy: dated now, not like its source (orphan sweep)", abs(modified.timeIntervalSinceNow) < 60)
+  check("copy: excluded from backup", (try MediaStore.directory(MediaStore.mediaFolder).resourceValues(forKeys: [.isExcludedFromBackupKey])).isExcludedFromBackup == true)
+  check("copy: listed for the sweep", MediaStore.mediaFiles().contains { $0["path"] as? String == copy.path })
+  MediaStore.rootOverride = nil
+} catch {
+  failures.append("durable copy threw: \(error)")
+}
+
 // MARK: - Fingerprint
 
 /// Same rule as local-media.ts `envelopeDistance`: over the common prefix only.

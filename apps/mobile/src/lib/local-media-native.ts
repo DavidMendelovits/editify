@@ -79,8 +79,8 @@ async function open(): Promise<MediaDeps | null> {
   });
 
   const deps: MediaDeps = { store, native };
-  // Launch housekeeping in the background: orphaned copies, then the copy budget.
-  void maintainMedia(deps).catch(() => undefined);
+  // Launch housekeeping before anyone gets the registry, so it can't overlap the first import.
+  await maintainMedia(deps).catch(() => undefined);
   return deps;
 }
 

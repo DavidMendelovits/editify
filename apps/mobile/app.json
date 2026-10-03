@@ -25,7 +25,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSSpeechRecognitionUsageDescription": "Editify transcribes your clips on this iPhone to make captions and find cuts."
+        "NSSpeechRecognitionUsageDescription": "Editify transcribes your clips on this iPhone to make captions and find cuts.",
+        "PHPhotoLibraryPreventAutomaticLimitedAccessAlert": true
       }
     },
     "android": {

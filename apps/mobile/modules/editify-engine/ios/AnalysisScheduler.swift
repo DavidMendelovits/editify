@@ -79,6 +79,10 @@ actor AnalysisScheduler {
   private var focus: String?
   private var playbackActive = false
   private var exportActive = false
+  /// The newest JS toggle sequence applied, per control: JS fires these without awaiting,
+  /// and two calls can reach the actor out of order, so an older one is dropped.
+  private var playbackSeq = 0
+  private var exportSeq = 0
   /// Seqs of proxy jobs cancelled by playback/export: `finish` re-queues them instead of recording.
   private var preempted: Set<Int> = []
   /// Proxies wait until then after playback/export stop (idle debounce).
@@ -123,6 +127,8 @@ actor AnalysisScheduler {
     epoch = incoming
     playbackActive = false
     exportActive = false
+    playbackSeq = 0
+    exportSeq = 0
     focus = nil
     pump()
     return true
@@ -148,10 +154,15 @@ actor AnalysisScheduler {
   }
 
   /// `epoch`: the calling JS context's (nil for native callers such as lab spikes).
-  func setPlaybackActive(_ active: Bool, epoch caller: Int? = nil) {
+  /// `seq`: the JS toggle's sequence number; a call older than one already applied is dropped.
+  func setPlaybackActive(_ active: Bool, epoch caller: Int? = nil, seq: Int? = nil) {
     if let caller {
       if adopt(caller) { emitState() }
       guard caller == epoch else { return }
+    }
+    if let seq {
+      guard seq > playbackSeq else { return }
+      playbackSeq = seq
     }
     guard playbackActive != active else { return }
     playbackActive = active
@@ -160,10 +171,14 @@ actor AnalysisScheduler {
   }
 
   /// True while an export renders: proxy generation is cancelled and held, words/faces pause.
-  func setExportActive(_ active: Bool, epoch caller: Int? = nil) {
+  func setExportActive(_ active: Bool, epoch caller: Int? = nil, seq: Int? = nil) {
     if let caller {
       if adopt(caller) { emitState() }
       guard caller == epoch else { return }
+    }
+    if let seq {
+      guard seq > exportSeq else { return }
+      exportSeq = seq
     }
     guard exportActive != active else { return }
     exportActive = active
@@ -397,13 +412,24 @@ actor AnalysisScheduler {
 
   /// The 1080p preview proxy, or the one already on disk when it was made by this proxy
   /// version from this same source (it survives relaunches; the results here don't).
-  /// `path` is relative to the media root, as the registry stores it.
+  /// `path` is relative to the media root, as the registry stores it. The source is opened
+  /// without network first: an original that went back to iCloud keeps its proxy rather
+  /// than being downloaded in full just to confirm the key.
   private func makeProxy(_ job: Job, progress: @escaping AnalyzerProgress, download: @escaping @Sendable (Double) -> Void) async throws -> PartResult {
     let store = ProxyStore.shared
     let path = try ProxyStore.relativePath(job.assetId)
-    let asset = try await AssetSource.load(job.ref, onDownload: download)
+    let existing = store.existing(job.assetId)
+    let asset: AVAsset
+    do {
+      asset = try await AssetSource.load(job.ref, allowNetwork: false)
+    } catch is AssetSource.InCloud {
+      if let existing, existing.key?.hasPrefix("\(AnalyzerVersion.proxy)|") == true {
+        return .ready(AnalyzerVersion.proxy, ["path": path, "bytes": existing.bytes, "reused": true, "keyChecked": false])
+      }
+      asset = try await AssetSource.load(job.ref, onDownload: download)
+    }
     let key = Self.proxyKey(try await MediaFingerprint.compute(asset))
-    if let existing = store.existing(job.assetId), existing.key == key {
+    if let existing, existing.key == key {
       return .ready(AnalyzerVersion.proxy, ["path": path, "bytes": existing.bytes, "reused": true])
     }
     let partial = try store.partialURL(job.assetId)

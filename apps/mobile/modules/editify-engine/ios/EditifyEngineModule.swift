@@ -136,8 +136,9 @@ public class EditifyEngineModule: Module {
       await AnalysisScheduler.shared.analyze(assetId: assetId, ref: ref, parts: parts, options: settings, force: force)
     }
 
-    AsyncFunction("setPlaybackActive") { (active: Bool) async in
-      await AnalysisScheduler.shared.setPlaybackActive(active, epoch: self.epochForCalls)
+    /// `seq` (optional): the caller's toggle counter; a call older than one already applied is dropped.
+    AsyncFunction("setPlaybackActive") { (active: Bool, seq: Int?) async in
+      await AnalysisScheduler.shared.setPlaybackActive(active, epoch: self.epochForCalls, seq: seq)
     }
 
     AsyncFunction("setFocusAsset") { (assetId: String?) async in
@@ -157,8 +158,8 @@ public class EditifyEngineModule: Module {
     }
 
     /// True while an export renders: proxies are cancelled and held, words/faces pause.
-    AsyncFunction("setExportActive") { (active: Bool) async in
-      await AnalysisScheduler.shared.setExportActive(active, epoch: self.epochForCalls)
+    AsyncFunction("setExportActive") { (active: Bool, seq: Int?) async in
+      await AnalysisScheduler.shared.setExportActive(active, epoch: self.epochForCalls, seq: seq)
     }
 
     // MARK: Local media registry (decision 3A) and preview proxies (10B)

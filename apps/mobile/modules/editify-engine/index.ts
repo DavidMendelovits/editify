@@ -134,15 +134,18 @@ interface EditifyEngineNative {
    * still matches): use `analyzeMedia` in src/lib/local-media.ts, never a raw PHAsset id.
    */
   analyze(assetId: string, ref: string, parts?: NativeAnalysisPart[] | null, options?: AnalyzeOptions | null): Promise<void>;
-  /** True while the user plays or scrubs: words and faces hold until it is false again. */
-  setPlaybackActive(active: boolean): Promise<void>;
+  /**
+   * True while the user plays or scrubs: words and faces hold until it is false again.
+   * `seq` (optional) numbers the caller's toggles; an older one arriving late is dropped.
+   */
+  setPlaybackActive(active: boolean, seq?: number | null): Promise<void>;
   /** The asset on screen: its queued parts go first. */
   setFocusAsset(assetId: string | null): Promise<void>;
   cancelAnalysis(assetId: string): Promise<void>;
   getAnalysis(assetId: string): Promise<NativeAssetAnalysis>;
   schedulerState(): Promise<{ playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean; queued: unknown[]; running: unknown[]; focus: string | null }>;
   /** True while an export renders: a running proxy is cancelled (restarted after), words and faces pause. */
-  setExportActive(active: boolean): Promise<void>;
+  setExportActive(active: boolean, seq?: number | null): Promise<void>;
 
   // Local media registry (decision 3A) and preview proxies (10B + OV9).
   /** Photos library access, read without prompting. */

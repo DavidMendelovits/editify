@@ -21,10 +21,11 @@
  *                                (preview: the server proxy; export: the server render path)
  *
  * Copies are a cache of media the server already has (rows exist only after an upload
- * landed): least recently used ones are evicted under a byte budget, min(20 GB, 25% of
- * free space) unless set, and released when their project is deleted. A copy made for
- * an upload that never committed (the app was killed mid-upload) has no row; the launch
- * sweep deletes such files after 24 hours.
+ * landed): when an import commits, least recently used ones are evicted under a byte
+ * budget, min(20 GB, 25% of free space plus the cache) unless set, skipping leased assets
+ * (`leaseMedia`, held by an export or a preview); they are also released when their
+ * project is deleted. A copy made for an upload that never committed (the app was killed
+ * mid-upload) has no row; the launch sweep deletes such files after 24 hours.
  *
  * Analyzers and proxies only ever get a ref resolveMedia returned (`analyzeMedia`), never
  * a raw PHAsset id: a 'changed' original must not be analyzed in place of the uploaded clip.
@@ -530,18 +531,89 @@ export async function askForPhotosAccessOnce(deps: MediaDeps, explain: () => Pro
 
 const GB = 1024 ** 3;
 export const COPY_BUDGET_CAP = 20 * GB;
-export const COPY_BUDGET_FREE_SHARE = 0.25;
+export const COPY_BUDGET_SHARE = 0.25;
 /** Left free after a copy, so an import never takes the phone's last gigabyte. */
 export const COPY_FREE_RESERVE = GB;
 /** A media/ file with no row this old is a copy whose upload never committed. */
 export const ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
 export const COPY_BUDGET_KEY = 'copy_budget_bytes';
 
-/** The copy budget: what was set, or min(20 GB, 25% of free space). */
+/**
+ * What this process knows beyond the database: copies made for uploads still in flight
+ * (they take space and must never be evicted or swept) and leases on assets an export or
+ * a preview is using. Per process and in memory: a relaunch starts with neither, which is
+ * right, since no upload or render survives it.
+ */
+interface Runtime {
+  inFlight: Map<number, { path: string; bytes: number }>;
+  leases: Map<string, number>;
+  next: number;
+}
+
+const runtimes = new WeakMap<LocalMediaStore, Runtime>();
+
+function runtime(deps: MediaDeps): Runtime {
+  let state = runtimes.get(deps.store);
+  if (!state) {
+    state = { inFlight: new Map(), leases: new Map(), next: 0 };
+    runtimes.set(deps.store, state);
+  }
+  return state;
+}
+
+function inFlightBytes(state: Runtime): number {
+  let total = 0;
+  for (const copy of state.inFlight.values()) total += copy.bytes;
+  return total;
+}
+
+export interface MediaLease {
+  /** Idempotent. */
+  release(): void;
+}
+
+/**
+ * Pins assets while an export or a preview uses their local sources: eviction and
+ * `forgetMedia` skip them until every lease on them is released. Reference counted,
+ * per process (see Runtime).
+ */
+export function leaseMedia(deps: MediaDeps, assetIds: Iterable<string>): MediaLease {
+  const state = runtime(deps);
+  const ids = [...new Set(assetIds)];
+  for (const id of ids) state.leases.set(id, (state.leases.get(id) ?? 0) + 1);
+  let released = false;
+  return {
+    release() {
+      if (released) return;
+      released = true;
+      for (const id of ids) {
+        const count = (state.leases.get(id) ?? 0) - 1;
+        if (count > 0) state.leases.set(id, count);
+        else state.leases.delete(id);
+      }
+    },
+  };
+}
+
+export function isLeased(deps: MediaDeps, assetId: string): boolean {
+  return (runtime(deps).leases.get(assetId) ?? 0) > 0;
+}
+
+/** Bytes held by copies: committed rows plus uploads in flight. */
+async function cacheBytes(deps: MediaDeps): Promise<{ committed: number; inFlight: number; copies: LocalMediaRow[] }> {
+  const copies = await deps.store.copies();
+  return { committed: copies.reduce((sum, row) => sum + (row.fileBytes ?? 0), 0), inFlight: inFlightBytes(runtime(deps)), copies };
+}
+
+/**
+ * The copy budget: what was set, or min(20 GB, 25% of what the cache could have),
+ * free space plus what the cache already holds (so a full cache doesn't shrink its own budget).
+ */
 export async function copyBudget(deps: MediaDeps): Promise<number> {
   const configured = Number(await deps.store.getMeta(COPY_BUDGET_KEY));
   if (Number.isFinite(configured) && configured > 0) return configured;
-  return Math.min(COPY_BUDGET_CAP, Math.max(0, deps.native.availableBytes()) * COPY_BUDGET_FREE_SHARE);
+  const { committed, inFlight } = await cacheBytes(deps);
+  return Math.min(COPY_BUDGET_CAP, (Math.max(0, deps.native.availableBytes()) + committed + inFlight) * COPY_BUDGET_SHARE);
 }
 
 /** A fixed copy budget in bytes, or null for the default. */
@@ -551,17 +623,25 @@ export async function setCopyBudget(deps: MediaDeps, bytes: number | null): Prom
 }
 
 /**
- * Evicts least recently used copies until the copies plus `incoming` bytes fit the
- * budget. `protect` (the copy just made) is never evicted. Returns the evicted asset ids.
+ * Evicts least recently used copies until committed plus in-flight copies fit the
+ * budget, and, with `minFree`, until that much space is free. In-flight copies count
+ * but are never evicted; neither is `protect` (the copy just committed) nor a leased
+ * asset. Runs when an import commits (and at launch only when space is short), never
+ * while staging: a failed upload evicts nothing. Returns the evicted asset ids.
  */
-export async function enforceCopyBudget(deps: MediaDeps, options: { incoming?: number; protect?: string } = {}): Promise<string[]> {
+export async function enforceCopyBudget(deps: MediaDeps, options: { protect?: string; minFree?: number } = {}): Promise<string[]> {
   const budget = await copyBudget(deps);
-  const copies = await deps.store.copies();
-  let total = copies.reduce((sum, row) => sum + (row.fileBytes ?? 0), 0) + (options.incoming ?? 0);
+  const { committed, inFlight, copies } = await cacheBytes(deps);
+  let total = committed + inFlight;
+  let target = budget;
+  if (options.minFree !== undefined) {
+    const shortfall = options.minFree - deps.native.availableBytes();
+    if (shortfall > 0) target = Math.min(target, total - shortfall);
+  }
   const evicted: string[] = [];
   for (const row of copies) {
-    if (total <= budget) break;
-    if (row.assetId === options.protect || !row.fileUri) continue;
+    if (total <= target) break;
+    if (row.assetId === options.protect || !row.fileUri || isLeased(deps, row.assetId)) continue;
     deps.native.removeMedia(row.fileUri);
     await deps.store.dropCopy(row.assetId, 'evicted');
     total -= row.fileBytes ?? 0;
@@ -570,10 +650,11 @@ export async function enforceCopyBudget(deps: MediaDeps, options: { incoming?: n
   return evicted;
 }
 
-/** Deletes media/ files no row points at once they are older than a day (uploads killed mid-way). */
+/** Deletes media/ files no row (and no upload in flight) points at once they are a day old. */
 export async function sweepOrphanCopies(deps: MediaDeps): Promise<string[]> {
   const now = (deps.now ?? Date.now)();
-  const referenced = new Set((await deps.store.copies()).map((row) => row.fileUri));
+  const referenced = new Set<string | null>((await deps.store.copies()).map((row) => row.fileUri));
+  for (const copy of runtime(deps).inFlight.values()) referenced.add(copy.path);
   const removed: string[] = [];
   for (const file of deps.native.mediaFiles()) {
     if (referenced.has(file.path) || now - file.modified < ORPHAN_AGE_MS) continue;
@@ -583,21 +664,29 @@ export async function sweepOrphanCopies(deps: MediaDeps): Promise<string[]> {
   return removed;
 }
 
-/** Launch housekeeping: the orphan sweep, then the budget. */
+/**
+ * Launch housekeeping, awaited before the registry is handed out: the orphan sweep, and
+ * eviction only when the phone is below the free-space reserve (a launch never shrinks a
+ * healthy cache just because free space moved).
+ */
 export async function maintainMedia(deps: MediaDeps): Promise<void> {
   await sweepOrphanCopies(deps);
-  await enforceCopyBudget(deps);
+  if (deps.native.availableBytes() < COPY_FREE_RESERVE) await enforceCopyBudget(deps, { minFree: COPY_FREE_RESERVE });
 }
 
-/** Drops everything the phone keeps for these assets: copy, proxy, row. */
-export async function forgetMedia(deps: MediaDeps, assetIds: Iterable<string>): Promise<void> {
+/** Drops everything the phone keeps for these assets (copy, proxy, row), except leased ones. Returns the ids dropped. */
+export async function forgetMedia(deps: MediaDeps, assetIds: Iterable<string>): Promise<string[]> {
+  const forgotten: string[] = [];
   for (const assetId of assetIds) {
+    if (isLeased(deps, assetId)) continue;
     const row = await deps.store.lookup(assetId);
     if (!row) continue;
     if (row.fileUri) deps.native.removeMedia(row.fileUri);
     deps.native.removeProxy(assetId);
     await deps.store.forget(assetId);
+    forgotten.push(assetId);
   }
+  return forgotten;
 }
 
 /**
@@ -605,9 +694,7 @@ export async function forgetMedia(deps: MediaDeps, assetIds: Iterable<string>): 
  * media stays). `stillUsed` is every asset id linked to a project that still exists.
  */
 export async function releaseProjectMedia(deps: MediaDeps, projectAssetIds: Iterable<string>, stillUsed: ReadonlySet<string>): Promise<string[]> {
-  const released = [...projectAssetIds].filter((id) => !stillUsed.has(id));
-  await forgetMedia(deps, released);
-  return released;
+  return await forgetMedia(deps, [...projectAssetIds].filter((id) => !stillUsed.has(id)));
 }
 
 // ─── Import hooks ───
@@ -647,7 +734,8 @@ export interface StagedImport {
  *   next to the copy.
  * - No file, or not enough room for a copy, leaves the asset server-only (with the reason).
  * The row is written in `commit`, after the upload; a copy whose upload never commits
- * (the app was killed) is left to `sweepOrphanCopies`.
+ * (the app was killed) is left to `sweepOrphanCopies`. The copy's modification time is
+ * set at copy time, so the sweep's 24-hour clock starts then.
  */
 export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): Promise<StagedImport> {
   const { native, store } = deps;
@@ -682,7 +770,6 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
 
   const size = candidate.size || native.fileSize(candidate.uri);
   if (native.availableBytes() < size + COPY_FREE_RESERVE || size > await copyBudget(deps)) return serverOnly('no-space');
-  await enforceCopyBudget(deps, { incoming: size });
 
   let copy: { path: string; uri: string; bytes: number };
   try {
@@ -690,16 +777,26 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
   } catch {
     return serverOnly('no-space'); // the copy failed (disk full): the upload still goes ahead from the picked file
   }
+  // In flight until commit or abort: counted against the budget, never evicted or swept.
+  const state = runtime(deps);
+  const token = (state.next += 1);
+  state.inFlight.set(token, { path: copy.path, bytes: copy.bytes || size });
   return {
     uploadUri: copy.uri,
     durable: true,
     commit: async (assetId) => {
-      const fingerprint = candidate.kind === 'image' ? null : uploaded ?? await fingerprintOf(native, copy.uri);
-      await store.record({ assetId, phLocalId, fileUri: copy.path, fileBytes: copy.bytes || size, fingerprint });
+      try {
+        const fingerprint = candidate.kind === 'image' ? null : uploaded ?? await fingerprintOf(native, copy.uri);
+        await store.record({ assetId, phLocalId, fileUri: copy.path, fileBytes: copy.bytes || size, fingerprint });
+      } finally {
+        state.inFlight.delete(token);
+      }
+      // Evicting happens here only: the upload landed, so whatever goes is on the server.
       await enforceCopyBudget(deps, { protect: assetId });
       if (candidate.kind === 'video') native.ensureProxy(assetId, copy.uri).catch(() => undefined);
     },
     abort: () => {
+      state.inFlight.delete(token);
       try { native.removeFile(copy.uri); } catch { /* already gone */ }
     },
   };

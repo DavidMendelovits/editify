@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  LOCAL_MEDIA_MIGRATIONS, ORPHAN_AGE_MS, PHOTOS_ASKED_KEY, analyzeMedia, applyProxyEvent, askForPhotosAccessOnce, copyBudget,
+  COPY_FREE_RESERVE, LOCAL_MEDIA_MIGRATIONS, ORPHAN_AGE_MS, isLeased, leaseMedia, PHOTOS_ASKED_KEY, analyzeMedia, applyProxyEvent, askForPhotosAccessOnce, copyBudget,
   createLocalMediaStore, downloadMedia, enforceCopyBudget, envelopeDistance, fingerprintsMatch, forgetMedia, maintainMedia,
   mediaKindOf, migrate, releaseProjectMedia, resolveMedia, setCopyBudget, stageImport, sweepOrphanCopies,
   type MediaDeps, type MediaFingerprint, type MediaNative, type MediaProbe, type PhotosAccess, type SqlDb,
@@ -490,14 +490,23 @@ describe('mediaKindOf', () => {
   });
 });
 
-describe('copy cache', () => {
-  async function seed(deps: MediaDeps, fake: Fake, clock: { value: number }, ids: string[], bytes: number): Promise<void> {
-    for (const id of ids) {
-      clock.value += 1000;
-      add(fake, `${ROOT}media/${id}.mov`, bytes);
-      await deps.store.record({ assetId: id, fileUri: `media/${id}.mov`, fileBytes: bytes });
-    }
+/** Committed copies, one second apart (oldest first). */
+async function seed(deps: MediaDeps, fake: Fake, clock: { value: number }, ids: string[], bytes: number): Promise<void> {
+  for (const id of ids) {
+    clock.value += 1000;
+    add(fake, `${ROOT}media/${id}.mov`, bytes);
+    await deps.store.record({ assetId: id, fileUri: `media/${id}.mov`, fileBytes: bytes });
   }
+}
+
+describe('copy cache', () => {
+
+  it('counts what the cache holds toward its own budget', async () => {
+    const { deps, fake, clock } = await setup();
+    fake.available.value = 4 * GB;
+    await seed(deps, fake, clock, ['a', 'b'], 2 * GB);
+    expect(await copyBudget(deps)).toBe(2 * GB); // a quarter of (4 GB free + 4 GB cached)
+  });
 
   it('budgets min(20 GB, a quarter of free space) unless set', async () => {
     const { deps, fake } = await setup();
@@ -520,7 +529,8 @@ describe('copy cache', () => {
     expect(await enforceCopyBudget(deps)).toEqual(['b']);
     expect(fake.files.has(`${ROOT}media/b.mov`)).toBe(false);
     expect(await resolveMedia(video('b'), deps)).toMatchObject({ state: 'server', reason: 'evicted' });
-    expect(await enforceCopyBudget(deps, { incoming: 1500, protect: 'c' })).toEqual(['a']);
+    await setCopyBudget(deps, 500);
+    expect(await enforceCopyBudget(deps, { protect: 'c' })).toEqual(['a']);
   });
 
   it('keeps the PHAsset id of an evicted copy', async () => {
@@ -621,5 +631,94 @@ describe('analyzeMedia', () => {
     expect(fake.analyzed).toEqual([['f1', `${ROOT}media/copy.mov`], ['l1', 'PH-L']]);
     // Analysis wants the original, not a proxy.
     expect(fake.ensured).toEqual([]);
+  });
+});
+
+describe('copy cache under concurrency', () => {
+  it('keeps four concurrent imports\' copies until each upload lands, then fits the budget', async () => {
+    const { deps, fake, clock } = await setup();
+    await setCopyBudget(deps, 1800);
+    clock.value += 1000;
+    add(fake, `${ROOT}media/old.mov`, 1000);
+    await deps.store.record({ assetId: 'old', fileUri: 'media/old.mov', fileBytes: 1000 });
+    const names = ['a', 'b', 'c', 'd'];
+    for (const name of names) add(fake, `file:///cache/${name}.mov`, 500);
+    const staged = await Promise.all(names.map(async (name) =>
+      await stageImport({ uri: `file:///cache/${name}.mov`, name: `${name}.mov`, kind: 'audio', origin: 'files' }, deps)));
+    // Staging never evicts: the old copy is still there with four uploads in flight.
+    expect(fake.files.has(`${ROOT}media/old.mov`)).toBe(true);
+    for (const [index, name] of names.entries()) {
+      clock.value += 1000;
+      // Every copy still uploading is on disk when its upload "lands".
+      for (const later of staged.slice(index)) expect(fake.files.has(later.uploadUri)).toBe(true);
+      await staged[index]?.commit(name);
+    }
+    const copies = await deps.store.copies();
+    expect(copies.reduce((sum, row) => sum + (row.fileBytes ?? 0), 0)).toBeLessThanOrEqual(1800);
+    expect(await deps.store.lookup('old')).toMatchObject({ fileUri: null, serverReason: 'evicted' });
+    expect(copies.map((row) => row.assetId)).toContain('d');
+  });
+
+  it('evicts nothing for a failed upload', async () => {
+    const { deps, fake, clock } = await setup();
+    await setCopyBudget(deps, 1500);
+    clock.value += 1000;
+    add(fake, `${ROOT}media/old.mov`, 1000);
+    await deps.store.record({ assetId: 'old', fileUri: 'media/old.mov', fileBytes: 1000 });
+    add(fake, 'file:///cache/new.mov', 1000);
+    const staged = await stageImport({ uri: 'file:///cache/new.mov', name: 'new.mov', kind: 'video', origin: 'files' }, deps);
+    staged.abort();
+    expect(fake.files.has(`${ROOT}media/old.mov`)).toBe(true);
+    expect(fake.files.has(staged.uploadUri)).toBe(false);
+    expect(await deps.store.lookup('old')).toMatchObject({ fileUri: 'media/old.mov' });
+    // And it no longer counts: a later import fits next to the old copy.
+    add(fake, 'file:///cache/next.mov', 400);
+    const next = await stageImport({ uri: 'file:///cache/next.mov', name: 'next.mov', kind: 'video', origin: 'files' }, deps);
+    await next.commit('next');
+    expect(await deps.store.lookup('old')).toMatchObject({ fileUri: 'media/old.mov' });
+  });
+
+  it('never sweeps a copy whose upload is still in flight', async () => {
+    const { deps, fake, clock } = await setup();
+    clock.value = 10 * ORPHAN_AGE_MS;
+    add(fake, 'file:///cache/clip.mov', 10);
+    const staged = await stageImport({ uri: 'file:///cache/clip.mov', name: 'clip.mov', kind: 'video', origin: 'files' }, deps);
+    // Even if its file looked old (the native side sets it to now), it is in flight.
+    const copy = fake.files.get(staged.uploadUri);
+    if (copy) copy.modified = 0;
+    expect(await sweepOrphanCopies(deps)).toEqual([]);
+  });
+
+  it('shrinks the cache at launch only when the phone is below the free-space reserve', async () => {
+    const { deps, fake, clock } = await setup();
+    await setCopyBudget(deps, 1000);
+    await seed(deps, fake, clock, ['a', 'b', 'c'], 1000);
+    fake.available.value = 10 * GB;
+    await maintainMedia(deps);
+    expect((await deps.store.copies()).length).toBe(3);
+    await setCopyBudget(deps, null);
+    fake.available.value = COPY_FREE_RESERVE - 1500;
+    await maintainMedia(deps);
+    // Two oldest copies go to get back above the reserve.
+    expect((await deps.store.copies()).map((row) => row.assetId)).toEqual(['c']);
+  });
+});
+
+describe('leases', () => {
+  it('pin assets against eviction and forgetting until every lease is released', async () => {
+    const { deps, fake, clock } = await setup();
+    await seed(deps, fake, clock, ['a', 'b'], 1000);
+    await setCopyBudget(deps, 10);
+    const exportLease = leaseMedia(deps, ['a', 'b']);
+    const previewLease = leaseMedia(deps, ['a']);
+    expect(await enforceCopyBudget(deps)).toEqual([]);
+    expect(await forgetMedia(deps, ['a', 'b'])).toEqual([]);
+    exportLease.release();
+    exportLease.release(); // idempotent
+    expect(isLeased(deps, 'a')).toBe(true);
+    expect(isLeased(deps, 'b')).toBe(false);
+    expect(await enforceCopyBudget(deps)).toEqual(['b']);
+    previewLease.release();
+    expect(await forgetMedia(deps, ['a'])).toEqual(['a']);
   });
 });
