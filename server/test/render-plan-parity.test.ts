@@ -27,9 +27,10 @@ import { synthesizeMedia, type MediaSpec } from './helpers/plan-media.js';
  *   filter, and the native compositor samples with Core Image.
  * - frames with only pictures on screen: the 5 x 5 box-blurred worst-channel
  *   difference <= 0.15 (the native suite's local check is 0.1 against its own
- *   renders). Measured up to 0.13: sub-pixel placement (ffmpeg crop is
- *   integer, perspective is about a quarter pixel off) on the harness's 2 px
- *   grid lines and code strip edges.
+ *   renders). Measured up to 0.13: sub-pixel placement (a static crop is
+ *   whole-pixel; animated crops interpolate bilinearly where Core Image
+ *   samples its own way) on the harness's 2 px grid lines and code strip
+ *   edges.
  * - frames with text or graphics on screen: the blurred maximum is reported,
  *   not bounded. libass and Core Text antialias glyph edges differently (and
  *   libass applies ligatures; an accepted difference in the schema), so text
@@ -49,13 +50,22 @@ const manifest = JSON.parse(readFileSync(join(goldens, 'manifest.json'), 'utf8')
   renders: Array<{ name: string; plan: string; downscale?: number; frames: Array<{ k: number; golden?: boolean; probes?: Array<{ name: string; x: number; y: number; r?: number }>; rects?: Array<{ name: string; x: number; y: number; w: number; h: number }> }> }>;
 };
 
-const NEEDED_FILTERS = ['zscale', 'lut1d', 'maskedmerge', 'blend', 'subtitles', 'perspective', 'alimiter', 'premultiply', 'unpremultiply',
+const NEEDED_FILTERS = ['zscale', 'lut1d', 'maskedmerge', 'blend', 'subtitles', 'geq', 'fillborders', 'alimiter', 'premultiply', 'unpremultiply',
   'negate', 'extractplanes', 'mergeplanes', 'rotate', 'tpad', 'aeval', 'afade', 'atempo', 'amix', 'adelay', 'pan'];
 const filterList = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' });
 const available = new Set((filterList.stdout ?? '').split('\n').map((line) => line.trim().split(/\s+/)[1]));
 const missing = filterList.status === 0 ? NEEDED_FILTERS.filter((name) => !available.has(name)) : ['ffmpeg'];
 const usable = missing.length === 0;
 const inCi = Boolean(process.env.CI);
+
+/**
+ * Media only the server suites draw: a 10-bit HLG grey ramp, shallow enough
+ * (about one 10-bit code every eight pixels) that an 8-bit stage anywhere
+ * before linearization shows, as steps of four codes or as dither noise.
+ */
+const SERVER_MEDIA: Record<string, MediaSpec> = {
+  'asset-hlg-ramp': { kind: 'video', transfer: 'hlg', w: 360, h: 640, fps: 30, seconds: 4, ramp: [0.2, 0.26] },
+};
 
 const MEAN_ABS_MAX = 0.012;
 const PICTURE_BLURRED_MAX = 0.15;
@@ -92,6 +102,7 @@ beforeAll(async () => {
     for (const entry of plan.audio) ids.add(entry.assetRef.id);
   }
   const media = await synthesizeMedia(manifest.media, scratch, ids);
+  for (const [id, path] of await synthesizeMedia(SERVER_MEDIA, scratch)) media.set(id, path);
   mediaPaths = media;
   for (const { name, plan } of plans) {
     const path = join(scratch, `${name}.mp4`);
@@ -311,6 +322,79 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
   it('zooms with the crop-key convention', () => {
     close(probeOf('zoom', 89, 'white').linear, grey(1), 0.03);
   });
+
+  it('keeps an HLG zoom at 16 bits: a smooth ramp has every code and no 8-bit steps or dither', async () => {
+    const { renderPlan } = await import('../src/media/plan/render.js');
+    const zoom = render('zoom').plan;
+    const plan: RenderPlan = {
+      ...zoom,
+      color: 'hlg',
+      video: { segments: zoom.video.segments.map((segment) => ({ ...segment, layers: segment.layers.map((layer) => ({ ...layer, assetRef: { id: 'asset-hlg-ramp', kind: 'video' as const } })) })) },
+    };
+    expect(plan.video.segments[0]!.layers[0]!.cropKeys.length).toBeGreaterThan(1);
+    const path = join(scratch, 'zoom-hlg.mp4');
+    await renderPlan(plan, (ref) => mediaPaths.get(ref.id), { outputPath: path, workDir: join(scratch, 'zoom-hlg') });
+    for (const k of [0, 45, 89]) {
+      // Y' codes of the 10-bit output, rows 200..439 (the ramp is grey, so luma carries it).
+      const raw = spawnSync('ffmpeg', ['-v', 'error', '-i', path, '-vf', `select='eq(n\\,${k})'`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'yuv420p10le', 'pipe:1'], { maxBuffer: 1 << 28 }).stdout;
+      const code = (x: number, y: number): number => raw.readUInt16LE((y * plan.size.w + x) * 2);
+      const codes = new Set<number>();
+      let neighbours = 0;
+      let pairs = 0;
+      const columns: number[] = [];
+      for (let x = 0; x < plan.size.w; x += 1) {
+        let sum = 0;
+        for (let y = 200; y < 440; y += 1) {
+          codes.add(code(x, y));
+          sum += code(x, y);
+          if (x > 0) {
+            neighbours += Math.abs(code(x, y) - code(x - 1, y));
+            pairs += 1;
+          }
+        }
+        columns.push(sum / 240);
+      }
+      const low = Math.min(...codes);
+      const high = Math.max(...codes);
+      const slope = (columns.at(-1)! - columns[0]!) / (plan.size.w - 1);
+      const steepest = Math.max(...columns.slice(1).map((value, index) => Math.abs(value - columns[index]!)));
+      // Measured (ffmpeg 9.0): 42-46 codes over 42-46 values, neighbours 0.11-0.13 apart (the ramp's own slope,
+      // 0.12), column steps of 1 code. Through the 8-bit perspective path it was neighbours 0.59-1.91 apart
+      // (dither) and column steps of up to 3.97 (an 8-bit step is 4 codes).
+      expect(high - low, `frame ${k} ramp range`).toBeGreaterThan(30);
+      expect(codes.size, `frame ${k} codes present`).toBeGreaterThanOrEqual(0.9 * (high - low + 1));
+      expect(neighbours / pairs, `frame ${k} mean neighbour step`).toBeLessThanOrEqual(Math.abs(slope) + 0.1);
+      expect(steepest, `frame ${k} steepest column step`).toBeLessThanOrEqual(1.5);
+    }
+  });
+
+  it('zooms past one crop window in chunks, every frame where the static chain puts that pose', async () => {
+    const { renderPlan } = await import('../src/media/plan/render.js');
+    const zoom = render('zoom').plan;
+    const segment = zoom.video.segments[0]!;
+    const withKeys = (cropKeys: RenderPlan['video']['segments'][number]['layers'][number]['cropKeys']): RenderPlan => ({
+      ...zoom,
+      video: { segments: [{ ...segment, layers: segment.layers.map((layer) => ({ ...layer, cropKeys })) }] },
+    });
+    // 1x to 3x across the segment: three crop windows (ratio 1.5 each), with a pan.
+    const end = segment.end;
+    const animated = withKeys([{ t: 0, scale: 1, x: 0, y: 0 }, { t: end, scale: 3, x: 0.6, y: -0.5 }]);
+    const path = join(scratch, 'zoom-3x.mp4');
+    await renderPlan(animated, (ref) => mediaPaths.get(ref.id), { outputPath: path, workDir: join(scratch, 'zoom-3x') });
+    // Frames on both sides of each chunk boundary (scale 1.5 at frame 22.5, 2.25 at 56.25) and the last, each
+    // against the static chain (one key) at that frame's pose: the convention cross-checked frame by frame.
+    for (const k of [10, 22, 23, 56, 57, 89]) {
+      const p = (k / zoom.fps) / end;
+      const still = withKeys([{ t: 0, scale: 1 + 2 * p, x: 0.6 * p, y: -0.5 * p }]);
+      const stillPath = join(scratch, `zoom-3x-${k}.mp4`);
+      await renderPlan(still, (ref) => mediaPaths.get(ref.id), { outputPath: stillPath, workDir: join(scratch, `zoom-3x-${k}`) });
+      const comparison = compare(decodeFrame(path, k, zoom.size, false), decodeFrame(stillPath, k, zoom.size, false));
+      // The still is the static chain, whole-pixel placed; the zoom is sub-pixel, so they differ by up to half a
+      // pixel. Measured (9.0): mean 0.001-0.007, blurred max 0.08-0.165. A wrong window or chunk is far off (0.1+).
+      for (const value of comparison.meanAbs) expect(value, `frame ${k} mean abs`).toBeLessThanOrEqual(0.009);
+      expect(comparison.blurredMax, `frame ${k} blurred max`).toBeLessThanOrEqual(0.2);
+    }
+  }, 120000);
 
   it('draws overlays: EXIF-upright stills, GIF delays clamped, z order', () => {
     close(probeOf('overlays', 0, 'logoWhite').linear, grey(1), 0.03);

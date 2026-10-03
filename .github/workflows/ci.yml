@@ -36,7 +36,7 @@ jobs:
       # them; the plan render tests fail rather than skip when CI is set.
       - name: ffmpeg has the plan render's filters
         run: |
-          for f in zscale lut1d maskedmerge blend subtitles perspective alimiter premultiply unpremultiply negate extractplanes mergeplanes rotate tpad aeval; do
+          for f in zscale lut1d maskedmerge blend subtitles geq fillborders alimiter premultiply unpremultiply negate extractplanes mergeplanes rotate tpad aeval; do
             ffmpeg -hide_banner -filters | grep -qE "^ [A-Z.|]+ $f " || { echo "::error::ffmpeg lacks the $f filter"; exit 1; }
           done
       - run: npm ci
