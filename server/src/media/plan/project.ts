@@ -12,8 +12,8 @@ import type { AssetStore, StoredAsset } from '../../db/asset-store.js';
 import { rendersRoot } from '../../config.js';
 import type { HdrHandling } from '../color.js';
 import { isHdrTransfer, transferKind } from './color.js';
-import { probePlanMedia, type PlanMediaProbe } from './media.js';
-import { renderPlan, type RenderPlanResult } from './render.js';
+import type { PlanMediaProbe } from './media.js';
+import { probePlanUnlessUnsupported, renderPlan, type RenderPlanResult } from './render.js';
 
 /**
  * The RENDER_PLAN export path for a stored project: build the RenderPlan the
@@ -56,7 +56,7 @@ export async function renderProjectFromPlan(
       if (!clip.assetId || probes.has(clip.assetId)) continue;
       const asset = scoped(clip.assetId);
       if (!asset) throw new Error(`Asset ${clip.assetId} referenced by clip ${clip.id} was not found`);
-      probes.set(clip.assetId, await probePlanMedia(asset.originalPath, assetKind(asset)));
+      probes.set(clip.assetId, await probePlanUnlessUnsupported(asset.originalPath, assetKind(asset)));
     }
   }
   // Legacy semantics for `hdr`: an HDR master only when some picture source is HDR.

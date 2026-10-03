@@ -213,13 +213,13 @@ export function toWorkingSpace(color: SourceColor, plan: Pick<RenderPlan, 'color
     const steps = [
       `zscale=${input}:t=709:p=${primaries}:r=full`,
       `format=${float}`,
-      `lut1d=file=${filterPath(files.sdrDecode)}:interp=linear`,
+      `lut1d=file='${filterPath(files.sdrDecode)}':interp=linear`,
     ];
     if (primaries !== '2020') steps.push(`zscale=tin=linear:pin=${primaries}:rin=full:t=linear:p=2020:r=full`, `format=${float}`);
     return steps.join(',');
   }
   const steps = [`zscale=${input}:t=linear:p=2020:r=full:npl=203`, `format=${float}`];
-  if (isHdrTransfer(kind) && plan.color === 'sdr') steps.push(`lut1d=file=${filterPath(files.tone)}:interp=linear`);
+  if (isHdrTransfer(kind) && plan.color === 'sdr') steps.push(`lut1d=file='${filterPath(files.tone)}':interp=linear`);
   return steps.join(',');
 }
 
@@ -227,7 +227,7 @@ export function toWorkingSpace(color: SourceColor, plan: Pick<RenderPlan, 'color
 export function fromWorkingSpace(plan: Pick<RenderPlan, 'color'>, files: LutFiles): string {
   if (plan.color === 'hlg') {
     return [
-      `lut1d=file=${filterPath(files.hlgClip)}:interp=linear`,
+      `lut1d=file='${filterPath(files.hlgClip)}':interp=linear`,
       'zscale=tin=linear:pin=2020:rin=full:npl=203:t=arib-std-b67:p=2020:m=2020_ncl:r=limited',
       'format=yuv420p10le',
       'setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv',
@@ -236,7 +236,7 @@ export function fromWorkingSpace(plan: Pick<RenderPlan, 'color'>, files: LutFile
   return [
     'zscale=tin=linear:pin=2020:rin=full:t=linear:p=709:r=full',
     'format=gbrpf32le',
-    `lut1d=file=${filterPath(files.sdrEncode)}:interp=linear`,
+    `lut1d=file='${filterPath(files.sdrEncode)}':interp=linear`,
     'zscale=tin=709:pin=709:rin=full:t=709:p=709:m=709:r=limited',
     'format=yuv420p',
     'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv',

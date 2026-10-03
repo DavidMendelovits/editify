@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -111,5 +111,28 @@ describe.skipIf(!usable)('plan render loudness on a real master', () => {
     const { renderPlan } = await import('../src/media/plan/render.js');
     const result = await renderPlan(plan([]), () => undefined, { outputPath: join(scratch, 'silent.mp4'), workDir: join(scratch, 'silent') });
     expect(result.loudness.decision).toEqual({ gainDb: 0, limit: true, reason: 'silent' });
+  }, 120000);
+
+  it('routes a plan over the memory budget away before rendering anything (the queue then uses legacy)', async () => {
+    const { renderPlan, planRenderMemoryMb, PlanRenderUnavailableError } = await import('../src/media/plan/render.js');
+    const big = { ...plan([]), size: { w: 2160, h: 3840 } };
+    expect(planRenderMemoryMb(big)).toBeGreaterThan(3072);
+    expect(planRenderMemoryMb(plan([]))).toBeLessThan(100);
+    const workDir = join(scratch, 'work-big');
+    await expect(renderPlan(big, () => undefined, { outputPath: join(scratch, 'big.mp4'), workDir })).rejects.toBeInstanceOf(PlanRenderUnavailableError);
+    expect(existsSync(join(scratch, 'big.mp4'))).toBe(false);
+  });
+
+  it('removes its work directory after a render, and after a failed one', async () => {
+    const { renderPlan } = await import('../src/media/plan/render.js');
+    const workDir = join(scratch, 'work-ok');
+    await renderPlan(plan([]), () => undefined, { outputPath: join(scratch, 'ok.mp4'), workDir });
+    expect(existsSync(workDir)).toBe(false);
+    expect(existsSync(join(scratch, 'ok.mp4'))).toBe(true);
+    const failed = join(scratch, 'work-failed');
+    // An asset the resolver will not hand over fails the render.
+    await expect(renderPlan(plan([entry('not-mine')]), () => undefined, { outputPath: join(scratch, 'failed.mp4'), workDir: failed }))
+      .rejects.toThrow('Asset not-mine is not available to this render');
+    expect(existsSync(failed)).toBe(false);
   }, 120000);
 });
