@@ -1,4 +1,6 @@
-import { requireOptionalNativeModule, type EventSubscription } from 'expo-modules-core';
+import type { ComponentType, RefAttributes } from 'react';
+import type { NativeSyntheticEvent, ViewProps } from 'react-native';
+import { requireNativeViewManager, requireOptionalNativeModule, type EventSubscription } from 'expo-modules-core';
 import type { AnalysisPartStatus } from '@editify/shared';
 import type { LabRow, SpikeId } from '../../src/lab/evaluate';
 
@@ -245,6 +247,9 @@ interface EditifyEngineNative {
   /** Whether this phone can keep exporting in the background (BGContinuedProcessingTask with GPU). */
   exportCapabilities(): { backgroundGPU: boolean };
 
+  /** Present (and true) only in binaries that have EditifyPlayerView. */
+  nativePreviewAvailable?: () => boolean;
+
   addListener(event: 'progress', listener: (event: ProgressEvent) => void): EventSubscription;
   addListener(event: 'analysisStatus', listener: (event: AnalysisStatusEvent) => void): EventSubscription;
   addListener(event: 'analysisState', listener: (event: AnalysisStateEvent) => void): EventSubscription;
@@ -253,3 +258,66 @@ interface EditifyEngineNative {
 
 /** iOS-only native engine (null on web and in builds without it): the capability lab, the device analyzers and export. */
 export const EditifyEngine = requireOptionalNativeModule<EditifyEngineNative>('EditifyEngine');
+
+// ─── Native preview (plan P5): EditifyPlayerView ───
+
+/** The native clock: ~30 Hz while playing, and once whenever a seek lands. */
+export interface PlayerTimeEvent { time: number; playing: boolean }
+export interface PlayerReadyEvent { duration: number }
+/** `end`: the timeline ran out. `interrupted`: iOS paused it (the app left the foreground, a call). */
+export interface PlayerEndedEvent { reason: 'end' | 'interrupted' }
+export interface PlayerErrorEvent { message: string }
+/**
+ * How an accepted plan was applied: `update` swapped the video composition (and the audio mix
+ * when sound changed) on the playing item; `rebuild` made a new item at the same time; `empty`
+ * shows only the background; `failed` kept what was on screen. `ms` runs from setPlan to installed.
+ */
+export interface PlayerPlanEvent {
+  revision: number;
+  buildSeq: number;
+  mode: 'update' | 'rebuild' | 'empty' | 'failed';
+  ms: number;
+  audioSwapped: boolean;
+  error?: string;
+}
+
+/** The view's ref. Every call goes to the main thread; seeks coalesce natively. */
+export interface EditifyPlayerViewHandle {
+  /**
+   * A RenderPlan v1 as JSON and its media map {assetId: ref} (PHAsset id, app file URI, or the
+   * user's server URL). `accepted: false` when its (revision, buildSeq) is not newer than the
+   * last one this view accepted. Rejects a plan or map the native side refuses.
+   */
+  setPlan(planJson: string, media: Record<string, string>): Promise<{ accepted: boolean }>;
+  play(): Promise<void>;
+  pause(): Promise<void>;
+  /** Exact seeks are zero-tolerance. */
+  seek(time: number, exact: boolean): Promise<void>;
+  setMuted(muted: boolean): Promise<void>;
+  currentTime(): Promise<number>;
+}
+
+export interface EditifyPlayerViewProps extends ViewProps {
+  onTime?: (event: NativeSyntheticEvent<PlayerTimeEvent>) => void;
+  onReady?: (event: NativeSyntheticEvent<PlayerReadyEvent>) => void;
+  onStall?: (event: NativeSyntheticEvent<Record<string, never>>) => void;
+  onEnded?: (event: NativeSyntheticEvent<PlayerEndedEvent>) => void;
+  onError?: (event: NativeSyntheticEvent<PlayerErrorEvent>) => void;
+  onPlan?: (event: NativeSyntheticEvent<PlayerPlanEvent>) => void;
+}
+
+export type EditifyPlayerViewComponent = ComponentType<EditifyPlayerViewProps & RefAttributes<EditifyPlayerViewHandle>>;
+
+let playerView: EditifyPlayerViewComponent | null | undefined;
+
+/**
+ * The native preview view, or null where it isn't: web, Android, and binaries built before it
+ * (an OTA update can bring this JS to one; asking for a view the binary lacks would crash).
+ */
+export function editifyPlayerView(): EditifyPlayerViewComponent | null {
+  if (playerView === undefined) {
+    const available = typeof EditifyEngine?.nativePreviewAvailable === 'function' && EditifyEngine.nativePreviewAvailable();
+    playerView = available ? requireNativeViewManager<EditifyPlayerViewProps>('EditifyEngine') as unknown as EditifyPlayerViewComponent : null;
+  }
+  return playerView;
+}

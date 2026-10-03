@@ -18,6 +18,20 @@ export interface Playback {
   seek: (time: number) => void;
   toggle: () => void;
   stop: () => void;
+  /**
+   * External clock only: publishes a time the player reported (the native preview's time
+   * events), clamped to the timeline. Never seeks anything.
+   */
+  follow: (time: number) => void;
+}
+
+export interface PlaybackOptions {
+  /**
+   * A player owns the clock (the native preview, plan P5): no rAF loop runs, and the
+   * player's time events arrive through `follow`. `toggle`, `seek` and `stop` still drive
+   * the state the player follows.
+   */
+  external?: boolean;
 }
 
 /** Per-frame playhead, for the few leaves that draw it. */
@@ -40,8 +54,12 @@ export function usePlayheadSelector<T>(clock: PlayheadClock, select: (playhead: 
  * truth for timeline playback: it advances on wall-clock time inside a
  * requestAnimationFrame loop, so gaps between clips keep running and the
  * preview only has to follow. Playback stops at the end of the project.
+ *
+ * With `external` (the native preview) the player is the clock instead: the
+ * loop is off and its time events come in through `follow`.
  */
-export function usePlayback(duration: number): Playback {
+export function usePlayback(duration: number, options: PlaybackOptions = {}): Playback {
+  const external = options.external === true;
   const [playing, setPlaying] = useState(false);
   const store = useRef({ position: 0, listeners: new Set<() => void>() }).current;
   const durationRef = useRef(duration);
@@ -74,8 +92,12 @@ export function usePlayback(duration: number): Playback {
 
   const stop = useCallback(() => setPlaying(false), []);
 
+  const follow = useCallback((time: number) => {
+    publish(Math.max(0, Math.min(time, Math.max(0, durationRef.current))));
+  }, [publish]);
+
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || external) return;
     let frame = 0;
     let last = Date.now();
     const tick = (): void => {
@@ -92,7 +114,7 @@ export function usePlayback(duration: number): Playback {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing, publish, store]);
+  }, [external, playing, publish, store]);
 
-  return { clock, playing, seek, toggle, stop };
+  return { clock, playing, seek, toggle, stop, follow };
 }

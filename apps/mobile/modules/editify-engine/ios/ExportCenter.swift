@@ -461,8 +461,9 @@ final class ExportCenter: @unchecked Sendable {
     return loaded
   }
 
-  /// A local file for a still or a GIF: an app copy as is, a Photos original written to a temp file.
-  static func imageFile(_ ref: String?, id: String) async throws -> URL {
+  /// A local file for a still or a GIF: an app copy as is, a Photos original written to a temp file
+  /// named with `prefix` (the native preview passes its own, so an export's cleanup leaves it alone).
+  static func imageFile(_ ref: String?, id: String, prefix: String = filePrefix) async throws -> URL {
     guard let ref else { throw AssetSource.NotFound(ref: id) }
     if ref.hasPrefix("file://") {
       guard let url = containedFileURL(ref) else { throw AssetSource.NotFound(ref: id) }
@@ -470,7 +471,7 @@ final class ExportCenter: @unchecked Sendable {
     }
     let (data, type) = try await AssetSource.originalImageData(ref)
     let ext = type.flatMap { UTType($0)?.preferredFilenameExtension } ?? "img"
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(filePrefix)still-\(UUID().uuidString).\(ext)")
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)still-\(UUID().uuidString).\(ext)")
     try data.write(to: url)
     return url
   }

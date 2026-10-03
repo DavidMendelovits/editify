@@ -1,7 +1,7 @@
 import AVFoundation
 import ExpoModulesCore
 
-/// The on-device engine. Three surfaces:
+/// The on-device engine. Four surfaces:
 ///   - capability lab: each `runSpike` call is one run: Sampler begin → spike → one
 ///     JSONL row, which is also returned to JS for display.
 ///   - analyzers (plan P2): direct calls that return a part result
@@ -9,6 +9,8 @@ import ExpoModulesCore
 ///     them per asset and reports through `analysisStatus` events.
 ///   - export (plan P4): `exportProject` renders a RenderPlan on the phone
 ///     (ExportCenter, PlanExporter) and reports through `exportState` events.
+///   - native preview (plan P5): the EditifyPlayerView view (PlanPlayer), driven
+///     through its ref.
 public class EditifyEngineModule: Module {
   /// This instance's JS context (see EngineContext): set before any JS call can arrive.
   private var contextEpoch = 0
@@ -281,6 +283,49 @@ public class EditifyEngineModule: Module {
     /// Deletes a file under the media root by its relative path.
     Function("removeMedia") { (path: String) in
       MediaStore.remove(relative: path)
+    }
+
+    // MARK: Native preview (plan P5, 6A + OV10)
+
+    /// True in binaries that have EditifyPlayerView: JS checks it before rendering the view, so an
+    /// OTA update on an older binary keeps PreviewPlayer instead of a missing native view.
+    Function("nativePreviewAvailable") { true }
+
+    View(EditifyPlayerView.self) {
+      Events("onTime", "onReady", "onStall", "onEnded", "onError", "onPlan")
+
+      /// A RenderPlan v1 (JSON, built for the view's size) and its media map {assetId: ref from
+      /// resolveMedia 'preview'}. Decoded and checked here, off the main thread; {accepted: false}
+      /// when its (revision, buildSeq) is not newer than the last one this view accepted. How it
+      /// was applied (in place or rebuilt) arrives as onPlan. Rejects a bad plan or media map.
+      AsyncFunction("setPlan") { (view: EditifyPlayerView, planJson: String, media: [String: Any]) async throws -> [String: Any] in
+        let plan: RenderPlan
+        do { plan = try RenderPlan.decode(Data(planJson.utf8)) } catch { throw PreviewMedia.Rejected(message: error.localizedDescription) }
+        let refs = try PreviewMedia.validate(media, for: plan)
+        let accepted = await MainActor.run { view.setPlan(plan, media: refs) }
+        return ["accepted": accepted]
+      }
+
+      AsyncFunction("play") { (view: EditifyPlayerView) in
+        await MainActor.run { view.play() }
+      }
+
+      AsyncFunction("pause") { (view: EditifyPlayerView) in
+        await MainActor.run { view.pause() }
+      }
+
+      /// Seeks coalesce natively (one in flight, the newest queued): a scrub can call this per frame.
+      AsyncFunction("seek") { (view: EditifyPlayerView, time: Double, exact: Bool) in
+        await MainActor.run { view.seek(time, exact: exact) }
+      }
+
+      AsyncFunction("setMuted") { (view: EditifyPlayerView, muted: Bool) in
+        await MainActor.run { view.setMuted(muted) }
+      }
+
+      AsyncFunction("currentTime") { (view: EditifyPlayerView) -> Double in
+        await MainActor.run { view.currentTime }
+      }
     }
   }
 

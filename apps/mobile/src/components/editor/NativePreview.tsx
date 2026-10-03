@@ -1,0 +1,322 @@
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { AssetMetadata, Clip, Operation, OverlayPlacement, Project, RenderPlan } from '@editify/shared';
+import { EditifyEngine, editifyPlayerView, type EditifyPlayerViewHandle } from '../../../modules/editify-engine';
+import { assetOriginalUrl, assetProxyUrl } from '../../lib/api';
+import { useEngineActivity } from '../../lib/engine-activity';
+import { leaseMedia } from '../../lib/local-media';
+import { localMedia } from '../../lib/local-media-native';
+import {
+  followsNativeTime, isExternalSeek, PlanFeeder, previewPlanSize, projectAssetRefs, resolvePreviewMedia, serverPreviewMedia,
+  type PreviewMedia,
+} from '../../lib/native-preview';
+import { colors, fonts, radius, space, type } from '../../lib/theme';
+import { formatTimecode } from '../../lib/timeline';
+import { PreviewHandles } from './PreviewHandles';
+import { usePlayhead, type PlayheadClock } from './usePlayback';
+
+/**
+ * The native preview (plan P5, D1 + 6A), behind the `nativePreview` flag on iOS. Same props as
+ * PreviewPlayer plus the clock hooks: EditifyPlayerView draws every pixel with the export's
+ * renderer, PreviewHandles lays only selection boxes and grips over it.
+ *
+ *   project ─▶ PlanFeeder (preview plans: revision = version, buildSeq + 1 per send,
+ *              edits coalesced, drags patched in place) ─▶ setPlan(plan JSON, media map)
+ *   native time events (while playing) ─▶ onTimeUpdate ─▶ the editor's playhead
+ *   playhead moved by the user (tap, scrub) ─▶ exact seek (native coalesces a scrub's seeks)
+ *   playing ─▶ play() / pause(); native end or interruption ─▶ onEnded
+ *   a native failure, or a project that can't become a plan ─▶ onUnavailable (the editor
+ *   falls back to PreviewPlayer)
+ *
+ * Media (resolvePreviewMedia): 1080p proxies when ready, the local original otherwise, the
+ * user's server copy for anything not on this iPhone; the local ones stay leased while this
+ * is mounted, and a proxy finishing (or going away) re-resolves.
+ */
+export interface NativePreviewProps {
+  project: Project;
+  assets: Record<string, AssetMetadata | undefined>;
+  clock: PlayheadClock;
+  playing: boolean;
+  scrubbing: boolean;
+  selectedId: string | undefined;
+  onTogglePlay: () => void;
+  onSeek: (time: number) => void;
+  onSelect: (clipId: string | undefined) => void;
+  onApply: (ops: Operation[]) => void;
+  /** The native clock while playing (usePlayback's `follow`). */
+  onTimeUpdate: (time: number) => void;
+  /** Native stopped on its own: the timeline ended, or iOS interrupted it. */
+  onEnded: () => void;
+  /** The native preview can't show this project: the editor switches to PreviewPlayer. */
+  onUnavailable: (reason: string) => void;
+}
+
+/** What the editor can ask of the preview directly. */
+export interface NativePreviewHandle {
+  play(): void;
+  pause(): void;
+  seek(time: number, exact?: boolean): void;
+  setMuted(muted: boolean): void;
+  /** The last time native reported (the playhead follows it while playing). */
+  currentTime(): number;
+}
+
+const ASPECT: Record<Project['format'], number> = { '9:16': 9 / 16, '1:1': 1, '16:9': 16 / 9 };
+/** After a proxy event, wait for the registry listener to record it before resolving again. */
+const RESOLVE_AFTER_PROXY_MS = 500;
+
+const SERVER = { proxy: assetProxyUrl, original: assetOriginalUrl };
+
+export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>(function NativePreview(props, ref) {
+  const { project, assets, clock, playing, selectedId, onTogglePlay, onSeek, onSelect, onApply, onTimeUpdate, onEnded, onUnavailable } = props;
+  const PlayerView = editifyPlayerView();
+  const view = useRef<EditifyPlayerViewHandle | null>(null);
+  const [wrap, setWrap] = useState({ width: 0, height: 0 });
+  const stage = fitStage(wrap, ASPECT[project.format]);
+  const ratio = PixelRatio.get();
+  const { width: stageWidth, height: stageHeight } = stage;
+  const size = useMemo(() => previewPlanSize(project.format, { width: stageWidth, height: stageHeight }, ratio), [project.format, stageWidth, stageHeight, ratio]);
+  const [plan, setPlan] = useState<RenderPlan>();
+  const [dragging, setDragging] = useState(false);
+  // Handle drags hold the engine's playback flag too: proxies and analyzers wait out a 60 Hz redraw.
+  useEngineActivity('playback', dragging);
+
+  // Latest callbacks for the long-lived feeder and native events.
+  const live = useRef({ onTimeUpdate, onEnded, onUnavailable, playing, project, assets });
+  live.current = { onTimeUpdate, onEnded, onUnavailable, playing, project, assets };
+  const unavailable = useCallback((reason: string) => live.current.onUnavailable(reason), []);
+
+  // ─── Media: resolved per asset set, leased while mounted ───
+  const refs = useMemo(() => projectAssetRefs(project, assets), [project, assets]);
+  const assetKey = refs ? refs.map((item) => `${item.kind}:${item.id}`).sort().join('|') : '';
+  const [media, setMedia] = useState<PreviewMedia>();
+  const [resolveTick, setResolveTick] = useState(0);
+  const refsRef = useRef(refs);
+  refsRef.current = refs;
+  useEffect(() => {
+    const wanted = refsRef.current;
+    if (!wanted) return undefined;
+    let cancelled = false;
+    let release: (() => void) | undefined;
+    void (async () => {
+      const deps = await localMedia();
+      if (cancelled) return;
+      if (!deps) {
+        setMedia(serverPreviewMedia(wanted, SERVER));
+        return;
+      }
+      const lease = leaseMedia(deps, wanted.map((item) => item.id));
+      release = () => lease.release();
+      try {
+        const resolved = await resolvePreviewMedia(wanted, deps, SERVER);
+        if (!cancelled) setMedia(resolved);
+      } catch {
+        if (!cancelled) setMedia(serverPreviewMedia(wanted, SERVER));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      release?.();
+    };
+  }, [assetKey, resolveTick]);
+
+  // A proxy became ready (or went away) for an asset on screen: resolve again, so native swaps it in.
+  const localIds = media?.local.join('|') ?? '';
+  useEffect(() => {
+    const engine = EditifyEngine;
+    if (!engine || !localIds) return undefined;
+    const ids = new Set(localIds.split('|'));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const subscription = engine.addListener('analysisStatus', (event) => {
+      if (event.part !== 'proxy' || !ids.has(event.assetId)) return;
+      if (!event.removed && event.status !== 'ready') return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setResolveTick((tick) => tick + 1), RESOLVE_AFTER_PROXY_MS);
+    });
+    return () => {
+      subscription.remove();
+      if (timer) clearTimeout(timer);
+    };
+  }, [localIds]);
+
+  // ─── Plans ───
+  const feeder = useRef<PlanFeeder | null>(null);
+  /** The last plan sent and its media, for a view that attaches after it was built. */
+  const lastSent = useRef<{ plan: RenderPlan; media: Record<string, string> } | undefined>(undefined);
+  const deliver = useCallback((target: EditifyPlayerViewHandle, next: RenderPlan, map: Record<string, string>) => {
+    target.setPlan(JSON.stringify(next), map).catch((error: unknown) => {
+      unavailable(`setPlan: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }, [unavailable]);
+  const feederFor = (): PlanFeeder => {
+    if (feeder.current) return feeder.current;
+    feeder.current = new PlanFeeder({
+      send: (next, map) => {
+        setPlan(next);
+        lastSent.current = { plan: next, media: map };
+        if (view.current) deliver(view.current, next, map);
+      },
+      onUnbuildable: () => {
+        // Assets still loading is a wait, not a failure.
+        const { project: current, assets: known } = live.current;
+        const ids = current.tracks.flatMap((track) => track.clips).flatMap((clip) => (clip.assetId ? [clip.assetId] : []));
+        if (ids.every((id) => known[id] !== undefined)) unavailable('plan');
+      },
+    });
+    return feeder.current;
+  };
+  // A new feeder (buildSeq from 1) only ever goes with a new view, whose ordering starts afresh.
+  useEffect(() => () => {
+    feeder.current?.dispose();
+    feeder.current = null;
+  }, []);
+  useEffect(() => {
+    // Media resolved for an older set of assets (a clip was just added): wait for the new map.
+    if (!size || !media || !refs || refs.some((item) => media.media[item.id] === undefined)) return;
+    feederFor().update({ project, assets, size, media: media.media, geometry: media.geometry });
+  }, [project, assets, size, media, refs]);
+  const attach = useCallback((node: EditifyPlayerViewHandle | null) => {
+    view.current = node;
+    if (node && lastSent.current) deliver(node, lastSent.current.plan, lastSent.current.media);
+  }, [deliver]);
+
+  const onDrag = useCallback((clip: Clip, placement: OverlayPlacement) => {
+    setDragging(true);
+    feeder.current?.drag(clip, placement);
+  }, []);
+  const onDragEnd = useCallback(() => {
+    setDragging(false);
+    feeder.current?.endDrag();
+  }, []);
+
+  // ─── The clock ───
+  /** The last time native reported and the playhead took; anything else on the clock is a user seek. */
+  const reported = useRef<number | undefined>(undefined);
+  /** The first item lands at 0: bring it to the playhead once (later rebuilds keep their own time). */
+  const placed = useRef(false);
+  useEffect(() => clock.subscribe(() => {
+    const time = clock.get();
+    if (!isExternalSeek(time, reported.current)) return;
+    reported.current = time;
+    void view.current?.seek(time, true).catch(() => undefined);
+  }), [clock]);
+  useEffect(() => {
+    const target = view.current;
+    if (!target) return;
+    if (playing) void target.play().catch(() => undefined);
+    else void target.pause().catch(() => undefined);
+  }, [playing]);
+
+  useImperativeHandle(ref, () => ({
+    play: () => { void view.current?.play().catch(() => undefined); },
+    pause: () => { void view.current?.pause().catch(() => undefined); },
+    seek: (time, exact = true) => { void view.current?.seek(time, exact).catch(() => undefined); },
+    setMuted: (muted) => { void view.current?.setMuted(muted).catch(() => undefined); },
+    currentTime: () => reported.current ?? clock.get(),
+  }), [clock]);
+
+  if (!PlayerView) return null;
+  return (
+    <View style={styles.panel}>
+      <View style={styles.header}>
+        <Text style={styles.zoneLabel}>PREVIEW</Text>
+        <Text style={styles.meta} numberOfLines={1}>{project.format} · {project.fps} FPS · V{project.version}</Text>
+      </View>
+      <View
+        style={styles.stageWrap}
+        onLayout={(event) => {
+          const { width, height } = event.nativeEvent.layout;
+          setWrap((current) => (current.width === width && current.height === height ? current : { width, height }));
+        }}
+      >
+        <View style={[styles.stage, { width: stage.width, height: stage.height }]}>
+          <PlayerView
+            ref={attach}
+            style={StyleSheet.absoluteFill}
+            onReady={() => {
+              if (placed.current) return;
+              placed.current = true;
+              reported.current = clock.get();
+              void view.current?.seek(clock.get(), true).catch(() => undefined);
+              if (live.current.playing) void view.current?.play().catch(() => undefined);
+            }}
+            onTime={(event) => {
+              const { time, playing: nativePlaying } = event.nativeEvent;
+              if (!followsNativeTime({ playing: nativePlaying }, live.current.playing)) return;
+              reported.current = time;
+              live.current.onTimeUpdate(time);
+            }}
+            onEnded={(event) => {
+              if (event.nativeEvent.reason === 'end') {
+                reported.current = live.current.project.duration;
+                live.current.onTimeUpdate(live.current.project.duration);
+              }
+              live.current.onEnded();
+            }}
+            onError={(event) => unavailable(`native: ${event.nativeEvent.message}`)}
+          />
+          {stage.width > 0 && (
+            <PreviewHandles
+              plan={plan}
+              project={project}
+              clock={clock}
+              view={stage}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onApply={onApply}
+              onDrag={onDrag}
+              onDragEnd={onDragEnd}
+            />
+          )}
+        </View>
+      </View>
+      <View style={styles.transport}>
+        <Control label="|◀" hint="start" onPress={() => onSeek(0)} />
+        <Control label={playing ? '❚❚' : '▶'} hint={playing ? 'pause' : 'play'} primary onPress={onTogglePlay} />
+        <Timecode clock={clock} />
+        <Text style={styles.timecodeMuted}>/ {formatTimecode(project.duration)}</Text>
+      </View>
+    </View>
+  );
+});
+
+/** Largest box of `aspect` (w/h) that fits inside the measured wrapper. */
+function fitStage(wrap: { width: number; height: number }, aspect: number): { width: number; height: number } {
+  if (wrap.width <= 0 || wrap.height <= 0) return { width: 0, height: 0 };
+  const width = Math.min(wrap.width, wrap.height * aspect);
+  return { width, height: width / aspect };
+}
+
+function Timecode({ clock }: { clock: PlayheadClock }) {
+  return <Text style={styles.timecode}>{formatTimecode(usePlayhead(clock))}</Text>;
+}
+
+function Control({ label, hint, onPress, primary }: { label: string; hint: string; onPress: () => void; primary?: boolean }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={hint}
+      onPress={onPress}
+      style={({ pressed }) => [styles.control, primary && styles.controlPrimary, pressed && styles.pressed]}
+    >
+      <Text style={[styles.controlText, primary && styles.controlTextPrimary]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  panel: { flex: 1, minHeight: 220, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelSunken, padding: space.lg, gap: space.lg },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  zoneLabel: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1.5 },
+  meta: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.sm, flexShrink: 1 },
+  stageWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 140 },
+  stage: { borderRadius: radius.md, overflow: 'hidden', backgroundColor: '#000000' },
+  transport: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  control: { minWidth: 30, height: 26, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.lg },
+  controlPrimary: { backgroundColor: colors.accentStrong, borderColor: colors.accentStrong },
+  controlText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base },
+  controlTextPrimary: { color: '#FFFFFF' },
+  timecode: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base, fontVariant: ['tabular-nums'] },
+  timecodeMuted: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
+  pressed: { opacity: 0.65 },
+});
