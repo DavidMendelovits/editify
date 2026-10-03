@@ -65,10 +65,12 @@ func naturalSize(of asset: AVAsset) async throws -> CGSize {
 }
 
 /// S1: sustained preview fps through the compositor.
-/// variant: render{720,1080,native}-{source,proxy}; params: asset, proxy (when variant ends -proxy), seconds (default 600).
+/// variant: render{720,1080,native}-{source,proxy}[-analysis]; params: asset, proxy (when the variant names it), seconds (default 600).
+/// `-analysis` previews while the 8A scheduler analyzes the same clip with playback
+/// active, so the light lane runs and the heavy lane is held (plan: "S1 under analysis load").
 struct PreviewSpike: Spike {
   @MainActor func run(variant: String, params: [String: Any], sampler: Sampler, progress: @escaping (Double) -> Void) async throws -> [String: Any] {
-    let key = variant.hasSuffix("-proxy") ? "proxy" : "asset"
+    let key = variant.contains("-proxy") ? "proxy" : "asset"
     guard let ref = params[key] as? String else { throw SpikeError(message: "S1 \(variant) needs params.\(key)") }
     let seconds = params["seconds"] as? Double ?? 600
     let asset = try await AssetSource.load(ref)
@@ -87,6 +89,20 @@ struct PreviewSpike: Spike {
       player.seek(to: .zero)
     }
     defer { NotificationCenter.default.removeObserver(loop) }
+
+    let analysisId = variant.hasSuffix("-analysis") ? "lab-s1-\(UUID().uuidString)" : nil
+    if let analysisId {
+      await AnalysisScheduler.shared.setPlaybackActive(true)
+      await AnalysisScheduler.shared.analyze(assetId: analysisId, ref: ref, parts: nil, options: .init(), force: true)
+    }
+    defer {
+      if let analysisId {
+        Task {
+          await AnalysisScheduler.shared.cancel(assetId: analysisId)
+          await AnalysisScheduler.shared.setPlaybackActive(false)
+        }
+      }
+    }
 
     meter.start()
     player.play()

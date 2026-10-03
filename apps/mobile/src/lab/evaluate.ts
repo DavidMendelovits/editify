@@ -10,7 +10,7 @@
  * fails is "borderline", so thermal or battery noise can't hide behind one good run.
  */
 
-export type SpikeId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10';
+export type SpikeId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S11';
 export type Thermal = 'nominal' | 'fair' | 'serious' | 'critical';
 export type MetricValue = number | boolean | Thermal;
 
@@ -88,6 +88,16 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
   ] },
   S10: { variant: 'proxy540', checks: [
     { metric: 'realtimeFactor', op: '>=', value: 10 },
+  ] },
+  // P2 analyzers end to end (decode, sync, words, laughter, energy, faces). The M4 Max
+  // ran a 295 s set in about 8 s (37x); a phone at 5x still has a 5-minute set ready in
+  // a minute. The words model must be installed, and sync's self-check must land.
+  S11: { variant: 'pipeline', checks: [
+    { metric: 'readyRealtimeFactor', op: '>=', value: 5 },
+    { metric: 'wordsReady', op: '==', value: true },
+    { metric: 'syncConfident', op: '==', value: true },
+    { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
+    { metric: 'thermalEnd', op: '<=', value: 'fair' },
   ] },
 };
 

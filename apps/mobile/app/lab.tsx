@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { Redirect } from 'expo-router';
 import { Share, StyleSheet, Text, View } from 'react-native';
@@ -15,17 +16,28 @@ import { colors, fonts, space, type } from '../src/lib/theme';
  */
 const LAB_ENABLED = process.env.EXPO_PUBLIC_LAB === '1' && EditifyEngine !== null;
 
-type Slot = 'local' | 'icloud';
+type Slot = 'local' | 'icloud' | 'memo';
 
 /** Spikes the native module can run so far, with the params each needs. */
 const SPIKES: Array<{ id: SpikeId; label: string; variants?: string[]; params: (slots: Partial<Record<Slot, string>>) => Record<string, unknown> | string }> = [
   // The threshold arm runs first; the others are context for where the limit sits.
   { id: 'S1', label: 'Preview fps, 10 min sustained', variants: ['render1080-source', 'render720-source', 'rendernative-source'], params: (s) => (s.local ? { asset: s.local } : 'pick a local clip') },
+  { id: 'S1', label: 'Preview fps under analysis load', variants: ['render1080-source-analysis'], params: (s) => (s.local ? { asset: s.local } : 'pick a local clip') },
   { id: 'S2', label: 'Scrub latency', params: (s) => (s.local ? { asset: s.local } : 'pick a local clip') },
   { id: 'S3', label: 'Edit stalls, 50 clips', params: (s) => (s.local ? { asset: s.local } : 'pick a local clip') },
   { id: 'S6', label: 'Photos refs (local, iCloud, deleted)', params: (s) => (s.local ? { local: s.local, icloud: s.icloud } : 'pick a local clip') },
   { id: 'S10', label: '540p proxy speed', params: (s) => (s.local ? { asset: s.local } : 'pick a local clip') },
+  // P2 analyzers. Without a memo, sync checks itself against an excerpt of the clip (clip over 90 s).
+  { id: 'S11', label: 'Analyzers, ready for the AI edit', variants: ['pipeline'], params: analyzerParams },
+  { id: 'S11', label: 'Analyzers one by one (timing, memory)', variants: ['sync', 'words', 'laughter', 'energy', 'faces'], params: analyzerParams },
+  { id: 'S11', label: 'Scheduler: playback pauses heavy analyzers', variants: ['scheduler'], params: analyzerParams },
+  { id: 'S11', label: 'Crop translation frames (Documents/lab)', variants: ['crop'], params: analyzerParams },
 ];
+
+function analyzerParams(slots: Partial<Record<Slot, string>>): Record<string, unknown> | string {
+  if (!slots.local) return 'pick a local clip';
+  return slots.memo ? { asset: slots.local, memo: slots.memo } : { asset: slots.local };
+}
 
 export default function LabScreen() {
   const [slots, setSlots] = useState<Partial<Record<Slot, string>>>({});
@@ -36,12 +48,19 @@ export default function LabScreen() {
 
   useEffect(() => {
     if (!LAB_ENABLED || !EditifyEngine) return;
-    const sub = EditifyEngine.addListener('progress', (event) => setProgress(event.fraction));
+    // Analyzer progress shares the event; only the running spike's moves the bar.
+    const sub = EditifyEngine.addListener('progress', (event) => { if ('spike' in event) setProgress(event.fraction); });
     return () => sub.remove();
   }, []);
 
   if (!LAB_ENABLED || !EditifyEngine) return <Redirect href="/" />;
   const engine = EditifyEngine;
+
+  async function pickMemo() {
+    const picked = await DocumentPicker.getDocumentAsync({ type: ['audio/*', 'video/*'], copyToCacheDirectory: true });
+    const uri = picked.assets?.[0]?.uri;
+    if (uri) setSlots((current) => ({ ...current, memo: uri }));
+  }
 
   async function pick(slot: Slot) {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'], allowsMultipleSelection: false });
@@ -83,9 +102,12 @@ export default function LabScreen() {
         <Button secondary onPress={() => pick('local')}>{slots.local ? 'Local clip ✓' : 'Pick local clip'}</Button>
         <Button secondary onPress={() => pick('icloud')}>{slots.icloud ? 'iCloud clip ✓' : 'Pick iCloud clip'}</Button>
       </View>
+      <View style={styles.row}>
+        <Button secondary onPress={pickMemo}>{slots.memo ? 'Memo ✓' : 'Pick memo (optional)'}</Button>
+      </View>
 
       {SPIKES.map((spike) => (
-        <Button key={spike.id} disabled={running} onPress={() => runAll(spike)}>
+        <Button key={`${spike.id} ${spike.label}`} disabled={running} onPress={() => runAll(spike)}>
           {`${spike.id} · ${spike.label}`}
         </Button>
       ))}

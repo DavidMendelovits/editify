@@ -13,6 +13,8 @@ struct LabTimeline {
   var renderSize = CGSize(width: 1080, height: 1920)
   var frameRate: Int32 = 30
   var overlay = true
+  /// Static crop on every clip (OV8: framing an off-centre face).
+  var crop = LayerCrop()
 }
 
 enum CompositionBuilder {
@@ -21,6 +23,7 @@ enum CompositionBuilder {
       throw SpikeError(message: "asset has no video track")
     }
     let sourceDuration = try await asset.load(.duration)
+    let orientation = try await sourceTrack.load(.preferredTransform)
     let audioSource = try await asset.loadTracks(withMediaType: .audio).first
     let composition = AVMutableComposition()
     guard let trackA = composition.addMutableTrack(withMediaType: .video, preferredTrackID: 1),
@@ -56,14 +59,14 @@ enum CompositionBuilder {
       let soloEnd = index == timeline.clips - 1 ? start + clip : start + step
       if soloEnd > soloStart {
         instructions.append(LabInstruction(timeRange: CMTimeRange(start: soloStart, end: soloEnd), layers: [
-          LabLayer(trackID: trackID, scaleFrom: 1, scaleTo: timeline.punchIn, opacityFrom: 1, opacityTo: 1),
+          LabLayer(trackID: trackID, scaleFrom: 1, scaleTo: timeline.punchIn, opacityFrom: 1, opacityTo: 1, crop: timeline.crop, orientation: orientation),
         ], overlay: overlay))
       }
       if index < timeline.clips - 1 {
         let nextID: CMPersistentTrackID = trackID == 1 ? 2 : 1
         instructions.append(LabInstruction(timeRange: CMTimeRange(start: start + step, duration: fade), layers: [
-          LabLayer(trackID: trackID, scaleFrom: timeline.punchIn, scaleTo: timeline.punchIn, opacityFrom: 1, opacityTo: 1),
-          LabLayer(trackID: nextID, scaleFrom: 1, scaleTo: 1, opacityFrom: 0, opacityTo: 1),
+          LabLayer(trackID: trackID, scaleFrom: timeline.punchIn, scaleTo: timeline.punchIn, opacityFrom: 1, opacityTo: 1, crop: timeline.crop, orientation: orientation),
+          LabLayer(trackID: nextID, scaleFrom: 1, scaleTo: 1, opacityFrom: 0, opacityTo: 1, crop: timeline.crop, orientation: orientation),
         ], overlay: overlay))
       }
     }

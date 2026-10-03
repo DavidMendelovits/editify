@@ -31,6 +31,13 @@ describe('evaluate', () => {
     expect(result.metrics.find((m) => m.metric === 'thermalEnd')).toMatchObject({ median: 'fair', worst: 'serious', worstPass: false });
   });
 
+  it('judges the analyzer pipeline (S11) on readiness, the speech model and sync', () => {
+    const pipeline = { spike: 'S11' as const, variant: 'pipeline', metrics: { readyRealtimeFactor: 9, wordsReady: true, syncConfident: true } };
+    expect(evaluate(runs([pipeline, pipeline, pipeline]))[0]!.verdict).toBe('go');
+    const noModel = { ...pipeline, metrics: { ...pipeline.metrics, wordsReady: false } };
+    expect(evaluate(runs([noModel, noModel, pipeline]))[0]!.verdict).toBe('no-go');
+  });
+
   it('needs three ok runs before judging', () => {
     const result = evaluate(runs([{}, {}]))[0]!;
     expect(result.verdict).toBe('insufficient');
