@@ -33,6 +33,14 @@ void supabase.auth.getSession().then(({ data }) => publishSession(data.session))
 // One auth observer owns API token changes; screens subscribe to its snapshots.
 supabase.auth.onAuthStateChange((_event, session) => publishSession(session));
 
+/**
+ * The current session, refreshed first when its access token has expired (the refresh then
+ * reaches setAccessToken through onAuthStateChange). For a media URL that just failed.
+ */
+export async function freshSession(): Promise<void> {
+  await supabase.auth.getSession();
+}
+
 export function onAuthStateChange(listener: AuthStateListener): () => void {
   listeners.add(listener);
   if (currentSession !== undefined) listener(currentSession);

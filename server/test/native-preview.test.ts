@@ -14,8 +14,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * parameter-only updates swapping the video composition on the same item
  * (and the paused frame redrawing), structural updates rebuilding the item
  * at the same time, (revision, buildSeq) ordering, 60 Hz box updates while
- * playing and while paused, audio continuity through an audio tap, and a
- * proxy replaced by its original.
+ * playing and while paused, audio continuity through an audio tap, a proxy
+ * replaced by its original, the lifecycle holds (backgrounded and parked kept
+ * apart), server copies through token refreshes and expiry, and the preview's
+ * downloads and temp stills.
  *
  * Needs swiftc (macOS). Elsewhere it skips, except where REQUIRE_SWIFT=1 (the
  * macOS CI `engine` job): there a missing toolchain fails. The golden
@@ -64,11 +66,21 @@ interface Report {
     failure: { rebuilt: boolean; errorsAfterFirst: number; errorsAfterSecond: number; timeAfterRetry: number };
     parked: { item: boolean; stickerBitmaps: number };
     unparked: { item: boolean; timeKept: boolean };
+    backgroundPark: { accepted: boolean; itemWhileBackgrounded: boolean; appliedWhileBackgrounded: number; item: boolean; timeKept: boolean; appliedAfterResume: number };
     teardown: { applied: number; item: boolean };
   };
   pausedDrag60: { sent: number; applied: number; refreshedFrames: number; refreshIntervalMs: Stats; stillAtTime: boolean; finalAtLast?: Vec };
   proxySwap: { first: string; second: string; proxyCode: number; reloaded: boolean; othersKept: boolean; originalCompare: Compare };
   renderCap: { scale4k: number; scale4kInView: number };
+  serverCopies: {
+    tokenRefresh: { mode: string; sameItem: boolean; sameSource: boolean; stale: string[] };
+    staleRetry: { rebuilt: boolean; reloaded: boolean; stale: string[]; expired: number; errors: number; timeKept: boolean };
+    asked: { expired: number; errors: number; sameItem: boolean; applied: number; state: string };
+    retried: { mode: string; reloaded: boolean; state: string; timeKept: boolean };
+    fellBack: { expired: number; errors: number };
+    structuralSwap: { staleBefore: string[]; mode: string; reloaded: boolean; staleAfter: string[] };
+  };
+  previewFiles: { runs: number; ended: number; cancelled: number; keptDeleted: boolean; lateDeleted: boolean; lateThrew: boolean; held: number };
   /** False on a machine with no audio output device (CI VMs): muted players, no tap. */
   audioDevice: boolean;
   steps: Array<{ step: string; ms: number }>;
@@ -83,7 +95,7 @@ beforeAll(async () => {
   if (!swiftAvailable) return;
   dir = mkdtempSync(join(tmpdir(), 'editify-native-preview-'));
   const binary = join(dir, 'preview-harness');
-  const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath', 'PlanPlayer']
+  const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath', 'PlanPlayer', 'PreviewFiles']
     .map((name) => join(engine, 'ios', `${name}.swift`));
   const harness = [join(engine, 'parity/render-golden/HarnessMedia.swift'), join(engine, 'parity/preview/main.swift')];
   await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
@@ -224,6 +236,35 @@ describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
     expect(parked).toEqual({ item: false, stickerBitmaps: 0 });
     expect(unparked).toEqual({ item: true, timeKept: true });
     expect(teardown).toEqual({ applied: 0, item: false });
+  });
+
+  it('keeps background and park apart: unparked while backgrounded, nothing runs until the app returns', () => {
+    expect(report.lifecycle.backgroundPark).toEqual({
+      accepted: true, itemWhileBackgrounded: false, appliedWhileBackgrounded: 0, item: true, timeKept: true, appliedAfterResume: 1,
+    });
+  });
+
+  it('keeps the item and its source through a token-only refresh, and swaps the URL at the next rebuild', () => {
+    const { tokenRefresh, staleRetry, structuralSwap } = report.serverCopies;
+    expect(tokenRefresh).toEqual({ mode: 'update', sameItem: true, sameSource: true, stale: ['asset-talk'] });
+    // The old token expiring under it: rebuilt on the URL already held, with no request for media.
+    expect(staleRetry).toEqual({ rebuilt: true, reloaded: true, stale: [], expired: 0, errors: 0, timeKept: true });
+    expect(structuralSwap).toEqual({ staleBefore: ['asset-talk'], mode: 'rebuild', reloaded: true, staleAfter: [] });
+  });
+
+  it('asks for fresh media when server copies fail, retries on them, and reports a failure after that', () => {
+    const { asked, retried, fellBack } = report.serverCopies;
+    // No retry on the same URLs: one mediaExpired, the failed item left as is.
+    expect(asked).toEqual({ expired: 1, errors: 0, sameItem: true, applied: 0, state: 'awaiting' });
+    expect(retried).toEqual({ mode: 'rebuild', reloaded: true, state: 'retried', timeKept: true });
+    expect(fellBack).toEqual({ expired: 1, errors: 1 });
+  });
+
+  it('never starts a download on an invalidated session, and deletes a still that lands after teardown', () => {
+    const files = report.previewFiles;
+    expect(files.ended).toBe(files.runs);
+    expect(files.cancelled).toBeGreaterThan(0);
+    expect(files).toMatchObject({ keptDeleted: true, lateDeleted: true, lateThrew: true, held: 0 });
   });
 
   it('redraws the paused frame through 60 Hz box updates', () => {

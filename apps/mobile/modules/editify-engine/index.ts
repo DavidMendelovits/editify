@@ -268,7 +268,12 @@ export interface PlayerReadyEvent { duration: number }
 export interface PlayerStallEvent { buffering: boolean }
 /** `end`: the timeline ran out. `interrupted`: iOS paused it (the app left the foreground, a call). */
 export interface PlayerEndedEvent { reason: 'end' | 'interrupted' }
-export interface PlayerErrorEvent { message: string }
+/**
+ * `code: 'mediaExpired'`: an item playing the user's server copies failed (often an expired
+ * media token): resolve the media again and send a plan; native retries on it, and a failure
+ * after that is a plain error. No code: the preview can't go on (fall back).
+ */
+export interface PlayerErrorEvent { message: string; code?: 'mediaExpired' }
 /**
  * How an accepted plan was applied: `update` swapped the video composition (and the audio mix
  * when sound changed) on the playing item; `rebuild` made a new item at the same time; `empty`

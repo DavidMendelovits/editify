@@ -14,6 +14,9 @@
  *        a burst of edits: the first sends at once, the rest coalesce into one send per window
  *        a handle drag: patchOverlayPlacement on the last plan (the overlay's box only, a
  *          parameter-only update native swaps in place); project rebuilds wait for release
+ *
+ *   native onError ─▶ MediaRecovery: 'mediaExpired' re-resolves the media (fresh token) and
+ *     sends a forced plan; anything else, or a second failure, falls back to PreviewPlayer
  */
 import {
   buildRenderPlan, planOverlayLayout,
@@ -245,10 +248,15 @@ export class PlanFeeder {
   get buildSeq(): number { return this.seq; }
   get isDragging(): boolean { return this.dragging !== undefined; }
 
-  /** The project, its assets, the size or the media changed. */
-  update(input: FeedInput): void {
+  /**
+   * The project, its assets, the size or the media changed. `force`: send this input's plan even
+   * when it matches what native already has (media resolved again after native asked for it:
+   * native retries on that plan, whatever its URLs).
+   */
+  update(input: FeedInput, force = false): void {
     if (this.disposed) return;
     this.input = input;
+    if (force) this.signature = undefined;
     if (this.dragging !== undefined || this.timer !== undefined) {
       this.dirty = true;
       return;
@@ -335,6 +343,91 @@ export class PlanFeeder {
       this.flush();
       this.arm();
     }, this.options.debounceMs);
+  }
+}
+
+// ─── Native failures ───
+
+export interface MediaRecoveryOptions {
+  /** Refresh the auth token if it expired, resolve the media again, and send a plan with it (forced). */
+  reresolve: () => void;
+  /** Give up on the native preview: the editor falls back to PreviewPlayer. */
+  fallback: (reason: string) => void;
+  /** How long native may take to apply a plan after a re-resolve before this gives up, ms (default 15 s). */
+  timeoutMs?: number;
+  /** Another expiry this soon after a recovery began falls back instead of looping, ms (default 30 s). */
+  minIntervalMs?: number;
+  now?: () => number;
+  setTimer?: (run: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+}
+
+/**
+ * What a native error means. `mediaExpired` (an item playing the user's server copies failed,
+ * most often an expired `k=` token after the app was in the background): resolve the media
+ * again instead of falling back; native rebuilds on the plan that follows, and reports a
+ * plain error if that fails too. Anything else, an expiry while a recovery is under way or
+ * soon after one, or a recovery whose plan never lands: fall back to PreviewPlayer.
+ *
+ *   onError(mediaExpired) ─▶ reresolve() ─▶ onPlan(update | rebuild) ─▶ done
+ *                                       └─▶ no plan within timeoutMs ─▶ fallback
+ *   onError(anything else) ─▶ fallback
+ */
+export class MediaRecovery {
+  private recovering = false;
+  private startedAt: number | undefined;
+  private timer: unknown;
+  private disposed = false;
+  private readonly options: Required<MediaRecoveryOptions>;
+
+  constructor(options: MediaRecoveryOptions) {
+    this.options = {
+      timeoutMs: 15_000,
+      minIntervalMs: 30_000,
+      now: () => Date.now(),
+      setTimer: (run, ms) => setTimeout(run, ms),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      ...options,
+    };
+  }
+
+  get isRecovering(): boolean { return this.recovering; }
+
+  /** A native onError. `hasRemote`: the media in use includes the user's server copies. */
+  onError(event: { message: string; code?: string }, hasRemote: boolean): void {
+    if (this.disposed) return;
+    const now = this.options.now();
+    const recent = this.startedAt !== undefined && now - this.startedAt < this.options.minIntervalMs;
+    if (event.code === 'mediaExpired' && hasRemote && !this.recovering && !recent) {
+      this.recovering = true;
+      this.startedAt = now;
+      this.timer = this.options.setTimer(() => {
+        this.timer = undefined;
+        if (this.disposed || !this.recovering) return;
+        this.recovering = false;
+        this.options.fallback(`native: media expired, and no plan with new media landed (${event.message})`);
+      }, this.options.timeoutMs);
+      this.options.reresolve();
+      return;
+    }
+    this.stop();
+    this.options.fallback(`native: ${event.message}`);
+  }
+
+  /** A native onPlan: a plan applied after a re-resolve ends the recovery (native retries on it). */
+  onPlan(mode: string): void {
+    if (this.recovering && mode !== 'failed') this.stop();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.stop();
+  }
+
+  private stop(): void {
+    this.recovering = false;
+    if (this.timer !== undefined) this.options.clearTimer(this.timer);
+    this.timer = undefined;
   }
 }
 

@@ -296,18 +296,19 @@ public class EditifyEngineModule: Module {
 
       /// The app's API origin (EXPO_PUBLIC_API_URL): remote media must come from it.
       Prop("apiOrigin") { (view: EditifyPlayerView, origin: String?) in
-        view.apiOrigin = origin.flatMap(URL.init(string:))
+        view.apiOrigin.url = origin.flatMap(URL.init(string:))
       }
 
       /// A RenderPlan v1 (JSON, built for the view's size) and its media map {assetId: ref from
-      /// resolveMedia 'preview'}. Decoded here, off the main thread; the map is checked on it.
-      /// {accepted: false} when its (revision, buildSeq) is not newer than the last one this view
-      /// accepted. How it was applied (in place or rebuilt) arrives as onPlan. Rejects a bad plan
-      /// or media map.
+      /// resolveMedia 'preview'}. Decoded and checked here, off the main thread (the check resolves
+      /// file symlinks on disk); only the hand-over runs on it. {accepted: false} when its
+      /// (revision, buildSeq) is not newer than the last one this view accepted. How it was
+      /// applied (in place or rebuilt) arrives as onPlan. Rejects a bad plan or media map.
       AsyncFunction("setPlan") { (view: EditifyPlayerView, planJson: String, media: [String: Any]) async throws -> [String: Any] in
         let plan: RenderPlan
         do { plan = try RenderPlan.decode(Data(planJson.utf8)) } catch { throw PreviewMedia.Rejected(message: error.localizedDescription) }
-        let accepted = try await MainActor.run { try view.setPlan(plan, media: media) }
+        let refs = try PreviewMedia.validate(media, for: plan, origin: view.apiOrigin.url)
+        let accepted = await MainActor.run { view.setPlan(plan, media: refs) }
         return ["accepted": accepted]
       }
 

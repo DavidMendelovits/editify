@@ -10,8 +10,9 @@ import UIKit
 /// setPlan(planJson, media), play, pause, seek(t, exact), setMuted; `apiOrigin`
 /// (a prop) is the only server remote media may come from. It reports onTime (the
 /// native clock: ~30 Hz while playing, and when a seek lands), onReady, onStall
-/// ({buffering}), onEnded ({reason: 'end' | 'interrupted'}), onError and onPlan (how
-/// each accepted plan was applied, with its latency).
+/// ({buffering}), onEnded ({reason: 'end' | 'interrupted'}), onError ({message, code?}:
+/// code 'mediaExpired' asks for the media to be resolved again, see PlanPlayer) and
+/// onPlan (how each accepted plan was applied, with its latency).
 ///
 /// The render is the view's pixel size, capped at 1080 x 1920 (PlanPlayer.renderScale);
 /// the layer aspect-fits it, with the plan's background behind.
@@ -29,7 +30,8 @@ final class EditifyPlayerView: ExpoView {
   let onPlan = EventDispatcher()
 
   /// The app's API server (scheme, host, port): the only origin remote media may come from.
-  var apiOrigin: URL?
+  /// Set from the main thread (a prop), read off it where setPlan validates the media map.
+  nonisolated let apiOrigin = PreviewOrigin()
 
   private let playerLayer = AVPlayerLayer()
   private let core: PlanPlayer
@@ -99,10 +101,9 @@ final class EditifyPlayerView: ExpoView {
 
   // MARK: Commands (from the module's View functions, on the main thread)
 
-  /// Validates the media map against the plan and `apiOrigin`, then hands the plan over.
+  /// Hands over a plan and its media map (validated off the main thread: PreviewMedia.validate).
   /// False when the plan is not newer than the last one this view accepted.
-  func setPlan(_ plan: RenderPlan, media raw: [String: Any]) throws -> Bool {
-    let media = try PreviewMedia.validate(raw, for: plan, origin: apiOrigin)
+  func setPlan(_ plan: RenderPlan, media: [String: String]) -> Bool {
     guard core.setPlan(plan, media: media) else { return false }
     backgroundColor = UIColor(red: plan.background.red, green: plan.background.green, blue: plan.background.blue, alpha: 1)
     return true
@@ -127,30 +128,22 @@ final class EditifyPlayerView: ExpoView {
     case .buffering(let buffering): onStall(["buffering": buffering])
     case .ended(let reason): onEnded(["reason": reason])
     case .error(let message): onError(["message": message])
+    case .mediaExpired(let message): onError(["message": message, "code": "mediaExpired"])
     case .plan(let applied): onPlan(applied.dictionary)
     }
   }
 }
 
-/// Temp stills the preview wrote (Photos originals, server copies), deleted once no plan uses them.
-final class PreviewTempFiles: @unchecked Sendable {
+/// The API origin remote media must come from: written by the `apiOrigin` prop on the main
+/// thread, read by setPlan's validation off it.
+final class PreviewOrigin: @unchecked Sendable {
   private let lock = NSLock()
-  private var files = Set<URL>()
+  private var value: URL?
 
-  func add(_ url: URL) { lock.withLock { _ = files.insert(url.standardizedFileURL) } }
-
-  /// Deletes every file not in `keep`.
-  func retain(only keep: Set<URL>) {
-    let kept = Set(keep.map(\.standardizedFileURL))
-    let gone = lock.withLock { () -> Set<URL> in
-      let gone = files.subtracting(kept)
-      files.subtract(gone)
-      return gone
-    }
-    for url in gone { try? FileManager.default.removeItem(at: url) }
+  var url: URL? {
+    get { lock.withLock { value } }
+    set { lock.withLock { value = newValue } }
   }
-
-  func removeAll() { retain(only: []) }
 }
 
 /// Where the preview's media comes from: the map JS built with resolveMedia (purpose
@@ -158,7 +151,8 @@ final class PreviewTempFiles: @unchecked Sendable {
 /// a file:// URI inside the app (an app copy or a 1080p proxy), or a URL on the app's own
 /// API server (the user's server copy of a clip that isn't on this iPhone): https only in
 /// release builds, and only `apiOrigin`. Ids resolve only within the map, never as paths
-/// (PlanAssetResolver's contract).
+/// (PlanAssetResolver's contract). Validation is pure (it resolves symlinks on disk):
+/// setPlan runs it off the main thread.
 enum PreviewMedia {
   struct Rejected: Error, LocalizedError {
     let message: String
@@ -206,13 +200,14 @@ enum PreviewMedia {
       },
       imageFile: { ref in
         guard let value = media[ref.id] else { throw AssetSource.NotFound(ref: ref.id) }
+        // A still that lands after teardown is deleted (and the build, already abandoned, fails).
         if PlanPlayer.isRemote(value), let url = URL(string: value) {
           let file = try await download(url)
-          temps.add(file)
+          try temps.add(file)
           return file
         }
         let file = try await ExportCenter.imageFile(value, id: ref.id, prefix: TempFiles.previewPrefix)
-        if file.lastPathComponent.hasPrefix(TempFiles.previewPrefix) { temps.add(file) }
+        if file.lastPathComponent.hasPrefix(TempFiles.previewPrefix) { try temps.add(file) }
         return file
       })
   }
@@ -227,83 +222,5 @@ enum PreviewMedia {
       try? FileManager.default.removeItem(at: target)
       throw error
     }
-  }
-}
-
-/// One download on its own ephemeral session: refused when the server announces more than
-/// `cap` bytes or sends more, and bounded by `timeout` for the whole transfer. Delegate
-/// callbacks run on the session's serial queue.
-private final class CappedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-  private let cap: Int64
-  private let target: URL
-  private var handle: FileHandle?
-  private var written: Int64 = 0
-  private var failure: Error?
-  private var continuation: CheckedContinuation<Void, Error>?
-
-  private init(cap: Int64, target: URL) {
-    self.cap = cap
-    self.target = target
-  }
-
-  static func run(_ url: URL, to target: URL, cap: Int64, timeout: TimeInterval) async throws {
-    let configuration = URLSessionConfiguration.ephemeral
-    configuration.timeoutIntervalForRequest = timeout
-    configuration.timeoutIntervalForResource = timeout
-    configuration.urlCache = nil
-    let delegate = CappedDownload(cap: cap, target: target)
-    let queue = OperationQueue()
-    queue.maxConcurrentOperationCount = 1
-    let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
-    defer { session.finishTasksAndInvalidate() }
-    try await withTaskCancellationHandler {
-      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-        queue.addOperation {
-          delegate.continuation = continuation
-          session.dataTask(with: url).resume()
-        }
-      }
-    } onCancel: {
-      session.invalidateAndCancel()
-    }
-  }
-
-  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
-                  completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-      failure = PreviewMedia.Rejected(message: "the server copy of a still is unavailable")
-      return completionHandler(.cancel)
-    }
-    guard response.expectedContentLength <= cap else {
-      failure = PreviewMedia.Rejected(message: "a still is over \(cap >> 20) MB")
-      return completionHandler(.cancel)
-    }
-    guard FileManager.default.createFile(atPath: target.path, contents: nil), let handle = try? FileHandle(forWritingTo: target) else {
-      failure = PreviewMedia.Rejected(message: "could not write a still")
-      return completionHandler(.cancel)
-    }
-    self.handle = handle
-    completionHandler(.allow)
-  }
-
-  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-    written += Int64(data.count)
-    guard written <= cap else {
-      failure = PreviewMedia.Rejected(message: "a still is over \(cap >> 20) MB")
-      dataTask.cancel()
-      return
-    }
-    do { try handle?.write(contentsOf: data) } catch {
-      failure = error
-      dataTask.cancel()
-    }
-  }
-
-  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-    try? handle?.close()
-    handle = nil
-    let continuation = self.continuation
-    self.continuation = nil
-    if let failure = failure ?? error { continuation?.resume(throwing: failure) } else { continuation?.resume() }
   }
 }

@@ -7,9 +7,10 @@ import { useEngineActivity } from '../../lib/engine-activity';
 import { leaseMedia, type MediaLease } from '../../lib/local-media';
 import { localMedia } from '../../lib/local-media-native';
 import {
-  createPlanStore, followsNativeTime, isExternalSeek, PlanFeeder, previewPlanSize, projectAssetRefs, redactMediaToken, resolvePreviewMedia,
-  serverPreviewMedia, urlOrigin, type PreviewMedia,
+  createPlanStore, followsNativeTime, isExternalSeek, MediaRecovery, PlanFeeder, previewPlanSize, projectAssetRefs, redactMediaToken,
+  resolvePreviewMedia, serverPreviewMedia, urlOrigin, type PreviewMedia,
 } from '../../lib/native-preview';
+import { freshSession } from '../../lib/supabase';
 import { colors, fonts, radius, space, type } from '../../lib/theme';
 import { formatTimecode } from '../../lib/timeline';
 import { PreviewHandles } from './PreviewHandles';
@@ -25,8 +26,10 @@ import { usePlayhead, type PlayheadClock } from './usePlayback';
  *   native time events (while playing) ─▶ onTimeUpdate ─▶ the editor's playhead
  *   playhead moved by the user (tap, scrub) ─▶ exact seek (native coalesces a scrub's seeks)
  *   playing ─▶ play() / pause(); native end or interruption ─▶ onEnded
- *   a native failure, or a project that can't become a plan ─▶ onUnavailable (the editor
- *   falls back to PreviewPlayer)
+ *   server copies failed (native 'mediaExpired', e.g. a token that expired in the background)
+ *     ─▶ refresh the session, resolve the media again, send a forced plan (native retries on it)
+ *   any other native failure, a failed retry, or a project that can't become a plan ─▶
+ *     onUnavailable (the editor falls back to PreviewPlayer)
  *
  * Media (resolvePreviewMedia): 1080p proxies when ready, the local original otherwise, the
  * user's server copy for anything not on this iPhone; the local ones stay leased while this
@@ -100,6 +103,17 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   const [resolveTick, setResolveTick] = useState(0);
   const refsRef = useRef(refs);
   refsRef.current = refs;
+  /** Native asked for fresh media: the next resolve is sent even if its URLs are unchanged. */
+  const recoveringMedia = useRef(false);
+  /** The resolve that answers native's request: the feeder sends its plan whatever native holds. */
+  const forcedMedia = useRef<PreviewMedia | undefined>(undefined);
+  const publishMedia = useCallback((next: PreviewMedia) => {
+    if (recoveringMedia.current) {
+      recoveringMedia.current = false;
+      forcedMedia.current = next;
+    }
+    setMedia(next);
+  }, []);
   /** The lease on the media in use: replaced (new first, then old released) on every resolve. */
   const lease = useRef<MediaLease | null>(null);
   useEffect(() => () => {
@@ -114,7 +128,7 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
       const deps = await localMedia();
       if (cancelled) return;
       if (!deps) {
-        setMedia(serverPreviewMedia(wanted, SERVER));
+        publishMedia(serverPreviewMedia(wanted, SERVER));
         return;
       }
       // No gap: the old lease holds until the new one is taken.
@@ -123,13 +137,13 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
       previous?.release();
       try {
         const resolved = await resolvePreviewMedia(wanted, deps, SERVER);
-        if (!cancelled) setMedia(resolved);
+        if (!cancelled) publishMedia(resolved);
       } catch {
-        if (!cancelled) setMedia(serverPreviewMedia(wanted, SERVER));
+        if (!cancelled) publishMedia(serverPreviewMedia(wanted, SERVER));
       }
     })();
     return () => { cancelled = true; };
-  }, [assetKey, resolveTick]);
+  }, [assetKey, resolveTick, publishMedia]);
 
   // Server URLs carry the auth token (`k=`): a refreshed token mints them again (native reloads only those).
   const hasRemote = (media?.remote.length ?? 0) > 0;
@@ -137,6 +151,19 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
     if (!hasRemote) return undefined;
     return onAccessTokenChange(() => setResolveTick((tick) => tick + 1));
   }, [hasRemote]);
+  const hasRemoteRef = useRef(hasRemote);
+  hasRemoteRef.current = hasRemote;
+
+  // Native errors: server copies that failed are resolved again (once); anything else falls back.
+  const recovery = useMemo(() => new MediaRecovery({
+    reresolve: () => {
+      // Flagged first: a refresh that changes the token re-resolves on its own, and that resolve is the one sent.
+      recoveringMedia.current = true;
+      void freshSession().catch(() => undefined).finally(() => setResolveTick((tick) => tick + 1));
+    },
+    fallback: unavailable,
+  }), [unavailable]);
+  useEffect(() => () => recovery.dispose(), [recovery]);
 
   // A proxy became ready (or went away) for an asset on screen: resolve again, so native swaps it in.
   const localIds = media?.local.join('|') ?? '';
@@ -191,7 +218,9 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   useEffect(() => {
     // Media resolved for an older set of assets (a clip was just added): wait for the new map.
     if (!size || !media || !refs || refs.some((item) => media.media[item.id] === undefined)) return;
-    feederFor().update({ project, assets, size, media: media.media, geometry: media.geometry });
+    const force = forcedMedia.current === media;
+    if (force) forcedMedia.current = undefined;
+    feederFor().update({ project, assets, size, media: media.media, geometry: media.geometry }, force);
   }, [project, assets, size, media, refs]);
   const attach = useCallback((node: EditifyPlayerViewHandle | null) => {
     view.current = node;
@@ -281,7 +310,8 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
               }
               live.current.onEnded();
             }}
-            onError={(event) => unavailable(`native: ${event.nativeEvent.message}`)}
+            onError={(event) => recovery.onError(event.nativeEvent, hasRemoteRef.current)}
+            onPlan={(event) => recovery.onPlan(event.nativeEvent.mode)}
           />
           {buffering && (
             <View pointerEvents="none" style={styles.buffering}>

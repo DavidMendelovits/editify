@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { applyBatch, type AssetMetadata, type Clip, type OverlayPlacement, type Project, type RenderPlan } from '@editify/shared';
 import { HandleDrag } from './preview-handles';
 import {
-  buildPreviewPlan, createPlanStore, followsNativeTime, isExternalSeek, NATIVE_PREVIEW_FLAG, redactMediaToken, urlOrigin, patchOverlayPlacement, PlanFeeder, previewAssetInfo,
+  buildPreviewPlan, createPlanStore, followsNativeTime, isExternalSeek, MediaRecovery, NATIVE_PREVIEW_FLAG, redactMediaToken, urlOrigin, patchOverlayPlacement, PlanFeeder, previewAssetInfo,
   previewPlanSize, previewRoute, projectAssetRefs, resolvePreviewMedia, serverPreviewMedia, type FeedInput,
 } from './native-preview';
 import { createLocalMediaStore, migrate, type MediaDeps, type MediaFingerprint, type MediaGeometry, type MediaNative, type MediaProbe } from './local-media';
@@ -284,6 +284,114 @@ describe('a drag that ends without a commit', () => {
     expect(final).toBe(dragged);
     // Never back to the old position in between.
     expect(sent.slice(-2).map((plan) => plan.overlays.find((overlay) => overlay.id === 'fire')!.box.x)).not.toContain(projectX);
+  });
+});
+
+describe('native failures (MediaRecovery)', () => {
+  function rig(options: { timeoutMs?: number; minIntervalMs?: number } = {}) {
+    let now = 0;
+    let pending: (() => void) | undefined;
+    const calls: string[] = [];
+    const recovery = new MediaRecovery({
+      reresolve: () => calls.push('reresolve'),
+      fallback: (reason) => calls.push(`fallback: ${reason}`),
+      now: () => now,
+      setTimer: (run) => { pending = run; return 1; },
+      clearTimer: () => { pending = undefined; },
+      ...options,
+    });
+    return {
+      recovery, calls,
+      advance: (ms: number) => { now += ms; },
+      fire: () => { const run = pending; pending = undefined; run?.(); },
+      get armed() { return pending !== undefined; },
+    };
+  }
+  const expired = { message: 'The operation could not be completed', code: 'mediaExpired' };
+
+  it('resolves expired server media again instead of falling back, and is done once a plan lands', () => {
+    const r = rig();
+    r.recovery.onError(expired, true);
+    expect(r.calls).toEqual(['reresolve']);
+    expect(r.recovery.isRecovering).toBe(true);
+    expect(r.armed).toBe(true);
+    // A plan that failed to apply doesn't end it; the re-resolved one does (native retries on it).
+    r.recovery.onPlan('failed');
+    expect(r.recovery.isRecovering).toBe(true);
+    r.recovery.onPlan('rebuild');
+    expect(r.recovery.isRecovering).toBe(false);
+    expect(r.armed).toBe(false);
+    r.fire();
+    expect(r.calls).toEqual(['reresolve']);
+  });
+
+  it('falls back when the retry fails too (a plain error), or its plan never lands', () => {
+    const failed = rig();
+    failed.recovery.onError(expired, true);
+    failed.recovery.onPlan('rebuild');
+    failed.recovery.onError({ message: 'Playback failed' }, true);
+    expect(failed.calls).toEqual(['reresolve', 'fallback: native: Playback failed']);
+
+    const silent = rig();
+    silent.recovery.onError(expired, true);
+    silent.fire();
+    expect(silent.calls).toEqual(['reresolve', 'fallback: native: media expired, and no plan with new media landed (The operation could not be completed)']);
+    expect(silent.recovery.isRecovering).toBe(false);
+  });
+
+  it('falls back on any other error, without server media, or on an expiry soon after a recovery', () => {
+    const other = rig();
+    other.recovery.onError({ message: 'compositor' }, true);
+    expect(other.calls).toEqual(['fallback: native: compositor']);
+
+    const local = rig();
+    local.recovery.onError(expired, false);
+    expect(local.calls).toEqual(['fallback: native: The operation could not be completed']);
+
+    // Recovered, then expired again within the interval: no loop.
+    const again = rig({ minIntervalMs: 30_000 });
+    again.recovery.onError(expired, true);
+    again.recovery.onPlan('rebuild');
+    again.advance(10_000);
+    again.recovery.onError(expired, true);
+    expect(again.calls).toEqual(['reresolve', 'fallback: native: The operation could not be completed']);
+
+    // An hour later (the next background trip) it recovers again.
+    const later = rig({ minIntervalMs: 30_000 });
+    later.recovery.onError(expired, true);
+    later.recovery.onPlan('update');
+    later.advance(3_600_000);
+    later.recovery.onError(expired, true);
+    expect(later.calls).toEqual(['reresolve', 'reresolve']);
+  });
+
+  it('sends the re-resolved media to native even when its URLs did not change (forced)', () => {
+    let pending: (() => void) | undefined;
+    const sent: Array<{ plan: RenderPlan; media: Record<string, string> }> = [];
+    const feeder = new PlanFeeder({
+      send: (plan, media) => sent.push({ plan, media }),
+      setTimer: (run) => { pending = run; return 1; },
+      clearTimer: () => { pending = undefined; },
+    });
+    const server = { 'asset-talk': 'https://api.test/assets/asset-talk/proxy.mp4?k=t1', 'asset-logo': 'PH-logo', 'asset-bed': 'PH-bed' };
+    const feed = (media: Record<string, string>): FeedInput => ({ project: PROJECT, assets: ASSETS, size: SIZE, media, geometry: {} });
+    feeder.update(feed(server));
+    pending?.();
+    expect(sent).toHaveLength(1);
+    // The same media again: nothing for native.
+    feeder.update(feed({ ...server }));
+    pending?.();
+    expect(sent).toHaveLength(1);
+    // Native asked for media and the token had not changed: the same URLs go anyway, as a newer plan.
+    feeder.update(feed({ ...server }), true);
+    pending?.();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.plan.buildSeq).toBeGreaterThan(sent[0]!.plan.buildSeq);
+    expect(sent[1]!.media).toEqual(server);
+    // A refreshed token goes without forcing (new URLs).
+    feeder.update(feed({ ...server, 'asset-talk': 'https://api.test/assets/asset-talk/proxy.mp4?k=t2' }));
+    pending?.();
+    expect(sent).toHaveLength(3);
   });
 });
 

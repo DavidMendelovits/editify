@@ -19,7 +19,15 @@
 //    by its original reloads only that asset.
 // 4. Lifecycle: suspended (backgrounded) plans and seeks wait for resume; a failed
 //    item is rebuilt once, a second failure reported; park drops the item and
-//    trims caches, unpark restores the time; teardown mid-build installs nothing.
+//    trims caches, unpark restores the time; unparked while still backgrounded,
+//    nothing runs until resume; teardown mid-build installs nothing.
+// 5. Server copies (refs on https://media.test, which the harness resolver maps to
+//    the local files): a token-only ref change keeps the item and the source; a
+//    failure then rebuilds on the new URL; a failure with no newer URL asks for
+//    media (mediaExpired) instead of retrying, the plan that follows rebuilds with
+//    the remote source reloaded, and a failure after that is an error.
+// 6. Preview files: a download cancelled around its start never touches an
+//    invalidated session; a still added after teardown is deleted.
 // Prints one JSON report on stdout; server/test/native-preview.test.ts asserts on it.
 //
 // Never hangs: every wait is bounded and labelled, and a watchdog thread (which needs
@@ -196,16 +204,29 @@ let proxyURL = work.appendingPathComponent("asset-talk-proxy.mov")
 _ = try writeVideo(proxyMedia, to: proxyURL)
 
 /// What the module does with the media map: ids resolve only within it (here, the synthesized files).
+/// A server copy (`https://media.test/<id>/...?k=<token>`) stands for that id's local file.
 func resolver(_ refs: [String: String]) -> PlanAssetResolver {
-  PlanAssetResolver(
+  func local(_ value: String) -> URL? {
+    guard PlanPlayer.isRemote(value) else { return URL(string: value) }
+    guard let id = URL(string: value)?.pathComponents.dropFirst().first, let file = mediaRefs[id] else { return nil }
+    return URL(string: file)
+  }
+  return PlanAssetResolver(
     asset: { ref in
-      guard ref.kind != .image, let value = refs[ref.id], let url = URL(string: value) else { throw HarnessError("no \(ref.kind.rawValue) asset \(ref.id)") }
+      guard ref.kind != .image, let value = refs[ref.id], let url = local(value) else { throw HarnessError("no \(ref.kind.rawValue) asset \(ref.id)") }
       return AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
     },
     imageFile: { ref in
-      guard ref.kind == .image, let value = refs[ref.id], let url = URL(string: value) else { throw HarnessError("no image asset \(ref.id)") }
+      guard ref.kind == .image, let value = refs[ref.id], let url = local(value) else { throw HarnessError("no image asset \(ref.id)") }
       return url
     })
+}
+
+/// The media map with asset-talk played from its "server copy", minted with `token`.
+func serverCopy(token: String) -> [String: String] {
+  var refs = mediaRefs
+  refs["asset-talk"] = "https://media.test/asset-talk/proxy.mp4?k=\(token)"
+  return refs
 }
 
 // MARK: Audio tap (continuity across composition and mix swaps)
@@ -282,6 +303,7 @@ final class Rig {
   var stalls = 0
   var ends = 0
   var errors: [String] = []
+  var expired: [String] = []
   var readies = 0
   let tap = TapLog()
 
@@ -307,6 +329,7 @@ final class Rig {
       case .buffering(let on): if on { self.stalls += 1 }
       case .ended: self.ends += 1
       case .error(let message): self.errors.append(message)
+      case .mediaExpired(let message): self.expired.append(message)
       case .ready: self.readies += 1
       }
     }
@@ -682,9 +705,33 @@ func run() async throws -> [String: Any] {
     rig.player.unpark()
     try await rig.expect("the unparked item ready") { rig.player.player.currentItem?.status == .readyToPlay }
     try await rig.expect("the unparked item back at its time") { abs(rig.player.currentTime - parkedTime) < 1e-3 }
+    let unparked: [String: Any] = ["item": rig.player.player.currentItem != nil, "timeKept": abs(rig.player.currentTime - parkedTime) < 1e-3]
+
+    watchdog.step("lifecycle: park in the background")
+    // Backgrounded, then parked, then back in the window while still backgrounded (the export
+    // screen popped with the app away): nothing is installed, applied or composited until resume.
+    let backgroundTime = rig.player.currentTime
+    rig.player.suspend()
+    rig.player.park()
+    let heldBefore = rig.applied.count
+    var heldPlan = base
+    edit(&heldPlan, ["overlays", 0, "box", "y"], 300)
+    let heldAccepted = rig.player.setPlan(try decode(heldPlan, revision: 1, buildSeq: next()), media: mediaRefs)
+    rig.player.unpark()
+    try? await Task.sleep(nanoseconds: 300_000_000)
+    let itemWhileBackgrounded = rig.player.player.currentItem != nil
+    let appliedWhileBackgrounded = rig.applied.count - heldBefore
+    rig.player.resume()
+    try await rig.expect("the item back after resume") { rig.player.player.currentItem?.status == .readyToPlay }
+    try await rig.expect("the held plan applied after resume") { rig.applied.count > heldBefore }
+    try await rig.expect("back at its time after resume") { abs(rig.player.currentTime - backgroundTime) < 1e-3 }
+    let backgroundPark: [String: Any] = [
+      "accepted": heldAccepted, "itemWhileBackgrounded": itemWhileBackgrounded, "appliedWhileBackgrounded": appliedWhileBackgrounded,
+      "item": rig.player.player.currentItem != nil, "timeKept": abs(rig.player.currentTime - backgroundTime) < 1e-3,
+      "appliedAfterResume": rig.applied.count - heldBefore,
+    ]
     report["lifecycle"] = [
-      "suspend": suspend, "failure": failure, "parked": parked,
-      "unparked": ["item": rig.player.player.currentItem != nil, "timeKept": abs(rig.player.currentTime - parkedTime) < 1e-3] as [String: Any],
+      "suspend": suspend, "failure": failure, "parked": parked, "unparked": unparked, "backgroundPark": backgroundPark,
     ] as [String: Any]
     rig.player.teardown()
 
@@ -697,6 +744,120 @@ func run() async throws -> [String: Any] {
     var lifecycle = report["lifecycle"] as! [String: Any]
     lifecycle["teardown"] = ["applied": gone.applied.count, "item": gone.player.player.currentItem != nil]
     report["lifecycle"] = lifecycle
+  }
+
+  // MARK: Server copies: token refreshes, a stale token, an expired one
+  do {
+    watchdog.step("server copies: token refresh")
+    let rig = Rig()
+    let base = try fixture("overlays")
+    let k = 40
+    let talkAsset = { rig.player.built?.media.videos["asset-talk"].map { ObjectIdentifier($0.asset) } }
+    try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t1"))
+    _ = try await rig.frame(at: k, fps: 30)
+    // The hourly refresh: the same plan with only the token changed. Nothing reloads or rebuilds.
+    var item = rig.player.player.currentItem
+    var asset = talkAsset()
+    let refreshed = try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t2"))
+    let tokenRefresh: [String: Any] = [
+      "mode": refreshed.mode.rawValue, "sameItem": rig.player.player.currentItem === item, "sameSource": talkAsset() == asset,
+      "stale": rig.player.tokenStale.sorted(),
+    ]
+
+    watchdog.step("server copies: stale token fails")
+    // The old token expires under the loaded source: rebuilt on the URL already held, no JS round trip.
+    item = rig.player.player.currentItem
+    asset = talkAsset()
+    rig.player.simulateItemFailure()
+    try await rig.expect("rebuilt on the refreshed URL") { rig.player.player.currentItem !== item && rig.player.player.currentItem?.status == .readyToPlay }
+    try await rig.expect("the rebuilt item back at its time") { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
+    let staleRetry: [String: Any] = [
+      "rebuilt": rig.player.player.currentItem !== item, "reloaded": talkAsset() != asset, "stale": rig.player.tokenStale.sorted(),
+      "expired": rig.expired.count, "errors": rig.errors.count, "timeKept": abs(rig.player.currentTime - Double(k) / 30) < 1e-3,
+    ]
+
+    watchdog.step("server copies: expired media")
+    // No newer URL held: the player asks for media instead of retrying on the same URLs.
+    item = rig.player.player.currentItem
+    asset = talkAsset()
+    let appliedBefore = rig.applied.count
+    rig.player.simulateItemFailure()
+    try await rig.expect("mediaExpired reported") { !rig.expired.isEmpty }
+    try? await Task.sleep(nanoseconds: 200_000_000)
+    let asked: [String: Any] = [
+      "expired": rig.expired.count, "errors": rig.errors.count, "sameItem": rig.player.player.currentItem === item,
+      "applied": rig.applied.count - appliedBefore, "state": "\(rig.player.remoteRetry)",
+    ]
+    // JS re-resolved (a fresh token): that plan rebuilds with the remote source reloaded.
+    let retry = try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t3"))
+    try await rig.expect("the retried item back at its time") { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
+    let retried: [String: Any] = [
+      "mode": retry.mode.rawValue, "reloaded": talkAsset() != asset, "state": "\(rig.player.remoteRetry)",
+      "timeKept": abs(rig.player.currentTime - Double(k) / 30) < 1e-3,
+    ]
+    // That fails too: an error (JS falls back to PreviewPlayer), and no second request for media.
+    rig.player.simulateItemFailure()
+    try await rig.expect("the second failure reported") { !rig.errors.isEmpty }
+    let fellBack: [String: Any] = ["expired": rig.expired.count, "errors": rig.errors.count]
+
+    watchdog.step("server copies: structural edit swaps a stale source")
+    // Another refresh, then a structural edit: the rebuild it makes anyway moves the source to the new URL.
+    let fresh = Rig()
+    try await fresh.apply(try decode(base, revision: 1, buildSeq: 1), media: serverCopy(token: "t4"))
+    try await fresh.apply(try decode(base, revision: 1, buildSeq: 2), media: serverCopy(token: "t5"))
+    let freshAsset = fresh.player.built?.media.videos["asset-talk"].map { ObjectIdentifier($0.asset) }
+    let staleBefore = fresh.player.tokenStale.sorted()
+    var trimmed = base
+    edit(&trimmed, ["video", "segments", 0, "layers", 0, "srcStart"], 0.5)
+    let structural = try await fresh.apply(try decode(trimmed, revision: 2, buildSeq: 3), media: serverCopy(token: "t5"))
+    let structuralSwap: [String: Any] = [
+      "staleBefore": staleBefore, "mode": structural.mode.rawValue,
+      "reloaded": fresh.player.built?.media.videos["asset-talk"].map { ObjectIdentifier($0.asset) } != freshAsset,
+      "staleAfter": fresh.player.tokenStale.sorted(),
+    ]
+    report["serverCopies"] = [
+      "tokenRefresh": tokenRefresh, "staleRetry": staleRetry, "asked": asked, "retried": retried, "fellBack": fellBack,
+      "structuralSwap": structuralSwap,
+    ] as [String: Any]
+    rig.player.teardown()
+    fresh.player.teardown()
+  }
+
+  // MARK: Preview files: downloads cancelled around their start, stills after teardown
+  do {
+    watchdog.step("preview files")
+    let dir = work.appendingPathComponent("preview-files", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    // Cancelled before, at and just after the start (port 9 refuses at once): every run ends,
+    // none creates a task on an invalidated session (that raises and kills the process).
+    let unreachable = URL(string: "http://127.0.0.1:9/still.png")!
+    var cancelled = 0, failed = 0, succeeded = 0
+    for index in 0..<300 {
+      let target = dir.appendingPathComponent("race-\(index).png")
+      let task = Task.detached { try await CappedDownload.run(unreachable, to: target, cap: 1 << 20, timeout: 5) }
+      if index % 3 == 1 { await Task.yield() }
+      if index % 3 == 2 { try? await Task.sleep(nanoseconds: 100_000) }
+      task.cancel()
+      switch await task.result {
+      case .success: succeeded += 1
+      case .failure(let error): if error is CancellationError || (error as? URLError)?.code == .cancelled { cancelled += 1 } else { failed += 1 }
+      }
+    }
+    let temps = PreviewTempFiles()
+    let kept = dir.appendingPathComponent("kept.png")
+    let late = dir.appendingPathComponent("late.png")
+    FileManager.default.createFile(atPath: kept.path, contents: Data([1]))
+    try temps.add(kept)
+    temps.removeAll()
+    // A download that finishes after teardown hands its still over: it is deleted, and the add throws.
+    FileManager.default.createFile(atPath: late.path, contents: Data([1]))
+    var lateThrew = false
+    do { try temps.add(late) } catch { lateThrew = true }
+    report["previewFiles"] = [
+      "runs": 300, "ended": cancelled + failed + succeeded, "cancelled": cancelled,
+      "keptDeleted": !FileManager.default.fileExists(atPath: kept.path),
+      "lateDeleted": !FileManager.default.fileExists(atPath: late.path), "lateThrew": lateThrew, "held": temps.count,
+    ] as [String: Any]
   }
 
   // MARK: 60 Hz box updates for 1 s while paused: the frame keeps redrawing (OV10)
