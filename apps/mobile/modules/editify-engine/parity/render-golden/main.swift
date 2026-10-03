@@ -121,6 +121,8 @@ func readFrame(_ built: BuiltPlan, frame k: Int) throws -> CVPixelBuffer {
 
 /// Samples the last readMix dropped past the plan's end.
 var lastOvershoot = 0
+/// Frames padded at the end because the mix ran short (time-pitch can end a sped-up entry early).
+var lastShortfall = 0
 
 /// The stereo mix as left and right channels.
 func readMix(_ built: BuiltPlan) throws -> (left: [Float], right: [Float]) {
@@ -150,6 +152,13 @@ func readMix(_ built: BuiltPlan) throws -> (left: [Float], right: [Float]) {
   }
   lastOvershoot = overshoot
   guard reader.status != .failed else { throw HarnessError("audio reader: \(reader.error?.localizedDescription ?? "?")") }
+  // Like PlanExporter, pad a short mix with silence to exactly the plan's length.
+  let expected = Int((end.seconds * 48_000).rounded())
+  lastShortfall = max(0, expected - left.count)
+  if lastShortfall > 0 {
+    left.append(contentsOf: repeatElement(0, count: lastShortfall))
+    right.append(contentsOf: repeatElement(0, count: lastShortfall))
+  }
   return (left, right)
 }
 
@@ -463,7 +472,7 @@ for render in manifest.renders {
       leftWindows[window.name] = lefts
       rightWindows[window.name] = rights
     }
-    entry["audio"] = ["samples": mix.count, "overshootDropped": lastOvershoot, "windows": windows, "left": leftWindows, "right": rightWindows]
+    entry["audio"] = ["samples": mix.count, "overshootDropped": lastOvershoot, "shortfall": lastShortfall, "windows": windows, "left": leftWindows, "right": rightWindows]
   }
   renders.append(entry)
 }
