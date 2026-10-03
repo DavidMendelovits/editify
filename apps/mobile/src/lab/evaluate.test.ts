@@ -31,11 +31,16 @@ describe('evaluate', () => {
     expect(result.metrics.find((m) => m.metric === 'thermalEnd')).toMatchObject({ median: 'fair', worst: 'serious', worstPass: false });
   });
 
-  it('judges the analyzer pipeline (S11) on readiness, the speech model and sync', () => {
-    const pipeline = { spike: 'S11' as const, variant: 'pipeline', metrics: { readyRealtimeFactor: 9, wordsReady: true, syncConfident: true } };
+  it('judges the analyzer pipeline (S11) on readiness and a real memo pair landing in sync', () => {
+    const metrics = { readyRealtimeFactor: 9, wordsReady: true, laughterReady: true, facesReady: true, syncSelfCheck: false, syncLagErrorMs: 0.4 };
+    const pipeline = { spike: 'S11' as const, variant: 'pipeline', metrics };
     expect(evaluate(runs([pipeline, pipeline, pipeline]))[0]!.verdict).toBe('go');
-    const noModel = { ...pipeline, metrics: { ...pipeline.metrics, wordsReady: false } };
+    const noModel = { ...pipeline, metrics: { ...metrics, wordsReady: false } };
     expect(evaluate(runs([noModel, noModel, pipeline]))[0]!.verdict).toBe('no-go');
+    const selfCheck = { ...pipeline, metrics: { ...metrics, syncSelfCheck: true } };
+    expect(evaluate(runs([selfCheck, selfCheck, selfCheck]))[0]!.verdict).toBe('no-go');
+    const offBy3ms = { ...pipeline, metrics: { ...metrics, syncLagErrorMs: 3 } };
+    expect(evaluate(runs([offBy3ms, offBy3ms, pipeline]))[0]!.verdict).toBe('no-go');
   });
 
   it('needs three ok runs before judging', () => {

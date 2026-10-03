@@ -11,8 +11,12 @@ import UniformTypeIdentifiers
 ///   scheduler  the 8A scheduler end to end: playback pauses the heavy lane, then everything finishes
 ///   crop       renders frames through LabCompositor with an off-centre static crop into Documents/lab (OV8)
 ///
-/// Without a memo, sync aligns the clip against a 60 s excerpt of its own audio
-/// cut at 30 s, so the right answer is known (lag 30 s) and `syncLagErrorMs` is real.
+/// Sync's answer is checked against a known lag:
+///   - with a memo: params.expectedLag, the lag the same Swift code measured for that pair
+///     on a Mac (stand-up pair: 59.43 s). This is the verdict arm: the phone must agree.
+///   - without: a 60 s excerpt of the clip's own audio cut at 30 s (lag 30 s). That only
+///     proves the code path, since the excerpt is sample-identical, so the row says
+///     `syncSelfCheck` and the evaluator won't pass it.
 struct AnalyzerSpike: Spike {
   func run(variant: String, params: [String: Any], sampler: Sampler, progress: @escaping (Double) -> Void) async throws -> [String: Any] {
     guard let ref = params["asset"] as? String else { throw SpikeError(message: "S11 needs params.asset") }
@@ -38,7 +42,8 @@ struct AnalyzerSpike: Spike {
       if all || variant == "sync" || variant == "energy" {
         try await stage("decode") { video = try await Analyzers.decodeMono(asset) }
       }
-      if all || variant == "sync" { try await stage("sync") { try await syncStage(video: video, memoRef: memoRef, metrics: &metrics) } }
+      let expectedLag = params["expectedLag"] as? Double
+      if all || variant == "sync" { try await stage("sync") { try await syncStage(video: video, memoRef: memoRef, expectedLag: expectedLag, metrics: &metrics) } }
       if all || variant == "words" {
         // Not ready (model missing, offline) is a result, recorded as wordsReady = false.
         await stage("words") {
@@ -85,11 +90,13 @@ struct AnalyzerSpike: Spike {
     return metrics
   }
 
-  private func syncStage(video: [Float], memoRef: String?, metrics: inout [String: Any]) async throws {
+  private func syncStage(video: [Float], memoRef: String?, expectedLag memoLag: Double?, metrics: inout [String: Any]) async throws {
     let memo: [Float]
     var expectedLag: Double?
+    metrics["syncSelfCheck"] = memoRef == nil
     if let memoRef {
       memo = try await Analyzers.decodeMono(try await AssetSource.load(memoRef))
+      expectedLag = memoLag
     } else {
       let rate = AudioSync.sampleRate
       guard video.count > 90 * rate else { throw SpikeError(message: "sync self-check needs a clip over 90 s, or pick a memo") }
@@ -123,13 +130,17 @@ struct AnalyzerSpike: Spike {
       try await Task.sleep(for: .milliseconds(100))
     }
     await scheduler.setPlaybackActive(true)
-    try await Task.sleep(for: .milliseconds(600))
+    // Let the step already in flight land: faces checks the gate every 16 frames, words every chunk.
+    try await Task.sleep(for: .milliseconds(1500))
     let before = await scheduler.heavyFraction
     try await Task.sleep(for: .seconds(3))
     let after = await scheduler.heavyFraction
     await scheduler.setPlaybackActive(false)
+    let seconds = try await AssetSource.load(ref).load(.duration).seconds
+    let tolerance = max(0.02, 16 / max(1, seconds * 2) + 0.005)
     metrics["heavyAdvancedWhilePaused"] = after - before
-    metrics["pauseHeld"] = after - before < 0.02
+    metrics["pauseTolerance"] = tolerance
+    metrics["pauseHeld"] = after - before <= tolerance
 
     while millis(since: start) < 900_000 {
       let current = await statuses()

@@ -14,8 +14,13 @@ public class EditifyEngineModule: Module {
 
     OnCreate {
       LabStore.recoverKilledRun()
+      TempFiles.sweep()
       let emit: AnalysisScheduler.Emit = { [weak self] event, body in self?.sendEvent(event, body) }
-      Task { await AnalysisScheduler.shared.setEmitter(emit) }
+      Task {
+        await AnalysisScheduler.shared.setEmitter(emit)
+        // The scheduler outlives a JS reload; the new context starts with playback stopped.
+        await AnalysisScheduler.shared.reset()
+      }
     }
 
     Function("readResults") { LabStore.readAll() }
@@ -44,12 +49,13 @@ public class EditifyEngineModule: Module {
 
     Function("analyzerVersions") { AnalyzerVersion.all }
 
-    /// Decodes the audio to mono Float32 LE at `sampleRate` (default 8000) into a
-    /// temp file; the samples stay native-side, JS gets the file and its length.
+    /// Decodes the audio to mono Float32 LE at `sampleRate` (8000-48000, default 8000) into
+    /// a temp file (swept on next launch); JS gets the file and its length.
     AsyncFunction("decodeMono") { (ref: String, sampleRate: Double?) async throws -> [String: Any] in
-      let rate = sampleRate ?? Double(AudioSync.sampleRate)
-      let samples = try await Analyzers.decodeMono(try await AssetSource.load(ref), rate: rate, progress: self.progress(part: "decode", ref: ref))
-      let url = FileManager.default.temporaryDirectory.appendingPathComponent("pcm-\(UUID().uuidString).f32")
+      let rate = try AnalyzerLimits.sampleRate(sampleRate ?? Double(AudioSync.sampleRate))
+      let asset = try await AssetSource.load(ref, onDownload: self.progress(part: "decode", ref: ref, phase: "download"))
+      let samples = try await Analyzers.decodeMono(asset, rate: rate, progress: self.progress(part: "decode", ref: ref))
+      let url = TempFiles.url(prefix: TempFiles.pcmPrefix, extension: "f32")
       try samples.withUnsafeBufferPointer { try Data(buffer: $0).write(to: url) }
       return ["uri": url.absoluteString, "sampleRate": rate, "sampleCount": samples.count, "seconds": Double(samples.count) / rate]
     }
@@ -61,14 +67,14 @@ public class EditifyEngineModule: Module {
 
     AsyncFunction("words") { (ref: String, locale: String?, allowModelDownload: Bool?) async -> [String: Any] in
       let progress = self.progress(part: "words", ref: ref)
-      return await EditifyEngineModule.part(ref, AnalyzerVersion.words) { asset in
+      return await self.part(ref, "words", AnalyzerVersion.words) { asset in
         await Analyzers.words(asset, locale: locale.map(Locale.init(identifier:)) ?? .current, allowModelDownload: allowModelDownload ?? true, progress: progress)
       }
     }
 
     AsyncFunction("laughter") { (ref: String, minConfidence: Double?) async -> [String: Any] in
       let progress = self.progress(part: "laughter", ref: ref)
-      return await EditifyEngineModule.part(ref, AnalyzerVersion.laughter) { asset in
+      return await self.part(ref, "laughter", AnalyzerVersion.laughter) { asset in
         await Analyzers.laughter(asset, minConfidence: minConfidence ?? 0.5, progress: progress)
       }
     }
@@ -76,7 +82,7 @@ public class EditifyEngineModule: Module {
     /// energyAnalysisSchema data (50 ms RMS dBFS cells) plus `onsetPeaks` seconds.
     AsyncFunction("energy") { (ref: String) async -> [String: Any] in
       let progress = self.progress(part: "energy", ref: ref)
-      return await EditifyEngineModule.part(ref, AnalyzerVersion.energy) { asset in
+      return await self.part(ref, "energy", AnalyzerVersion.energy) { asset in
         do {
           return Analyzers.energy(samples: try await Analyzers.decodeMono(asset, progress: progress))
         } catch is NoAudio {
@@ -94,15 +100,17 @@ public class EditifyEngineModule: Module {
 
     AsyncFunction("faces") { (ref: String, fps: Double?) async -> [String: Any] in
       let progress = self.progress(part: "faces", ref: ref)
-      return await EditifyEngineModule.part(ref, AnalyzerVersion.faces) { asset in
+      return await self.part(ref, "faces", AnalyzerVersion.faces) { asset in
         await Analyzers.faces(asset, fps: fps ?? 2, progress: progress)
       }
     }
 
-    /// An H.264 copy at most `maxHeight` (default 360) tall for Gemini style analysis:
-    /// {uri, width, height, seconds, bytes, exportMs}. Uploading it is the caller's job.
+    /// An H.264 copy at most `maxHeight` (clamped to 144-1080, default 360) tall for Gemini
+    /// style analysis: {uri, width, height, seconds, bytes, exportMs}, the size as written.
+    /// Uploading it is the caller's job; the file is swept on next launch.
     AsyncFunction("makeProxy") { (ref: String, maxHeight: Double?) async throws -> [String: Any] in
-      try await Analyzers.makeProxy(try await AssetSource.load(ref), maxHeight: maxHeight ?? 360)
+      let asset = try await AssetSource.load(ref, onDownload: self.progress(part: "proxy", ref: ref, phase: "download"))
+      return try await Analyzers.makeProxy(asset, maxHeight: maxHeight ?? 360)
     }
 
     // MARK: Scheduler (decision 8A)
@@ -138,16 +146,24 @@ public class EditifyEngineModule: Module {
     }
   }
 
-  private func progress(part: String, ref: String) -> AnalyzerProgress {
-    { [weak self] fraction in self?.sendEvent("progress", ["part": part, "ref": ref, "fraction": fraction]) }
+  private func progress(part: String, ref: String, phase: String? = nil) -> AnalyzerProgress {
+    { [weak self] fraction in
+      var body: [String: Any] = ["part": part, "ref": ref, "fraction": fraction]
+      if let phase { body["phase"] = phase }
+      self?.sendEvent("progress", body)
+    }
   }
 
-  /// Loads the asset, mapping a missing or iCloud-only source to `unavailable`, then runs `body`.
-  private static func part(_ ref: String, _ version: String, _ body: (AVAsset) async -> PartResult) async -> [String: Any] {
+  /// Loads the asset (forwarding iCloud download progress), mapping a missing or
+  /// unreachable source to `unavailable`, then runs `body`.
+  private func part(_ ref: String, _ part: String, _ version: String, _ body: (AVAsset) async -> PartResult) async -> [String: Any] {
     do {
-      return await body(try await AssetSource.load(ref)).dictionary
-    } catch {
+      let asset = try await AssetSource.load(ref, onDownload: progress(part: part, ref: ref, phase: "download"))
+      return await body(asset).dictionary
+    } catch where AssetSource.isUnavailable(error) {
       return PartResult.unavailable(version, error.localizedDescription).dictionary
+    } catch {
+      return PartResult.failed(version, error).dictionary
     }
   }
 }

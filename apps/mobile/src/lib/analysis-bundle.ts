@@ -4,16 +4,18 @@
  * asset, plus one sync result per video/memo pair (OV6), and turns them into
  * the zod-valid bundle an agent turn carries.
  *
- *   analysisStatus events / getAnalysis / syncPair
- *        └─▶ applyPartResult / applySync ─▶ DeviceAnalysisState
- *                    markStale(current versions) ─┤  (a bumped analyzer sends its parts back to pending)
- *                                                 └─▶ buildAnalysisBundle ─▶ { bundle, extras }
+ *   analysisStatus event ─▶ applyStatusEvent ─┬─ pending / failed / unavailable / removed: applied
+ *                                             └─ ready: { refetch } (events carry no data)
+ *   getAnalysis(assetId) ─▶ applyAssetAnalysis ──┐  (the asset's parts become exactly what it returns)
+ *   syncPair ─▶ applySync ───────────────────────┴─▶ DeviceAnalysisState
+ *        markStale(current versions) ─┤  (a bumped analyzer sends its parts back to pending)
+ *                                     └─▶ buildAnalysisBundle ─▶ { bundle, extras }
  *
  * Parts the shared schema has no slot for yet (laughter spans, onset peaks)
  * travel in `extras` with the same status/version shape.
  */
 import { assetAnalysisSchema, analysisBundleSchema, syncMeasurementSchema, type AnalysisBundle, type AnalysisPartStatus } from '@editify/shared';
-import type { NativeAnalysisPart, NativeAssetAnalysis, NativeEnergy, NativeLaughter, NativePartResult, NativeSync } from '../../modules/editify-engine';
+import type { AnalysisStatusEvent, NativeAnalysisPart, NativeAssetAnalysis, NativeEnergy, NativeLaughter, NativePartResult, NativeSync } from '../../modules/editify-engine';
 
 export interface PartState<T = unknown> {
   status: AnalysisPartStatus;
@@ -44,7 +46,11 @@ export interface AnalysisExtras {
 
 export const emptyAnalysisState = (): DeviceAnalysisState => ({ assets: {}, syncs: [] });
 
-/** A ready result must carry data; one that doesn't is a failure, not a silent empty part. */
+/**
+ * For results that are supposed to carry data (getAnalysis, direct analyzer calls,
+ * syncPair): a ready result without data is a failure, not a silent empty part.
+ * Status events never carry data; they go through `applyStatusEvent` instead.
+ */
 function normalize<T>(result: NativePartResult<T>): PartState<T> {
   if (result.status === 'ready' && result.data === undefined) {
     return { status: 'failed', analyzerVersion: result.analyzerVersion, error: 'The analyzer reported ready without data' };
@@ -70,13 +76,33 @@ export function applyPartResult(state: DeviceAnalysisState, assetId: string, par
   return { ...state, assets: { ...state.assets, [assetId]: { ...parts, [part]: nextPartState(parts[part], result) } } };
 }
 
-/** Folds a whole `getAnalysis` answer in. */
+/**
+ * Folds a whole `getAnalysis` answer in. The native side is the source of truth:
+ * parts it no longer returns (cancelled while pending) are dropped here too.
+ */
 export function applyAssetAnalysis(state: DeviceAnalysisState, analysis: NativeAssetAnalysis): DeviceAnalysisState {
-  let next = state;
+  const previous = state.assets[analysis.assetId] ?? {};
+  const parts: Partial<Record<NativeAnalysisPart, PartState>> = {};
   for (const [part, result] of Object.entries(analysis.parts) as Array<[NativeAnalysisPart, NativePartResult]>) {
-    next = applyPartResult(next, analysis.assetId, part, result);
+    parts[part] = nextPartState(previous[part], result);
   }
-  return next;
+  return { ...state, assets: { ...state.assets, [analysis.assetId]: parts } };
+}
+
+/**
+ * One `analysisStatus` event. Events carry no data, so a `ready` event changes
+ * nothing here and answers `refetch: true`: call `getAnalysis(assetId)` and fold
+ * the answer in with `applyAssetAnalysis`. A `removed` event drops the part.
+ */
+export function applyStatusEvent(state: DeviceAnalysisState, event: AnalysisStatusEvent): { state: DeviceAnalysisState; refetch: boolean } {
+  if (event.removed) {
+    const { [event.part]: _dropped, ...rest } = state.assets[event.assetId] ?? {};
+    return { state: { ...state, assets: { ...state.assets, [event.assetId]: rest } }, refetch: false };
+  }
+  if (event.status === 'ready') return { state, refetch: true };
+  const result: NativePartResult = { status: event.status, analyzerVersion: event.analyzerVersion };
+  if (event.error !== undefined) result.error = event.error;
+  return { state: applyPartResult(state, event.assetId, event.part, result), refetch: false };
 }
 
 export function applySync(state: DeviceAnalysisState, videoAssetId: string, memoAssetId: string, result: NativePartResult<NativeSync>): DeviceAnalysisState {

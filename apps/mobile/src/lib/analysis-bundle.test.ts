@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analysisBundleSchema, readyPart } from '@editify/shared';
 import type { NativeEnergy, NativeFaces, NativeLaughter, NativeSync, NativeTranscript } from '../../modules/editify-engine';
-import { applyAssetAnalysis, applyPartResult, applySync, buildAnalysisBundle, emptyAnalysisState, markStale, nextPartState } from './analysis-bundle';
+import { applyAssetAnalysis, applyPartResult, applyStatusEvent, applySync, buildAnalysisBundle, emptyAnalysisState, markStale, nextPartState } from './analysis-bundle';
 
 const transcript: NativeTranscript = {
   language: 'en', durationProcessedSeconds: 12.5,
@@ -51,6 +51,38 @@ describe('part status transitions', () => {
     });
     expect(state.assets.clip?.energy?.status).toBe('ready');
     expect(state.assets.clip?.faces).toEqual({ status: 'failed', analyzerVersion: 'f1', error: 'boom' });
+  });
+});
+
+describe('status events', () => {
+  it('a ready event asks for a refetch instead of failing the data-less part', () => {
+    const pending = applyPartResult(emptyAnalysisState(), 'a', 'words', { status: 'pending', analyzerVersion: 'w1' });
+    const { state, refetch } = applyStatusEvent(pending, { assetId: 'a', part: 'words', status: 'ready', analyzerVersion: 'w1' });
+    expect(refetch).toBe(true);
+    expect(state.assets.a?.words).toEqual({ status: 'pending', analyzerVersion: 'w1' });
+    const fetched = applyAssetAnalysis(state, { assetId: 'a', parts: { words: { status: 'ready', analyzerVersion: 'w1', data: transcript } } });
+    expect(fetched.assets.a?.words?.status).toBe('ready');
+  });
+
+  it('applies pending, failed and unavailable events directly', () => {
+    const { state, refetch } = applyStatusEvent(emptyAnalysisState(), { assetId: 'a', part: 'faces', status: 'unavailable', analyzerVersion: 'f1', error: 'offline' });
+    expect(refetch).toBe(false);
+    expect(state.assets.a?.faces).toEqual({ status: 'unavailable', analyzerVersion: 'f1', error: 'offline' });
+  });
+
+  it('a removed event drops the cancelled pending part and keeps the rest', () => {
+    let state = applyPartResult(emptyAnalysisState(), 'a', 'faces', { status: 'pending', analyzerVersion: 'f1' });
+    state = applyPartResult(state, 'a', 'energy', { status: 'ready', analyzerVersion: 'e1', data: energy });
+    const next = applyStatusEvent(state, { assetId: 'a', part: 'faces', removed: true }).state;
+    expect(next.assets.a?.faces).toBeUndefined();
+    expect(next.assets.a?.energy?.status).toBe('ready');
+  });
+
+  it('getAnalysis is the source of truth: parts it no longer returns are dropped', () => {
+    let state = applyPartResult(emptyAnalysisState(), 'a', 'faces', { status: 'pending', analyzerVersion: 'f1' });
+    state = applyPartResult(state, 'a', 'energy', { status: 'ready', analyzerVersion: 'e1', data: energy });
+    const next = applyAssetAnalysis(state, { assetId: 'a', parts: { energy: { status: 'ready', analyzerVersion: 'e1', data: energy } } });
+    expect(Object.keys(next.assets.a ?? {})).toEqual(['energy']);
   });
 });
 

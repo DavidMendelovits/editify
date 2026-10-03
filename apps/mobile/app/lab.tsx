@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { Redirect } from 'expo-router';
-import { Share, StyleSheet, Text, View } from 'react-native';
+import { Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { EditifyEngine } from '../modules/editify-engine';
 import { Button } from '../src/components/Button';
 import { Screen } from '../src/components/Screen';
@@ -16,7 +16,11 @@ import { colors, fonts, space, type } from '../src/lib/theme';
  */
 const LAB_ENABLED = process.env.EXPO_PUBLIC_LAB === '1' && EditifyEngine !== null;
 
-type Slot = 'local' | 'icloud' | 'memo';
+/** `expectedLag`: seconds, the lag the macOS harness measured for the picked memo pair. */
+type Slot = 'local' | 'icloud' | 'memo' | 'expectedLag';
+
+/** What the same Swift sync measured on a Mac for the stand-up fixture (IMG_9267 + its memo). */
+const STANDUP_PAIR_LAG = '59.43';
 
 /** Spikes the native module can run so far, with the params each needs. */
 const SPIKES: Array<{ id: SpikeId; label: string; variants?: string[]; params: (slots: Partial<Record<Slot, string>>) => Record<string, unknown> | string }> = [
@@ -27,7 +31,8 @@ const SPIKES: Array<{ id: SpikeId; label: string; variants?: string[]; params: (
   { id: 'S3', label: 'Edit stalls, 50 clips', params: (s) => (s.local ? { asset: s.local } : 'pick a local clip') },
   { id: 'S6', label: 'Photos refs (local, iCloud, deleted)', params: (s) => (s.local ? { local: s.local, icloud: s.icloud } : 'pick a local clip') },
   { id: 'S10', label: '540p proxy speed', params: (s) => (s.local ? { asset: s.local } : 'pick a local clip') },
-  // P2 analyzers. Without a memo, sync checks itself against an excerpt of the clip (clip over 90 s).
+  // P2 analyzers. The verdict needs a memo pair with a known lag; without a memo, sync only
+  // checks itself against an excerpt of the clip (clip over 90 s) and the row can't pass.
   { id: 'S11', label: 'Analyzers, ready for the AI edit', variants: ['pipeline'], params: analyzerParams },
   { id: 'S11', label: 'Analyzers one by one (timing, memory)', variants: ['sync', 'words', 'laughter', 'energy', 'faces'], params: analyzerParams },
   { id: 'S11', label: 'Scheduler: playback pauses heavy analyzers', variants: ['scheduler'], params: analyzerParams },
@@ -36,11 +41,13 @@ const SPIKES: Array<{ id: SpikeId; label: string; variants?: string[]; params: (
 
 function analyzerParams(slots: Partial<Record<Slot, string>>): Record<string, unknown> | string {
   if (!slots.local) return 'pick a local clip';
-  return slots.memo ? { asset: slots.local, memo: slots.memo } : { asset: slots.local };
+  if (!slots.memo) return { asset: slots.local };
+  const expectedLag = Number(slots.expectedLag);
+  return Number.isFinite(expectedLag) && slots.expectedLag?.trim() ? { asset: slots.local, memo: slots.memo, expectedLag } : { asset: slots.local, memo: slots.memo };
 }
 
 export default function LabScreen() {
-  const [slots, setSlots] = useState<Partial<Record<Slot, string>>>({});
+  const [slots, setSlots] = useState<Partial<Record<Slot, string>>>({ expectedLag: STANDUP_PAIR_LAG });
   const [rows, setRows] = useState<LabRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -104,6 +111,15 @@ export default function LabScreen() {
       </View>
       <View style={styles.row}>
         <Button secondary onPress={pickMemo}>{slots.memo ? 'Memo ✓' : 'Pick memo (optional)'}</Button>
+        <TextInput
+          style={styles.input}
+          value={slots.expectedLag ?? ''}
+          onChangeText={(text) => setSlots((current) => ({ ...current, expectedLag: text }))}
+          keyboardType="decimal-pad"
+          placeholder="Expected lag (s)"
+          placeholderTextColor={colors.muted}
+          accessibilityLabel="Expected memo lag in seconds"
+        />
       </View>
 
       {SPIKES.map((spike) => (
@@ -131,5 +147,6 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontFamily: fonts.display, fontSize: type.title, marginBottom: space.lg },
   body: { color: colors.muted, fontFamily: fonts.regular, fontSize: type.base, marginBottom: space.lg },
   row: { flexDirection: 'row', gap: space.md, marginBottom: space.lg },
+  input: { flex: 1, color: colors.text, fontFamily: fonts.mono, fontSize: type.base, borderColor: colors.border, borderWidth: 1, borderRadius: 8, paddingHorizontal: space.md },
   mono: { color: colors.text, fontFamily: fonts.mono, fontSize: type.sm, marginTop: space.md },
 });

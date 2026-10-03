@@ -91,11 +91,16 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
   ] },
   // P2 analyzers end to end (decode, sync, words, laughter, energy, faces). The M4 Max
   // ran a 295 s set in about 8 s (37x); a phone at 5x still has a 5-minute set ready in
-  // a minute. The words model must be installed, and sync's self-check must land.
+  // a minute. Every analyzer must come back ready (the words model installed), and sync
+  // must land within 2 ms of the lag the same code measured on a Mac for a real memo
+  // pair: a self-check (no memo) aligns sample-identical audio, so it can't pass.
   S11: { variant: 'pipeline', checks: [
     { metric: 'readyRealtimeFactor', op: '>=', value: 5 },
     { metric: 'wordsReady', op: '==', value: true },
-    { metric: 'syncConfident', op: '==', value: true },
+    { metric: 'laughterReady', op: '==', value: true },
+    { metric: 'facesReady', op: '==', value: true },
+    { metric: 'syncSelfCheck', op: '==', value: false },
+    { metric: 'syncLagErrorMs', op: '<=', value: 2 },
     { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
     { metric: 'thermalEnd', op: '<=', value: 'fair' },
   ] },

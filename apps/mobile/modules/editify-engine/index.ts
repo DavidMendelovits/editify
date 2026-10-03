@@ -54,10 +54,17 @@ export interface NativeAssetAnalysis {
 
 export interface AnalyzeOptions { facesFps?: number; locale?: string; allowModelDownload?: boolean; force?: boolean }
 
+/** `phase: 'download'` is the iCloud original being fetched before the analyzer starts. */
 export type ProgressEvent =
   | { spike: SpikeId; run: number; fraction: number }
-  | { part: NativeAnalysisPart; assetId?: string; ref?: string; fraction: number };
-export interface AnalysisStatusEvent { assetId: string; part: NativeAnalysisPart; status: AnalysisPartStatus; analyzerVersion: string; error?: string }
+  | { part: NativeAnalysisPart | 'proxy'; assetId?: string; ref?: string; fraction: number; phase?: 'download' };
+/**
+ * A part's status changed. Carries no data: on `ready`, read it with `getAnalysis`.
+ * `removed` means `cancelAnalysis` dropped a part that was still pending.
+ */
+export type AnalysisStatusEvent =
+  | { assetId: string; part: NativeAnalysisPart; status: AnalysisPartStatus; analyzerVersion: string; error?: string; removed?: undefined }
+  | { assetId: string; part: NativeAnalysisPart; removed: true };
 export interface AnalysisStateEvent { playbackActive: boolean; thermal: string; heavyPaused: boolean }
 
 interface EditifyEngineNative {
@@ -68,7 +75,7 @@ interface EditifyEngineNative {
 
   // Analyzers, called directly. `ref` is a PHAsset localIdentifier or a file:// URI.
   analyzerVersions(): Record<NativeAnalysisPart | 'sync', string>;
-  /** Mono Float32 LE PCM (default 8 kHz) written to a temp file. */
+  /** Mono Float32 LE PCM at 8000-48000 Hz (default 8000; anything else rejects) written to a temp file swept on next launch. */
   decodeMono(ref: string, sampleRate?: number | null): Promise<{ uri: string; sampleRate: number; sampleCount: number; seconds: number }>;
   /** One pair's SyncMeasurement (OV6). Asset ids let it reuse the scheduler's decoded audio. */
   syncPair(videoRef: string, memoRef: string, videoAssetId?: string | null, memoAssetId?: string | null): Promise<NativePartResult<NativeSync>>;
@@ -77,7 +84,7 @@ interface EditifyEngineNative {
   energy(ref: string): Promise<NativePartResult<NativeEnergy>>;
   onsetPeaks(rmsDb: number[], cellSeconds: number): number[];
   faces(ref: string, fps?: number | null): Promise<NativePartResult<NativeFaces>>;
-  /** An H.264 file at most `maxHeight` (default 360) tall for Gemini style analysis. Uploading it is the caller's job. */
+  /** An H.264 file at most `maxHeight` (clamped to 144-1080, default 360) tall for Gemini style analysis; width/height are as written. Uploading it is the caller's job. */
   makeProxy(ref: string, maxHeight?: number | null): Promise<{ uri: string; width: number; height: number; seconds: number; bytes: number; exportMs: number }>;
 
   // Scheduler (decision 8A). Status changes arrive as `analysisStatus` events.

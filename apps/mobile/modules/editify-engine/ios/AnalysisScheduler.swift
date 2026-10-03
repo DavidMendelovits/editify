@@ -5,13 +5,17 @@ import Foundation
 ///
 ///   analyze(asset) ─▶ parts queued as `pending` ─┬─ light lane: decode ▶ laughter ▶ energy   (one at a time)
 ///                                                └─ heavy lane: words ▶ faces              (one at a time, gated)
-///   syncPair ─▶ runs at once, never queued (reuses a cached 8 kHz decode when there is one)
+///   syncPair ─▶ runs at once, never queued (shares the cached or in-flight 8 kHz decode)
 ///
 /// Picking order inside a lane: the asset on screen first (`setFocus`), then
 /// part rank (decode, words, laughter, energy, faces), then arrival. The heavy
 /// gate holds words/faces between chunks while playback or scrubbing is active
 /// (`setPlaybackActive`) or the thermal state is `.serious` or worse; light
-/// parts keep going. Every status change is emitted as an `analysisStatus` event.
+/// parts keep going.
+///
+/// Events: `analysisStatus` {assetId, part, status, analyzerVersion, error?} on every
+/// change, carrying no data (on `ready`, read it with `analysis(assetId:)`), or
+/// {assetId, part, removed: true} when `cancel` drops a pending part.
 actor AnalysisScheduler {
   static let shared = AnalysisScheduler()
 
@@ -43,9 +47,12 @@ actor AnalysisScheduler {
 
   private var queue: [Job] = []
   private var running: [Bool: (job: Job, task: Task<Void, Never>)] = [:]
+  // TODO(P2 follow-up 13): results grow with every asset analyzed this session; bound them
+  // (or move them to disk) once the app analyzes whole libraries.
   private var results: [String: [Part: PartResult]] = [:]
   private var pcm: [String: [Float]] = [:]
   private var pcmOrder: [String] = []
+  private var decoding: [String: Task<[Float], Error>] = [:]
   private var seq = 0
   private var generations: [String: Int] = [:]
   private var focus: String?
@@ -67,19 +74,27 @@ actor AnalysisScheduler {
     }
   }
 
+  /// A fresh JS context (reload, new module instance) knows nothing of the old one's
+  /// playback or focus; left as they were, a stale `playbackActive` would hold the heavy lane forever.
+  func reset() {
+    playbackActive = false
+    focus = nil
+    emitState()
+  }
+
   // MARK: - Commands from JS
 
   /// Queue `parts` (all by default) for an asset. Parts already ready from the
   /// current analyzer version are skipped unless `force`.
   func analyze(assetId: String, ref: String, parts requested: [String]?, options: Options, force: Bool) {
     let parts = requested?.compactMap(Part.init(rawValue:)) ?? Part.allCases
+    let generation = generations[assetId, default: 0]
     for part in parts {
       if !force, let done = results[assetId]?[part], done.status == "ready", done.analyzerVersion == part.version { continue }
       if queue.contains(where: { $0.assetId == assetId && $0.part == part }) { continue }
-      let current = generations[assetId, default: 0]
-      if running.values.contains(where: { $0.job.assetId == assetId && $0.job.part == part && $0.job.generation == current }) { continue }
+      if running.values.contains(where: { $0.job.assetId == assetId && $0.job.part == part && $0.job.generation == generation }) { continue }
       seq += 1
-      queue.append(Job(assetId: assetId, ref: ref, part: part, seq: seq, generation: generations[assetId, default: 0], options: options))
+      queue.append(Job(assetId: assetId, ref: ref, part: part, seq: seq, generation: generation, options: options))
       record(assetId, part, PartResult(status: "pending", analyzerVersion: part.version))
     }
     pump()
@@ -96,13 +111,21 @@ actor AnalysisScheduler {
     focus = assetId
   }
 
-  /// Drop an asset's queued parts and stop its running ones.
+  /// Drop an asset's queued parts and stop its running ones. Their pending entries go
+  /// away (each with a `removed` event); parts already ready stay.
   func cancel(assetId: String) {
     generations[assetId, default: 0] += 1
-    for job in queue where job.assetId == assetId { results[assetId]?[job.part] = nil }
     queue.removeAll { $0.assetId == assetId }
     for (_, entry) in running where entry.job.assetId == assetId { entry.task.cancel() }
+    for (part, result) in results[assetId] ?? [:] where result.status == "pending" {
+      results[assetId]?[part] = nil
+      lastProgress["\(assetId)/\(part.rawValue)"] = nil
+      emit?("analysisStatus", ["assetId": assetId, "part": part.rawValue, "removed": true])
+    }
+    decoding[assetId]?.cancel()
+    decoding[assetId] = nil
     pcm[assetId] = nil
+    pcmOrder.removeAll { $0 == assetId }
   }
 
   /// Every part known for an asset, with data when ready.
@@ -132,6 +155,8 @@ actor AnalysisScheduler {
       return Analyzers.sync(video: v, memo: m)
     } catch is NoAudio {
       return .unavailable(AnalyzerVersion.sync, NoAudio().localizedDescription)
+    } catch where AssetSource.isUnavailable(error) {
+      return .unavailable(AnalyzerVersion.sync, error.localizedDescription)
     } catch {
       return .failed(AnalyzerVersion.sync, error)
     }
@@ -159,7 +184,8 @@ actor AnalysisScheduler {
       let candidates = queue.filter { $0.part.heavy == heavy }
       guard let next = candidates.min(by: { order($0) < order($1) }) else { continue }
       queue.removeAll { $0.assetId == next.assetId && $0.part == next.part }
-      let task = Task { [weak self] in
+      // Background work: utility priority, and the blocking calls inside run on AnalysisQueue.
+      let task = Task(priority: .utility) { [weak self] in
         guard let self else { return }
         let result = await self.run(next)
         await self.finish(next, result)
@@ -172,15 +198,17 @@ actor AnalysisScheduler {
     (job.assetId == focus ? 0 : 1, job.part.rank, job.seq)
   }
 
+  private func isCurrent(_ job: Job) -> Bool {
+    job.generation == generations[job.assetId, default: 0]
+  }
+
   private func finish(_ job: Job, _ result: PartResult) {
     running[job.part.heavy] = nil
     if job.part.heavy { heavyFraction = 0 }
-    // A cancelled asset's part leaves no trace rather than a misleading `failed`.
-    if job.generation == generations[job.assetId, default: 0] {
-      record(job.assetId, job.part, result)
-    } else if results[job.assetId]?[job.part]?.status == "pending", !queue.contains(where: { $0.assetId == job.assetId && $0.part == job.part }) {
-      results[job.assetId]?[job.part] = nil
-    }
+    lastProgress["\(job.assetId)/\(job.part.rawValue)"] = nil
+    // A cancelled job's result is dropped: `cancel` already removed its pending entry,
+    // and a newer request for the same part may be queued under the new generation.
+    if isCurrent(job) { record(job.assetId, job.part, result) }
     pump()
   }
 
@@ -188,56 +216,62 @@ actor AnalysisScheduler {
     let progress: AnalyzerProgress = { [weak self] fraction in
       Task { await self?.progress(job, fraction) }
     }
+    let download: @Sendable (Double) -> Void = { [weak self] fraction in
+      Task { await self?.progress(job, fraction, phase: "download") }
+    }
     let stop = CancelFlag()
     let gate: AnalyzerGate = { [weak self] in await self?.waitWhileHeavyPaused(stop) ?? false }
     return await withTaskCancellationHandler {
-      await analyze(job, progress: progress, gate: gate)
+      await analyze(job, progress: progress, download: download, gate: gate)
     } onCancel: {
       stop.set()
     }
   }
 
-  private func analyze(_ job: Job, progress: @escaping AnalyzerProgress, gate: @escaping AnalyzerGate) async -> PartResult {
+  private func analyze(_ job: Job, progress: @escaping AnalyzerProgress, download: @escaping @Sendable (Double) -> Void, gate: @escaping AnalyzerGate) async -> PartResult {
     let version = job.part.version
     do {
       switch job.part {
       case .decode:
-        let samples = try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress)
+        let samples = try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress, download: download)
         return .ready(version, [
           "sampleRate": AudioSync.sampleRate, "sampleCount": samples.count,
           "seconds": Double(samples.count) / Double(AudioSync.sampleRate),
         ])
       case .energy:
-        let samples = try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress)
+        let samples = try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress, download: download)
         return Analyzers.energy(samples: samples)
       case .laughter:
-        return await Analyzers.laughter(try await AssetSource.load(job.ref), progress: progress)
+        return await Analyzers.laughter(try await AssetSource.load(job.ref, onDownload: download), progress: progress)
       case .words:
         let locale = job.options.locale.map(Locale.init(identifier:)) ?? .current
-        return await Analyzers.words(try await AssetSource.load(job.ref), locale: locale, allowModelDownload: job.options.allowModelDownload, progress: progress, gate: gate)
+        let asset = try await AssetSource.load(job.ref, onDownload: download)
+        return await Analyzers.words(asset, locale: locale, allowModelDownload: job.options.allowModelDownload, progress: progress, gate: gate)
       case .faces:
-        return await Analyzers.faces(try await AssetSource.load(job.ref), fps: job.options.facesFps, progress: progress, gate: gate)
+        let asset = try await AssetSource.load(job.ref, onDownload: download)
+        return await Analyzers.faces(asset, fps: job.options.facesFps, progress: progress, gate: gate)
       }
     } catch is NoAudio {
       return .unavailable(version, NoAudio().localizedDescription)
-    } catch let error as AssetSource.InCloud {
-      return .unavailable(version, error.localizedDescription)
-    } catch let error as AssetSource.NotFound {
+    } catch where AssetSource.isUnavailable(error) {
+      // Offline iCloud originals, deleted clips: retry later, not a broken analyzer.
       return .unavailable(version, error.localizedDescription)
     } catch {
       return .failed(version, error)
     }
   }
 
-  private func progress(_ job: Job, _ fraction: Double) {
-    // Progress hops here on its own task, so a late tick from a finished part is ignored.
-    guard let current = running[job.part.heavy]?.job, current.seq == job.seq else { return }
-    if job.part.heavy { heavyFraction = fraction }
+  private func progress(_ job: Job, _ fraction: Double, phase: String? = nil) {
+    // Progress hops here on its own task: a late tick from a finished or cancelled part is ignored.
+    guard isCurrent(job), let current = running[job.part.heavy]?.job, current.seq == job.seq else { return }
+    if job.part.heavy, phase == nil { heavyFraction = fraction }
     // Whole percents only: words reports every audio chunk.
-    let key = "\(job.assetId)/\(job.part.rawValue)"
+    let key = "\(job.assetId)/\(job.part.rawValue)\(phase.map { "/\($0)" } ?? "")"
     guard fraction >= 1 || fraction - (lastProgress[key] ?? -1) >= 0.01 else { return }
     lastProgress[key] = fraction >= 1 ? nil : fraction
-    emit?("progress", ["assetId": job.assetId, "part": job.part.rawValue, "fraction": fraction])
+    var body: [String: Any] = ["assetId": job.assetId, "part": job.part.rawValue, "fraction": fraction]
+    if let phase { body["phase"] = phase }
+    emit?("progress", body)
   }
 
   private func record(_ assetId: String, _ part: Part, _ result: PartResult) {
@@ -253,10 +287,26 @@ actor AnalysisScheduler {
 
   // MARK: - Decoded audio cache
 
-  private func cachedPCM(assetId: String?, ref: String, progress: AnalyzerProgress? = nil) async throws -> [Float] {
+  /// The 8 kHz decode for `assetId` (or `ref`), shared: a second caller while the
+  /// first decode is running waits for it instead of opening another reader.
+  private func cachedPCM(assetId: String?, ref: String, progress: AnalyzerProgress? = nil, download: (@Sendable (Double) -> Void)? = nil) async throws -> [Float] {
     let key = assetId ?? ref
     if let hit = pcm[key] { return hit }
-    let samples = try await Analyzers.decodeMono(try await AssetSource.load(ref), progress: progress)
+    if let inFlight = decoding[key] { return try await inFlight.value }
+    let task = Task(priority: .utility) {
+      try await Analyzers.decodeMono(try await AssetSource.load(ref, onDownload: download), progress: progress)
+    }
+    decoding[key] = task
+    let samples: [Float]
+    do {
+      samples = try await task.value
+    } catch {
+      if decoding[key] == task { decoding[key] = nil }
+      throw error
+    }
+    // A cancel while decoding removed the entry; don't cache what it dropped.
+    guard decoding[key] == task else { return samples }
+    decoding[key] = nil
     pcm[key] = samples
     pcmOrder.removeAll { $0 == key }
     pcmOrder.append(key)
@@ -268,12 +318,4 @@ actor AnalysisScheduler {
     }
     return samples
   }
-}
-
-/// Set once from a cancellation handler, read from analyzer loops on other tasks.
-final class CancelFlag: @unchecked Sendable {
-  private let lock = NSLock()
-  private var value = false
-  var isSet: Bool { lock.withLock { value } }
-  func set() { lock.withLock { value = true } }
 }
