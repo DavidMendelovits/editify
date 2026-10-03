@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { rmSync } from 'node:fs';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '@editify/shared';
 import { AssetStore, type StoredAsset } from '../src/db/asset-store.js';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
@@ -13,20 +14,25 @@ import { RenderStore } from '../src/db/render-store.js';
  */
 // Plan renders make their render directory: keep it out of server/data.
 vi.hoisted(() => { process.env.EDITIFY_DATA_DIR = `${process.env.TMPDIR ?? '/tmp'}/editify-plan-queue-${process.pid}`; });
-const calls = vi.hoisted(() => ({ legacy: [] as unknown[][], plan: [] as unknown[][], qa: [] as unknown[][] }));
+const calls = vi.hoisted(() => ({ legacy: [] as unknown[][], plan: [] as unknown[][], qa: [] as unknown[][], unavailable: false }));
 vi.mock('../src/media/render.js', () => ({
   renderProject: async (...args: unknown[]) => {
     calls.legacy.push(args);
     return `/renders/${String(args[2])}/output.mp4`;
   },
 }));
-vi.mock('../src/media/plan/render.js', () => ({
+vi.mock('../src/media/plan/render.js', () => {
+  class PlanRenderUnavailableError extends Error {}
+  return {
+  PlanRenderUnavailableError,
   renderPlan: async (...args: unknown[]) => {
     calls.plan.push(args);
+    if (calls.unavailable) throw new PlanRenderUnavailableError('this ffmpeg lacks the filters: lut1d');
     const out = args[2] as { outputPath: string };
     return { outputPath: out.outputPath, frames: 30, notes: ['Emoji sticker s was left out.'], loudness: { measuredLufs: -20, truePeakDb: -3, decision: { gainDb: 4, limit: true } }, elapsed: 1 };
   },
-}));
+  };
+});
 vi.mock('../src/media/plan/media.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/media/plan/media.js')>()),
   probePlanMedia: async (path: string, kind: string) => ({
@@ -75,7 +81,9 @@ beforeEach(() => {
   calls.legacy.length = 0;
   calls.plan.length = 0;
   calls.qa.length = 0;
+  calls.unavailable = false;
 });
+afterAll(() => rmSync(process.env.EDITIFY_DATA_DIR!, { recursive: true, force: true }));
 afterEach(() => {
   delete process.env.RENDER_PLAN;
   database.close();
@@ -122,6 +130,21 @@ describe('RENDER_PLAN flag', () => {
     const render = new RenderQueue(renders, projects, assets).enqueue(project.id, '720p', 'sdr', 'off');
     await vi.waitFor(() => expect(renders.get(render.id)?.status).toBe('done'));
     expect((calls.plan[0]![0] as { loudness: { targetLufs: number | null } }).loudness.targetLufs).toBeNull();
+  });
+
+  it('falls back to the legacy render, with a QA note, when this server cannot run the plan render', async () => {
+    process.env.RENDER_PLAN = '1';
+    calls.unavailable = true;
+    assets.insert(storedAsset('a1'), 'alice');
+    const project = projectWith('alice', 'a1');
+    assets.link(project.id, 'a1');
+    const render = new RenderQueue(renders, projects, assets).enqueue(project.id, '720p', 'sdr', 'normalize');
+    await vi.waitFor(() => expect(renders.get(render.id)?.status).toBe('done'));
+    expect(calls.plan).toHaveLength(1);
+    expect(calls.legacy).toHaveLength(1);
+    // Legacy QA normalizes as it always has, and says why the plan render was not used.
+    expect(calls.qa[0]![3]).toBe('normalize');
+    expect(calls.qa[0]![4]).toEqual({ normalized: null, notes: ['Rendered with the legacy renderer: this ffmpeg lacks the filters: lut1d'] });
   });
 });
 

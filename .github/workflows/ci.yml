@@ -47,6 +47,25 @@ jobs:
         env:
           SYNC_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/editify_t9_test
       - run: npm test -w @editify/mobile
+  # The plan render (RENDER_PLAN, server/src/media/plan) on the ffmpeg production
+  # runs: the Docker runtime stage is node:20-bookworm-slim + Debian 12's apt
+  # ffmpeg (5.1), which differs from ubuntu-latest's 6.1 in filter formats and
+  # options (5.1's tpad has no float formats; mergeplanes, ebur128 options). Same
+  # Debian release, same ffmpeg package, so the parity suite here is the one
+  # production would pass. CI set: a missing filter fails rather than skips.
+  plan-render-runtime:
+    runs-on: ubuntu-latest
+    container: node:20-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y --no-install-recommends ffmpeg
+      - run: ffmpeg -version | head -1
+      - run: npm ci
+      - run: npm run build -w @editify/shared
+      - run: npx vitest run --testTimeout=60000 test/render-plan-parity.test.ts test/render-plan-loudness.test.ts test/render-plan-ass.test.ts test/render-files.test.ts
+        working-directory: server
+        env:
+          CI: 'true'
   # The engine's macOS checks: the Swift AudioSync port held to sync.ts
   # (decision 1A, server/test/sync-parity.test.ts), the renderer's golden
   # frames (plan 9A, server/test/render-golden.test.ts) and the on-device
@@ -137,7 +156,7 @@ jobs:
           path: ${{ runner.temp }}/render-goldens
           if-no-files-found: ignore
   deploy:
-    needs: [check, engine]
+    needs: [check, engine, plan-render-runtime]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: { group: fly-deploy, cancel-in-progress: false }

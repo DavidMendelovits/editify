@@ -130,9 +130,9 @@ describe('ASS writer: captions', () => {
     expect([...layers].sort((left, right) => left - right)).toEqual(layers);
   });
 
-  it('escapes override braces and backslashes in caption text', () => {
+  it('escapes override braces, and keeps a backslash literal with a word joiner (libass has no \\\\ escape)', () => {
     const odd = { ...caption, lines: [{ text: 'a{b}\\c', x: 1, y: 2, width: 3 }] } as PlanCaption;
-    expect(dialogues(planAss(plan, [{ kind: 'caption', caption: odd }]))[0]!.text).toContain('a\\{b\\}\\\\c');
+    expect(dialogues(planAss(plan, [{ kind: 'caption', caption: odd }]))[0]!.text).toContain('a\\{b\\}\\\u2060c');
   });
 
   it('puts a plan box on a BorderStyle 3 event under the text', () => {

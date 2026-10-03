@@ -5,6 +5,7 @@ import type { RenderRecord, RenderStore } from '../db/render-store.js';
 import type { HdrHandling } from '../media/color.js';
 import { renderPlanEnabled } from '../config.js';
 import { renderProjectFromPlan } from '../media/plan/project.js';
+import { PlanRenderUnavailableError } from '../media/plan/render.js';
 import { renderProject } from '../media/render.js';
 import { slotMediaJob } from './media-jobs.js';
 import { runRenderQa, type LoudnessMode, type PlannedQa } from './render-qa.js';
@@ -92,22 +93,34 @@ export class RenderQueue {
           // TODO(P6): delete transitions.ts, duck.ts and ass.ts's lane trimming once RENDER_PLAN defaults on.
           const usePlan = renderPlanEnabled();
           let planned: PlannedQa | undefined;
+          // True when the plan render applied loudness itself (QA then only measures).
+          let loudnessDone = false;
           const outputPath = await slotMediaJob('render', { projectId: project.id, renderId: id }, `render ${id}`, async () => {
             if (!usePlan) return await renderProject(project, record.resolution, id, this.assets, hdr);
-            const result = await renderProjectFromPlan(project, record.resolution, id, this.assets, {
-              hdr, loudness, ownerId: this.projects.ownerId(project.id),
-            });
-            const { decision, measuredLufs } = result.loudness;
-            planned = {
-              normalized: decision.gainDb !== 0 && measuredLufs !== null ? { fromLufs: measuredLufs, gainDb: decision.gainDb } : null,
-              notes: result.notes,
-            };
-            return result.outputPath;
+            try {
+              const result = await renderProjectFromPlan(project, record.resolution, id, this.assets, {
+                hdr, loudness, ownerId: this.projects.ownerId(project.id),
+              });
+              const { decision, measuredLufs } = result.loudness;
+              planned = {
+                normalized: decision.gainDb !== 0 && measuredLufs !== null ? { fromLufs: measuredLufs, gainDb: decision.gainDb } : null,
+                notes: result.notes,
+              };
+              loudnessDone = true;
+              return result.outputPath;
+            } catch (error) {
+              // This server cannot run the plan render (an ffmpeg without a filter it needs, or a plan over the
+              // memory budget): the legacy render is the export, and QA says why.
+              if (!(error instanceof PlanRenderUnavailableError)) throw error;
+              console.warn('[render] plan render unavailable, using legacy', { renderId: id, reason: error.message });
+              planned = { normalized: null, notes: [`Rendered with the legacy renderer: ${error.message}`] };
+              return await renderProject(project, record.resolution, id, this.assets, hdr);
+            }
           });
           // QA runs before 'done' because legacy normalizing rewrites the file a client would download (the plan
           // path normalized inside the render, so QA only measures). A QA failure is reported on the record,
           // never as a failed render.
-          const qa = await runRenderQa(outputPath, project, this.assets, planned ? 'off' : loudness, planned)
+          const qa = await runRenderQa(outputPath, project, this.assets, loudnessDone ? 'off' : loudness, planned)
             .catch((error: unknown) => {
               console.warn('[render] QA failed', { renderId: id, error: error instanceof Error ? error.message : String(error) });
               return undefined;
