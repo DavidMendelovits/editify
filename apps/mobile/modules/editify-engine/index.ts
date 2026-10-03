@@ -40,7 +40,7 @@ export interface NativeProxy {
   width?: number;
   height?: number;
   fps?: number;
-  color?: 'hlg' | 'pq' | 'sdr';
+  color?: 'hlg' | 'pq' | 'log' | 'sdr';
   codec?: 'hevc-main10' | 'h264-high';
   audio?: 'passthrough' | 'aac' | 'none';
   exportMs?: number;
@@ -51,7 +51,7 @@ export interface NativeFingerprint {
   duration: number;
   bytes: number;
   audio: string | null;
-  color: 'hlg' | 'pq' | 'sdr' | null;
+  color: 'hlg' | 'pq' | 'log' | 'sdr' | null;
 }
 
 export type PhotosAccess = 'all' | 'limited' | 'denied' | 'undetermined';
@@ -129,6 +129,10 @@ interface EditifyEngineNative {
   makeProxy(ref: string, maxHeight?: number | null): Promise<{ uri: string; width: number; height: number; seconds: number; bytes: number; exportMs: number }>;
 
   // Scheduler (decision 8A). Status changes arrive as `analysisStatus` events.
+  /**
+   * `ref` must come from `resolveMedia` (an app copy, or a Photos original whose fingerprint
+   * still matches): use `analyzeMedia` in src/lib/local-media.ts, never a raw PHAsset id.
+   */
   analyze(assetId: string, ref: string, parts?: NativeAnalysisPart[] | null, options?: AnalyzeOptions | null): Promise<void>;
   /** True while the user plays or scrubs: words and faces hold until it is false again. */
   setPlaybackActive(active: boolean): Promise<void>;
@@ -146,7 +150,17 @@ interface EditifyEngineNative {
   /** Application Support/Editify/ as a file:// URL with a trailing slash; registry paths are relative to it. */
   mediaRoot(): string;
   /** Copies a file:// URI into media/ (durable, excluded from backup); `path` is relative to `mediaRoot()`. */
-  durableCopy(uri: string, name: string): Promise<{ path: string; uri: string }>;
+  durableCopy(uri: string, name: string): Promise<{ path: string; uri: string; bytes: number }>;
+  /** Shows the system Photos prompt when it was never shown; answers the access afterwards. */
+  requestPhotosAccess(): Promise<PhotosAccess>;
+  /** Bytes iOS would make available for an import (0 when unknown). */
+  availableBytes(): number;
+  /** Every file under media/ with its size and modification time (ms), for the orphan sweep. */
+  mediaFiles(): Array<{ path: string; bytes: number; modified: number }>;
+  /** Deletes a file under the media root by its relative path. */
+  removeMedia(path: string): void;
+  /** Deletes an asset's preview proxy. */
+  removeProxy(assetId: string): void;
   /** A PHAsset id (loaded as `.original`) or file:// URI: fingerprinted when on the device, never downloaded. */
   probeMedia(ref: string): Promise<NativeProbe>;
   /** `probeMedia`, downloading an iCloud original first; `progress` events carry `requestId`. Rejects when cancelled. */
@@ -156,8 +170,8 @@ interface EditifyEngineNative {
   ensureProxy(assetId: string, ref: string): Promise<void>;
   /** The preview opened this proxy (least recently opened is evicted first). False when there is none. */
   touchProxy(assetId: string): boolean;
-  /** The proxy store's byte budget (default 4 GB); applied at once. */
-  setProxyBudget(bytes: number): Promise<void>;
+  /** The proxy store's byte budget (default 4 GB), clamped to 256 MB-1 TB and applied at once; false for a non-number. */
+  setProxyBudget(bytes: number): Promise<boolean>;
 
   addListener(event: 'progress', listener: (event: ProgressEvent) => void): EventSubscription;
   addListener(event: 'analysisStatus', listener: (event: AnalysisStatusEvent) => void): EventSubscription;

@@ -7,12 +7,13 @@ import VideoToolbox
 /// The device preview proxy (decision 10B + OV9): a reader/writer transcode, not the
 /// 640x480 `makeProxy` preset (that one stays for the Gemini upload).
 ///
-///   AVAssetReader ─┬─ video: decoded at the source's bit depth ─▶ VTPixelTransferSession
-///                  │          (short side ≤ 1080, aspect kept) ─▶ HEVC Main10 + the source's
-///                  │          HLG/PQ BT.2020 tags (HDR), or H.264 High + its SDR tags
-///                  └─ audio: AAC passed through, anything else encoded to AAC 128k
-///   ─▶ AVAssetWriter (.mov, moov first, 1 s keyframes for scrubbing) at every source
-///      timestamp, so the frame rate (variable or 60/120 fps) is kept as is.
+///   AVAssetReader ─┬─ video (first enabled track): decoded at 8 or 10 bits ─▶ VTPixelTransferSession
+///                  │          (short side ≤ 1080, aspect kept) ─▶ HEVC Main10 for HDR (the source's
+///                  │          HLG/PQ BT.2020 tags) and other 10-bit sources (Apple Log, wide-gamut
+///                  │          10-bit SDR), H.264 High for 8-bit SDR; SDR keeps the source's own tags
+///                  └─ audio (first enabled track): AAC passed through, anything else encoded to AAC 128k
+///   ─▶ AVAssetWriter (.mov, 1 s keyframes for scrubbing) at every source timestamp, so the
+///      frame rate (variable or 60/120 fps) is kept as is.
 ///
 /// A writer can't pause, so the scheduler cancels a proxy when playback or an export
 /// starts and runs it again from the start afterwards. Cancelling (task cancellation)
@@ -36,24 +37,25 @@ enum ProxyPipeline {
     hold: @escaping @Sendable () -> Bool = ProxyPipeline.thermalHold
   ) async throws -> [String: Any] {
     let start = ContinuousClock.now
-    guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw NoVideo() }
+    guard let videoTrack = try await firstEnabledTrack(asset, .video) else { throw NoVideo() }
     let (natural, transform, nominalFps, formats) = try await videoTrack.load(.naturalSize, .preferredTransform, .nominalFrameRate, .formatDescriptions)
     let duration = try await asset.load(.duration)
-    let audioTrack = try await asset.loadTracks(withMediaType: .audio).first
+    let audioTrack = try await firstEnabledTrack(asset, .audio)
     let tags = ColorTags(formats.first)
-    let hdr = tags.hdr
+    let tenBit = tags.tenBit
     // The frame is scaled as stored; the writer keeps the source's rotation in its transform.
     let size = AnalysisMath.previewProxySize(for: natural, maxShortSide: maxShortSide)
     let width = Int(size.width), height = Int(size.height)
     guard width > 0, height > 0 else { throw EngineError(message: "The video track has no size") }
     let scales = width != Int(natural.width.rounded()) || height != Int(natural.height.rounded())
     let fps = nominalFps > 0 ? Double(nominalFps) : 30
-    let pixelFormat = hdr ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    let pixelFormat = tenBit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
     try? FileManager.default.removeItem(at: output)
     let reader = try AVAssetReader(asset: asset)
     let writer = try AVAssetWriter(outputURL: output, fileType: .mov)
-    writer.shouldOptimizeForNetworkUse = true
+    // Local playback only: moving the moov to the front would cost a second pass over the file.
+    writer.shouldOptimizeForNetworkUse = false
 
     let videoOut = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
       kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
@@ -64,9 +66,9 @@ enum ProxyPipeline {
     reader.add(videoOut)
 
     let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings(width: width, height: height, fps: fps, tags: tags))
-    // The rotation stays; its translation is in source pixels, so it scales with the frame.
-    let factor = CGFloat(width) / max(1, natural.width)
-    videoIn.transform = CGAffineTransform(a: transform.a, b: transform.b, c: transform.c, d: transform.d, tx: transform.tx * factor, ty: transform.ty * factor)
+    // The rotation stays; the translation is rebuilt for the scaled frame (each side was
+    // rounded on its own, so scaling the source's translation could be a pixel off).
+    videoIn.transform = AnalysisMath.uprightTransform(transform, size: CGSize(width: width, height: height))
     videoIn.expectsMediaDataInRealTime = false
     guard writer.canAdd(videoIn) else { throw EngineError(message: "Can't encode the proxy video") }
     writer.add(videoIn)
@@ -143,48 +145,47 @@ enum ProxyPipeline {
     let bytes = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
     return [
       "width": width, "height": height, "fps": round3(fps), "color": tags.name,
-      "codec": hdr ? "hevc-main10" : "h264-high", "bytes": bytes, "seconds": round3(duration.seconds),
+      "codec": tenBit ? "hevc-main10" : "h264-high", "bytes": bytes, "seconds": round3(duration.seconds),
       "audio": audioMode, "exportMs": millisSince(start),
     ]
   }
 
-  /// HEVC Main10 with the source's HDR tags, or H.264 High with its SDR tags (BT.709 when
-  /// untagged or tagged with something the encoder doesn't take). ~0.1 bit per pixel (H.264),
-  /// 0.07 (HEVC): plenty for a preview, a fraction of an iPhone original.
+  /// HEVC Main10 with the source's HDR tags; HEVC Main10 or H.264 High for SDR. Tagged SDR
+  /// (BT.709, Display P3, Apple Log…) sets no color properties, so the encoder keeps the
+  /// tags each decoded frame carries instead of being forced to BT.709; untagged SDR is
+  /// written as BT.709. ~0.1 bit per pixel (H.264), 0.07 (HEVC): plenty for a preview.
   static func videoSettings(width: Int, height: Int, fps: Double, tags: ColorTags) -> [String: Any] {
     let hdr = tags.hdr
+    let hevc = tags.tenBit
     let pixelsPerSecond = Double(width * height) * max(24, min(fps, 120))
-    let bitrate = Int(min(40_000_000, max(2_000_000, pixelsPerSecond * (hdr ? 0.07 : 0.1))))
+    let bitrate = Int(min(40_000_000, max(2_000_000, pixelsPerSecond * (hevc ? 0.07 : 0.1))))
     var compression: [String: Any] = [
       AVVideoAverageBitRateKey: bitrate,
       AVVideoExpectedSourceFrameRateKey: Int(fps.rounded()),
       AVVideoMaxKeyFrameIntervalDurationKey: 1.0,
       AVVideoAllowFrameReorderingKey: false,
     ]
-    compression[AVVideoProfileLevelKey] = hdr ? (kVTProfileLevel_HEVC_Main10_AutoLevel as String) : AVVideoProfileLevelH264HighAutoLevel
-    let color: [String: Any]
+    compression[AVVideoProfileLevelKey] = hevc ? (kVTProfileLevel_HEVC_Main10_AutoLevel as String) : AVVideoProfileLevelH264HighAutoLevel
+    var settings: [String: Any] = [
+      AVVideoCodecKey: hevc ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
+      AVVideoWidthKey: width,
+      AVVideoHeightKey: height,
+      AVVideoCompressionPropertiesKey: compression,
+    ]
     if hdr {
-      color = [
+      settings[AVVideoColorPropertiesKey] = [
         AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
         AVVideoTransferFunctionKey: tags.isHLG ? AVVideoTransferFunction_ITU_R_2100_HLG : AVVideoTransferFunction_SMPTE_ST_2084_PQ,
         AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
       ]
-    } else {
-      let primaries = [AVVideoColorPrimaries_ITU_R_709_2, AVVideoColorPrimaries_SMPTE_C, AVVideoColorPrimaries_P3_D65]
-      let matrices = [AVVideoYCbCrMatrix_ITU_R_709_2, AVVideoYCbCrMatrix_ITU_R_601_4]
-      color = [
-        AVVideoColorPrimariesKey: tags.primaries.flatMap { primaries.contains($0) ? $0 : nil } ?? AVVideoColorPrimaries_ITU_R_709_2,
+    } else if !tags.tagged {
+      settings[AVVideoColorPropertiesKey] = [
+        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
         AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-        AVVideoYCbCrMatrixKey: tags.matrix.flatMap { matrices.contains($0) ? $0 : nil } ?? AVVideoYCbCrMatrix_ITU_R_709_2,
+        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
       ]
     }
-    return [
-      AVVideoCodecKey: hdr ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
-      AVVideoWidthKey: width,
-      AVVideoHeightKey: height,
-      AVVideoCompressionPropertiesKey: compression,
-      AVVideoColorPropertiesKey: color,
-    ]
+    return settings
   }
 
   /// AAC is copied as is; anything else (PCM, ALAC, AC-3) is decoded and encoded to AAC 128k.

@@ -176,8 +176,8 @@ public class EditifyEngineModule: Module {
     /// Copies a picked/shared/recorded file into media/ (durable, excluded from backup).
     AsyncFunction("durableCopy") { (uri: String, name: String) throws -> [String: Any] in
       guard let source = URL(string: uri), source.isFileURL else { throw InvalidArgument(message: "durableCopy needs a file:// URI, got \(uri)") }
-      let path = try MediaStore.durableCopy(from: source, name: name)
-      return ["path": path, "uri": MediaStore.url(forRelative: path).absoluteString]
+      let copy = try MediaStore.durableCopy(from: source, name: name)
+      return ["path": copy.path, "uri": MediaStore.url(forRelative: copy.path).absoluteString, "bytes": copy.bytes]
     }
 
     /// Fingerprint and availability of a PHAsset id or file:// URI, without downloading from iCloud.
@@ -205,7 +205,8 @@ public class EditifyEngineModule: Module {
 
     /// Queues the 1080p preview proxy (the scheduler's `proxy` part); status and progress
     /// arrive as `analysisStatus` / `progress` events with part 'proxy'.
-    AsyncFunction("ensureProxy") { (assetId: String, ref: String) async in
+    AsyncFunction("ensureProxy") { (assetId: String, ref: String) async throws in
+      guard !assetId.isEmpty, !ref.isEmpty else { throw InvalidArgument(message: "ensureProxy needs an asset id and a ref") }
       await AnalysisScheduler.shared.analyze(assetId: assetId, ref: ref, parts: ["proxy"], options: AnalysisScheduler.Options(), force: false)
     }
 
@@ -214,8 +215,34 @@ public class EditifyEngineModule: Module {
       ProxyStore.shared.touch(assetId)
     }
 
-    AsyncFunction("setProxyBudget") { (bytes: Double) async in
-      await AnalysisScheduler.shared.setProxyBudget(Int64(max(0, bytes)))
+    /// Clamped to 256 MB...1 TB; a non-number is ignored and answers false.
+    AsyncFunction("setProxyBudget") { (bytes: Double) async -> Bool in
+      await AnalysisScheduler.shared.setProxyBudget(bytes)
+    }
+
+    /// Deletes an asset's proxy (the registry forgot the asset).
+    Function("removeProxy") { (assetId: String) in
+      ProxyStore.shared.remove(assetId)
+    }
+
+    /// Shows the system Photos prompt if it was never shown; answers the access after it.
+    AsyncFunction("requestPhotosAccess") { () async -> String in
+      await AssetSource.requestPhotosAccess()
+    }
+
+    /// Bytes iOS would make available for something the user asked for (0 when unknown).
+    Function("availableBytes") { () -> Double in
+      Double(MediaStore.availableBytes())
+    }
+
+    /// Every file under media/: {path, bytes, modified (ms)}, for the registry's orphan sweep.
+    Function("mediaFiles") { () -> [[String: Any]] in
+      MediaStore.mediaFiles()
+    }
+
+    /// Deletes a file under the media root by its relative path.
+    Function("removeMedia") { (path: String) in
+      MediaStore.remove(relative: path)
     }
   }
 
@@ -241,17 +268,22 @@ public class EditifyEngineModule: Module {
   }
 }
 
-/// In-flight `downloadMedia` tasks by request id.
+/// In-flight `downloadMedia` tasks by request id. A cancel can arrive before its download
+/// has registered (JS fires both without waiting): the id is remembered and the task is
+/// cancelled as it registers.
 private final class DownloadTasks: @unchecked Sendable {
   private let lock = NSLock()
   private var tasks: [String: Task<[String: Any], Error>] = [:]
+  private var cancelledEarly: Set<String> = []
 
   func set(_ id: String, _ task: Task<[String: Any], Error>) {
-    let previous = lock.withLock { () -> Task<[String: Any], Error>? in
+    let (previous, cancelNow) = lock.withLock { () -> (Task<[String: Any], Error>?, Bool) in
+      if cancelledEarly.remove(id) != nil { return (nil, true) }
       defer { tasks[id] = task }
-      return tasks[id]
+      return (tasks[id], false)
     }
     previous?.cancel()
+    if cancelNow { task.cancel() }
   }
 
   /// Only if it is still this task (a newer download may have reused the id).
@@ -260,6 +292,13 @@ private final class DownloadTasks: @unchecked Sendable {
   }
 
   func cancel(_ id: String) {
-    lock.withLock { tasks.removeValue(forKey: id) }?.cancel()
+    let task = lock.withLock { () -> Task<[String: Any], Error>? in
+      if let task = tasks.removeValue(forKey: id) { return task }
+      // Bounded: a cancel that lands after its download finished is never consumed.
+      if cancelledEarly.count >= 64 { cancelledEarly.removeAll() }
+      cancelledEarly.insert(id)
+      return nil
+    }
+    task?.cancel()
   }
 }

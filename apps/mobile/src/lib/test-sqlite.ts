@@ -1,7 +1,7 @@
 /**
  * Test-only: a real SQLite engine behind the async slice of expo-sqlite the registry
- * uses, so migrations and queries run for real. better-sqlite3 is the server's
- * dependency, hoisted to the workspace root (node:sqlite needs Node 22.13+; CI runs 20).
+ * uses, so migrations and queries run for real. better-sqlite3 rather than node:sqlite,
+ * which needs Node 22.13+ (CI runs 20).
  */
 import Database from 'better-sqlite3';
 import type { SqlDb, SqlValue } from './local-media';

@@ -15,6 +15,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 const engine = resolve(fileURLToPath(import.meta.url), '../../../apps/mobile/modules/editify-engine');
 const hasSwift = process.platform === 'darwin' && spawnSync('xcrun', ['--find', 'swiftc']).status === 0;
 const hasFfmpeg = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' }).stdout?.includes('libx265') ?? false;
+/** The macOS CI job installs both: there a missing tool is a failure, not a skip. */
+const required = process.platform === 'darwin' && Boolean(process.env.CI);
 let dir: string | undefined;
 
 afterAll(() => {
@@ -28,8 +30,10 @@ function ffmpeg(args: string[]): void {
 /** A tone whose loudness keeps moving, so its energy envelope has something to hash. */
 const MOVING_TONE = "aevalsrc=exprs='0.5*sin(2*PI*440*t)*(0.55+0.45*sin(2*PI*1.7*t+3*sin(2*PI*0.31*t)))':sample_rate=48000";
 
-describe.skipIf(!hasSwift || !hasFfmpeg)('device proxy pipeline and fingerprint (Swift)', () => {
+describe.skipIf(!required && (!hasSwift || !hasFfmpeg))('device proxy pipeline and fingerprint (Swift)', () => {
   it('passes every check', () => {
+    expect(hasSwift, 'swiftc (xcrun) is required on macOS CI').toBe(true);
+    expect(hasFfmpeg, 'ffmpeg with libx265 is required on macOS CI').toBe(true);
     dir = mkdtempSync(join(tmpdir(), 'editify-media-pipeline-'));
     const clips = join(dir, 'clips');
     execFileSync('mkdir', ['-p', clips]);
@@ -50,13 +54,24 @@ describe.skipIf(!hasSwift || !hasFfmpeg)('device proxy pipeline and fingerprint 
       '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30', '-f', 'lavfi', '-i', 'sine=frequency=550:sample_rate=44100', '-t', '1',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', join(clips, 'sdr-small.mov'),
     ]);
+    ffmpeg([
+      '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30', '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      // In the bitstream too: AVFoundation reads the VUI when the container's colr atom is partial.
+      '-x264-params', 'colorprim=smpte432:transfer=bt709:colormatrix=bt709',
+      '-color_primaries', 'smpte432', '-color_trc', 'bt709', '-colorspace', 'bt709', join(clips, 'sdr-p3.mov'),
+    ]);
+    // A portrait phone clip: landscape pixels plus a 90 degree display matrix.
+    ffmpeg(['-display_rotation', '90', '-i', join(clips, 'sdr-big.mp4'), '-c', 'copy', join(clips, 'rotated.mov')]);
     ffmpeg(['-f', 'lavfi', '-i', MOVING_TONE, '-t', '12', '-c:a', 'aac', '-b:a', '128k', join(clips, 'audio.m4a')]);
     ffmpeg(['-i', join(clips, 'audio.m4a'), '-c', 'copy', join(clips, 'audio-remux.mov')]);
+    ffmpeg(['-i', join(clips, 'audio.m4a'), '-c:a', 'aac', '-b:a', '96k', join(clips, 'audio-reenc.m4a')]);
     ffmpeg(['-ss', '1.5', '-i', join(clips, 'audio.m4a'), '-c:a', 'aac', '-b:a', '128k', join(clips, 'audio-trim.m4a')]);
 
     const binary = join(dir, 'media-pipeline');
     const sources = ['AnalysisMath', 'AudioDecode', 'AudioSync', 'MediaFingerprint', 'MediaStore', 'ProxyPipeline'].map((name) => join(engine, `ios/${name}.swift`));
-    execFileSync('xcrun', ['swiftc', '-O', ...sources, join(engine, 'parity/media-pipeline/main.swift'), '-o', binary]);
+    // macOS 15: the log-transfer and async AVFoundation APIs the engine (iOS 26 floor) uses.
+    const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macos15.0`;
+    execFileSync('xcrun', ['swiftc', '-O', '-target', target, ...sources, join(engine, 'parity/media-pipeline/main.swift'), '-o', binary]);
     const run = spawnSync(binary, [clips, join(dir, 'scratch')], { encoding: 'utf8' });
     expect(run.stderr).toBe('');
     expect(run.stdout.trim()).toBe('ok');

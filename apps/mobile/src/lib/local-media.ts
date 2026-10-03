@@ -4,20 +4,32 @@
  * from on this phone. Pure logic: the SQLite database and the native engine are
  * passed in (`local-media-native.ts` wires the real ones), so every branch runs in vitest.
  *
- *   import ─▶ stageImport ─┬─ Photos pick, full library access ─▶ referenced by PHAsset id (D5)
- *                          ├─ Files / share / capture / sticker / limited-access Photos
- *                          │     ─▶ copied into Application Support/Editify/media BEFORE upload
- *                          └─ nothing on disk ─▶ server-only
+ *   first Photos video import ─▶ askForPhotosAccessOnce (our reason, then the iOS prompt, once)
+ *
+ *   import ─▶ stageImport ─┬─ Photos pick, full access, original == picked file ─▶ PHAsset id only (D5)
+ *                          ├─ anything else with a file (Files, share, capture, sticker,
+ *                          │   limited/denied Photos, a clip edited in Photos) ─▶ copy into
+ *                          │   Application Support/Editify/media BEFORE upload (PHAsset id kept)
+ *                          └─ no file, or no room for a copy ─▶ server-only (with the reason)
  *          upload ok ─▶ commit(assetId): row + fingerprint of the uploaded file (+ proxy queued)
  *
- *   assetRef ─▶ resolveMedia ─┬─ app file on disk ─────────────────────────▶ 'file'
+ *   assetRef ─▶ resolveMedia ─┬─ app copy on disk ─────────────────────────▶ 'file'
  *                             ├─ PHAsset local, fingerprint matches ────────▶ 'local'
  *                             ├─ PHAsset local, fingerprint differs ────────▶ 'changed'
  *                             ├─ PHAsset in iCloud ─▶ 'icloud' ─▶ downloadMedia (progress, cancel)
- *                             └─ no row / server-only / deleted / limited / denied ─▶ 'server'
+ *                             └─ no row / server-only / evicted / deleted / limited / denied ─▶ 'server'
  *                                (preview: the server proxy; export: the server render path)
  *
- * The app file is checked first: it is the exact file that was uploaded, so nothing
+ * Copies are a cache of media the server already has (rows exist only after an upload
+ * landed): least recently used ones are evicted under a byte budget, min(20 GB, 25% of
+ * free space) unless set, and released when their project is deleted. A copy made for
+ * an upload that never committed (the app was killed mid-upload) has no row; the launch
+ * sweep deletes such files after 24 hours.
+ *
+ * Analyzers and proxies only ever get a ref resolveMedia returned (`analyzeMedia`), never
+ * a raw PHAsset id: a 'changed' original must not be analyzed in place of the uploaded clip.
+ *
+ * The app copy is checked first: it is the exact file that was uploaded, so nothing
  * can have changed under it. Paths are stored relative to the native media root
  * (`mediaRoot()`), because the app container's absolute path changes on every update.
  */
@@ -25,7 +37,7 @@ import type { AssetRef } from '@editify/shared';
 
 // ─── Types shared with the native engine (structural, so tests need no native module) ───
 
-export type MediaColor = 'hlg' | 'pq' | 'sdr';
+export type MediaColor = 'hlg' | 'pq' | 'log' | 'sdr';
 export type PhotosAccess = 'all' | 'limited' | 'denied' | 'undetermined';
 
 /** What the engine measures (`MediaFingerprint.swift`). `audio` is an envelope hash ("e1:…"). */
@@ -45,20 +57,33 @@ export type MediaProbe =
 
 /** The native calls the registry needs; `local-media-native.ts` maps them to EditifyEngine and expo-file-system. */
 export interface MediaNative {
-  /** A PHAsset id or file:// URI, never downloading from iCloud. */
+  /** A PHAsset id or file:// URI, never downloading from iCloud (and never touching PhotoKit without access). */
   probe(ref: string): Promise<MediaProbe>;
   /** `probe` that downloads an iCloud original first; rejects once `cancelDownload(requestId)` lands. */
   download(ref: string, requestId: string, onProgress?: (fraction: number) => void): Promise<MediaProbe>;
   cancelDownload(requestId: string): void;
   photosAccess(): PhotosAccess;
+  /** The iOS prompt when it was never shown; answers the access afterwards. */
+  requestPhotosAccess(): Promise<PhotosAccess>;
   /** file:// URL of the media root, with a trailing slash. */
   mediaRoot(): string;
   /** Copies a file:// URI into the durable media folder; `path` is relative to `mediaRoot()`. */
-  durableCopy(uri: string, name: string): Promise<{ path: string; uri: string }>;
+  durableCopy(uri: string, name: string): Promise<{ path: string; uri: string; bytes: number }>;
+  /** Bytes iOS would make available for an import (volumeAvailableCapacityForImportantUsage). */
+  availableBytes(): number;
+  /** Every file under media/, for the orphan sweep. `modified` is ms since 1970. */
+  mediaFiles(): Array<{ path: string; bytes: number; modified: number }>;
+  /** Deletes a file under the media root by its relative path. */
+  removeMedia(path: string): void;
   fileExists(uri: string): boolean;
+  /** Size of a file:// URI, 0 when unknown. */
+  fileSize(uri: string): number;
   removeFile(uri: string): void;
   ensureProxy(assetId: string, ref: string): Promise<void>;
   touchProxy(assetId: string): boolean;
+  removeProxy(assetId: string): void;
+  /** Queues analyzer parts for a resolved ref (the scheduler's `analyze`). */
+  analyze(assetId: string, ref: string, parts: string[] | null, options: Record<string, unknown> | null): Promise<void>;
 }
 
 // ─── SQLite ───
@@ -93,6 +118,12 @@ export const LOCAL_MEDIA_MIGRATIONS: readonly string[] = [
     server_only INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
   )`,
+  // The copy cache (H1): size and last use of each copy, why a row is server-only, and
+  // one-off flags (the Photos access question).
+  `ALTER TABLE local_media ADD COLUMN file_bytes INTEGER;
+   ALTER TABLE local_media ADD COLUMN last_used INTEGER;
+   ALTER TABLE local_media ADD COLUMN server_reason TEXT;
+   CREATE TABLE IF NOT EXISTS local_media_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT)`,
 ];
 
 /** Brings the database to the newest schema; safe to call on every launch. Returns the version. */
@@ -118,6 +149,8 @@ export interface LocalMediaRow {
   phLocalId: string | null;
   /** Relative to the media root. */
   fileUri: string | null;
+  /** Size of the copy at `fileUri`. */
+  fileBytes: number | null;
   /** Relative to the media root. */
   proxyUri: string | null;
   proxyStatus: ProxyStatus | null;
@@ -127,6 +160,9 @@ export interface LocalMediaRow {
   bytes: number | null;
   color: MediaColor | null;
   serverOnly: boolean;
+  serverReason: ServerReason | null;
+  /** Last time resolve handed this source out (ms); drives copy eviction. */
+  lastUsed: number | null;
   updatedAt: number;
 }
 
@@ -135,6 +171,7 @@ export interface LocalMediaRecord {
   assetId: string;
   phLocalId?: string | null;
   fileUri?: string | null;
+  fileBytes?: number | null;
   fingerprint?: MediaFingerprint | null;
 }
 
@@ -142,6 +179,7 @@ interface RawRow {
   asset_id: string;
   ph_local_id: string | null;
   file_uri: string | null;
+  file_bytes: number | null;
   proxy_uri: string | null;
   proxy_status: string | null;
   fingerprint: string | null;
@@ -149,6 +187,8 @@ interface RawRow {
   bytes: number | null;
   color: string | null;
   server_only: number;
+  server_reason: string | null;
+  last_used: number | null;
   updated_at: number;
 }
 
@@ -157,11 +197,20 @@ export interface LocalMediaStore {
   /** Insert or replace what an import knows (the proxy columns survive). */
   record(entry: LocalMediaRecord): Promise<void>;
   /** No local source: preview from the server proxy, export on the server. */
-  markServerOnly(assetId: string): Promise<void>;
+  markServerOnly(assetId: string, reason?: ServerReason): Promise<void>;
   /** Trust-on-first-use for a row stored without one. */
   setFingerprint(assetId: string, fingerprint: MediaFingerprint): Promise<void>;
   /** Only touches an existing row. */
   setProxy(assetId: string, status: ProxyStatus | null, proxyUri: string | null): Promise<void>;
+  /** Resolve handed this source out now. */
+  touch(assetId: string): Promise<void>;
+  /** Rows that hold a copy, least recently used first. */
+  copies(): Promise<LocalMediaRow[]>;
+  /** The copy is gone: a row with no PHAsset id to fall back on becomes server-only. */
+  dropCopy(assetId: string, reason: ServerReason): Promise<void>;
+  forget(assetId: string): Promise<void>;
+  getMeta(key: string): Promise<string | null>;
+  setMeta(key: string, value: string | null): Promise<void>;
 }
 
 export function createLocalMediaStore(db: SqlDb, now: () => number = Date.now): LocalMediaStore {
@@ -172,23 +221,24 @@ export function createLocalMediaStore(db: SqlDb, now: () => number = Date.now): 
     },
     async record(entry) {
       const fingerprint = entry.fingerprint ?? null;
+      const at = now();
       await db.runAsync(
-        `INSERT INTO local_media (asset_id, ph_local_id, file_uri, fingerprint, duration, bytes, color, server_only, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        `INSERT INTO local_media (asset_id, ph_local_id, file_uri, file_bytes, fingerprint, duration, bytes, color, server_only, server_reason, last_used, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
          ON CONFLICT(asset_id) DO UPDATE SET
-           ph_local_id = excluded.ph_local_id, file_uri = excluded.file_uri, fingerprint = excluded.fingerprint,
-           duration = excluded.duration, bytes = excluded.bytes, color = excluded.color,
-           server_only = 0, updated_at = excluded.updated_at`,
-        entry.assetId, entry.phLocalId ?? null, entry.fileUri ?? null,
+           ph_local_id = excluded.ph_local_id, file_uri = excluded.file_uri, file_bytes = excluded.file_bytes,
+           fingerprint = excluded.fingerprint, duration = excluded.duration, bytes = excluded.bytes, color = excluded.color,
+           server_only = 0, server_reason = NULL, last_used = excluded.last_used, updated_at = excluded.updated_at`,
+        entry.assetId, entry.phLocalId ?? null, entry.fileUri ?? null, entry.fileBytes ?? null,
         fingerprint?.audio ?? null, fingerprint?.duration ?? null, fingerprint?.bytes ?? null, fingerprint?.color ?? null,
-        now(),
+        at, at,
       );
     },
-    async markServerOnly(assetId) {
+    async markServerOnly(assetId, reason = 'server-only') {
       await db.runAsync(
-        `INSERT INTO local_media (asset_id, server_only, updated_at) VALUES (?, 1, ?)
-         ON CONFLICT(asset_id) DO UPDATE SET server_only = 1, updated_at = excluded.updated_at`,
-        assetId, now(),
+        `INSERT INTO local_media (asset_id, server_only, server_reason, updated_at) VALUES (?, 1, ?, ?)
+         ON CONFLICT(asset_id) DO UPDATE SET server_only = 1, server_reason = excluded.server_reason, updated_at = excluded.updated_at`,
+        assetId, reason, now(),
       );
     },
     async setFingerprint(assetId, fingerprint) {
@@ -203,6 +253,41 @@ export function createLocalMediaStore(db: SqlDb, now: () => number = Date.now): 
         status, proxyUri, now(), assetId,
       );
     },
+    async touch(assetId) {
+      await db.runAsync('UPDATE local_media SET last_used = ? WHERE asset_id = ?', now(), assetId);
+    },
+    async copies() {
+      const raws = await db.getAllAsync<RawRow>(
+        'SELECT * FROM local_media WHERE file_uri IS NOT NULL ORDER BY COALESCE(last_used, updated_at) ASC, asset_id ASC',
+      );
+      return raws.map(fromRaw);
+    },
+    async dropCopy(assetId, reason) {
+      await db.runAsync(
+        `UPDATE local_media SET file_uri = NULL, file_bytes = NULL,
+           server_only = CASE WHEN ph_local_id IS NULL THEN 1 ELSE server_only END,
+           server_reason = CASE WHEN ph_local_id IS NULL THEN ? ELSE server_reason END,
+           updated_at = ? WHERE asset_id = ?`,
+        reason, now(), assetId,
+      );
+    },
+    async forget(assetId) {
+      await db.runAsync('DELETE FROM local_media WHERE asset_id = ?', assetId);
+    },
+    async getMeta(key) {
+      const row = await db.getFirstAsync<{ value: string | null }>('SELECT value FROM local_media_meta WHERE key = ?', key);
+      return row?.value ?? null;
+    },
+    async setMeta(key, value) {
+      if (value === null) {
+        await db.runAsync('DELETE FROM local_media_meta WHERE key = ?', key);
+        return;
+      }
+      await db.runAsync(
+        'INSERT INTO local_media_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        key, value,
+      );
+    },
   };
 }
 
@@ -211,6 +296,7 @@ function fromRaw(raw: RawRow): LocalMediaRow {
     assetId: raw.asset_id,
     phLocalId: raw.ph_local_id,
     fileUri: raw.file_uri,
+    fileBytes: raw.file_bytes,
     proxyUri: raw.proxy_uri,
     proxyStatus: raw.proxy_status as ProxyStatus | null,
     fingerprint: raw.fingerprint,
@@ -218,6 +304,8 @@ function fromRaw(raw: RawRow): LocalMediaRow {
     bytes: raw.bytes,
     color: raw.color as MediaColor | null,
     serverOnly: raw.server_only === 1,
+    serverReason: raw.server_reason as ServerReason | null,
+    lastUsed: raw.last_used,
     updatedAt: raw.updated_at,
   };
 }
@@ -226,26 +314,31 @@ function fromRaw(raw: RawRow): LocalMediaRow {
 
 /** A remux or a re-encode can move the duration by a frame or two; a trim moves it by far more. */
 export const FINGERPRINT_DURATION_TOLERANCE = 0.1;
-/** Same audio decodes to the same hash; a front trim scrambles about half of it. */
+/** Same audio decodes to the same hash (a re-encode flips ~1%); a front trim scrambles about half. */
 export const FINGERPRINT_MAX_BIT_DIFFERENCE = 0.1;
 
-/** Share of differing bits between two envelope hashes, or null when they can't be compared. */
+/**
+ * Share of differing bits between two envelope hashes over their common prefix (the
+ * duration check catches a length difference), or null when they can't be compared.
+ */
 export function envelopeDistance(a: string, b: string): number | null {
   const [tagA, hexA = ''] = a.split(':');
   const [tagB, hexB = ''] = b.split(':');
   if (!tagA || tagA !== tagB) return null;
-  const length = Math.max(hexA.length, hexB.length);
+  const length = Math.min(hexA.length, hexB.length);
   if (length === 0) return 0;
   let differing = 0;
   for (let index = 0; index < length; index += 1) {
-    const x = Number.parseInt(hexA[index] ?? '', 16);
-    const y = Number.parseInt(hexB[index] ?? '', 16);
-    // A nibble only one side has counts as fully different.
-    if (Number.isNaN(x) || Number.isNaN(y)) { differing += 4; continue; }
-    let bits = x ^ y;
+    let bits = (Number.parseInt(hexA[index] as string, 16) || 0) ^ (Number.parseInt(hexB[index] as string, 16) || 0);
     while (bits) { differing += bits & 1; bits >>= 1; }
   }
   return differing / (length * 4);
+}
+
+type ExpectedFingerprint = Pick<LocalMediaRow, 'fingerprint' | 'duration' | 'bytes'>;
+
+function expectedOf(fingerprint: MediaFingerprint): ExpectedFingerprint {
+  return { fingerprint: fingerprint.audio, duration: fingerprint.duration, bytes: fingerprint.bytes };
 }
 
 /**
@@ -254,7 +347,7 @@ export function envelopeDistance(a: string, b: string): number | null {
  * envelope agrees. Bytes alone can't decide a mismatch: the picker may hand over a
  * re-wrapped copy of the very same original.
  */
-export function fingerprintsMatch(expected: Pick<LocalMediaRow, 'fingerprint' | 'duration' | 'bytes'>, actual: MediaFingerprint): boolean {
+export function fingerprintsMatch(expected: ExpectedFingerprint, actual: MediaFingerprint): boolean {
   if (expected.duration !== null && Math.abs(expected.duration - actual.duration) > FINGERPRINT_DURATION_TOLERANCE) return false;
   if (expected.bytes && actual.bytes && expected.bytes === actual.bytes) return true;
   if (expected.fingerprint === null || actual.audio === null) return expected.fingerprint === actual.audio;
@@ -268,6 +361,8 @@ export function fingerprintsMatch(expected: Pick<LocalMediaRow, 'fingerprint' | 
 export type ServerReason =
   | 'no-row'        // imported before the registry existed (an old project) or on another device
   | 'server-only'   // nothing was kept on this phone at import
+  | 'no-space'      // the phone was too full to keep a copy at import
+  | 'evicted'       // the copy was evicted to stay within the copy budget
   | 'deleted'       // the PHAsset is gone, with full library access
   | 'limited'       // outside a Limited Library selection
   | 'denied'        // no Photos access at all
@@ -282,13 +377,13 @@ export type ResolvedMedia =
   /** The app's own copy (Files, share, capture, sticker, limited-access Photos). `ref` is its file:// URI. */
   | (ResolvedBase & { state: 'file'; ref: string; proxyUri?: string })
   /** The PHAsset differs from what was uploaded: the user picks "use it anyway / re-link / server copy". */
-  | (ResolvedBase & { state: 'changed'; ref: string; expected: Pick<LocalMediaRow, 'fingerprint' | 'duration' | 'bytes'>; actual: MediaFingerprint })
+  | (ResolvedBase & { state: 'changed'; ref: string; expected: ExpectedFingerprint; actual: MediaFingerprint })
   /** Offloaded to iCloud: `downloadMedia` fetches it. `unreachable` is the last download's error (offline). */
   | (ResolvedBase & { state: 'icloud'; ref: string; unreachable?: string })
   /** No usable local source: preview from the server proxy, export through the server. */
   | (ResolvedBase & { state: 'server'; reason: ServerReason });
 
-export interface MediaDeps { store: LocalMediaStore; native: MediaNative }
+export interface MediaDeps { store: LocalMediaStore; native: MediaNative; now?: () => number }
 
 export interface ResolveOptions {
   /** 'preview' (default) attaches the 1080p proxy when it is on disk and queues it when not. */
@@ -305,19 +400,40 @@ export async function resolveMedia(ref: AssetRef, deps: MediaDeps, options: Reso
   const base: ResolvedBase = { assetId: ref.id, kind: ref.kind };
   const row = await deps.store.lookup(ref.id);
   if (!row) return { ...base, state: 'server', reason: 'no-row' };
-  if (row.serverOnly) return { ...base, state: 'server', reason: 'server-only' };
+  if (row.serverOnly) return { ...base, state: 'server', reason: row.serverReason ?? 'server-only' };
 
-  let reason: ServerReason = 'server-only';
+  let reason: ServerReason = row.serverReason ?? 'server-only';
   if (row.fileUri) {
     const uri = absoluteUri(deps.native, row.fileUri);
-    if (deps.native.fileExists(uri)) return await withProxy({ ...base, state: 'file', ref: uri }, row, deps, options);
+    if (deps.native.fileExists(uri)) {
+      await deps.store.touch(ref.id);
+      return await withProxy({ ...base, state: 'file', ref: uri }, row, deps, options);
+    }
     reason = 'file-missing';
   }
   if (row.phLocalId) {
     const outcome = await fromProbe(base, row, row.phLocalId, await deps.native.probe(row.phLocalId), deps);
-    return outcome.state === 'local' ? await withProxy(outcome, row, deps, options) : outcome;
+    if (outcome.state !== 'local') return outcome;
+    await deps.store.touch(ref.id);
+    return await withProxy(outcome, row, deps, options);
   }
   return { ...base, state: 'server', reason };
+}
+
+/**
+ * The only way analyzers get a source (M1): resolved first, and queued only for an app
+ * copy or a Photos original that still matches the upload. Anything else (changed,
+ * iCloud, server) is returned untouched for the caller to deal with.
+ */
+export async function analyzeMedia(
+  ref: AssetRef,
+  deps: MediaDeps,
+  parts: string[] | null = null,
+  options: Record<string, unknown> | null = null,
+): Promise<ResolvedMedia> {
+  const media = await resolveMedia(ref, deps, { purpose: 'export' });
+  if (media.state === 'local' || media.state === 'file') await deps.native.analyze(ref.id, media.ref, parts, options);
+  return media;
 }
 
 let downloadCount = 0;
@@ -391,6 +507,109 @@ async function withProxy<T extends Extract<ResolvedMedia, { state: 'local' | 'fi
   return media;
 }
 
+// ─── Photos access (asked once) ───
+
+export const PHOTOS_ASKED_KEY = 'photos_access_asked';
+
+/**
+ * Before the first Photos video import: with access never asked for, show our reason
+ * (`explain` resolves true to go on), then the iOS prompt. Asked at most once: the flag
+ * is stored before asking, so "Not now", a decline or a kill mid-prompt all stay asked.
+ * Independent of the picker, which needs no permission and keeps working either way.
+ */
+export async function askForPhotosAccessOnce(deps: MediaDeps, explain: () => Promise<boolean>): Promise<PhotosAccess> {
+  const access = deps.native.photosAccess();
+  if (access !== 'undetermined') return access;
+  if (await deps.store.getMeta(PHOTOS_ASKED_KEY)) return access;
+  await deps.store.setMeta(PHOTOS_ASKED_KEY, String((deps.now ?? Date.now)()));
+  if (!(await explain())) return access;
+  return await deps.native.requestPhotosAccess();
+}
+
+// ─── The copy cache (H1) ───
+
+const GB = 1024 ** 3;
+export const COPY_BUDGET_CAP = 20 * GB;
+export const COPY_BUDGET_FREE_SHARE = 0.25;
+/** Left free after a copy, so an import never takes the phone's last gigabyte. */
+export const COPY_FREE_RESERVE = GB;
+/** A media/ file with no row this old is a copy whose upload never committed. */
+export const ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
+export const COPY_BUDGET_KEY = 'copy_budget_bytes';
+
+/** The copy budget: what was set, or min(20 GB, 25% of free space). */
+export async function copyBudget(deps: MediaDeps): Promise<number> {
+  const configured = Number(await deps.store.getMeta(COPY_BUDGET_KEY));
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return Math.min(COPY_BUDGET_CAP, Math.max(0, deps.native.availableBytes()) * COPY_BUDGET_FREE_SHARE);
+}
+
+/** A fixed copy budget in bytes, or null for the default. */
+export async function setCopyBudget(deps: MediaDeps, bytes: number | null): Promise<void> {
+  const valid = bytes !== null && Number.isFinite(bytes) && bytes > 0;
+  await deps.store.setMeta(COPY_BUDGET_KEY, valid ? String(Math.round(bytes)) : null);
+}
+
+/**
+ * Evicts least recently used copies until the copies plus `incoming` bytes fit the
+ * budget. `protect` (the copy just made) is never evicted. Returns the evicted asset ids.
+ */
+export async function enforceCopyBudget(deps: MediaDeps, options: { incoming?: number; protect?: string } = {}): Promise<string[]> {
+  const budget = await copyBudget(deps);
+  const copies = await deps.store.copies();
+  let total = copies.reduce((sum, row) => sum + (row.fileBytes ?? 0), 0) + (options.incoming ?? 0);
+  const evicted: string[] = [];
+  for (const row of copies) {
+    if (total <= budget) break;
+    if (row.assetId === options.protect || !row.fileUri) continue;
+    deps.native.removeMedia(row.fileUri);
+    await deps.store.dropCopy(row.assetId, 'evicted');
+    total -= row.fileBytes ?? 0;
+    evicted.push(row.assetId);
+  }
+  return evicted;
+}
+
+/** Deletes media/ files no row points at once they are older than a day (uploads killed mid-way). */
+export async function sweepOrphanCopies(deps: MediaDeps): Promise<string[]> {
+  const now = (deps.now ?? Date.now)();
+  const referenced = new Set((await deps.store.copies()).map((row) => row.fileUri));
+  const removed: string[] = [];
+  for (const file of deps.native.mediaFiles()) {
+    if (referenced.has(file.path) || now - file.modified < ORPHAN_AGE_MS) continue;
+    deps.native.removeMedia(file.path);
+    removed.push(file.path);
+  }
+  return removed;
+}
+
+/** Launch housekeeping: the orphan sweep, then the budget. */
+export async function maintainMedia(deps: MediaDeps): Promise<void> {
+  await sweepOrphanCopies(deps);
+  await enforceCopyBudget(deps);
+}
+
+/** Drops everything the phone keeps for these assets: copy, proxy, row. */
+export async function forgetMedia(deps: MediaDeps, assetIds: Iterable<string>): Promise<void> {
+  for (const assetId of assetIds) {
+    const row = await deps.store.lookup(assetId);
+    if (!row) continue;
+    if (row.fileUri) deps.native.removeMedia(row.fileUri);
+    deps.native.removeProxy(assetId);
+    await deps.store.forget(assetId);
+  }
+}
+
+/**
+ * After a project is deleted: forgets its assets that no remaining project uses (shared
+ * media stays). `stillUsed` is every asset id linked to a project that still exists.
+ */
+export async function releaseProjectMedia(deps: MediaDeps, projectAssetIds: Iterable<string>, stillUsed: ReadonlySet<string>): Promise<string[]> {
+  const released = [...projectAssetIds].filter((id) => !stillUsed.has(id));
+  await forgetMedia(deps, released);
+  return released;
+}
+
 // ─── Import hooks ───
 
 export type ImportOrigin = 'photos' | 'files' | 'share' | 'capture';
@@ -403,10 +622,12 @@ export interface ImportCandidate {
   origin: ImportOrigin;
   /** ImagePicker's `assetId` (a PHAsset localIdentifier), when it gave one. */
   phLocalId?: string | null;
+  /** The picker's size, when it reported one. */
+  size?: number;
 }
 
 export interface StagedImport {
-  /** What to upload: the durable copy when one was made, so a later edit to the picked file can't diverge. */
+  /** What to upload: the copy when one was made, so a later edit to the picked file can't diverge. */
   uploadUri: string;
   /** The device keeps its own copy (a share-extension copy is then redundant). */
   durable: boolean;
@@ -417,48 +638,65 @@ export interface StagedImport {
 }
 
 /**
- * Prepares one import before its upload. Photos videos are referenced by PHAsset id
- * when the app has full library access (D5: never copied); everything else that has
- * a file is copied into the durable media folder first. Without access, a Photos id
- * is kept anyway (it starts working if the user grants access later) next to the copy.
- * No file at all (or a failed copy) leaves the asset server-only.
+ * Prepares one import before its upload.
+ * - A Photos video with full library access whose original (`.original`) matches the
+ *   picked file is referenced by PHAsset id, never copied (D5).
+ * - Anything else with a file is copied into the media folder first: Files, share,
+ *   capture, stickers, Photos without full access, and a clip already edited in Photos
+ *   (the picker uploads the rendered edit, the original differs). A PHAsset id is kept
+ *   next to the copy.
+ * - No file, or not enough room for a copy, leaves the asset server-only (with the reason).
+ * The row is written in `commit`, after the upload; a copy whose upload never commits
+ * (the app was killed) is left to `sweepOrphanCopies`.
  */
 export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): Promise<StagedImport> {
   const { native, store } = deps;
   const onDisk = candidate.uri.startsWith('file://');
   const phLocalId = candidate.phLocalId ?? null;
-  const serverOnly: StagedImport = {
+  const serverOnly = (reason: ServerReason): StagedImport => ({
     uploadUri: candidate.uri,
     durable: false,
-    commit: async (assetId) => { await store.markServerOnly(assetId); },
+    commit: async (assetId) => { await store.markServerOnly(assetId, reason); },
     abort: () => undefined,
-  };
+  });
 
+  let uploaded: MediaFingerprint | null | undefined;
   if (candidate.kind === 'video' && candidate.origin === 'photos' && phLocalId && native.photosAccess() === 'all') {
-    return {
-      uploadUri: candidate.uri,
-      durable: false,
-      commit: async (assetId) => {
-        await store.record({ assetId, phLocalId, fingerprint: onDisk ? await fingerprintOf(native, candidate.uri) : null });
-        native.ensureProxy(assetId, phLocalId).catch(() => undefined);
-      },
-      abort: () => undefined,
-    };
+    uploaded = onDisk ? await fingerprintOf(native, candidate.uri) : null;
+    const original = await native.probe(phLocalId).catch(() => null);
+    if (uploaded && original?.status === 'ok' && fingerprintsMatch(expectedOf(uploaded), original.fingerprint)) {
+      const fingerprint = uploaded;
+      return {
+        uploadUri: candidate.uri,
+        durable: false,
+        commit: async (assetId) => {
+          await store.record({ assetId, phLocalId, fingerprint });
+          native.ensureProxy(assetId, phLocalId).catch(() => undefined);
+        },
+        abort: () => undefined,
+      };
+    }
+    // Edited in Photos, in iCloud, or unreadable: keep a copy of what is uploaded.
   }
-  if (!onDisk) return serverOnly;
+  if (!onDisk) return serverOnly('server-only');
 
-  let copy: { path: string; uri: string };
+  const size = candidate.size || native.fileSize(candidate.uri);
+  if (native.availableBytes() < size + COPY_FREE_RESERVE || size > await copyBudget(deps)) return serverOnly('no-space');
+  await enforceCopyBudget(deps, { incoming: size });
+
+  let copy: { path: string; uri: string; bytes: number };
   try {
     copy = await native.durableCopy(candidate.uri, candidate.name);
   } catch {
-    return serverOnly; // disk full: the upload still goes ahead, from the picked file
+    return serverOnly('no-space'); // the copy failed (disk full): the upload still goes ahead from the picked file
   }
   return {
     uploadUri: copy.uri,
     durable: true,
     commit: async (assetId) => {
-      const fingerprint = candidate.kind === 'image' ? null : await fingerprintOf(native, copy.uri);
-      await store.record({ assetId, phLocalId, fileUri: copy.path, fingerprint });
+      const fingerprint = candidate.kind === 'image' ? null : uploaded ?? await fingerprintOf(native, copy.uri);
+      await store.record({ assetId, phLocalId, fileUri: copy.path, fileBytes: copy.bytes || size, fingerprint });
+      await enforceCopyBudget(deps, { protect: assetId });
       if (candidate.kind === 'video') native.ensureProxy(assetId, copy.uri).catch(() => undefined);
     },
     abort: () => {

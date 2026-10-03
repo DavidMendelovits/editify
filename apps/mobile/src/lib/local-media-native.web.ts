@@ -4,3 +4,5 @@ import type { MediaDeps } from './local-media';
 export function localMedia(): Promise<MediaDeps | null> {
   return Promise.resolve(null);
 }
+
+export async function releaseDeletedProjectMedia(_projectAssetIds: string[]): Promise<void> {}

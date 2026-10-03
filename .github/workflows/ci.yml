@@ -54,7 +54,7 @@ jobs:
         run: |
           base="${{ github.event.pull_request.base.sha || github.event.before }}"
           if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then echo "engine=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/sync\.ts|server/src/media/sync\.ts|server/test/(sync-parity\.test\.ts|helpers/sync-fixtures\.ts))'; then
+          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/sync\.ts|server/src/media/sync\.ts|server/test/(sync-parity\.test\.ts|helpers/sync-fixtures\.ts|media-pipeline\.test\.ts))'; then
             echo "engine=true" >> "$GITHUB_OUTPUT"; else echo "engine=false" >> "$GITHUB_OUTPUT"; fi
   engine:
     needs: changes
@@ -68,6 +68,12 @@ jobs:
       - run: npm run build -w @editify/shared
       - name: Swift AudioSync parity with sync.ts
         run: npx vitest run test/sync-parity.test.ts
+        working-directory: server
+      # The device proxy writer and media fingerprint (plan P1) on ffmpeg-made HDR/SDR clips.
+      - name: ffmpeg (with x265) for the media pipeline clips
+        run: brew install ffmpeg
+      - name: Swift media pipeline (proxy, LRU store, fingerprint)
+        run: npx vitest run test/media-pipeline.test.ts
         working-directory: server
   deploy:
     needs: check

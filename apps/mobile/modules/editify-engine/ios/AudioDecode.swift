@@ -86,7 +86,7 @@ final class PCMChunks: @unchecked Sendable {
   /// `limitSeconds` reads only the start (the media fingerprint's first 20 s).
   init(asset: AVAsset, rate: Double, limitSeconds: Double? = nil) async throws {
     self.rate = try AnalyzerLimits.sampleRate(rate)
-    guard let track = try await asset.loadTracks(withMediaType: .audio).first else { throw NoAudio() }
+    guard let track = try await firstEnabledTrack(asset, .audio) else { throw NoAudio() }
     let total = try await asset.load(.duration).seconds
     durationSeconds = limitSeconds.map { min($0, total) } ?? total
     reader = try AVAssetReader(asset: asset)
@@ -142,3 +142,12 @@ struct EngineError: Error, LocalizedError {
 }
 
 func round3(_ value: Double) -> Double { (value * 1000).rounded() / 1000 }
+
+/// The first track of `type` that is enabled: a file can carry a disabled alternate
+/// (a commentary, a muted original) ahead of the one that plays. Falls back to the
+/// first track when none is marked enabled.
+func firstEnabledTrack(_ asset: AVAsset, _ type: AVMediaType) async throws -> AVAssetTrack? {
+  let tracks = try await asset.loadTracks(withMediaType: type)
+  for track in tracks where try await track.load(.isEnabled) { return track }
+  return tracks.first
+}

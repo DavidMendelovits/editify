@@ -16,6 +16,18 @@ const state = vi.hoisted(() => ({
   discarded: [] as string[],
   picked: undefined as unknown,
   documents: undefined as unknown,
+  alerts: [] as string[],
+  alertChoice: 'Continue',
+  pickerOpenedAfterAlert: false,
+}));
+
+vi.mock('react-native', () => ({
+  Alert: {
+    alert: (title: string, _message: string, buttons: Array<{ text: string; onPress?: () => void }>) => {
+      state.alerts.push(title);
+      buttons.find((button) => button.text === state.alertChoice)?.onPress?.();
+    },
+  },
 }));
 
 vi.mock('./local-media-native', () => ({ localMedia: async () => state.deps }));
@@ -29,7 +41,10 @@ vi.mock('./api', () => ({
 vi.mock('./shared-files', () => ({ discardSharedCopy: (uri: string) => { state.discarded.push(uri); } }));
 vi.mock('expo-file-system', () => ({ File: class { size = 0; constructor(public uri: string) {} } }));
 vi.mock('expo-image-picker', () => ({
-  launchImageLibraryAsync: async () => state.picked,
+  launchImageLibraryAsync: async () => {
+    state.pickerOpenedAfterAlert = state.alerts.length > 0;
+    return state.picked;
+  },
   requestMediaLibraryPermissionsAsync: async () => ({ granted: true }),
 }));
 vi.mock('expo-document-picker', () => ({ getDocumentAsync: async () => state.documents }));
@@ -50,22 +65,55 @@ beforeEach(async () => {
     download: async () => ({ status: 'icloud' }),
     cancelDownload: () => undefined,
     photosAccess: () => access,
+    requestPhotosAccess: async () => { access = 'all'; return access; },
     mediaRoot: () => ROOT,
     durableCopy: async (_uri, name) => {
       copies += 1;
       const path = `media/${copies}-${name}`;
       files.add(`${ROOT}${path}`);
-      return { path, uri: `${ROOT}${path}` };
+      return { path, uri: `${ROOT}${path}`, bytes: 900 };
     },
+    availableBytes: () => 100 * 1024 ** 3,
+    mediaFiles: () => [],
+    removeMedia: (path) => { files.delete(`${ROOT}${path}`); },
     fileExists: (uri) => files.has(uri),
+    fileSize: () => 900,
     removeFile: (uri) => { files.delete(uri); },
     ensureProxy: async () => undefined,
     touchProxy: () => false,
+    removeProxy: () => undefined,
+    analyze: async () => undefined,
   };
   state.deps = { store: createLocalMediaStore(db), native };
   state.uploads = [];
   state.failNames = new Set();
   state.discarded = [];
+  state.alerts = [];
+  state.alertChoice = 'Continue';
+  state.pickerOpenedAfterAlert = false;
+});
+
+describe('Photos access', () => {
+  it('explains and asks once, before opening the picker, then references by asset id', async () => {
+    access = 'undetermined';
+    state.picked = { canceled: false, assets: [{ uri: 'file:///cache/IMG_1.mov', fileName: 'IMG_1.mov', assetId: 'PH-1' }] };
+    await pickFromPhotos('p1');
+    expect(state.alerts).toEqual(['Use your originals']);
+    expect(state.pickerOpenedAfterAlert).toBe(true);
+    expect(await state.deps?.store.lookup('asset-IMG_1.mov')).toMatchObject({ phLocalId: 'PH-1', fileUri: null });
+    await pickFromPhotos('p1');
+    expect(state.alerts).toHaveLength(1);
+  });
+
+  it('copies after "Not now" and never asks again', async () => {
+    access = 'undetermined';
+    state.alertChoice = 'Not now';
+    state.picked = { canceled: false, assets: [{ uri: 'file:///cache/IMG_1.mov', fileName: 'IMG_1.mov', assetId: 'PH-1' }] };
+    await pickFromPhotos('p1');
+    await pickFromPhotos('p1');
+    expect(state.alerts).toHaveLength(1);
+    expect(await state.deps?.store.lookup('asset-IMG_1.mov')).toMatchObject({ phLocalId: 'PH-1', fileUri: expect.stringMatching(/^media\//) });
+  });
 });
 
 describe('import hooks', () => {

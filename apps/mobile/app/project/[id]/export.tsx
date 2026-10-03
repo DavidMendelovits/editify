@@ -7,6 +7,7 @@ import { Button } from '../../../src/components/Button';
 import { Screen } from '../../../src/components/Screen';
 import { api, IS_LOCAL_API, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
 import { track } from '../../../src/lib/telemetry';
+import { useEngineActivity } from '../../../src/lib/engine-activity';
 import { backControlStyle, goBack } from '../../../src/lib/nav';
 import { colors, radius, space, type, fonts } from '../../../src/lib/theme';
 
@@ -47,6 +48,8 @@ export default function ExportScreen() {
     onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
   });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
+  // An export in flight: the device engine stops writing preview proxies until it ends.
+  useEngineActivity('export', status !== undefined && status !== 'done' && status !== 'error');
 
   useEffect(() => {
     if (status === 'done' || status === 'error') track(`render_${status}`);

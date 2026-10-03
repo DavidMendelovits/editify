@@ -33,6 +33,9 @@ enum AssetSource {
   /// Cancelling the calling task cancels the Photos request.
   static func load(_ ref: String, allowNetwork: Bool = true, onDownload: (@Sendable (Double) -> Void)? = nil) async throws -> AVAsset {
     if ref.hasPrefix("file://"), let url = URL(string: ref) { return AVURLAsset(url: url) }
+    // Without access, PhotoKit isn't touched at all (fetching would only fail, and some
+    // calls log or prompt); the ref is simply not reachable from here.
+    guard hasPhotosAccess() else { throw NotFound(ref: ref) }
     guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { throw NotFound(ref: ref) }
     let options = PHVideoRequestOptions()
     options.isNetworkAccessAllowed = allowNetwork
@@ -75,6 +78,21 @@ enum AssetSource {
     case .notDetermined: return "undetermined"
     default: return "denied"
     }
+  }
+
+  /// Full or limited access: the only states in which PhotoKit may be asked for an asset.
+  static func hasPhotosAccess() -> Bool {
+    let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    return status == .authorized || status == .limited
+  }
+
+  /// Shows the system Photos prompt when access was never asked for, and answers the
+  /// resulting `photosAccess()`. Once asked, iOS never shows it again; this then just reads.
+  static func requestPhotosAccess() async -> String {
+    if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .notDetermined {
+      _ = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+    }
+    return photosAccess()
   }
 
   private static func isNetworkError(_ error: Error) -> Bool {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  LOCAL_MEDIA_MIGRATIONS, applyProxyEvent, createLocalMediaStore, downloadMedia, envelopeDistance, fingerprintsMatch,
-  mediaKindOf, migrate, resolveMedia, stageImport,
+  LOCAL_MEDIA_MIGRATIONS, ORPHAN_AGE_MS, PHOTOS_ASKED_KEY, analyzeMedia, applyProxyEvent, askForPhotosAccessOnce, copyBudget,
+  createLocalMediaStore, downloadMedia, enforceCopyBudget, envelopeDistance, fingerprintsMatch, forgetMedia, maintainMedia,
+  mediaKindOf, migrate, releaseProjectMedia, resolveMedia, setCopyBudget, stageImport, sweepOrphanCopies,
   type MediaDeps, type MediaFingerprint, type MediaNative, type MediaProbe, type PhotosAccess, type SqlDb,
 } from './local-media';
 import { memoryDb } from './test-sqlite';
@@ -10,9 +11,16 @@ const ROOT = 'file:///container/Library/Application%20Support/Editify/';
 const HASH = 'e1:9f3c5a7e9f3c5a7e9f3c5a7e9f3c5a7e';
 const PRINT: MediaFingerprint = { duration: 12.5, bytes: 4_000_000, audio: HASH, color: 'hlg' };
 
+const GB = 1024 ** 3;
+
 interface Fake {
   native: MediaNative;
-  files: Set<string>;
+  /** URI → size and modification time. */
+  files: Map<string, { bytes: number; modified: number }>;
+  available: { value: number };
+  asked: { value: number };
+  removedProxies: string[];
+  analyzed: Array<[string, string]>;
   probes: Map<string, MediaProbe>;
   downloads: Map<string, MediaProbe | Error>;
   access: { value: PhotosAccess };
@@ -25,7 +33,8 @@ interface Fake {
 
 function fakeNative(): Fake {
   const fake: Omit<Fake, 'native'> = {
-    files: new Set(), probes: new Map(), downloads: new Map(), access: { value: 'all' },
+    files: new Map(), available: { value: 100 * GB }, asked: { value: 0 }, removedProxies: [], analyzed: [],
+    probes: new Map(), downloads: new Map(), access: { value: 'all' },
     ensured: [], touched: [], cancelled: [], copies: [], failCopy: { value: false },
   };
   let copyCount = 0;
@@ -48,19 +57,33 @@ function fakeNative(): Fake {
       pendingDownloads.get(requestId)?.(new Error('cancelled'));
     },
     photosAccess: () => fake.access.value,
+    requestPhotosAccess: async () => {
+      fake.asked.value += 1;
+      fake.access.value = 'all';
+      return 'all';
+    },
     mediaRoot: () => ROOT,
-    durableCopy: async (_uri, name) => {
+    durableCopy: async (uri, name) => {
       if (fake.failCopy.value) throw new Error('No space left on device');
       copyCount += 1;
       const path = `media/copy-${copyCount}-${name}`;
-      fake.files.add(`${ROOT}${path}`);
+      const bytes = fake.files.get(uri)?.bytes ?? 1000;
+      fake.files.set(`${ROOT}${path}`, { bytes, modified: 0 });
       fake.copies.push(path);
-      return { path, uri: `${ROOT}${path}` };
+      return { path, uri: `${ROOT}${path}`, bytes };
     },
+    availableBytes: () => fake.available.value,
+    mediaFiles: () => [...fake.files.entries()]
+      .filter(([uri]) => uri.startsWith(`${ROOT}media/`))
+      .map(([uri, file]) => ({ path: uri.slice(ROOT.length), bytes: file.bytes, modified: file.modified })),
+    removeMedia: (path) => { fake.files.delete(`${ROOT}${path}`); },
     fileExists: (uri) => fake.files.has(uri),
+    fileSize: (uri) => fake.files.get(uri)?.bytes ?? 0,
     removeFile: (uri) => { fake.files.delete(uri); },
     ensureProxy: async (assetId, ref) => { fake.ensured.push([assetId, ref]); },
     touchProxy: (assetId) => { fake.touched.push(assetId); return true; },
+    removeProxy: (assetId) => { fake.removedProxies.push(assetId); },
+    analyze: async (assetId, ref) => { fake.analyzed.push([assetId, ref]); },
   };
   return { ...fake, native };
 }
@@ -68,13 +91,17 @@ function fakeNative(): Fake {
 const open: Array<{ close(): void }> = [];
 afterEach(() => { for (const db of open.splice(0)) db.close(); });
 
-async function setup(): Promise<{ deps: MediaDeps; fake: Fake; db: SqlDb }> {
+async function setup(): Promise<{ deps: MediaDeps; fake: Fake; db: SqlDb; clock: { value: number } }> {
   const db = memoryDb();
   open.push(db);
   await migrate(db);
   const fake = fakeNative();
-  return { deps: { store: createLocalMediaStore(db, () => 1000), native: fake.native }, fake, db };
+  const clock = { value: 1000 };
+  const now = () => clock.value;
+  return { deps: { store: createLocalMediaStore(db, now), native: fake.native, now }, fake, db, clock };
 }
+
+const add = (fake: Fake, uri: string, bytes = 1000, modified = 0): void => { fake.files.set(uri, { bytes, modified }); };
 
 const video = (id: string) => ({ id, kind: 'video' as const });
 
@@ -91,8 +118,9 @@ describe('migrate', () => {
     const columns = (await db.getAllAsync<{ name: string }>('PRAGMA table_info(local_media)')).map((column) => column.name);
     expect(columns).toEqual([
       'asset_id', 'ph_local_id', 'file_uri', 'proxy_uri', 'proxy_status', 'fingerprint',
-      'duration', 'bytes', 'color', 'server_only', 'updated_at',
+      'duration', 'bytes', 'color', 'server_only', 'updated_at', 'file_bytes', 'last_used', 'server_reason',
     ]);
+    expect(await db.getAllAsync('SELECT * FROM local_media_meta')).toEqual([]);
   });
 
   it('applies only the steps a database has not seen, in order', async () => {
@@ -100,8 +128,8 @@ describe('migrate', () => {
     open.push(db);
     await migrate(db, LOCAL_MEDIA_MIGRATIONS);
     const next = [...LOCAL_MEDIA_MIGRATIONS, 'ALTER TABLE local_media ADD COLUMN label TEXT'];
-    expect(await migrate(db, next)).toBe(2);
-    expect(await migrate(db, next)).toBe(2);
+    expect(await migrate(db, next)).toBe(LOCAL_MEDIA_MIGRATIONS.length + 1);
+    expect(await migrate(db, next)).toBe(LOCAL_MEDIA_MIGRATIONS.length + 1);
     const columns = (await db.getAllAsync<{ name: string }>('PRAGMA table_info(local_media)')).map((column) => column.name);
     expect(columns.filter((name) => name === 'label')).toHaveLength(1);
   });
@@ -116,10 +144,11 @@ describe('migrate', () => {
 });
 
 describe('fingerprints', () => {
-  it('compares envelope hashes bit by bit, and only within one algorithm version', () => {
+  it('compares envelope hashes bit by bit over their common prefix, within one algorithm version', () => {
     expect(envelopeDistance('e1:ff', 'e1:ff')).toBe(0);
     expect(envelopeDistance('e1:f0', 'e1:ff')).toBe(0.5);
-    expect(envelopeDistance('e1:ff', 'e1:ffff')).toBe(0.5);
+    // A shorter clip hashes fewer cells; the duration check is what tells them apart.
+    expect(envelopeDistance('e1:ff', 'e1:ff00')).toBe(0);
     expect(envelopeDistance('e1:ff', 'e2:ff')).toBeNull();
   });
 
@@ -215,8 +244,8 @@ describe('resolveMedia', () => {
     const { deps, fake } = await setup();
     await deps.store.record({ assetId: 'f1', fileUri: 'media/clip.mov', fingerprint: PRINT });
     await deps.store.setProxy('f1', 'ready', 'proxies/f1.mov');
-    fake.files.add(`${ROOT}media/clip.mov`);
-    fake.files.add(`${ROOT}proxies/f1.mov`);
+    add(fake, `${ROOT}media/clip.mov`);
+    add(fake, `${ROOT}proxies/f1.mov`);
     expect(await resolveMedia(video('f1'), deps)).toEqual({
       assetId: 'f1', kind: 'video', state: 'file', ref: `${ROOT}media/clip.mov`, proxyUri: `${ROOT}proxies/f1.mov`,
     });
@@ -228,7 +257,7 @@ describe('resolveMedia', () => {
     const { deps, fake } = await setup();
     await deps.store.record({ assetId: 'f1', fileUri: 'media/clip.mov' });
     await deps.store.setProxy('f1', 'ready', 'proxies/f1.mov');
-    fake.files.add(`${ROOT}media/clip.mov`);
+    add(fake, `${ROOT}media/clip.mov`);
     const resolved = await resolveMedia(video('f1'), deps);
     expect(resolved).toEqual({ assetId: 'f1', kind: 'video', state: 'file', ref: `${ROOT}media/clip.mov` });
     expect(await deps.store.lookup('f1')).toMatchObject({ proxyStatus: 'missing', proxyUri: null });
@@ -238,7 +267,7 @@ describe('resolveMedia', () => {
   it('leaves the proxy alone for an export', async () => {
     const { deps, fake } = await setup();
     await deps.store.record({ assetId: 'f1', fileUri: 'media/clip.mov' });
-    fake.files.add(`${ROOT}media/clip.mov`);
+    add(fake, `${ROOT}media/clip.mov`);
     expect(await resolveMedia(video('f1'), deps, { purpose: 'export' })).toEqual({ assetId: 'f1', kind: 'video', state: 'file', ref: `${ROOT}media/clip.mov` });
     expect(fake.ensured).toEqual([]);
   });
@@ -247,8 +276,8 @@ describe('resolveMedia', () => {
     const { deps, fake } = await setup();
     await deps.store.record({ assetId: 'm1', fileUri: 'media/memo.m4a' });
     await deps.store.record({ assetId: 'i1', fileUri: 'media/sticker.png' });
-    fake.files.add(`${ROOT}media/memo.m4a`);
-    fake.files.add(`${ROOT}media/sticker.png`);
+    add(fake, `${ROOT}media/memo.m4a`);
+    add(fake, `${ROOT}media/sticker.png`);
     expect(await resolveMedia({ id: 'm1', kind: 'audio' }, deps)).toMatchObject({ state: 'file', kind: 'audio' });
     expect(await resolveMedia({ id: 'i1', kind: 'image' }, deps)).toMatchObject({ state: 'file', kind: 'image' });
     expect(fake.ensured).toEqual([]);
@@ -282,7 +311,7 @@ describe('resolveMedia', () => {
   it('prefers the app copy kept under limited access over the PHAsset', async () => {
     const { deps, fake } = await setup();
     await deps.store.record({ assetId: 'a1', phLocalId: 'PH-1', fileUri: 'media/clip.mov', fingerprint: PRINT });
-    fake.files.add(`${ROOT}media/clip.mov`);
+    add(fake, `${ROOT}media/clip.mov`);
     fake.probes.set('PH-1', { status: 'missing', access: 'limited' });
     expect(await resolveMedia(video('a1'), deps)).toMatchObject({ state: 'file', ref: `${ROOT}media/clip.mov` });
   });
@@ -299,15 +328,49 @@ describe('stageImport', () => {
   it('references a Photos video by its PHAsset id under full access, without copying', async () => {
     const { deps, fake } = await setup();
     fake.probes.set('file:///cache/ImagePicker/IMG_1.mov', { status: 'ok', fingerprint: PRINT });
+    // The original, re-wrapped by the picker: other bytes, same audio and duration.
+    fake.probes.set('PH-1', { status: 'ok', fingerprint: { ...PRINT, bytes: 4_100_000 } });
     const staged = await stageImport({ uri: 'file:///cache/ImagePicker/IMG_1.mov', name: 'IMG_1.mov', kind: 'video', origin: 'photos', phLocalId: 'PH-1' }, deps);
     expect(staged).toMatchObject({ uploadUri: 'file:///cache/ImagePicker/IMG_1.mov', durable: false });
     await staged.commit('a1');
     expect(fake.copies).toEqual([]);
     expect(await deps.store.lookup('a1')).toEqual({
-      assetId: 'a1', phLocalId: 'PH-1', fileUri: null, proxyUri: null, proxyStatus: null,
-      fingerprint: HASH, duration: 12.5, bytes: 4_000_000, color: 'hlg', serverOnly: false, updatedAt: 1000,
+      assetId: 'a1', phLocalId: 'PH-1', fileUri: null, fileBytes: null, proxyUri: null, proxyStatus: null,
+      fingerprint: HASH, duration: 12.5, bytes: 4_000_000, color: 'hlg', serverOnly: false, serverReason: null,
+      lastUsed: 1000, updatedAt: 1000,
     });
     expect(fake.ensured).toEqual([['a1', 'PH-1']]);
+  });
+
+  it('copies a Photos video edited in Photos before import (the picker uploads the edit), keeping the id', async () => {
+    const { deps, fake } = await setup();
+    add(fake, 'file:///cache/ImagePicker/IMG_1.mov');
+    fake.probes.set('file:///cache/ImagePicker/IMG_1.mov', { status: 'ok', fingerprint: { ...PRINT, duration: 8 } });
+    fake.probes.set('PH-1', { status: 'ok', fingerprint: PRINT });
+    const staged = await stageImport({ uri: 'file:///cache/ImagePicker/IMG_1.mov', name: 'IMG_1.mov', kind: 'video', origin: 'photos', phLocalId: 'PH-1' }, deps);
+    expect(staged).toMatchObject({ uploadUri: `${ROOT}media/copy-1-IMG_1.mov`, durable: true });
+    await staged.commit('a1');
+    expect(await deps.store.lookup('a1')).toMatchObject({ phLocalId: 'PH-1', fileUri: 'media/copy-1-IMG_1.mov', duration: 8 });
+    expect(await resolveMedia(video('a1'), deps)).toMatchObject({ state: 'file' });
+  });
+
+  it('copies a Photos video whose original is only in iCloud, under full access', async () => {
+    const { deps, fake } = await setup();
+    fake.probes.set('file:///cache/ImagePicker/IMG_1.mov', { status: 'ok', fingerprint: PRINT });
+    fake.probes.set('PH-1', { status: 'icloud' });
+    const staged = await stageImport({ uri: 'file:///cache/ImagePicker/IMG_1.mov', name: 'IMG_1.mov', kind: 'video', origin: 'photos', phLocalId: 'PH-1' }, deps);
+    expect(staged.durable).toBe(true);
+  });
+
+  it('skips the copy and marks the asset server-only when the phone is short of space', async () => {
+    const { deps, fake } = await setup();
+    add(fake, 'file:///cache/DocumentPicker/take.mov', 2 * GB);
+    fake.available.value = 2.5 * GB;
+    const staged = await stageImport({ uri: 'file:///cache/DocumentPicker/take.mov', name: 'take.mov', kind: 'video', origin: 'files' }, deps);
+    expect(staged).toMatchObject({ uploadUri: 'file:///cache/DocumentPicker/take.mov', durable: false });
+    expect(fake.copies).toEqual([]);
+    await staged.commit('f1');
+    expect(await resolveMedia(video('f1'), deps)).toMatchObject({ state: 'server', reason: 'no-space' });
   });
 
   it('copies a Photos video under limited access and keeps the PHAsset id next to it', async () => {
@@ -424,5 +487,139 @@ describe('mediaKindOf', () => {
     expect(mediaKindOf('image/png', 'a.png')).toBe('image');
     expect(mediaKindOf('application/octet-stream', 'memo.m4a')).toBe('audio');
     expect(mediaKindOf(undefined, 'IMG_1.MOV')).toBe('video');
+  });
+});
+
+describe('copy cache', () => {
+  async function seed(deps: MediaDeps, fake: Fake, clock: { value: number }, ids: string[], bytes: number): Promise<void> {
+    for (const id of ids) {
+      clock.value += 1000;
+      add(fake, `${ROOT}media/${id}.mov`, bytes);
+      await deps.store.record({ assetId: id, fileUri: `media/${id}.mov`, fileBytes: bytes });
+    }
+  }
+
+  it('budgets min(20 GB, a quarter of free space) unless set', async () => {
+    const { deps, fake } = await setup();
+    fake.available.value = 200 * GB;
+    expect(await copyBudget(deps)).toBe(20 * GB);
+    fake.available.value = 40 * GB;
+    expect(await copyBudget(deps)).toBe(10 * GB);
+    await setCopyBudget(deps, 3 * GB);
+    expect(await copyBudget(deps)).toBe(3 * GB);
+    await setCopyBudget(deps, Number.NaN);
+    expect(await copyBudget(deps)).toBe(10 * GB);
+  });
+
+  it('evicts the least recently used copies first, keeps a protected one, and falls back to the server', async () => {
+    const { deps, fake, clock } = await setup();
+    await setCopyBudget(deps, 2500);
+    await seed(deps, fake, clock, ['a', 'b', 'c'], 1000);
+    clock.value += 1000;
+    await resolveMedia({ id: 'a', kind: 'audio' }, deps); // a is used again: b is now the oldest
+    expect(await enforceCopyBudget(deps)).toEqual(['b']);
+    expect(fake.files.has(`${ROOT}media/b.mov`)).toBe(false);
+    expect(await resolveMedia(video('b'), deps)).toMatchObject({ state: 'server', reason: 'evicted' });
+    expect(await enforceCopyBudget(deps, { incoming: 1500, protect: 'c' })).toEqual(['a']);
+  });
+
+  it('keeps the PHAsset id of an evicted copy', async () => {
+    const { deps, fake } = await setup();
+    await setCopyBudget(deps, 10);
+    add(fake, `${ROOT}media/a.mov`, 1000);
+    await deps.store.record({ assetId: 'a', phLocalId: 'PH-1', fileUri: 'media/a.mov', fileBytes: 1000, fingerprint: PRINT });
+    await enforceCopyBudget(deps);
+    expect(await deps.store.lookup('a')).toMatchObject({ fileUri: null, phLocalId: 'PH-1', serverOnly: false });
+    fake.probes.set('PH-1', { status: 'missing', access: 'limited' });
+    expect(await resolveMedia(video('a'), deps)).toMatchObject({ state: 'server', reason: 'limited' });
+  });
+
+  it('makes room for a new copy, counting images too', async () => {
+    const { deps, fake, clock } = await setup();
+    await setCopyBudget(deps, 2500);
+    await seed(deps, fake, clock, ['old'], 1000);
+    clock.value += 1000;
+    add(fake, `${ROOT}media/sticker.png`, 1000);
+    await deps.store.record({ assetId: 'img', fileUri: 'media/sticker.png', fileBytes: 1000 });
+    add(fake, 'file:///cache/new.mov', 1000);
+    const staged = await stageImport({ uri: 'file:///cache/new.mov', name: 'new.mov', kind: 'video', origin: 'files' }, deps);
+    await staged.commit('new');
+    expect(await deps.store.lookup('old')).toMatchObject({ fileUri: null, serverOnly: true });
+    expect(await deps.store.lookup('img')).toMatchObject({ fileUri: 'media/sticker.png' });
+    expect(await deps.store.lookup('new')).toMatchObject({ fileBytes: 1000 });
+  });
+
+  it('sweeps media files no row points at once they are a day old', async () => {
+    const { deps, fake, clock } = await setup();
+    clock.value = 10 * ORPHAN_AGE_MS;
+    add(fake, `${ROOT}media/kept.mov`, 10, 0);
+    await deps.store.record({ assetId: 'k', fileUri: 'media/kept.mov', fileBytes: 10 });
+    add(fake, `${ROOT}media/orphan-old.mov`, 10, clock.value - ORPHAN_AGE_MS - 1);
+    add(fake, `${ROOT}media/orphan-new.mov`, 10, clock.value - 1000);
+    expect(await sweepOrphanCopies(deps)).toEqual(['media/orphan-old.mov']);
+    await maintainMedia(deps);
+    expect([...fake.files.keys()].sort()).toEqual([`${ROOT}media/kept.mov`, `${ROOT}media/orphan-new.mov`]);
+  });
+
+  it('forgets a deleted project\'s media unless another project uses it', async () => {
+    const { deps, fake, clock } = await setup();
+    await seed(deps, fake, clock, ['only-here', 'shared'], 10);
+    expect(await releaseProjectMedia(deps, ['only-here', 'shared'], new Set(['shared']))).toEqual(['only-here']);
+    expect(await deps.store.lookup('only-here')).toBeNull();
+    expect(fake.files.has(`${ROOT}media/only-here.mov`)).toBe(false);
+    expect(fake.removedProxies).toEqual(['only-here']);
+    expect(await deps.store.lookup('shared')).not.toBeNull();
+    await forgetMedia(deps, ['never-seen']);
+  });
+});
+
+describe('askForPhotosAccessOnce', () => {
+  it('explains, then asks iOS, once', async () => {
+    const { deps, fake } = await setup();
+    fake.access.value = 'undetermined';
+    const explain = vi.fn(async () => true);
+    expect(await askForPhotosAccessOnce(deps, explain)).toBe('all');
+    expect(explain).toHaveBeenCalledTimes(1);
+    expect(fake.asked.value).toBe(1);
+    expect(await deps.store.getMeta(PHOTOS_ASKED_KEY)).not.toBeNull();
+  });
+
+  it('does not ask again after "Not now"', async () => {
+    const { deps, fake } = await setup();
+    fake.access.value = 'undetermined';
+    const explain = vi.fn(async () => false);
+    expect(await askForPhotosAccessOnce(deps, explain)).toBe('undetermined');
+    expect(await askForPhotosAccessOnce(deps, explain)).toBe('undetermined');
+    expect(explain).toHaveBeenCalledTimes(1);
+    expect(fake.asked.value).toBe(0);
+  });
+
+  it('never asks once iOS has an answer (granted, limited or declined)', async () => {
+    for (const access of ['all', 'limited', 'denied'] as const) {
+      const { deps, fake } = await setup();
+      fake.access.value = access;
+      const explain = vi.fn(async () => true);
+      expect(await askForPhotosAccessOnce(deps, explain)).toBe(access);
+      expect(explain).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe('analyzeMedia', () => {
+  it('analyzes only a resolved app copy or a matching original, by its resolved ref', async () => {
+    const { deps, fake } = await setup();
+    add(fake, `${ROOT}media/copy.mov`);
+    await deps.store.record({ assetId: 'f1', phLocalId: 'PH-F', fileUri: 'media/copy.mov' });
+    await deps.store.record({ assetId: 'l1', phLocalId: 'PH-L', fingerprint: PRINT });
+    await deps.store.record({ assetId: 'c1', phLocalId: 'PH-C', fingerprint: PRINT });
+    fake.probes.set('PH-L', { status: 'ok', fingerprint: PRINT });
+    fake.probes.set('PH-C', { status: 'ok', fingerprint: { ...PRINT, duration: 3 } });
+    await analyzeMedia(video('f1'), deps);
+    await analyzeMedia(video('l1'), deps);
+    expect(await analyzeMedia(video('c1'), deps)).toMatchObject({ state: 'changed' });
+    expect(await analyzeMedia(video('none'), deps)).toMatchObject({ state: 'server' });
+    expect(fake.analyzed).toEqual([['f1', `${ROOT}media/copy.mov`], ['l1', 'PH-L']]);
+    // Analysis wants the original, not a proxy.
+    expect(fake.ensured).toEqual([]);
   });
 });

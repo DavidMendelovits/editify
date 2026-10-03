@@ -145,6 +145,15 @@ enum AnalysisMath {
     return CGSize(width: even(size.width), height: even(size.height))
   }
 
+  /// A track transform for a frame of `size`: the source's rotation/flip, translated so
+  /// the upright frame starts at the origin. Rebuilt rather than scaled, so a frame whose
+  /// sides were rounded independently still lands exactly in the positive quadrant.
+  static func uprightTransform(_ transform: CGAffineTransform, size: CGSize) -> CGAffineTransform {
+    let rotation = CGAffineTransform(a: transform.a, b: transform.b, c: transform.c, d: transform.d, tx: 0, ty: 0)
+    let rect = CGRect(origin: .zero, size: size).applying(rotation)
+    return rotation.concatenating(CGAffineTransform(translationX: -rect.minX, y: -rect.minY))
+  }
+
   /// Version tag of `envelopeHash`; packages/shared-side matching (local-media.ts) refuses
   /// to compare hashes with different tags.
   static let envelopeHashVersion = "e1"

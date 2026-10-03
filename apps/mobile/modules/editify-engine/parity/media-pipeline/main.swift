@@ -2,13 +2,16 @@
 // fingerprint (MediaFingerprint.swift) on macOS (plan P1: 10B + OV9, 3A + OV2). Not part
 // of the app. Built and run by server/test/media-pipeline.test.ts, which makes the clips
 // with ffmpeg first:
-//   swiftc ../../ios/{AnalysisMath,AudioDecode,AudioSync,MediaFingerprint,MediaStore,ProxyPipeline}.swift main.swift
+//   swiftc -target <arch>-apple-macos15.0 ../../ios/{AnalysisMath,AudioDecode,AudioSync,MediaFingerprint,MediaStore,ProxyPipeline}.swift main.swift
 //   usage: media-pipeline <clip dir> <scratch dir>
 //     hdr.mov        3840x2160 HEVC Main10, HLG / BT.2020 tags, 50 fps, PCM audio
 //     sdr-big.mp4    2560x1440 H.264 BT.709, 25 fps, AAC audio
 //     sdr-small.mov  640x360 H.264, 30 fps, AAC audio
+//     sdr-p3.mov     1280x720 H.264 tagged Display P3 (wide-gamut SDR)
+//     rotated.mov    sdr-big.mp4 with a 90 degree display rotation (a portrait phone clip)
 //     audio.m4a      12 s of AAC with a moving envelope; audio-remux.mov the same stream
-//                    re-wrapped; audio-trim.m4a the same audio from 1.5 s, re-encoded
+//                    re-wrapped; audio-reenc.m4a re-encoded at 96k; audio-trim.m4a the
+//                    same audio from 1.5 s, re-encoded
 // Prints "ok" and exits 0, or lists every failed check and exits 1.
 import AVFoundation
 import CoreMedia
@@ -110,6 +113,28 @@ do {
   failures.append("small proxy threw: \(error)")
 }
 
+do {
+  let output = scratch.appendingPathComponent("p3-proxy.mov")
+  _ = try await ProxyPipeline.make(AVURLAsset(url: clips.appendingPathComponent("sdr-p3.mov")), to: output)
+  let written = try await inspect(output)
+  check("p3: wide-gamut SDR keeps its P3 primaries (\(written.primaries ?? "none"))", written.primaries == (kCVImageBufferColorPrimaries_P3_D65 as String))
+} catch {
+  failures.append("p3 proxy threw: \(error)")
+}
+
+do {
+  let output = scratch.appendingPathComponent("rotated-proxy.mov")
+  _ = try await ProxyPipeline.make(AVURLAsset(url: clips.appendingPathComponent("rotated.mov")), to: output)
+  let track = try await AVURLAsset(url: output).loadTracks(withMediaType: .video).first!
+  let (natural, transform) = try await track.load(.naturalSize, .preferredTransform)
+  let upright = CGRect(origin: .zero, size: natural).applying(transform)
+  check("rotated: stored frame scaled (\(natural))", natural == CGSize(width: 1920, height: 1080))
+  check("rotated: upright portrait at the origin (\(upright))",
+        abs(upright.minX) < 0.01 && abs(upright.minY) < 0.01 && abs(upright.width - 1080) < 0.01 && abs(upright.height - 1920) < 0.01)
+} catch {
+  failures.append("rotated proxy threw: \(error)")
+}
+
 // MARK: - Proxy: cancel mid-write
 
 final class TaskBox: @unchecked Sendable {
@@ -154,47 +179,51 @@ do {
   try? FileManager.default.removeItem(at: folder)
   let store = ProxyStore(directory: folder, budgetBytes: 250)
   let base = Date(timeIntervalSince1970: 1_700_000_000)
-  for (index, id) in ["a", "b", "c"].enumerated() {
-    let url = try store.finalURL(id)
-    try Data(count: 100).write(to: url)
+  for (index, id) in ["asset/a", "asset/b", "asset/c"].enumerated() {
+    try Data(count: 100).write(to: try store.partialURL(id))
+    let url = try store.commit(id, key: "v1|\(id)")
     try FileManager.default.setAttributes([.modificationDate: base.addingTimeInterval(Double(index) * 60)], ofItemAtPath: url.path)
   }
+  check("store: files are named by hash", try store.finalURL("asset/a").lastPathComponent.count == 64 + 4)
+  check("store: keeps the proxy key", store.existing("asset/b")?.key == "v1|asset/b")
+  check("store: rejects an empty id", (try? ProxyStore.hashedName("")) == nil)
+  check("store: ignores a non-number budget", !store.setBudget(.nan) && !store.setBudget(.infinity) && store.budgetBytes == 250)
+  check("store: clamps a tiny budget", store.setBudget(1) && store.budgetBytes == ProxyStore.budgetRange.lowerBound)
+  store.budgetBytes = 250
   // "a" was made first but opened last: now the most recently used.
-  check("lru: touch finds a proxy", store.touch("a", at: base.addingTimeInterval(600)))
+  check("lru: touch finds a proxy", store.touch("asset/a", at: base.addingTimeInterval(600)))
   check("lru: touch reports a missing proxy", !store.touch("zzz"))
   let first = store.evictOverBudget()
-  check("lru: evicts the least recently opened first (\(first))", first == ["b"])
+  check("lru: evicts the least recently opened first, by asset id (\(first))", first == ["asset/b"])
   store.budgetBytes = 50
-  let second = store.evictOverBudget(protecting: "a")
-  check("lru: never evicts the protected proxy (\(second))", second == ["c"] && store.existing("a") != nil)
-  check("lru: evicted proxies are gone", store.existing("b") == nil && store.existing("c") == nil)
+  let second = store.evictOverBudget(protecting: "asset/a")
+  check("lru: never evicts the protected proxy (\(second))", second == ["asset/c"] && store.existing("asset/a") != nil)
+  check("lru: evicted proxies are gone", store.existing("asset/b") == nil && store.existing("asset/c") == nil)
 
   try Data(count: 10).write(to: try store.partialURL("d"))
-  _ = try store.commit("d")
+  _ = try store.commit("d", key: "k")
   let partialD = try store.partialURL("d").path
   check("commit: partial renamed into place", store.existing("d")?.bytes == 10 && !FileManager.default.fileExists(atPath: partialD))
   let partialE = try store.partialURL("e")
   try Data(count: 10).write(to: partialE)
   store.sweepPartials()
   check("sweep: partial removed", !FileManager.default.fileExists(atPath: partialE.path))
-  check("relative path", ProxyStore.relativePath("a1-B_2") == "proxies/a1-B_2.mov")
+  let relative = try ProxyStore.relativePath("a1-B_2")
+  check("relative path (\(relative))", relative.hasPrefix("proxies/") && relative.hasSuffix(".mov") && relative.count == 8 + 64 + 4)
 } catch {
   failures.append("proxy store threw: \(error)")
 }
 
 // MARK: - Fingerprint
 
+/// Same rule as local-media.ts `envelopeDistance`: over the common prefix only.
 func distance(_ a: String, _ b: String) -> Double {
   let x = Array(a.split(separator: ":").last ?? ""), y = Array(b.split(separator: ":").last ?? "")
-  let length = max(x.count, y.count)
+  let length = min(x.count, y.count)
   guard length > 0 else { return 0 }
   var differing = 0
   for index in 0..<length {
-    guard index < x.count, index < y.count, let p = Int(String(x[index]), radix: 16), let q = Int(String(y[index]), radix: 16) else {
-      differing += 4
-      continue
-    }
-    differing += (p ^ q).nonzeroBitCount
+    differing += ((Int(String(x[index]), radix: 16) ?? 0) ^ (Int(String(y[index]), radix: 16) ?? 0)).nonzeroBitCount
   }
   return Double(differing) / Double(length * 4)
 }
@@ -210,6 +239,10 @@ do {
   check("fingerprint: same file twice is identical", NSDictionary(dictionary: once).isEqual(to: twice))
   check("fingerprint: bytes and duration", (once["bytes"] as? Int ?? 0) > 0 && abs((once["duration"] as? Double ?? 0) - 12) < 0.1)
   check("fingerprint: a re-wrapped copy has the same audio hash", remux["audio"] as? String == hash)
+  let reencoded = try await MediaFingerprint.compute(AVURLAsset(url: clips.appendingPathComponent("audio-reenc.m4a")))
+  let reencDistance = distance(hash, reencoded["audio"] as? String ?? "")
+  check("fingerprint: the same audio re-encoded at 96k still matches (\(reencDistance))",
+        reencDistance <= 0.1 && abs((reencoded["duration"] as? Double ?? 0) - (once["duration"] as? Double ?? 0)) <= 0.1)
   let trimmed = trim["audio"] as? String ?? ""
   let trimDistance = distance(hash, trimmed)
   check("fingerprint: a trimmed copy differs in duration", abs((trim["duration"] as? Double ?? 0) - (once["duration"] as? Double ?? 0)) > 1)
@@ -231,6 +264,12 @@ check("previewProxySize keeps small", AnalysisMath.previewProxySize(for: CGSize(
 check("previewProxySize evens odd sides", AnalysisMath.previewProxySize(for: CGSize(width: 4000, height: 3000)) == CGSize(width: 1440, height: 1080))
 check("envelopeHash bits", AnalysisMath.envelopeHash([-20, -10, -10.2, -30, -29, -28]) == "e1:98")
 check("envelopeHash deadband", AnalysisMath.envelopeHash([-20, -19.8, -19.6]) == "e1:0")
+// A portrait source whose scaled sides were rounded independently (3000x1690 → 1918x1080).
+let quarterTurn = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 1690, ty: 0)
+let placed = CGRect(x: 0, y: 0, width: 1918, height: 1080).applying(AnalysisMath.uprightTransform(quarterTurn, size: CGSize(width: 1918, height: 1080)))
+check("uprightTransform lands at the origin (\(placed))", abs(placed.minX) < 1e-6 && abs(placed.minY) < 1e-6 && abs(placed.width - 1080) < 1e-6 && abs(placed.height - 1918) < 1e-6)
+let upsideDown = CGRect(x: 0, y: 0, width: 1920, height: 1080).applying(AnalysisMath.uprightTransform(CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 3840, ty: 2160), size: CGSize(width: 1920, height: 1080)))
+check("uprightTransform upside down (\(upsideDown))", abs(upsideDown.minX) < 1e-6 && abs(upsideDown.minY) < 1e-6 && abs(upsideDown.width - 1920) < 1e-6)
 
 if failures.isEmpty {
   print("ok")

@@ -15,7 +15,7 @@ enum MediaFingerprint {
   /// Long enough that two different takes disagree, short enough to read in well under a second.
   static let audioSeconds = 20.0
 
-  /// {duration, bytes, audio (envelope hash, or null without an audio track), color ('hlg' | 'pq' | 'sdr', or null without video)}.
+  /// {duration, bytes, audio (envelope hash, or null without an audio track), color ('hlg' | 'pq' | 'log' | 'sdr', or null without video)}.
   static func compute(_ asset: AVAsset) async throws -> [String: Any] {
     let duration = try await asset.load(.duration).seconds
     var bytes = 0
@@ -60,27 +60,37 @@ enum MediaFingerprint {
 
   /// The first video track's transfer function as the registry names it; nil without video.
   static func colorName(_ asset: AVAsset) async throws -> String? {
-    guard let track = try await asset.loadTracks(withMediaType: .video).first else { return nil }
+    guard let track = try await firstEnabledTrack(asset, .video) else { return nil }
     let formats = try await track.load(.formatDescriptions)
     return ColorTags(formats.first).name
   }
 }
 
-/// A video track's color tags, read from its format description. `hdr` is HLG or PQ.
+/// A video track's color tags and bit depth, read from its format description.
+/// `hdr` is HLG or PQ; `tenBit` also covers Apple Log and other deeper-than-8-bit sources.
 struct ColorTags {
   var primaries: String?
   var transfer: String?
   var matrix: String?
+  var bits: Int?
+  /// Apple Log and other log curves sit in their own extension, not the transfer function.
+  var log: String?
 
   init(_ format: CMFormatDescription?) {
     guard let format else { return }
     primaries = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries) as? String
     transfer = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
     matrix = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_YCbCrMatrix) as? String
+    bits = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_BitsPerComponent) as? Int
+    log = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_LogTransferFunction) as? String
   }
 
   var isHLG: Bool { transfer == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) }
   var isPQ: Bool { transfer == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String) }
+  var isAppleLog: Bool { log != nil }
   var hdr: Bool { isHLG || isPQ }
-  var name: String { isHLG ? "hlg" : isPQ ? "pq" : "sdr" }
+  var tenBit: Bool { hdr || isAppleLog || (bits ?? 8) > 8 }
+  /// Any color tag at all: the frames carry them, so the encoder can keep them.
+  var tagged: Bool { primaries != nil || transfer != nil || matrix != nil || log != nil }
+  var name: String { isHLG ? "hlg" : isPQ ? "pq" : isAppleLog ? "log" : "sdr" }
 }

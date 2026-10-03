@@ -2,9 +2,10 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File as ExpoFile } from 'expo-file-system';
 import { discardSharedCopy } from './shared-files';
 import * as ImagePicker from 'expo-image-picker';
+import { Alert } from 'react-native';
 import type { AssetMetadata } from '@editify/shared';
 import { uploadAsset, type UploadBytes } from './api';
-import { mediaKindOf, stageImport, type ImportCandidate } from './local-media';
+import { askForPhotosAccessOnce, mediaKindOf, stageImport, type ImportCandidate } from './local-media';
 import { localMedia } from './local-media-native';
 import type { ImportProgress } from './upload-progress';
 import type { SharedFile } from './share-intake';
@@ -99,7 +100,7 @@ async function uploadAll(projectId: string | undefined, files: PendingFile[], on
 async function uploadKeepingLocal(projectId: string | undefined, file: PendingFile, onBytes?: UploadBytes): Promise<AssetMetadata> {
   const registry = file.local ? await localMedia() : null;
   const staged = registry && file.local
-    ? await stageImport({ uri: file.uri, name: file.name, ...file.local }, registry).catch(() => undefined)
+    ? await stageImport({ uri: file.uri, name: file.name, ...file.local, ...(file.size ? { size: file.size } : {}) }, registry).catch(() => undefined)
     : undefined;
   const { local: _local, ...upload } = file;
   let asset: AssetMetadata;
@@ -157,11 +158,32 @@ function describePickerError(error: unknown): string {
 }
 
 /**
+ * Our reason before the iOS Photos prompt (decision 1). Resolves true to go on to the prompt.
+ */
+function explainPhotosAccess(): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      'Use your originals',
+      'Editify works from the originals in your Photos library, so it does not need to copy your videos. iOS asks next: choose Allow Full Access. With limited access, Editify keeps its own copy of each clip on this phone instead.',
+      [
+        { text: 'Not now', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'Continue', onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    );
+  });
+}
+
+/**
  * The device photo library: Apple Photos on iOS, the gallery (Google Photos and
  * friends) on Android, a file input on web. Videos only — a clip needs a media
  * stream the server can probe, and stills have none.
  */
 export async function pickFromPhotos(projectId: string | undefined, onProgress?: PickProgress): Promise<PickResult> {
+  // Asked once, before (and apart from) the picker, which needs no permission either way:
+  // full access lets the registry reference originals instead of copying them.
+  const registry = await localMedia();
+  if (registry) await askForPhotosAccessOnce(registry, explainPhotosAccess).catch(() => undefined);
   let picked: ImagePicker.ImagePickerResult;
   try {
     picked = await launchLibrary();

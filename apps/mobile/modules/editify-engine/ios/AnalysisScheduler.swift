@@ -17,7 +17,10 @@ import Foundation
 /// (`ensureProxy`, or `parts: ["proxy"]`), never by a default `analyze`. An AVAssetWriter
 /// can't pause, so playback or an export *cancels* a running proxy (its partial file is
 /// deleted) and puts it back in the queue; it isn't picked again until both have
-/// stopped, and then starts from scratch. Thermal pressure parks it like the others.
+/// stopped and stayed stopped for `proxyResumeDelay` (so play/pause taps don't restart an
+/// encode from zero each time), and then starts from scratch. Thermal pressure parks it
+/// like the others. A proxy already on disk is reused only when its key (proxy version +
+/// the source's fingerprint) still matches.
 /// A finished proxy can push the store over its byte budget: the least recently opened
 /// proxies are deleted, each reported as a `removed` proxy part.
 ///
@@ -78,6 +81,9 @@ actor AnalysisScheduler {
   private var exportActive = false
   /// Seqs of proxy jobs cancelled by playback/export: `finish` re-queues them instead of recording.
   private var preempted: Set<Int> = []
+  /// Proxies wait until then after playback/export stop (idle debounce).
+  private var proxyResumeAt: ContinuousClock.Instant?
+  static let proxyResumeDelay: Duration = .seconds(4)
   private(set) var heavyFraction = 0.0
   /// The largest single progress step of the running heavy part (its granularity).
   private(set) var heavyStep = 0.0
@@ -176,8 +182,19 @@ actor AnalysisScheduler {
         task.cancel()
       }
     } else {
+      let resumeAt = ContinuousClock.now + Self.proxyResumeDelay
+      proxyResumeAt = resumeAt
+      // Words/faces resume at once (their gate opens); a proxy waits out the idle window.
       pump()
+      Task { [weak self] in
+        try? await Task.sleep(until: resumeAt, clock: .continuous)
+        await self?.pump()
+      }
     }
+  }
+
+  private var proxyMayStart: Bool {
+    !proxyBlocked && (proxyResumeAt.map { ContinuousClock.now >= $0 } ?? true)
   }
 
   /// The asset on screen jumps the queue in both lanes (it does not preempt a running part).
@@ -269,7 +286,7 @@ actor AnalysisScheduler {
 
   private func pump() {
     for heavy in [false, true] where running[heavy] == nil {
-      let candidates = queue.filter { $0.part.heavy == heavy && !($0.part == .proxy && proxyBlocked) }
+      let candidates = queue.filter { $0.part.heavy == heavy && ($0.part != .proxy || proxyMayStart) }
       guard let next = candidates.min(by: { order($0) < order($1) }) else { continue }
       queue.removeAll { $0.assetId == next.assetId && $0.part == next.part }
       // Background work: utility priority, and the blocking calls inside run on AnalysisQueue.
@@ -316,10 +333,13 @@ actor AnalysisScheduler {
     }
   }
 
-  /// A new byte budget for the proxy store, applied at once.
-  func setProxyBudget(_ bytes: Int64) {
-    ProxyStore.shared.budgetBytes = bytes
+  /// A new byte budget for the proxy store, clamped to `ProxyStore.budgetRange` and applied
+  /// at once. A non-number is ignored (false).
+  @discardableResult
+  func setProxyBudget(_ bytes: Double) -> Bool {
+    guard ProxyStore.shared.setBudget(bytes) else { return false }
     evictProxies(protecting: nil)
+    return true
   }
 
   private func run(_ job: Job) async -> PartResult {
@@ -375,25 +395,33 @@ actor AnalysisScheduler {
     }
   }
 
-  /// The 1080p preview proxy, or the one already on disk (it survives relaunches; the
-  /// results here don't). `path` is relative to the media root, as the registry stores it.
+  /// The 1080p preview proxy, or the one already on disk when it was made by this proxy
+  /// version from this same source (it survives relaunches; the results here don't).
+  /// `path` is relative to the media root, as the registry stores it.
   private func makeProxy(_ job: Job, progress: @escaping AnalyzerProgress, download: @escaping @Sendable (Double) -> Void) async throws -> PartResult {
     let store = ProxyStore.shared
-    let path = ProxyStore.relativePath(job.assetId)
-    if let existing = store.existing(job.assetId) {
+    let path = try ProxyStore.relativePath(job.assetId)
+    let asset = try await AssetSource.load(job.ref, onDownload: download)
+    let key = Self.proxyKey(try await MediaFingerprint.compute(asset))
+    if let existing = store.existing(job.assetId), existing.key == key {
       return .ready(AnalyzerVersion.proxy, ["path": path, "bytes": existing.bytes, "reused": true])
     }
-    let asset = try await AssetSource.load(job.ref, onDownload: download)
     let partial = try store.partialURL(job.assetId)
     do {
       var data = try await ProxyPipeline.make(asset, to: partial, progress: progress)
-      _ = try store.commit(job.assetId)
+      _ = try store.commit(job.assetId, key: key)
       data["path"] = path
       return .ready(AnalyzerVersion.proxy, data)
     } catch {
       store.removePartial(job.assetId)
       throw error
     }
+  }
+
+  /// What a stored proxy must match to be reused: the proxy version and the source's fingerprint.
+  static func proxyKey(_ fingerprint: [String: Any]) -> String {
+    let audio = fingerprint["audio"] as? String ?? "none"
+    return "\(AnalyzerVersion.proxy)|\(fingerprint["duration"] ?? 0)|\(fingerprint["bytes"] ?? 0)|\(audio)"
   }
 
   private func progress(_ job: Job, _ fraction: Double, phase: String? = nil) {
