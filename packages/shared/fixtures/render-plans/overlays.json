@@ -1,5 +1,5 @@
 {
-  "description": "Every overlay kind over one video layer, each rotated except the logo: image sticker, looping GIF, emoji fitted to its box (Apple Color Emoji advance 1.17 em, ascent 0.95 em, descent 0.27 em: 85.5 px, baseline 87.6), a centred check callout resolved to card, vector glyph and label (with a PNG raster for executors that cannot draw it), and a picture-in-picture b-roll clip, stacked by z.",
+  "description": "Every overlay kind over one video layer, each rotated except the logo: image sticker, looping GIF, emoji fitted to its box (Apple Color Emoji advance 1.0 em, ascent 1.0 em, descent 0.3125 em: 100 px, baseline 100.375), a check callout resolved to card, vector glyph and label, and a picture-in-picture b-roll clip trimmed from its source, stacked by z.",
   "plan": {
     "version": 1,
     "requires": [],
@@ -54,10 +54,10 @@
     "overlays": [
       {
         "id": "sticker-logo",
-        "kind": "image",
         "z": 0,
         "start": 0,
         "end": 4,
+        "kind": "image",
         "box": {
           "x": 90,
           "y": 120,
@@ -76,10 +76,10 @@
       },
       {
         "id": "sticker-gif",
-        "kind": "gif",
         "z": 1,
         "start": 0.5,
         "end": 3.5,
+        "kind": "gif",
         "box": {
           "x": 270,
           "y": 140,
@@ -99,36 +99,36 @@
       },
       {
         "id": "emoji-fire",
-        "kind": "emoji",
         "z": 2,
         "start": 1,
         "end": 3,
+        "kind": "emoji",
         "box": {
           "x": 180,
           "y": 300,
           "w": 100,
-          "h": 117,
+          "h": 132,
           "rotationDeg": 15
         },
         "emoji": {
           "text": "🔥",
-          "sizePx": 85.5,
+          "sizePx": 100,
           "x": 0,
-          "y": 87.6,
+          "y": 100.375,
           "width": 100
         }
       },
       {
         "id": "callout-check",
-        "kind": "callout",
         "z": 3,
         "start": 1.5,
         "end": 4,
+        "kind": "callout",
         "box": {
           "x": 180,
           "y": 480,
-          "w": 190,
-          "h": 64,
+          "w": 260,
+          "h": 104,
           "rotationDeg": -4
         },
         "callout": {
@@ -136,41 +136,37 @@
           "card": {
             "x": 0,
             "y": 0,
-            "w": 190,
-            "h": 64,
-            "radiusPx": 13,
+            "w": 260,
+            "h": 104,
+            "radiusPx": 19.439,
             "color": "#14141BF2"
           },
           "glyph": {
             "shape": "check",
-            "x": 17,
-            "y": 18,
-            "w": 28,
-            "h": 28,
-            "strokePx": 4,
+            "x": 25.757,
+            "y": 34.814,
+            "w": 34.019,
+            "h": 34.019,
+            "strokePx": 4.763,
             "color": "#39D98A"
           },
           "label": {
             "text": "Do this",
             "font": "Montserrat-Bold",
-            "sizePx": 28,
-            "x": 55,
-            "y": 42,
-            "width": 118,
+            "sizePx": 42.766,
+            "x": 74.841,
+            "y": 67.155,
+            "width": 159.176,
             "color": "#FFFFFF"
           }
-        },
-        "raster": {
-          "id": "raster-callout-check",
-          "kind": "image"
         }
       },
       {
         "id": "broll-city",
-        "kind": "broll",
         "z": 4,
         "start": 2,
         "end": 3.5,
+        "kind": "broll",
         "box": {
           "x": 250,
           "y": 200,
@@ -184,7 +180,8 @@
             "kind": "video"
           },
           "srcStart": 3,
-          "speed": 1
+          "speed": 1,
+          "loop": false
         }
       }
     ],

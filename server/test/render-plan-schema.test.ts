@@ -74,7 +74,10 @@ describe('render plan fixtures', () => {
     expect(new Set(captions.map((caption) => caption.lane)).size).toBeGreaterThan(1);
     expect(plans.some((plan) => plan.color === 'hlg')).toBe(true);
     expect(plans.some((plan) => plan.audio.some((entry) => entry.gainKeys.length > 2) && plan.loudness.targetLufs !== null)).toBe(true);
-    expect(plans.flatMap((plan) => plan.overlays).some((overlay) => overlay.raster)).toBe(true);
+    // The v1 builder never emits a raster (the device uploads one with a snapshot, T8); the schema still takes one.
+    const withRaster = planFrom('overlays');
+    withRaster.overlays[3]!.raster = { id: 'raster-callout-check', kind: 'image' };
+    expect(issues(withRaster)).toEqual([]);
     expect(plans.every((plan) => plan.requires.length === 0)).toBe(true);
     expect(plans.some((plan) => plan.duration === 0 && plan.video.segments.length === 0)).toBe(true);
   });
@@ -207,8 +210,9 @@ describe('invalid render plans', () => {
 
   it('refuses two captions sharing a lane at the same time', () => {
     const plan = planFrom('captions-multi-lane');
-    plan.captions[1]!.start = 1.2;
-    expect(issues(plan)).toEqual(['captions.1.start: captions cap-1 and cap-2 overlap in lane 0; a lane shows one caption at a time']);
+    // The builder lists captions in timeline order: cap-1, cap-top, cap-2.
+    plan.captions[2]!.start = 1.2;
+    expect(issues(plan)).toEqual(['captions.2.start: captions cap-1 and cap-2 overlap in lane 0; a lane shows one caption at a time']);
   });
 
   it('refuses a shrink receipt that contradicts its scale', () => {

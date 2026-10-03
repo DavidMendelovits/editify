@@ -1,5 +1,5 @@
 {
-  "description": "A caption too long for its styled 30 px at 360 wide: the layout shrank it to 24 px (scale 0.8) over three lines and flagged it, with no ellipsis.",
+  "description": "A caption too long for three lines at its styled size: the layout shrank it by 0.7 to 19.42 px over 3 lines and flagged it, with no ellipsis.",
   "plan": {
     "version": 1,
     "requires": [],
@@ -55,45 +55,45 @@
     "captions": [
       {
         "id": "cap-long",
-        "rev": "r-cap-long-a1",
+        "rev": "c3a8758baf3e66b9",
         "start": 0,
         "end": 3,
         "lane": 0,
         "font": "Montserrat-Bold",
-        "sizePx": 24,
+        "sizePx": 19.42,
         "color": "#FFFFFF",
         "strokeColor": "#000000",
         "strokePx": 1,
         "emphasisColor": "#FACC15",
         "shadow": {
           "color": "#000000",
-          "opacity": 0.61,
-          "offsetPx": 1
+          "opacity": 0.607843,
+          "offsetPx": 0.333
         },
         "align": "center",
         "lines": [
           {
             "text": "NOBODY TELLS YOU THIS",
-            "x": 13.7,
-            "y": 498,
-            "width": 332.6
+            "x": 50.054,
+            "y": 493.87,
+            "width": 259.892
           },
           {
-            "text": "ABOUT RUNNING A",
-            "x": 61.2,
-            "y": 526,
-            "width": 237.6
+            "text": "ABOUT RUNNING A MARATHON",
+            "x": 17.915,
+            "y": 524.203,
+            "width": 324.171
           },
           {
-            "text": "MARATHON IN THE RAIN",
-            "x": 21.6,
-            "y": 554,
-            "width": 316.8
+            "text": "IN THE POURING RAIN",
+            "x": 66.153,
+            "y": 554.536,
+            "width": 227.694
           }
         ],
         "fitted": {
           "shrunk": true,
-          "scale": 0.8
+          "scale": 0.7
         }
       }
     ],

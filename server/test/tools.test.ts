@@ -264,8 +264,10 @@ describe('agent tool registry', () => {
     const captions = project?.tracks.find((track) => track.id === 'captions')?.clips ?? [];
     expect(captions.map((caption) => caption.text)).toEqual(['Original', 'lower case line']);
     // The packet asks for 78%, but a 3.6% line centred there runs into Instagram's
-    // bottom UI band (the lowest 420 of 1920px), so placement lifts it to the band's edge.
-    expect(captions[1]?.style).toMatchObject({ sizePct: 3.6, anchorPct: 76, emphasis: 'none' });
+    // bottom UI band (the lowest 420 of 1920px), so placement lifts it to the band's edge:
+    // 1500px less half a 73px block (one 69px cell + 2 x 2px stroke). It was 76 when the
+    // block was estimated at 1.15 x the size per line.
+    expect(captions[1]?.style).toMatchObject({ sizePct: 3.6, anchorPct: 76.2, emphasis: 'none' });
     expect(captions[1]?.style?.emphasisColor).toBeUndefined();
     expect(result.guidance.some((line) => line.startsWith('B-roll (frequent'))).toBe(true);
   });
