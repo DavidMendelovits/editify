@@ -7,11 +7,13 @@ import { Brand } from '../../../src/components/Brand';
 import { Button } from '../../../src/components/Button';
 import { Screen } from '../../../src/components/Screen';
 import { EditifyEngine } from '../../../modules/editify-engine';
-import { api, IS_LOCAL_API, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
+import { renderSnapshot, type RenderSnapshot } from '@editify/shared';
+import { api, IS_LOCAL_API, rebaseServerUrl, uploadOriginal, type RenderRecord } from '../../../src/lib/api';
 import {
-  buildExportPlan, exportOnDevice, exportStateLabel, isTerminal, routeExport, serverRouteLine, STARTING,
-  type DeviceExportView, type ExportChoices, type ExportRoute,
+  buildExportPlan, exportOnDevice, exportStateLabel, isTerminal, projectAssetRefs, routeExport, serverRenderable, serverRouteLine, STARTING,
+  uploadMissing, type DeviceExportView, type ExportChoices, type ExportRoute, type ServerCheck, type UploadClip, type UploadOriginal,
 } from '../../../src/lib/device-export';
+import { describeImport, type ImportProgress } from '../../../src/lib/upload-progress';
 import { useEngineActivity } from '../../../src/lib/engine-activity';
 import { localMedia } from '../../../src/lib/local-media-native';
 import { track } from '../../../src/lib/telemetry';
@@ -51,15 +53,16 @@ export default function ExportScreen() {
     refetchInterval: (query) => query.state.data?.status === 'done' || query.state.data?.status === 'error' ? false : 1200,
   });
   const start = useMutation({
-    mutationFn: () => api.render(id, resolution, hdr, loudness),
+    mutationFn: (snapshot?: RenderSnapshot) => api.render(id, resolution, hdr, loudness, snapshot),
     onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
   });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
 
   // On-device export (plan P4): at 720p and 1080p, when every clip of the plan is on this
-  // iPhone, it renders here; otherwise the server path above runs as before, with a line
-  // saying why (the clips that aren't here, or 4K).
-  // TODO(T8): send the server a snapshot of this plan and check it has every original first.
+  // iPhone, it renders here. Otherwise (OV1) the server is asked which originals it holds:
+  // all there renders this screen's document as a snapshot; missing ones this iPhone has
+  // are offered as "Upload X to export"; missing everywhere is named plainly. Without the
+  // engine (web) the server renders its own copy, as before.
   const engine = EditifyEngine;
   const choices: ExportChoices = { resolution, hdr, loudness };
   const assets = useQuery({ queryKey: ['assets', id], queryFn: () => api.listAssets(id), enabled: Boolean(engine) });
@@ -67,14 +70,19 @@ export default function ExportScreen() {
     const asset = assets.data?.find((item) => item.id === assetId);
     return asset ? `"${asset.label ?? asset.originalName}"` : 'a clip';
   };
+  const serverCheck = (): ServerCheck | undefined => (project.data && assets.data
+    ? { refs: projectAssetRefs(project.data, assets.data), check: async (ids) => await api.assetAvailability(id, ids) }
+    : undefined);
   const route = useQuery({
     queryKey: ['export-route', id, project.data?.version, assets.dataUpdatedAt, resolution],
     enabled: Boolean(engine && project.data && assets.data),
     queryFn: async (): Promise<ExportRoute> => {
       const plan = buildExportPlan(project.data!, assets.data!, choices);
-      return await routeExport(plan, await localMedia(), nameOf, resolution);
+      return await routeExport(plan, await localMedia(), nameOf, resolution, serverCheck());
     },
   });
+  const [uploading, setUploading] = useState<ImportProgress>();
+  const [serverError, setServerError] = useState<string | null>(null);
   const [device, setDevice] = useState<DeviceExportView>();
   const [serverNote, setServerNote] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -97,7 +105,46 @@ export default function ExportScreen() {
 
   const renderOnServer = (note: string | null): void => {
     setServerNote(note);
-    start.mutate(undefined, { onSettled: () => { busy.current = false; } });
+    // With the engine the server renders this screen's document, not its own copy (OV1).
+    let snapshot: RenderSnapshot | undefined;
+    try {
+      snapshot = engine && project.data ? renderSnapshot(project.data) : undefined;
+    } catch (error) {
+      busy.current = false;
+      setServerError(`This project can't be sent for rendering: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    start.mutate(snapshot, { onSettled: () => { busy.current = false; } });
+  };
+  const sendOriginal: UploadOriginal = async (assetId, uri, onBytes) => {
+    const asset = assets.data?.find((item) => item.id === assetId);
+    await uploadOriginal(assetId, id, { uri, name: asset?.originalName ?? `${assetId}.mov`, ...(asset?.mimeType ? { mimeType: asset.mimeType } : {}) }, onBytes);
+  };
+  /** Uploads only the clips the server is missing, then routes again: ready renders at once. */
+  const uploadThenRender = async (clips: UploadClip[]): Promise<void> => {
+    const deps = await localMedia();
+    if (!deps) return;
+    const controller = new AbortController();
+    abort.current = controller;
+    setServerError(null);
+    setUploading({ done: 0, total: clips.length, sentBytes: 0, totalBytes: 0 });
+    track('export_upload_started', String(clips.length));
+    try {
+      const result = await uploadMissing({ clips, deps, upload: sendOriginal, onProgress: setUploading, signal: controller.signal });
+      if (result.failed.length > 0) {
+        const first = result.failed[0]!;
+        setServerError(`Couldn't upload ${first.name}: ${first.error}`);
+      }
+      const next = await route.refetch();
+      if (result.failed.length === 0 && next.data && serverRenderable(next.data)) {
+        renderOnServer(null);
+        return;
+      }
+    } finally {
+      if (abort.current === controller) abort.current = null;
+      setUploading(undefined);
+    }
+    busy.current = false;
   };
   const exportHere = async (): Promise<void> => {
     const deps = await localMedia();
@@ -107,15 +154,23 @@ export default function ExportScreen() {
     const controller = new AbortController();
     abort.current = controller;
     track('device_export_started', resolution);
+    const server = serverCheck();
     try {
       const outcome = await exportOnDevice({
         build: (geometry) => buildExportPlan(current, list, choices, geometry),
         resolution, deps, native: engine, nameOf, onUpdate: setDevice, signal: controller.signal,
+        ...(server ? { server } : {}),
       });
       if (outcome.kind === 'server') {
-        // Something changed since the screen opened (a clip went missing): the server renders it.
+        // Something changed since the screen opened (a clip went missing): the server renders
+        // it when it can; otherwise the screen shows what it needs (upload, or why not).
         setDevice(undefined);
-        renderOnServer(serverRouteLine(outcome.route));
+        if (serverRenderable(outcome.route)) {
+          renderOnServer(serverRouteLine(outcome.route));
+          return;
+        }
+        void route.refetch();
+        busy.current = false;
         return;
       }
       track(`device_export_${outcome.view.state}`, outcome.view.stats ? `${outcome.view.stats.xRealtime}x` : undefined);
@@ -132,9 +187,24 @@ export default function ExportScreen() {
       void exportHere().catch(() => { busy.current = false; setDevice(undefined); });
       return;
     }
+    if (route.data?.kind === 'server' && route.data.server?.state === 'upload') {
+      void uploadThenRender(route.data.server.clips).catch((error: unknown) => {
+        busy.current = false;
+        setServerError(error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
+    if (route.data && !serverRenderable(route.data)) { busy.current = false; return; }
     renderOnServer(route.data ? serverRouteLine(route.data) : null);
   };
-  const locked = Boolean(renderId) || deviceBusy;
+  const locked = Boolean(renderId) || deviceBusy || Boolean(uploading);
+  const needsUpload = route.data?.kind === 'server' && route.data.server?.state === 'upload' ? route.data.server.clips : null;
+  const blocked = route.data?.kind === 'server' && route.data.server?.state === 'blocked';
+  const renderLabel = uploading
+    ? `uploading… ${describeImport(uploading)}`
+    : start.isPending ? 'joining the queue…'
+      : needsUpload ? `upload ${needsUpload.length === 1 ? 'clip' : `${needsUpload.length} clips`}`
+        : `render ${resolution} master`;
   const routeLine = route.data?.kind === 'device' ? 'Exports on this iPhone. Keep Editify open until it finishes.' : route.data ? serverRouteLine(route.data) : null;
 
   useEffect(() => {
@@ -166,8 +236,9 @@ export default function ExportScreen() {
           {loudnessOptions.map((item) => <Pressable key={item.value} testID={`loudness-${item.value}`} disabled={locked} onPress={() => setLoudness(item.value)} style={[styles.resolution, loudness === item.value && styles.resolutionSelected]}><View style={[styles.radio, loudness === item.value && styles.radioSelected]}>{loudness === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
         </View>
       </View>
-      {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{start.isPending ? 'joining the queue…' : `render ${resolution} master`}</Button>}
+      {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || Boolean(uploading) || blocked || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{renderLabel}</Button>}
       {!renderId && !device && (serverNote ?? routeLine) && <Text testID="export-route" style={styles.note}>{serverNote ?? routeLine}</Text>}
+      {serverError && <Text style={styles.error}>{serverError}</Text>}
       {device && <DeviceExportCard view={device} onCancel={() => abort.current?.abort()} onRetry={() => setDevice(undefined)} />}
       {renderId && serverNote && <Text style={styles.note}>{serverNote}</Text>}
       {status && (

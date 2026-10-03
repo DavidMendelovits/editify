@@ -237,6 +237,13 @@ function migrate(database: EditifyDatabase): void {
     database.exec('ALTER TABLE renders ADD COLUMN project_version INTEGER');
   }
 
+  // The server fallback (plan OV1) renders the document the phone sent, stored with the
+  // render so a queued or recovered job renders exactly it. NULL: the stored project.
+  if (!renderColumns.some((column) => column.name === 'snapshot_json')) {
+    database.exec('ALTER TABLE renders ADD COLUMN snapshot_json TEXT');
+    database.exec('ALTER TABLE renders ADD COLUMN snapshot_hash TEXT');
+  }
+
   backfillProjectAssets(database);
 }
 

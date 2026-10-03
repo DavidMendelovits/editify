@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { renderQaSchema, type RenderQa } from '@editify/shared';
+import { projectSchema, renderQaSchema, type Project, type RenderQa, type RenderSnapshot } from '@editify/shared';
 import type { EditifyDatabase } from './database.js';
 import { publicBaseUrl } from '../config.js';
 
@@ -16,6 +16,8 @@ export interface RenderRecord {
   qa?: RenderQa;
   /** Present when QA wrote a contact sheet of the master's frames. */
   contactSheetUrl?: string;
+  /** Set when the render takes the phone's snapshot (plan OV1) instead of the stored project. */
+  snapshot?: { revision: number; hash: string };
   createdAt: string;
   updatedAt: string;
 }
@@ -25,19 +27,36 @@ interface RenderRow {
   output_path: string | null; error: string | null; created_at: string; updated_at: string;
   project_version: number | null;
   qa_json: string | null;
+  snapshot_json: string | null;
+  snapshot_hash: string | null;
 }
 
 export class RenderStore {
   constructor(private readonly database: EditifyDatabase) {}
 
-  create(projectId: string, resolution: RenderRecord['resolution']): RenderRecord {
+  /** With a snapshot, the job renders that document (its revision is the version recorded). */
+  create(projectId: string, resolution: RenderRecord['resolution'], snapshot?: RenderSnapshot): RenderRecord {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.prepare(`
-      INSERT INTO renders (id, project_id, resolution, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'queued', ?, ?)
-    `).run(id, projectId, resolution, now, now);
+      INSERT INTO renders (id, project_id, resolution, status, created_at, updated_at, project_version, snapshot_json, snapshot_hash)
+      VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+    `).run(
+      id, projectId, resolution, now, now,
+      snapshot?.revision ?? null, snapshot ? JSON.stringify(snapshot.project) : null, snapshot?.hash ?? null,
+    );
     return this.get(id) as RenderRecord;
+  }
+
+  /**
+   * The document a snapshot render was given, or undefined for a render of the stored
+   * project. Throws when the stored snapshot no longer parses: rendering something else
+   * in its place would be the stale render the snapshot exists to prevent.
+   */
+  snapshotProject(id: string): Project | undefined {
+    const row = this.database.prepare('SELECT snapshot_json FROM renders WHERE id = ?').get(id) as { snapshot_json: string | null } | undefined;
+    if (!row?.snapshot_json) return undefined;
+    return projectSchema.parse(JSON.parse(row.snapshot_json));
   }
 
   /** `projectVersion` is only written when given, so later status changes keep it. */
@@ -93,6 +112,7 @@ export class RenderStore {
       ...(row.error ? { error: row.error } : {}),
       ...(qa?.success ? { qa: qa.data } : {}),
       ...(qa?.success && qa.data.contactSheet ? { contactSheetUrl: `${publicBaseUrl}/renders/${row.id}/contact.jpg` } : {}),
+      ...(row.snapshot_hash !== null && row.project_version !== null ? { snapshot: { revision: row.project_version, hash: row.snapshot_hash } } : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

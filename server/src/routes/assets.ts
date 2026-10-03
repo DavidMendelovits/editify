@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
@@ -14,6 +14,7 @@ import { assetsRoot, mediaImportDir } from '../config.js';
 import { COLOR_PIPELINE_VERSION } from '../media/color.js';
 import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbnail, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
+import { isFile } from '../services/asset-availability.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { FaceService } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
@@ -42,6 +43,10 @@ const labelRequestSchema = z.object({ label: z.string().max(120) }).strict();
 const linkRequestSchema = z.object({ projectId: z.string().min(1) }).strict();
 const rawUploadSchema = z.string().trim().min(1).max(255);
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+/** Asset ids are UUIDs; one the phone names for an original it uploads must be one too (it becomes a folder name). */
+const ASSET_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A re-uploaded original may differ from the record by a remux's frame or two, never by a trim. */
+export const RESTORE_DURATION_TOLERANCE = 0.25;
 
 export class UploadTooLargeError extends Error {}
 
@@ -184,7 +189,7 @@ async function processAsset(
   assets: AssetStore,
   transcripts: TranscriptService,
   input: { originalName: string; mimeType: string; originalPath: string },
-  id = randomUUID(),
+  id: string = randomUUID(),
   userId?: string,
   faces?: FaceService,
 ): Promise<StoredAsset> {
@@ -297,8 +302,8 @@ export function registerAssetRoutes(
     file: { name: string; mimeType: string },
     projectId: string | undefined,
     userId: string | undefined,
+    id: string = randomUUID(),
   ): Promise<FastifyReply> {
-    const id = randomUUID();
     const directory = join(assetsRoot, id);
     await mkdir(directory, { recursive: true });
     const extension = extname(file.name).replace(/[^.a-zA-Z0-9]/g, '').slice(0, 12) || '.media';
@@ -358,6 +363,76 @@ export function registerAssetRoutes(
       return await reply.code(413).send({ error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
     }
     return await saveUpload(reply, body, { name: name.data, mimeType }, projectId, request.userId);
+  });
+
+  /**
+   * Puts an original back on the server under its existing asset id (plan OV1, "upload
+   * clips X"): the phone uploads only the clips a server render is missing, from its app
+   * copy or the Photos original, and the project's references keep working.
+   *
+   *   another account's row ........... 404, as if absent
+   *   own row, original on disk ....... 200, nothing written (a retry)
+   *   own row, original gone .......... written, its duration checked against the record
+   *                                     (409 { code: 'mismatch' } when it is another file)
+   *   no row (device-first import) .... a new asset under this id, like POST /assets/raw
+   *
+   * Always linked to `projectId`, which is required. The body is the raw file, as for /assets/raw.
+   */
+  app.put<{ Params: { id: string }; Querystring: { projectId?: string; name?: string } }>('/assets/:id/original', async (request, reply) => {
+    const body = typeof (request.body as NodeJS.ReadableStream | undefined)?.pipe === 'function'
+      ? request.body as NodeJS.ReadableStream
+      : undefined;
+    const refuse = async (status: number, payload: Record<string, unknown>): Promise<FastifyReply> => {
+      body?.resume();
+      return await reply.code(status).send(payload);
+    };
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
+    if (projectId === null) { body?.resume(); return reply; }
+    if (!projectId) return await refuse(400, { error: 'projectId is required' });
+    const { id } = request.params;
+    const existing = assets.get(id);
+    if (existing) {
+      if (!assets.owned(id, request.userId)) return await refuse(404, { error: 'Asset not found' });
+      if (await isFile(existing.originalPath)) {
+        assets.link(projectId, id);
+        return await refuse(200, publicAsset(existing));
+      }
+    } else if (!ASSET_ID.test(id)) {
+      return await refuse(400, { error: 'Asset ids are UUIDs' });
+    }
+    const name = rawUploadSchema.safeParse(request.query.name);
+    const mimeType = (request.headers['content-type'] ?? '').split(';')[0]?.trim() ?? '';
+    if (!name.success || !body || !isMediaType(mimeType)) {
+      return await refuse(!name.success ? 400 : 415, {
+        error: !name.success ? 'A file name is required' : 'Only video, audio, and image files are supported',
+      });
+    }
+    if (Number(request.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) {
+      return await refuse(413, { error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
+    }
+    if (!existing) return await saveUpload(reply, body, { name: name.data, mimeType }, projectId, request.userId, id);
+
+    const directory = join(assetsRoot, id);
+    await mkdir(directory, { recursive: true });
+    const extension = extname(name.data).replace(/[^.a-zA-Z0-9]/g, '').slice(0, 12) || extname(existing.originalPath) || '.media';
+    const incoming = join(directory, `restore-${randomUUID()}${extension}`);
+    try {
+      await pipeline(body, capBytes(MAX_UPLOAD_BYTES), (await import('node:fs')).createWriteStream(incoming));
+      const probe = await probeMedia(incoming);
+      if (!existing.mimeType.startsWith('image/') && Math.abs(probe.duration - existing.duration) > RESTORE_DURATION_TOLERANCE) {
+        await rm(incoming, { force: true });
+        return await reply.code(409).send({ error: "That file isn't the clip this project uses", code: 'mismatch' });
+      }
+      const originalPath = join(directory, `original${extension}`);
+      await rename(incoming, originalPath);
+      assets.setOriginalPath(id, originalPath);
+      assets.link(projectId, id);
+      return await reply.code(200).send(publicAsset(assets.get(id) ?? existing));
+    } catch (error) {
+      await rm(incoming, { force: true });
+      if (error instanceof UploadTooLargeError) return await reply.code(413).send({ error: error.message });
+      throw error;
+    }
   });
 
   // The media library. With `?projectId=` it is scoped to that project's own

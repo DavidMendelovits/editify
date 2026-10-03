@@ -222,3 +222,33 @@ extension AssetSource {
     }
   }
 }
+
+extension AssetSource {
+  /// Writes a PHAsset's original resource (the file Photos keeps, never an edited render)
+  /// to a new file under the temporary folder, never downloading, for an upload the server
+  /// is missing (plan OV1, "upload clips X"). The caller removes the file afterwards.
+  static func exportOriginal(_ ref: String) async throws -> (url: URL, bytes: Int64) {
+    guard hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { throw NotFound(ref: ref) }
+    let resources = PHAssetResource.assetResources(for: asset)
+    // `.video` / `.photo` / `.audio` are the originals; the `fullSize…` types are Photos edits.
+    let wanted: PHAssetResourceType = switch asset.mediaType {
+    case .video: .video
+    case .audio: .audio
+    default: .photo
+    }
+    guard let resource = resources.first(where: { $0.type == wanted }) else { throw NotFound(ref: ref) }
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("editify-uploads", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let ext = (resource.originalFilename as NSString).pathExtension
+    let target = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext.isEmpty ? "mov" : ext)
+    let options = PHAssetResourceRequestOptions()
+    options.isNetworkAccessAllowed = false
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      PHAssetResourceManager.default().writeData(for: resource, toFile: target, options: options) { error in
+        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+      }
+    }
+    let bytes = ((try? FileManager.default.attributesOfItem(atPath: target.path))?[.size] as? NSNumber)?.int64Value ?? 0
+    return (target, bytes)
+  }
+}

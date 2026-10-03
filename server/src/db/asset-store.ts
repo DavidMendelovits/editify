@@ -72,6 +72,20 @@ export class AssetStore {
     }
   }
 
+  /**
+   * A re-uploaded original (PUT /assets/:id/original). A still's display paths point at its
+   * original, so they move with it.
+   */
+  setOriginalPath(id: string, path: string): void {
+    this.database.prepare(`
+      UPDATE assets
+         SET original_path = ?,
+             proxy_path = CASE WHEN proxy_path = original_path THEN ? ELSE proxy_path END,
+             thumbnail_path = CASE WHEN thumbnail_path = original_path THEN ? ELSE thumbnail_path END
+       WHERE id = ?
+    `).run(path, path, path, id);
+  }
+
   /** An empty/blank label clears it, so the card falls back to the file name. */
   setLabel(id: string, label: string): StoredAsset | undefined {
     const trimmed = label.trim();
