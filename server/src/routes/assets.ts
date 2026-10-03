@@ -4,7 +4,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply } from 'fastify';
 import type { AssetMetadata } from '@editify/shared';
 import { z } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
@@ -17,7 +17,8 @@ import { sendMediaFile } from '../media/send-file.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { FaceService } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
-import { withMediaSlot } from '../services/media-slots.js';
+import { timeMediaJob } from '../services/media-jobs.js';
+import { mediaSlots, withMediaSlot, type SlotLane } from '../services/media-slots.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 import { WaveformService } from '../services/waveform-service.js';
 
@@ -94,51 +95,75 @@ function downsampleEnvelope(envelope: { cellSeconds: number; rmsDb: number[] }):
 }
 
 /**
- * Background work per asset id: proxy, thumbnail and transcription. Imports do
- * not wait for it — the row is already in the library, marked `processing`.
- * Exposed so tests can await an import deterministically.
+ * Background work per asset id: proxy, thumbnail, transcription and faces.
+ * Imports do not wait for it — the row is already in the library, marked
+ * `processing`. Exposed so tests can await an import deterministically.
  */
 export const pendingAssetWork = new Map<string, Promise<void>>();
 
 /**
  * ffmpeg and whisper each saturate the box on their own, so a 40-clip import
- * that spawns 40 of them leaves everything crawling. Imports wait their turn in
- * the shared media pool (`media-slots.ts`) inside their own `pendingAssetWork`
- * promise, so awaiting an import still waits for the queue. One slot covers the
- * encode *and* the transcription: the transcription runs inside the slot this
- * chain already holds rather than taking a second one.
+ * that spawns 40 of them leaves everything crawling. Every import job waits its
+ * turn in the shared media pool (`media-slots.ts`) inside the asset's
+ * `pendingAssetWork` promise, so awaiting an import still waits for the queue.
+ *
+ * Each import queues two slot jobs the moment it lands:
+ * - `import <id>`, foreground: proxy + thumbnail + colour sidecar, which is what
+ *   moves the row to `ready`, then face tracking while it still holds the slot.
+ * - `transcribe <id>`, background: Whisper reads the original's audio and never
+ *   needs the proxy, so it no longer queues behind the encode. That encode used
+ *   to hold the one slot through the whole Whisper run, and an agent turn on a
+ *   fresh 5-minute clip waited for both back to back.
+ *
+ * Memory and concurrency: this changes *who* holds a slot, never *how many*.
+ * The pool still runs at most `capacity` (2) jobs, and "a preview encode next
+ * to a Whisper run" was already a reachable pair (two imports, or an import
+ * plus an on-demand transcription), as was "a render next to Whisper". The
+ * worst case on the 4 GB box stays a ~2 GB render plus one other job. The
+ * background lane keeps previews fast: a waiting proxy (or render) always gets
+ * the next free slot before a waiting import transcription, so in a batch the
+ * previews finish first, and a transcript someone asks for is promoted out of
+ * the background lane (`TranscriptService.transcribe`). No deadlock: the two
+ * jobs are siblings started outside any slot (`detached`), neither waits on the
+ * other, and nothing inside a slot waits for a second one. An on-demand
+ * transcription during the import joins this run through `TranscriptService`'s
+ * in-flight map rather than starting a second Whisper.
  *
  * Runs after the import responded, and moves the row to `ready` or `error`.
  */
-function queueAssetWork(
-  app: FastifyInstance,
+export function queueAssetWork(
+  log: Pick<FastifyBaseLogger, 'error' | 'warn'>,
   assets: AssetStore,
   transcripts: TranscriptService,
   asset: StoredAsset,
   probe: ProbeResult,
   faces?: FaceService,
 ): void {
-  const pending = (async () => {
-    await withMediaSlot(`import ${asset.id}`, async () => {
+  const pending = mediaSlots.detached(() => {
+    const queuedAt = performance.now();
+    // Queued first, so when only one slot is free the preview takes it.
+    const preview = withMediaSlot(`import ${asset.id}`, async () => {
       try {
-        const generated = await createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe);
+        const generated = await timeMediaJob('proxy', { assetId: asset.id }, () =>
+          createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe), performance.now() - queuedAt);
         assets.setStatus(asset.id, 'ready', generated);
       } catch (error) {
         assets.setStatus(asset.id, 'error');
-        app.log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
+        log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
         return;
       }
-      await transcribeQuietly(app, transcripts, asset);
       // Tracked now so the first caption placement doesn't wait on OpenCV.
       if (faces && probe.hasVideo) {
         try {
-          await faces.getOrCreate(asset);
+          await timeMediaJob('faces', { assetId: asset.id }, () => faces.getOrCreate(asset));
         } catch (error) {
-          app.log.warn({ err: error, assetId: asset.id }, 'Face tracking failed; captions will only keep to the safe area');
+          log.warn({ err: error, assetId: asset.id }, 'Face tracking failed; captions will only keep to the safe area');
         }
       }
     });
-  })().finally(() => pendingAssetWork.delete(asset.id));
+    const transcript = transcribeQuietly(log, transcripts, asset, 'background');
+    return Promise.all([preview, transcript]);
+  }).then(() => undefined).finally(() => pendingAssetWork.delete(asset.id));
   pendingAssetWork.set(asset.id, pending);
 }
 
@@ -158,7 +183,7 @@ async function processAsset(
   const directory = join(assetsRoot, id);
   await mkdir(directory, { recursive: true });
   try {
-    const probe = await probeMedia(input.originalPath);
+    const probe = await timeMediaJob('probe', { assetId: id }, () => probeMedia(input.originalPath));
     if (!probe.hasVideo && !probe.hasAudio) throw new Error('The media file has no video or audio streams');
     if (input.mimeType.startsWith('image/')) {
       // Stickers: no proxy or transcode — the original IS the display asset.
@@ -203,7 +228,7 @@ async function processAsset(
       filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
     }, userId);
-    queueAssetWork(app, assets, transcripts, asset, probe, faces);
+    queueAssetWork(app.log, assets, transcripts, asset, probe, faces);
     return asset;
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
@@ -212,15 +237,16 @@ async function processAsset(
 }
 
 async function transcribeQuietly(
-  app: FastifyInstance,
+  log: Pick<FastifyBaseLogger, 'warn'>,
   transcripts: TranscriptService,
   asset: StoredAsset,
+  lane: SlotLane,
 ): Promise<void> {
   if (!asset.hasAudio) return;
   try {
-    await transcripts.transcribe(asset);
+    await transcripts.transcribe(asset, false, { lane });
   } catch (error) {
-    app.log.warn({ err: error, assetId: asset.id }, 'Asset transcription failed; media import will continue');
+    log.warn({ err: error, assetId: asset.id }, 'Asset transcription failed; media import will continue');
   }
 }
 
@@ -395,7 +421,7 @@ export function registerAssetRoutes(
     if (existing) {
       if (projectId) assets.link(projectId, existing.id);
       // Already on disk — a missing transcript can catch up in the background.
-      void transcribeQuietly(app, transcripts, existing);
+      void transcribeQuietly(app.log, transcripts, existing, 'background');
       return publicAsset(existing);
     }
 
@@ -522,7 +548,8 @@ export function registerAssetRoutes(
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!existsSync(asset.thumbnailPath)) return notReady(reply, asset);
     if (colorPipelineIsStale(asset)) {
-      const pending = recolors.get(asset.id) ?? regenerateThumbnail(asset.originalPath, asset.thumbnailPath, asset)
+      const pending = recolors.get(asset.id) ?? timeMediaJob('thumbnail', { assetId: asset.id }, () =>
+        regenerateThumbnail(asset.originalPath, asset.thumbnailPath, asset))
         .then(async () => { await rm(join(dirname(asset.thumbnailPath), 'filmstrip.jpg'), { force: true }); })
         .catch((error: unknown) => { app.log.warn({ err: error, assetId: asset.id }, 'thumbnail recolor failed'); })
         .finally(() => recolors.delete(asset.id));

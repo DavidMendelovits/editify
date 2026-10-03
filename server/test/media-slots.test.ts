@@ -43,7 +43,11 @@ function insertAsset(id: string): StoredAsset {
   });
 }
 
-/** Mirrors `queueAssetWork`: encode inside a slot, then transcribe without letting go of it. */
+/**
+ * A slot holder that transcribes inline, without letting go of its slot. Imports
+ * no longer do this (`queueAssetWork` queues the transcription as its own job,
+ * see import-scheduling.test.ts), but any caller inside a slot still may.
+ */
 function importWork(transcripts: TranscriptService, asset: StoredAsset, encodeMs = 20): Promise<unknown> {
   return withMediaSlot(`import ${asset.id}`, async () => {
     peak.sample(mediaSlots.active().length);
@@ -135,6 +139,50 @@ describe('media slot pool', () => {
     expect(askedFirst).toBe(importedFirst);
     expect(runner).toHaveBeenCalledTimes(2);
     expect(mediaSlots.active()).toEqual([]);
+  });
+
+  it('serves every waiting foreground job before a waiting background one', async () => {
+    const slots = new MediaSlots(1);
+    const order: string[] = [];
+    const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
+      order.push(label);
+      await delay(5);
+    }, { lane });
+    await Promise.all([
+      job('running', 'foreground'),
+      job('transcribe early', 'background'),
+      job('proxy', 'foreground'),
+      job('transcribe late', 'background'),
+      job('render', 'foreground'),
+    ]);
+    expect(order).toEqual(['running', 'proxy', 'render', 'transcribe early', 'transcribe late']);
+  });
+
+  it('promotes a background waiter to the back of the foreground queue', async () => {
+    const slots = new MediaSlots(1);
+    const order: string[] = [];
+    const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
+      order.push(label);
+      await delay(5);
+    }, { lane });
+    const all = [job('running', 'foreground'), job('transcribe', 'background'), job('proxy', 'foreground')];
+    expect(slots.promote('transcribe')).toBe(true);
+    const later = job('render', 'foreground');
+    expect(slots.queued()).toEqual(['proxy', 'transcribe', 'render']);
+    expect(slots.promote('running')).toBe(false);
+    await Promise.all([...all, later]);
+    expect(order).toEqual(['running', 'proxy', 'transcribe', 'render']);
+  });
+
+  it('queues work started through `detached` on its own instead of riding the caller\'s slot', async () => {
+    const slots = new MediaSlots(1);
+    let inner: Promise<void> | undefined;
+    await slots.run('parent', async () => {
+      inner = slots.detached(() => slots.run('child', async () => undefined));
+      expect(slots.queued()).toEqual(['child']);
+    });
+    await inner;
+    expect(slots.active()).toEqual([]);
   });
 
   it('releases the slot when a job throws', async () => {

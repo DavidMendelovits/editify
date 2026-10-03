@@ -3,7 +3,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StoredAsset } from '../db/asset-store.js';
 import { analyzeEnergy } from '../media/audio-analysis.js';
-import { mediaSlots, type MediaSlots } from './media-slots.js';
+import { timeMediaJob } from './media-jobs.js';
+import { mediaSlots, type MediaSlots, type SlotLane } from './media-slots.js';
 import {
   transcriptResultSchema,
   type StoredTranscript,
@@ -66,6 +67,7 @@ export function runWhisperTranscription(mediaPath: string): Promise<TranscriptRe
  */
 interface InFlightRun {
   promise: Promise<StoredTranscript>;
+  label: string;
   started: boolean;
   replacedBy?: InFlightRun;
 }
@@ -84,11 +86,18 @@ export class TranscriptService {
     return this.store.get(assetId);
   }
 
-  async transcribe(asset: StoredAsset, force = false): Promise<StoredTranscript> {
+  /**
+   * `lane: 'background'` is for work nobody is waiting on yet (an import
+   * transcribing its own clip): it yields the slot queue to previews and
+   * renders. A foreground caller that joins such a run while it still waits
+   * for a slot promotes it, so the agent never waits behind a batch of encodes.
+   */
+  async transcribe(asset: StoredAsset, force = false, options: { lane?: SlotLane } = {}): Promise<StoredTranscript> {
+    const lane = options.lane ?? 'foreground';
     const existing = this.store.get(asset.id);
     if (existing && !force) {
       if (existing.energy) return existing;
-      try { return this.store.putEnergy(asset.id, await this.energyAnalyzer(asset.originalPath)); } catch { return existing; }
+      try { return this.store.putEnergy(asset.id, await this.measureEnergy(asset)); } catch { return existing; }
     }
     // ponytail: a force=true call that lands mid-run joins the in-flight run
     // instead of starting a second Whisper pass — it gets a transcript that is
@@ -98,20 +107,24 @@ export class TranscriptService {
     // holds one (an import transcribing its own clip): joining would park a
     // slot on a job that may be waiting for that very slot. Run it here instead,
     // and let the queued run hand its callers over when its turn comes.
-    if (current && (current.started || !this.slots.held())) return await current.promise;
-    const run = this.start(asset);
+    if (current && (current.started || !this.slots.held())) {
+      if (!current.started && lane === 'foreground') this.slots.promote(current.label);
+      return await current.promise;
+    }
+    const run = this.start(asset, lane);
     if (current) current.replacedBy = run;
     return await run.promise;
   }
 
-  private start(asset: StoredAsset): InFlightRun {
-    const run = { started: false } as InFlightRun;
+  private start(asset: StoredAsset, lane: SlotLane): InFlightRun {
+    const run = { label: `transcribe ${asset.id}`, started: false } as InFlightRun;
     this.inFlight.set(asset.id, run);
-    run.promise = this.slots.run(`transcribe ${asset.id}`, async () => {
+    const queuedAt = performance.now();
+    run.promise = this.slots.run(run.label, async () => {
       if (run.replacedBy) return undefined;
       run.started = true;
-      return await this.run(asset);
-    })
+      return await this.run(asset, performance.now() - queuedAt);
+    }, { lane })
       .then((result) => result ?? (run.replacedBy as InFlightRun).promise)
       .finally(() => {
         if (this.inFlight.get(asset.id) === run) this.inFlight.delete(asset.id);
@@ -119,19 +132,23 @@ export class TranscriptService {
     return run;
   }
 
-  private async run(asset: StoredAsset): Promise<StoredTranscript> {
-    const result = await this.runner(asset.originalPath);
+  private async run(asset: StoredAsset, waitMs: number): Promise<StoredTranscript> {
+    const result = await timeMediaJob('transcribe', { assetId: asset.id }, () => this.runner(asset.originalPath), waitMs);
     try {
-      return this.store.put(asset.id, result, await this.energyAnalyzer(asset.originalPath));
+      return this.store.put(asset.id, result, await this.measureEnergy(asset));
     } catch {
       return this.store.put(asset.id, result);
     }
+  }
+
+  private measureEnergy(asset: StoredAsset): Promise<EnergyAnalysis> {
+    return timeMediaJob('energy', { assetId: asset.id }, () => this.energyAnalyzer(asset.originalPath));
   }
 
   async ensureEnergy(asset: StoredAsset): Promise<EnergyAnalysis> {
     const existing = this.store.get(asset.id);
     if (!existing) throw new Error(`No transcript for asset ${asset.id}`);
     if (existing.energy) return existing.energy;
-    return this.store.putEnergy(asset.id, await this.energyAnalyzer(asset.originalPath)).energy as EnergyAnalysis;
+    return this.store.putEnergy(asset.id, await this.measureEnergy(asset)).energy as EnergyAnalysis;
   }
 }
