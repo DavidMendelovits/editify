@@ -215,6 +215,34 @@ function brightest(name: string, k: number, rect: string): Vec {
   return best;
 }
 
+/**
+ * The fill colour of the text in a rect: the per-channel median of its bright
+ * pixels (luma within 10% of the brightest). Not the single brightest pixel:
+ * on a yellow word that is a near-tie between fill pixels and glyph-edge
+ * pixels whose 4:2:0 chroma carries the dark stroke's blue (luma 0.816 at
+ * blue 0.37 against the fill's 0.808 at 0.13), and which one wins moved with
+ * the CPU's SIMD paths (Ubuntu's ffmpeg 6.1 on some x86-64 runners).
+ */
+function fillColour(name: string, k: number, rect: string): Vec {
+  const spec = manifest.renders.find((item) => item.name === name)!.frames.find((frame) => frame.k === k)!.rects!.find((item) => item.name === rect)!;
+  const picture = render(name).frames.get(k)!;
+  const pixels: Array<{ luma: number; pixel: Vec }> = [];
+  for (let y = Math.floor(spec.y); y < spec.y + spec.h; y += 1) {
+    for (let x = Math.floor(spec.x); x < spec.x + spec.w; x += 1) {
+      const at3 = (y * picture.width + x) * 3;
+      const pixel: Vec = [picture.rgb[at3]!, picture.rgb[at3 + 1]!, picture.rgb[at3 + 2]!];
+      pixels.push({ luma: 0.2627 * pixel[0] + 0.678 * pixel[1] + 0.0593 * pixel[2], pixel });
+    }
+  }
+  const top = Math.max(...pixels.map((item) => item.luma));
+  const bright = pixels.filter((item) => item.luma >= 0.9 * top);
+  const median = (channel: number): number => {
+    const values = bright.map((item) => item.pixel[channel]!).sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)]!;
+  };
+  return [median(0), median(1), median(2)];
+}
+
 /** Amplitude of a pure tone in a Hann-windowed stretch (Goertzel), as the native harness measures it. */
 function tone(samples: Float32Array, from: number, to: number, hz: number): number {
   const start = Math.max(0, Math.floor(from * 48000));
@@ -550,17 +578,17 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     const yellow = (v: Vec): boolean => v[0] > 0.9 && v[1] > 0.65 && v[2] < 0.3;
     const white = (v: Vec): boolean => Math.min(...v) > 0.95;
     expect(Math.max(...sdrToLinear(brightest('caption-karaoke', 10, 'how')))).toBeLessThan(0.7); // before 0.5 s: no caption
-    expect(yellow(brightest('caption-karaoke', 20, 'how'))).toBe(true);
-    expect(white(brightest('caption-karaoke', 20, 'are'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 40, 'are'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 40, 'you'))).toBe(true);
-    expect(white(brightest('caption-karaoke', 40, 'doing'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 75, 'doing'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 75, 'today'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 20, 'how'))).toBe(true);
+    expect(white(fillColour('caption-karaoke', 20, 'are'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 40, 'are'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 40, 'you'))).toBe(true);
+    expect(white(fillColour('caption-karaoke', 40, 'doing'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 75, 'doing'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 75, 'today'))).toBe(true);
   });
 
   it('shows caption lanes together and each caption only in its span', () => {
-    const present = (k: number, lane: string): boolean => Math.min(...brightest('captions-multi-lane', k, lane)) > 0.95;
+    const present = (k: number, lane: string): boolean => Math.min(...fillColour('captions-multi-lane', k, lane)) > 0.95;
     expect([10, 30, 50, 80].map((k) => present(k, 'top'))).toEqual([false, true, true, false]);
     expect([10, 30, 50, 80].map((k) => present(k, 'bottom'))).toEqual([true, true, true, true]);
   });
