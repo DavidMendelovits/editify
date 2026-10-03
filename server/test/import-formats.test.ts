@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -32,10 +32,31 @@ describe.skipIf(!hasFfmpeg)('import format allowlist', () => {
   });
 
   it('names the problem when ffprobe refuses the sniffed format', async () => {
-    const hls = join(dir, 'm3u8.mov');
-    writeFileSync(hls, '#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n');
-    // ffprobe either refuses the sniffed hls demuxer (allowlist) or cannot parse it as any allowed one.
-    await expect(probeMedia(hls)).rejects.toSatisfy((error: unknown) => error instanceof UnsupportedMediaError || /Invalid data/.test(String(error)));
+    // FLV is a real container ffprobe sniffs whatever the name, and not one the app takes.
+    const flv = make('flash.mp4', ['-f', 'lavfi', '-i', 'testsrc=s=64x64:d=0.2', '-c:v', 'flv1', '-f', 'flv']);
+    await expect(probeMedia(flv)).rejects.toBeInstanceOf(UnsupportedMediaError);
+    const concat = join(dir, 'script.mp4');
+    writeFileSync(concat, "ffconcat version 1.0\nfile '/etc/passwd'\n");
+    await expect(probeMedia(concat)).rejects.toBeInstanceOf(UnsupportedMediaError);
+  });
+
+  it('reports a source the plan render will not open as unavailable, so the queue falls back to legacy', async () => {
+    const { probePlanUnlessUnsupported, PlanRenderUnavailableError } = await import('../src/media/plan/render.js');
+    const flv = make('stored.mp4', ['-f', 'lavfi', '-i', 'testsrc=s=64x64:d=0.2', '-c:v', 'flv1', '-f', 'flv']);
+    await expect(probePlanUnlessUnsupported(flv, 'video')).rejects.toBeInstanceOf(PlanRenderUnavailableError);
+  });
+
+  it('refuses an unsupported upload with 415, not a 500', async () => {
+    const { buildApp } = await import('../src/app.js');
+    const { createDatabase } = await import('../src/db/database.js');
+    const flv = make('upload.mp4', ['-f', 'lavfi', '-i', 'testsrc=s=64x64:d=0.2', '-c:v', 'flv1', '-f', 'flv']);
+    const app = await buildApp({ database: createDatabase(':memory:') });
+    const response = await app.inject({
+      method: 'POST', url: `/assets/raw?name=${encodeURIComponent('clip.mp4')}`, headers: { 'content-type': 'video/mp4' }, payload: readFileSync(flv),
+    });
+    expect(response.statusCode).toBe(415);
+    expect(response.json<{ error: string }>().error).toMatch(/not a supported/);
+    await app.close();
   });
 
   it('accepts video, audio and stills', async () => {
@@ -49,5 +70,15 @@ describe.skipIf(!hasFfmpeg)('import format allowlist', () => {
     expect((await probeMedia(m4a)).hasAudio).toBe(true);
     expect((await probeMedia(wav)).hasAudio).toBe(true);
     for (const still of [png, gif, jpg]) expect((await probeMedia(still)).hasVideo).toBe(true);
+  });
+
+  it('accepts the other formats production takes: AVI, MPEG-TS, AIFF, CAF, APNG', async () => {
+    const avi = make('clip.avi', ['-f', 'lavfi', '-i', 'testsrc=s=64x64:d=0.2', '-c:v', 'mpeg4']);
+    const ts = make('clip.ts', ['-f', 'lavfi', '-i', 'testsrc=s=64x64:d=0.2', '-c:v', 'mpeg2video']);
+    const aiff = make('voice.aiff', ['-f', 'lavfi', '-i', 'sine=d=0.2']);
+    const caf = make('voice.caf', ['-f', 'lavfi', '-i', 'sine=d=0.2']);
+    const apng = make('sticker.apng', ['-f', 'lavfi', '-i', 'testsrc=s=16x16:d=0.2', '-f', 'apng']);
+    for (const video of [avi, ts, apng]) expect((await probeMedia(video)).hasVideo, video).toBe(true);
+    for (const audio of [aiff, caf]) expect((await probeMedia(audio)).hasAudio, audio).toBe(true);
   });
 });

@@ -18,7 +18,7 @@ import {
 import { measureLoudness } from '../../services/render-qa.js';
 import { locateAssFont } from '../ass.js';
 import { rasterizeEmoji } from '../emoji.js';
-import { runProcess } from '../process.js';
+import { runProcess, UnsupportedMediaError } from '../process.js';
 import type { SourceColor } from '../color.js';
 import { planAss, spanFrames, type AssItem } from './ass.js';
 import { loudnessFilters, planAudioJob, planLoudnessGain, keyValueAt, piecewiseLinear, type LoudnessDecision } from './audio.js';
@@ -109,6 +109,20 @@ export interface RenderPlanResult {
   loudness: { measuredLufs: number | null; truePeakDb: number | null; decision: LoudnessDecision };
   /** Wall-clock seconds of the whole render. */
   elapsed: number;
+}
+
+/**
+ * probePlanMedia, with a source outside the import allowlist reported as
+ * PlanRenderUnavailableError, so the queue falls back to the legacy render
+ * (which decides about that file the way it always has) instead of failing.
+ */
+export async function probePlanUnlessUnsupported(path: string, kind: PlanAssetRef['kind']): Promise<PlanMediaProbe> {
+  try {
+    return await probePlanMedia(path, kind);
+  } catch (error) {
+    if (error instanceof UnsupportedMediaError) throw new PlanRenderUnavailableError(`a source is not in a format the plan render opens (${kind})`);
+    throw error;
+  }
 }
 
 /** Thrown when this ffmpeg cannot execute a plan (a filter missing from the build). */
@@ -885,7 +899,7 @@ async function renderInWorkDir(input: unknown, resolveAsset: PlanAssetResolver, 
   for (const ref of refs.values()) {
     const path = await resolveAsset(ref);
     if (!path) throw new Error(`Asset ${ref.id} is not available to this render`);
-    media.set(ref.id, await probePlanMedia(path, ref.kind));
+    media.set(ref.id, await probePlanUnlessUnsupported(path, ref.kind));
   }
   const rasterPaths = new Map<string, string>();
   for (const overlay of plan.overlays) {

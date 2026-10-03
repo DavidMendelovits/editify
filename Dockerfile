@@ -20,8 +20,10 @@ FROM node:20-bookworm-slim
 # python3 + faster-whisper back `scripts/transcribe.py`, which the server spawns
 # for every transcription. Without them the spawn fails with ENOENT and imports
 # silently land with no captions.
+# fonts-symbola: libass's monochrome fallback for emoji stickers and captions
+# (the image's DejaVu has no emoji, so they drew as missing-glyph boxes).
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg ca-certificates python3 python3-pip \
+  && apt-get install -y --no-install-recommends ffmpeg fonts-symbola ca-certificates python3 python3-pip \
   && rm -rf /var/lib/apt/lists/*
 # Debian marks its python as externally managed; this image has no other consumer.
 # OpenCV (headless: no GUI libs) backs `scripts/face_track.py`, which keeps

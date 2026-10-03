@@ -1,6 +1,6 @@
 import { open } from 'node:fs/promises';
 import type { PlanAssetInfo } from '@editify/shared';
-import { ALLOWED_DEMUXERS, runProcess } from '../process.js';
+import { ALLOWED_DEMUXERS, runProcess, UnsupportedMediaError } from '../process.js';
 import type { SourceColor } from '../color.js';
 
 /**
@@ -137,7 +137,10 @@ export async function probePlanMedia(path: string, kind: PlanAssetInfo['kind']):
 async function probeOnce(path: string, kind: PlanAssetInfo['kind']): Promise<PlanMediaProbe> {
   const { stdout } = await runProcess('ffprobe', [
     '-v', 'error', '-format_whitelist', ALLOWED_DEMUXERS.join(','), '-show_format', '-show_streams', '-of', 'json', path,
-  ]);
+  ]).catch((error: unknown) => {
+    if (error instanceof Error && /not on whitelist/i.test(error.message)) throw new UnsupportedMediaError();
+    throw error;
+  });
   const parsed = JSON.parse(stdout) as { format?: { duration?: string }; streams?: ProbeStream[] };
   const streams = parsed.streams ?? [];
   const video = streams.find((stream) => stream.codec_type === 'video' && !stream.disposition?.attached_pic);

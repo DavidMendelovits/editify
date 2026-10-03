@@ -34,6 +34,7 @@ import { registerSyncRoutes } from './routes/sync.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { ensureSoundLibrary } from './media/sound-library.js';
 import { RenderQueue } from './services/render-queue.js';
+import { UnsupportedMediaError } from './media/process.js';
 import { DissectService } from './services/dissect-service.js';
 import { SyncService } from './services/sync-service.js';
 import { FaceService } from './services/face-service.js';
@@ -149,6 +150,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
     if (error instanceof OperationError) {
       return await reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof UnsupportedMediaError) {
+      return await reply.code(415).send({ error: error.message });
     }
     // Fastify's own refusals (413 body too large, 415, malformed JSON) keep their status.
     const status = (error as { statusCode?: unknown }).statusCode;

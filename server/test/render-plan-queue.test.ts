@@ -25,6 +25,15 @@ vi.mock('../src/media/plan/render.js', () => {
   class PlanRenderUnavailableError extends Error {}
   return {
   PlanRenderUnavailableError,
+  probePlanUnlessUnsupported: async (path: string, kind: string) => {
+    const media = await import('../src/media/plan/media.js');
+    try {
+      return await media.probePlanMedia(path, kind as 'video');
+    } catch (error) {
+      if ((error as Error).name === 'UnsupportedMediaError') throw new PlanRenderUnavailableError('a source is not in a format the plan render opens (video)');
+      throw error;
+    }
+  },
   renderPlan: async (...args: unknown[]) => {
     calls.plan.push(args);
     if (calls.unavailable) throw new PlanRenderUnavailableError('this ffmpeg lacks the filters: lut1d');
@@ -35,10 +44,17 @@ vi.mock('../src/media/plan/render.js', () => {
 });
 vi.mock('../src/media/plan/media.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/media/plan/media.js')>()),
-  probePlanMedia: async (path: string, kind: string) => ({
-    path, info: { kind, width: 1080, height: 1920, duration: 10, hasAudio: true, fps: 30 },
-    color: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', range: 'tv' }, orientation: 1, hasVideo: true, audioChannels: 2, audioLayout: 'stereo',
-  }),
+  probePlanMedia: async (path: string, kind: string) => {
+    if (path.includes('flash')) {
+      const error = new Error('This file is not a supported video, audio or image format.');
+      error.name = 'UnsupportedMediaError';
+      throw error;
+    }
+    return {
+      path, info: { kind, width: 1080, height: 1920, duration: 10, hasAudio: true, fps: 30 },
+      color: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', range: 'tv' }, orientation: 1, hasVideo: true, audioChannels: 2, audioLayout: 'stereo',
+    };
+  },
 }));
 vi.mock('../src/services/render-qa.js', () => ({
   runRenderQa: async (...args: unknown[]) => {
@@ -145,6 +161,18 @@ describe('RENDER_PLAN flag', () => {
     // Legacy QA normalizes as it always has, and says why the plan render was not used.
     expect(calls.qa[0]![3]).toBe('normalize');
     expect(calls.qa[0]![4]).toEqual({ normalized: null, notes: ['Rendered with the legacy renderer: this ffmpeg lacks the filters: lut1d'] });
+  });
+
+  it('falls back to legacy when a source is in a format the plan render does not open', async () => {
+    process.env.RENDER_PLAN = '1';
+    assets.insert({ ...storedAsset('flash'), originalPath: '/media/flash.mp4' }, 'alice');
+    const project = projectWith('alice', 'flash');
+    assets.link(project.id, 'flash');
+    const render = new RenderQueue(renders, projects, assets).enqueue(project.id, '720p', 'sdr', 'normalize');
+    await vi.waitFor(() => expect(renders.get(render.id)?.status).toBe('done'));
+    expect(calls.plan).toEqual([]);
+    expect(calls.legacy).toHaveLength(1);
+    expect(calls.qa[0]![4]).toEqual({ normalized: null, notes: ['Rendered with the legacy renderer: a source is not in a format the plan render opens (video)'] });
   });
 });
 

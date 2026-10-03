@@ -48,8 +48,10 @@ function parseRate(rate: string | undefined): number {
  */
 export const ALLOWED_DEMUXERS = [
   'mov', // mov,mp4,m4a,3gp,3g2,mj2 (and HEIC stills on ffmpeg before 7.1)
-  'matroska', 'webm', 'mp3', 'wav', 'aac', 'flac', 'ogg',
-  'image2', 'png_pipe', 'jpeg_pipe', 'gif', 'webp_pipe', 'bmp_pipe', 'tiff_pipe', 'heif',
+  'matroska', 'webm', 'avi', 'mpegts',
+  'mp3', 'wav', 'aac', 'flac', 'ogg', 'aiff', 'caf', 'amr', 'amrnb', 'amrwb',
+  'image2', 'png_pipe', 'jpeg_pipe', 'gif', 'apng', 'webp_pipe', 'bmp_pipe', 'tiff_pipe', 'heif',
+  // Never playlist or script demuxers (hls, concat, dash, ...): they open the URLs a file names.
 ] as const;
 
 /** Thrown when an upload is not a media container the server accepts. */
