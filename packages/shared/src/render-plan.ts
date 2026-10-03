@@ -2,6 +2,8 @@ import { CAPTION_MAX_LINES, captionWords, EMOJI_ASCENT_EM, EMOJI_DESCENT_EM, fon
 import { captionFaceFor, type PlanFontFace } from './caption-fonts.js';
 import { clipTimelineDuration, type CaptionStyle, type Clip, type Project } from './index.js';
 import {
+  PLAN_LIMITS,
+  planFrameAt,
   RENDER_PLAN_EPSILON,
   RENDER_PLAN_VERSION,
   renderPlanSchema,
@@ -71,6 +73,12 @@ export interface BuildRenderPlanOptions {
   revision: number;
   buildSeq: number;
   assetInfo: (assetId: string) => PlanAssetInfo | undefined;
+  /**
+   * Parse the result with the strict schema before returning it (default
+   * true). A preview rebuilding on every drag may turn it off; exports and
+   * tests keep it.
+   */
+  selfCheck?: boolean;
 }
 
 /** A project the builder cannot turn into a valid plan (unknown asset, fractional fps). */
@@ -116,23 +124,19 @@ const SHADOW_OPACITY = 155 / 255;
 const CAPTION_SIDE_MARGIN = 40;
 const CAPTION_SAFE_MARGIN_PCT = 12;
 
-/**
- * The one frame quantization for clip edges: the frame a timeline time falls
- * on, floor(t * fps + 1e-6). (A follow-up to T1 exports this as planFrameAt
- * from the schema module; this is the same rule.)
- */
-function frameAt(time: number, fps: number): number {
-  return Math.floor(time * fps + RENDER_PLAN_EPSILON);
-}
-
 const round6 = (value: number): number => Math.round(value * 1e6) / 1e6 + 0;
 const round3 = (value: number): number => Math.round(value * 1e3) / 1e3 + 0;
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 const lerp = (from: number, to: number, p: number): number => from + (to - from) * p;
 const even = (value: number): number => Math.max(2, Math.round(value / 2) * 2);
 
+/**
+ * Timeline order, ties by id compared by UTF-16 code unit (locale-free, so
+ * every device sorts alike). Legacy render.ts and ass.ts use localeCompare,
+ * which orders differently only for ids differing in case or non-ASCII.
+ */
 function sortedClips(clips: readonly Clip[]): Clip[] {
-  return [...clips].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id));
+  return [...clips].sort((left, right) => left.start - right.start || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 }
 
 /* ------------------------------------------------------------------------ */
@@ -275,8 +279,8 @@ function upright(info: PlanAssetInfo): { width: number; height: number } {
  * transform is one key. An animated one (render.ts zoompan, the RN preview)
  * pans inside the frame-shaped centre crop instead: when the source aspect
  * matches the frame the two conventions coincide and the move is two keys;
- * otherwise each output frame gets a key converted with
- * x = px (W - W/z) / (Cw - W/z).
+ * otherwise the move is sampled once per output frame, converted with
+ * x = px (W - W/z) / (Cw - W/z), and simplified (simplifyCropKeys).
  */
 function cropKeys(clip: Clip, info: PlanAssetInfo, width: number, height: number, first: number, fps: number): ValueKey[] {
   const from = clip.transform ?? { scale: 1, x: 0, y: 0 };
@@ -300,7 +304,9 @@ function cropKeys(clip: Clip, info: PlanAssetInfo, width: number, height: number
   const [fromZoom, fromX, fromY] = pose(from) as [number, number, number];
   const [toZoom, toX, toY] = pose(to) as [number, number, number];
   const keys: ValueKey[] = [];
-  for (let frame = 0; frame <= frames; frame += 1) {
+  // Very long moves are sampled every few frames; the curve is smooth, and simplifying keeps the error in pixels.
+  const stride = Math.max(1, Math.ceil(frames / MAX_CROP_SAMPLES));
+  for (let frame = 0; frame <= frames; frame = frame === frames ? frames + 1 : Math.min(frames, frame + stride)) {
     const p = frame / frames;
     const zoom = lerp(fromZoom, toZoom, p);
     keys.push({
@@ -308,7 +314,76 @@ function cropKeys(clip: Clip, info: PlanAssetInfo, width: number, height: number
       v: [zoom, convert(lerp(fromX, toX, p), zoom, width, coverWidth), convert(lerp(fromY, toY, p), zoom, height, coverHeight)],
     });
   }
-  return keys;
+  return simplifyCropKeys(keys, { width, height, coverWidth, coverHeight });
+}
+
+/** Per-frame samples taken for one zoom at most; past this the samples spread out. */
+const MAX_CROP_SAMPLES = 100_000;
+/** Largest drift, in output pixels, that dropping a crop key may cause. */
+const CROP_TOLERANCE_PX = 0.1;
+
+interface CropFrame { width: number; height: number; coverWidth: number; coverHeight: number }
+
+/**
+ * How far apart two poses put the picture, in output pixels: the largest
+ * distance between where each pose shows the same source point at the four
+ * output corners. Poses are (scale, x, y) in the crop-key convention, with
+ * the source measured in cover-fit output pixels (Cw x Ch).
+ */
+function poseDistance(left: readonly number[], right: readonly number[], frame: CropFrame): number {
+  const place = (pose: readonly number[]): [number, number, number] => {
+    const [scale, x, y] = pose as [number, number, number];
+    return [scale, (frame.coverWidth * scale - frame.width) / 2 * (1 + x), (frame.coverHeight * scale - frame.height) / 2 * (1 + y)];
+  };
+  const [scaleA, oxA, oyA] = place(left);
+  const [scaleB, oxB, oyB] = place(right);
+  let worst = 0;
+  for (const [u, v] of [[0, 0], [frame.width, 0], [0, frame.height], [frame.width, frame.height]] as const) {
+    // Source point under (u, v) for pose A, then where pose B draws it.
+    const sx = (u + oxA) / scaleA;
+    const sy = (v + oyA) / scaleA;
+    worst = Math.max(worst, Math.hypot(sx * scaleB - oxB - u, sy * scaleB - oyB - v));
+  }
+  return worst;
+}
+
+/**
+ * Drops crop keys that linear interpolation between their neighbours
+ * reproduces within CROP_TOLERANCE_PX (Douglas-Peucker on the pixel
+ * distance), so a constant-scale pan is two keys and a long zoom a handful.
+ * If the result still exceeds PLAN_LIMITS.keys the tolerance doubles until it
+ * fits.
+ */
+function simplifyCropKeys(keys: ValueKey[], frame: CropFrame): ValueKey[] {
+  if (keys.length <= 2) return keys;
+  for (let tolerance = CROP_TOLERANCE_PX; ; tolerance *= 2) {
+    const keep = new Uint8Array(keys.length);
+    keep[0] = 1;
+    keep[keys.length - 1] = 1;
+    const stack: Array<[number, number]> = [[0, keys.length - 1]];
+    while (stack.length > 0) {
+      const [from, to] = stack.pop()!;
+      const left = keys[from]!;
+      const right = keys[to]!;
+      let worst = 0;
+      let at = -1;
+      for (let index = from + 1; index < to; index += 1) {
+        const key = keys[index]!;
+        const p = (key.t - left.t) / (right.t - left.t);
+        const distance = poseDistance(key.v, left.v.map((value, axis) => lerp(value, right.v[axis]!, p)), frame);
+        if (distance > worst) {
+          worst = distance;
+          at = index;
+        }
+      }
+      if (at >= 0 && worst > tolerance) {
+        keep[at] = 1;
+        stack.push([from, at], [at, to]);
+      }
+    }
+    const kept = keys.filter((_key, index) => keep[index] === 1);
+    if (kept.length <= PLAN_LIMITS.keys) return kept;
+  }
 }
 
 /** Two fades in series on one picture: dim = 1 - (1 - in)(1 - out), sampled at every key time. */
@@ -335,8 +410,8 @@ function videoPictures(project: Project, fps: number, width: number, height: num
       const speed = clip.speed ?? 1;
       const extend = plan?.extendSourceBy ?? 0;
       const total = (clip.out + extend - clip.in) / speed + (plan?.holdLastFrameFor ?? 0);
-      const first = frameAt(clip.start, fps);
-      const end = Math.min(frameAt(clip.start + total, fps), totalFrames);
+      const first = planFrameAt(clip.start, fps);
+      const end = Math.min(planFrameAt(clip.start + total, fps), totalFrames);
       if (end <= first || first >= totalFrames) continue;
       // Frames past the source become a hold of its last frame: a crossfade's
       // planned hold, or quantization reaching past the asset's end.
@@ -516,6 +591,9 @@ function overlayBox(clip: Clip, width: number, height: number, aspect: number): 
  * Emoji sticker: render.ts rasterized the text in Apple Color Emoji at 320 px
  * and scaled that PNG to the sticker width, so the box takes the PNG's aspect
  * (one emoji line is 1.3125 em tall) and the payload is fitted inside it.
+ * Stickers are meant for emoji: any other character in one is set by Core
+ * Text's fallback (Apple Color Emoji has no letters) and measured with the
+ * fallback width, so a text sticker's fit is approximate.
  */
 function emojiOverlay(clip: Clip, text: string, width: number, height: number): Pick<PlanOverlay, 'box' | 'emoji'> {
   const { widthEm } = measureEmojiRun(text, 'Montserrat-Bold');
@@ -560,30 +638,32 @@ function calloutOverlay(clip: Clip, callout: NonNullable<Clip['callout']>, text:
   const cardHeight = Math.max(2, Math.ceil(line + padding * 2));
   const box = overlayBox(clip, width, height, cardHeight / cardWidth);
   const k = box.w / cardWidth;
+  const label: PlanCallout['label'] = {
+    text,
+    font: face,
+    sizePx: round3(font * k),
+    x: round3((padding + lead) * k),
+    y: round3((padding + (line - textHeight) / 2 + (metrics.ascender * font) / metrics.unitsPerEm) * k),
+    width: round3(textWidth * k),
+    color: '#FFFFFF',
+  };
+  // Keys in draw order: card, glyph, label.
   const payload: PlanCallout = {
     variant: callout.variant,
     card: { x: 0, y: 0, w: box.w, h: box.h, radiusPx: round3(radius * k), color: callout.bg ?? CALLOUT_BG },
-    label: {
-      text,
-      font: face,
-      sizePx: round3(font * k),
-      x: round3((padding + lead) * k),
-      y: round3((padding + (line - textHeight) / 2 + (metrics.ascender * font) / metrics.unitsPerEm) * k),
-      width: round3(textWidth * k),
-      color: '#FFFFFF',
-    },
+    ...(shape ? {
+      glyph: {
+        shape,
+        x: round3(padding * k),
+        y: round3((padding + (line - glyphSide) / 2) * k),
+        w: round3(glyphSide * k),
+        h: round3(glyphSide * k),
+        strokePx: round3(Math.max(0.5, glyphSide * 0.14 * k)),
+        color: callout.color ?? CALLOUT_ACCENT[callout.variant],
+      },
+    } : {}),
+    label,
   };
-  if (shape) {
-    payload.glyph = {
-      shape,
-      x: round3(padding * k),
-      y: round3((padding + (line - glyphSide) / 2) * k),
-      w: round3(glyphSide * k),
-      h: round3(glyphSide * k),
-      strokePx: round3(Math.max(0.5, glyphSide * 0.14 * k)),
-      color: callout.color ?? CALLOUT_ACCENT[callout.variant],
-    };
-  }
   return { box, callout: payload };
 }
 
@@ -686,8 +766,9 @@ function fnv1a(text: string, seed = 0x811c9dc5): string {
  *   (winAscent + winDescent) (0.64 for Montserrat; checked against a libass
  *   render: Fontsize 100 draws a 45 px cap height and puts the baseline
  *   winDescent above the margin). Lines are one cell apart.
- * - Wrapping is greedy within 1080 - 2 x 40 px (libass WrapStyle 0 balances
- *   lines instead; intended), shrinking in 5% steps past three lines.
+ * - Wrapping is greedy within 1080 - 2 x 40 px, then balanced to even line
+ *   widths at the same line count (close to libass WrapStyle 0, not
+ *   identical), shrinking in 5% steps past three lines.
  * - Bottom/top captions sit 12% of the height from the edge, centre ones and
  *   custom anchors are centred on their anchor.
  * Stroke (default 3 px), the 1 px drop shadow and the margins are the ASS
@@ -736,7 +817,9 @@ function planCaption(
     previousStart = s;
     return { s: round6(s), e: round6(Math.max(s, clamp(clip.start + (word.e - base), event.start, event.end))) };
   });
-  let wordIndex = 0;
+  // A right-to-left line is laid out as one run, so it lights as a whole: at
+  // the caption start, or with the last word sung before it.
+  let lit = event.start;
   const lines: PlanCaptionLine[] = layout.lines.map((line, lineIndex) => {
     const x = (design.width - line.width) / 2;
     const planned: PlanCaptionLine = {
@@ -746,10 +829,12 @@ function planCaption(
       width: round3(line.width * k),
     };
     if (times) {
+      const lineStart = lit;
       planned.words = line.words.map((word) => {
-        const time = times[wordIndex]!;
-        wordIndex += 1;
-        return { w: word.w, s: time.s, e: time.e, x: round3((x + word.x) * k) };
+        const time = times[word.index]!;
+        const s = line.rightToLeft ? lineStart : time.s;
+        lit = Math.max(lit, s);
+        return { w: word.w, s, e: Math.max(s, time.e), x: round3((x + word.x) * k) };
       });
     }
     return planned;
@@ -764,7 +849,12 @@ function planCaption(
     shadow: { color: '#000000', opacity: round6(SHADOW_OPACITY), offsetPx: round3(1 * k) },
     align: 'center' as const,
     lines,
-    fitted: { shrunk: layout.shrunk, scale: layout.scale },
+    fitted: {
+      shrunk: layout.shrunk,
+      scale: layout.scale,
+      ...(layout.overflow ? { overflow: true } : {}),
+      ...(layout.approximate ? { approximate: true } : {}),
+    },
   };
   // Everything that changes the caption's pixels; times only pick the sung-word count, which the cache keys separately.
   const pixels = JSON.stringify({ ...look, lines: lines.map((line) => ({ ...line, words: line.words?.map(({ w, x }) => ({ w, x })) })) });
@@ -782,8 +872,10 @@ function planCaption(
 /* The plan                                                                 */
 
 /**
- * Builds RenderPlan v1 and self-checks it against the strict schema (throws
- * on a builder bug rather than handing an executor a plan it must refuse).
+ * Builds RenderPlan v1 and, unless `selfCheck` is false, checks it against the
+ * strict schema (throws on a builder bug rather than handing an executor a
+ * plan it must refuse). Content never makes it throw; an unknown asset or a
+ * fractional fps does.
  */
 export function buildRenderPlan(project: Project, target: PlanTarget, options: BuildRenderPlanOptions): RenderPlan {
   const fps = target.fps ?? project.fps;
@@ -792,7 +884,9 @@ export function buildRenderPlan(project: Project, target: PlanTarget, options: B
   }
   const width = even(target.size.w);
   const height = even(target.size.h);
-  const totalFrames = Math.max(0, Math.ceil(project.duration * fps - RENDER_PLAN_EPSILON));
+  // Same quantization as the clip edges, so a clip ending at the project end
+  // ends on the last frame; any length at all gets at least one frame.
+  const totalFrames = project.duration > 0 ? Math.max(1, planFrameAt(project.duration, fps)) : 0;
   const duration = totalFrames / fps;
 
   const infos = new Map<string, PlanAssetInfo>();
@@ -883,6 +977,7 @@ export function buildRenderPlan(project: Project, target: PlanTarget, options: B
     captions,
     audio,
   };
+  if (options.selfCheck === false) return plan;
   const checked = renderPlanSchema.safeParse(plan);
   if (!checked.success) {
     const problems = checked.error.issues.slice(0, 5).map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');

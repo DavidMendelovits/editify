@@ -5,9 +5,11 @@ import {
   audioEntryEnd,
   buildRenderPlan,
   exportPlanSize,
+  PLAN_LIMITS,
   PLAN_LOUDNESS,
   planCaptionLanes,
   planDuckWindows,
+  planFrameAt,
   planFrameCount,
   planVideoTransitions,
   RenderPlanBuildError,
@@ -24,6 +26,7 @@ import { formatAssTime, generateAss } from '../src/media/ass.js';
 import { duckExpression, duckWindows } from '../src/media/duck.js';
 import { planTransitions } from '../src/media/transitions.js';
 import { TARGET_LUFS } from '../src/services/render-qa.js';
+import { buildFixture, FIXTURE_ASSETS, FIXTURE_SCENARIOS, staleFixtures } from '../../packages/shared/scripts/render-plan-fixtures.js';
 
 /**
  * T2 of the on-device export plan: buildRenderPlan reproduces the legacy
@@ -38,10 +41,10 @@ function fixture(name: string): RenderPlan {
 }
 
 const ASSETS: Record<string, PlanAssetInfo> = {
+  ...FIXTURE_ASSETS,
   'asset-talk': { kind: 'video', width: 1080, height: 1920, duration: 30, hasAudio: true, fps: 30 },
   'asset-cutaway': { kind: 'video', width: 1080, height: 1920, duration: 30, hasAudio: true, fps: 30 },
   'asset-a': { kind: 'video', width: 1080, height: 1920, duration: 8, hasAudio: true, fps: 30 },
-  'asset-short': { kind: 'video', width: 1080, height: 1920, duration: 2.2, hasAudio: true, fps: 30 },
   'asset-b': { kind: 'video', width: 1080, height: 1920, duration: 8, hasAudio: true, fps: 30 },
   'asset-wide': { kind: 'video', width: 1920, height: 1080, duration: 30, hasAudio: true, fps: 30 },
   'asset-hlg': { kind: 'video', width: 1080, height: 1920, duration: 10, hasAudio: true, fps: 30 },
@@ -72,6 +75,17 @@ const audio = (clips: Clip[], id = 'audio'): Track => ({ id, kind: 'audio', clip
 const captions = (clips: Clip[], id = 'captions'): Track => ({ id, kind: 'caption', clips });
 const overlay = (clips: Clip[], id = 'overlay'): Track => ({ id, kind: 'overlay', clips });
 
+describe('render plan fixtures come from the builder', () => {
+  it('has no stale fixture file (npx tsx packages/shared/scripts/render-plan-fixtures.ts --check)', () => {
+    expect(staleFixtures()).toEqual([]);
+  });
+
+  it.each(FIXTURE_SCENARIOS.map((scenario) => [scenario.name, scenario] as const))('%s equals the builder output in full', (name, scenario) => {
+    const built = buildFixture(scenario);
+    expect(JSON.parse(readFileSync(`${fixturesDir}${name}.json`, 'utf8'))).toEqual(JSON.parse(JSON.stringify(built)));
+  });
+});
+
 describe('buildRenderPlan: video', () => {
   it('stacks two overlapping video tracks by track (overlapping-video-tracks.json)', () => {
     const plan = build(project([
@@ -96,14 +110,15 @@ describe('buildRenderPlan: video', () => {
 
   it('holds the last frame where a crossfade outlasts the source (crossfade-hold.json)', () => {
     const plan = build(project([video([
-      { id: 'a', assetId: 'asset-short', start: 0, in: 0, out: 2 },
+      { id: 'a', assetId: 'asset-a-short', start: 0, in: 0, out: 2 },
       { id: 'b', assetId: 'asset-b', start: 2, in: 0, out: 2, transition: { type: 'crossfade', duration: 0.6 } },
     ])]));
     const expected = fixture('crossfade-hold');
-    // The fixture names its short asset asset-a.
-    const renamed = JSON.parse(JSON.stringify(plan).replaceAll('asset-short', 'asset-a')) as RenderPlan;
-    expect(renamed.video).toEqual(expected.video);
-    expect(renamed.audio).toEqual(expected.audio);
+    expect(plan.video).toEqual(expected.video);
+    expect(plan.audio).toEqual(expected.audio);
+    // transitions.ts holds for 0.6 - 0.2 s; the last real frame of a 2.2 s, 30 fps source sits at 2.2 - 1/30.
+    expect(plan.video.segments[2]).toMatchObject({ start: 2.2, end: 2.6 });
+    expect(plan.video.segments[2]!.layers[0]!.hold).toEqual({ frameAt: 2.166667 });
   });
 
   it('dips through black on both sides of the cut (dip.json)', () => {
@@ -112,10 +127,10 @@ describe('buildRenderPlan: video', () => {
       { id: 'b', assetId: 'asset-b', start: 2, in: 0, out: 2, transition: { type: 'dip', duration: 0.6 } },
     ])]));
     const expected = fixture('dip');
-    // z is the clip's stacking across the whole track (b above a), so b keeps z 1 when it is alone;
-    // the hand-written fixture renumbered it 0. Only the order within a segment matters.
-    expected.video.segments[1]!.layers[0]!.z = 1;
     expect(plan.video).toEqual(expected.video);
+    // transitions.ts: a dims over [2 - 0.3, 2], b rises over [2, 2.3]; z is the clip's stacking on its track.
+    expect(plan.video.segments[0]!.layers[0]!.dimKeys).toEqual([{ t: 1.7, value: 0 }, { t: 2, value: 1 }]);
+    expect(plan.video.segments[1]!.layers[0]).toMatchObject({ z: 1, dimKeys: [{ t: 2, value: 1 }, { t: 2.3, value: 0 }] });
     expect(plan.audio).toEqual(expected.audio);
   });
 
@@ -127,25 +142,60 @@ describe('buildRenderPlan: video', () => {
     expect(plan.video).toEqual(fixture('zoom').video);
   });
 
-  it('samples a zoom on a mismatched source once per frame, matching the zoompan geometry', () => {
+  /** A layer's crop pose at timeline t, interpolated as an executor does. */
+  function poseAt(keys: RenderPlan['video']['segments'][number]['layers'][number]['cropKeys'], t: number): { scale: number; x: number; y: number } {
+    if (t <= keys[0]!.t) return keys[0]!;
+    for (let index = 1; index < keys.length; index += 1) {
+      const right = keys[index]!;
+      const left = keys[index - 1]!;
+      if (t <= right.t) {
+        const p = (t - left.t) / (right.t - left.t);
+        return { scale: left.scale + (right.scale - left.scale) * p, x: left.x + (right.x - left.x) * p, y: left.y + (right.y - left.y) * p };
+      }
+    }
+    return keys.at(-1)!;
+  }
+
+  it('reproduces a zoom on a mismatched source within 0.1 px at every frame, with few keys', () => {
     const clip: Clip = {
       id: 'wide', assetId: 'asset-wide', start: 0, in: 0, out: 1,
       transform: { scale: 1, x: 0, y: 0 }, transformEnd: { scale: 1.5, x: 0.4, y: -0.3 },
     };
     const plan = build(project([video([clip])]));
     const keys = plan.video.segments[0]!.layers[0]!.cropKeys;
-    expect(keys).toHaveLength(31);
+    expect(keys.length).toBeGreaterThan(2);
+    expect(keys.length).toBeLessThan(31);
     const frame = { width: 360, height: 640 };
     const source = { width: 1920, height: 1080 };
     // safezone.sourceYToScreen follows render.ts's zoompan; the crop key convention must land a source row in the same place.
-    for (const key of [keys[0]!, keys[10]!, keys[30]!]) {
-      const cover = Math.max(frame.width / source.width, frame.height / source.height) * key.scale;
-      const oy = (source.height * cover - frame.height) / 2 * (1 + key.y);
-      for (const v of [0.2, 0.5, 0.8]) {
-        // Keys carry 6 decimals, so a row lands within a thousandth of a pixel.
-        expect(v * source.height * cover - oy).toBeCloseTo(sourceYToScreen(v, clip, key.t, source, frame), 3);
+    for (let index = 0; index <= 30; index += 1) {
+      const t = index / 30;
+      const pose = poseAt(keys, t);
+      const cover = Math.max(frame.width / source.width, frame.height / source.height) * pose.scale;
+      const oy = (source.height * cover - frame.height) / 2 * (1 + pose.y);
+      for (const v of [0, 0.5, 1]) {
+        expect(Math.abs(v * source.height * cover - oy - sourceYToScreen(v, clip, t, source, frame))).toBeLessThan(0.15);
       }
     }
+  });
+
+  it('collapses a constant-scale pan on a mismatched source to two keys', () => {
+    const plan = build(project([video([{
+      id: 'pan', assetId: 'asset-wide', start: 0, in: 0, out: 3,
+      transform: { scale: 1.2, x: -0.5, y: 0 }, transformEnd: { scale: 1.2, x: 0.5, y: 0 },
+    }])]));
+    expect(plan.video.segments[0]!.layers[0]!.cropKeys).toHaveLength(2);
+  });
+
+  it('keeps a 15-minute 60 fps zoom on a mismatched source under the key cap, and a 5-minute one small', () => {
+    const long: Clip = {
+      id: 'long', assetId: 'asset-wide', start: 0, in: 0, out: 900,
+      transform: { scale: 1, x: -0.8, y: 0.3 }, transformEnd: { scale: 3, x: 0.9, y: -0.6 },
+    };
+    const plan = build(project([video([long])], { fps: 60 }));
+    expect(plan.video.segments[0]!.layers[0]!.cropKeys.length).toBeLessThanOrEqual(PLAN_LIMITS.keys);
+    const five = build(project([video([{ ...long, out: 300 }])]));
+    expect(JSON.stringify(five).length).toBeLessThan(20_000);
   });
 
   it('keeps a static crop as one key and matches the static chain geometry', () => {
@@ -201,7 +251,7 @@ describe('buildRenderPlan: video', () => {
   });
 
   it('holds the source\'s last frame when a clip runs past its asset', () => {
-    const plan = build(project([video([{ id: 'over', assetId: 'asset-short', start: 0, in: 1, out: 2.5 }])]));
+    const plan = build(project([video([{ id: 'over', assetId: 'asset-a-short', start: 0, in: 1, out: 2.5 }])]));
     const [playing, held] = plan.video.segments;
     expect(playing).toMatchObject({ start: 0, end: 1.2 });
     expect(held!.layers[0]!.hold).toEqual({ frameAt: 2.166667 });
@@ -212,8 +262,16 @@ describe('buildRenderPlan: video', () => {
       { id: 'a', assetId: 'asset-talk', start: 0.1, in: 0, out: 1 },
       { id: 'b', assetId: 'asset-talk', start: 1.51, in: 0, out: 0.5 },
     ])]));
+    // The project ends at 2.01 s: frame 60, the same frame clip b's end quantizes to, so no background frame trails it.
     expect(plan.video.segments.map(({ start, end, layers }) => [start * 30, end * 30, layers.length].map((value) => Math.round(value))))
-      .toEqual([[0, 3, 0], [3, 33, 1], [33, 45, 0], [45, 60, 1], [60, 61, 0]]);
+      .toEqual([[0, 3, 0], [3, 33, 1], [33, 45, 0], [45, 60, 1]]);
+  });
+
+  it('ends an off-grid project on the clip\'s last frame, not on a background frame', () => {
+    const plan = build(project([video([{ id: 'a', assetId: 'asset-talk', start: 0, in: 0, out: 12.345 }])]));
+    expect(planFrameCount(plan)).toBe(370);
+    expect(plan.video.segments).toHaveLength(1);
+    expect(plan.video.segments[0]).toMatchObject({ start: 0, end: 370 / 30 });
   });
 });
 
@@ -237,7 +295,7 @@ describe('buildRenderPlan: frame grid', () => {
     const input = project([video(clips(6, 'a'), 'v0'), video(clips(4, 'b'), 'v1')], { fps });
     const plan = build(input);
     expect(plan.fps).toBe(fps);
-    expect(planFrameCount(plan)).toBe(Math.ceil(input.duration * fps - 1e-6));
+    expect(planFrameCount(plan)).toBe(Math.max(1, planFrameAt(input.duration, fps)));
     let cursor = 0;
     for (const segment of plan.video.segments) {
       expect(segment.start).toBe(cursor);
@@ -252,9 +310,9 @@ describe('buildRenderPlan: frame grid', () => {
       .toThrow(RenderPlanBuildError);
   });
 
-  it('rounds the duration up to whole frames', () => {
-    const plan = build(project([video([{ id: 'a', assetId: 'asset-talk', start: 0, in: 0, out: 1.01 }])]));
-    expect(plan.duration).toBe(31 / 30);
+  it('sets the duration to the frame the project end falls on, at least one frame', () => {
+    expect(build(project([video([{ id: 'a', assetId: 'asset-talk', start: 0, in: 0, out: 1.01 }])])).duration).toBe(1);
+    expect(build(project([video([{ id: 'a', assetId: 'asset-talk', start: 0, in: 0, out: 0.01 }])])).duration).toBe(1 / 30);
   });
 });
 
@@ -487,6 +545,53 @@ describe('buildRenderPlan: captions', () => {
   });
 });
 
+describe('buildRenderPlan: caption content never throws', () => {
+  const words = (count: number) => Array.from({ length: count }, (_unused, index) => ({ w: `word${index}`, s: index * 0.2, e: index * 0.2 + 0.15 }));
+
+  it('fits a 400-word karaoke caption inside the plan caps and reports the overflow', () => {
+    const many = words(400);
+    const plan = build(project([captions([{ id: 'k', start: 0, in: 0, out: 80, text: many.map((word) => word.w).join(' '), style: { ...style, position: 'bottom', words: many } }])]));
+    const caption = plan.captions[0]!;
+    expect(caption.fitted).toMatchObject({ shrunk: true, overflow: true });
+    expect(caption.lines.length).toBeLessThanOrEqual(PLAN_LIMITS.linesPerCaption);
+    expect(caption.lines.flatMap((line) => line.words!.map((word) => word.w))).toEqual(many.map((word) => word.w));
+    for (const line of caption.lines) {
+      expect(line.text.length).toBeLessThanOrEqual(PLAN_LIMITS.textChars);
+      expect(line.words!.length).toBeLessThanOrEqual(PLAN_LIMITS.wordsPerLine);
+      expect(line.width).toBeLessThanOrEqual(360 - 2 * 40 / 3 + 1e-6);
+    }
+  });
+
+  it('hard-breaks a 600-character word across lines', () => {
+    const long = 'A'.repeat(600);
+    const plan = build(project([captions([{ id: 'c', start: 0, in: 0, out: 2, text: `before ${long} after` }])]));
+    const caption = plan.captions[0]!;
+    expect(caption.fitted.overflow).toBe(true);
+    expect(caption.lines.map((line) => line.text.replaceAll(' ', '')).join('')).toBe(`before${long}after`);
+    for (const line of caption.lines) expect(line.text.length).toBeLessThanOrEqual(PLAN_LIMITS.textChars);
+  });
+
+  it('marks text outside the face approximate and lights a right-to-left karaoke line at once', () => {
+    const greek = build(project([captions([{ id: 'g', start: 0, in: 0, out: 2, text: 'Γειά σου κόσμε' }])])).captions[0]!;
+    expect(greek.fitted.approximate).toBe(true);
+    const latin = build(project([captions([{ id: 'l', start: 0, in: 0, out: 2, text: 'Hello there' }])])).captions[0]!;
+    expect(latin.fitted).toEqual({ shrunk: false, scale: 1 });
+    const hebrew = [{ w: 'שלום', s: 5, e: 5.4 }, { w: 'עולם', s: 5.5, e: 6 }];
+    const rtl = build(project([captions([{ id: 'h', start: 1, in: 0, out: 2, text: 'שלום עולם', style: { ...style, position: 'bottom', words: hebrew } }])])).captions[0]!;
+    expect(rtl.fitted.approximate).toBe(true);
+    expect(rtl.lines.flatMap((line) => line.words!.map((word) => word.s))).toEqual([1, 1]);
+  });
+
+  it('never emits an empty word', () => {
+    const spaced = [{ w: 'one', s: 0, e: 0.5 }, { w: ' ', s: 0.5, e: 0.6 }, { w: 'two', s: 0.6, e: 1 }];
+    const plan = build(project([captions([{ id: 'c', start: 0, in: 0, out: 2, text: 'one two', style: { ...style, position: 'bottom', words: spaced } }])]));
+    const all = plan.captions.flatMap((caption) => caption.lines.flatMap((line) => line.words ?? []));
+    expect(all.map((word) => word.w)).toEqual(['one', 'two']);
+    expect(all.every((word) => word.w.trim().length > 0)).toBe(true);
+    expect(all.map((word) => word.s)).toEqual([0, 0.6]);
+  });
+});
+
 describe('buildRenderPlan: whole plans', () => {
   it('builds the HLG plan with the target colour (hlg-color.json)', () => {
     const plan = build(project([
@@ -523,6 +628,12 @@ describe('buildRenderPlan: whole plans', () => {
     expect(exportPlanSize('16:9', '720p')).toEqual({ w: 1280, h: 720 });
     expect(exportPlanSize('1:1', '4k')).toEqual({ w: 2160, h: 2160 });
     expect(build(project([]), { ...PREVIEW, size: { w: 393, h: 699 } }).size).toEqual({ w: 394, h: 700 });
+  });
+
+  it('skips the strict self-check on request and returns the same plan', () => {
+    const input = project([video([{ id: 'a', assetId: 'asset-talk', start: 0, in: 0, out: 1 }])]);
+    const options = { revision: 1, buildSeq: 1, assetInfo: (id: string) => ASSETS[id] };
+    expect(buildRenderPlan(input, PREVIEW, { ...options, selfCheck: false })).toEqual(buildRenderPlan(input, PREVIEW, options));
   });
 
   it('names a missing asset instead of guessing', () => {

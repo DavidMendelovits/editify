@@ -22,20 +22,14 @@ export const FONT_PATH = resolve(here, '../../../server/fonts/Montserrat-Bold.tt
 export const OUTPUT_PATH = resolve(here, '../src/caption-font-metrics.ts');
 
 /**
- * Code points whose advances are tabled: everything the font maps in these
- * blocks (Basic Latin, Latin-1, Latin Extended-A/B, Greek, Cyrillic, General Punctuation,
- * currency, letterlike symbols). Anything else measures with the fallback.
- */
-const WIDTH_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x20, 0x7e], [0xa0, 0x24f], [0x370, 0x3ff], [0x400, 0x52f], [0x2000, 0x206f], [0x20a0, 0x20bf], [0x2100, 0x214f],
-];
-/**
- * Pairs are tabled only between these (Basic Latin, Latin-1 letters, Russian Cyrillic, Latin
- * Extended-A, curly quotes, dashes, ellipsis): caption text. Pairs outside
- * measure unkerned.
+ * Advances are tabled for every code point the font maps. Pairs are tabled
+ * only between these (Basic Latin, Latin-1 letters, Latin Extended-A, Russian
+ * Cyrillic, Vietnamese: the horned O and U plus Latin Extended Additional,
+ * curly quotes, dashes, ellipsis): caption text. Pairs outside measure
+ * unkerned.
  */
 const KERN_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x20, 0x7e], [0xa1, 0x17f], [0x401, 0x45f], [0x2013, 0x2014], [0x2018, 0x201e], [0x2026, 0x2026],
+  [0x20, 0x7e], [0xa1, 0x17f], [0x401, 0x45f], [0x1a0, 0x1b0], [0x1e00, 0x1eff], [0x2013, 0x2014], [0x2018, 0x201e], [0x2026, 0x2026],
 ];
 
 interface Tables { [tag: string]: { offset: number; length: number } }
@@ -279,7 +273,7 @@ export function parseFontMetrics(bytes: Uint8Array): ParsedMetrics {
   const hhea = table(all, 'hhea');
   const cmap = readCmap(font, table(all, 'cmap'));
   const advances = readAdvances(font, all);
-  const codes = [...cmap.keys()].filter((code) => inRanges(code, WIDTH_RANGES)).sort((left, right) => left - right);
+  const codes = [...cmap.keys()].sort((left, right) => left - right);
   const lookups = all.GPOS ? kernSubtables(font, all.GPOS.offset) : [];
   const kernCodes = codes.filter((code) => inRanges(code, KERN_RANGES));
   const kern: Array<[number, number, number]> = [];

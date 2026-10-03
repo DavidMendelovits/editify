@@ -127,18 +127,19 @@ function captionSize(style: CaptionStyle, frame: Frame): number {
 /**
  * Rendered block height: the shared caption layout (caption-layout.ts, the
  * same wrap and shrink the render plan draws) gives the line count and the
- * fitted size at the frame width less the 40px side margins.
+ * fitted scale at the frame width less the 40px side margins. Each line is
+ * one cell, (winAscent + winDescent) / unitsPerEm x the em, which is the ASS
+ * font size itself: libass sizes the face so the cell equals it.
  */
 function blockHeight(text: string, style: CaptionStyle, frame: Frame): number {
   const size = captionSize(style, frame);
   const face = captionFaceFor(style.font);
   const metrics = fontMetrics(face);
-  // libass sizes the face so winAscent + winDescent is the ASS font size.
   const em = (size * metrics.unitsPerEm) / (metrics.winAscent + metrics.winDescent);
   const { words, breaks } = captionWords(text);
   const layout = layoutCaption({ words, breaks, face, sizePx: em, maxWidth: Math.max(1, frame.width - 80) });
-  const lines = Math.max(1, layout.lines.length);
-  return lines * size * layout.scale * 1.15 + 2 * (style.strokePx ?? 3);
+  const cell = (em * layout.scale * (metrics.winAscent + metrics.winDescent)) / metrics.unitsPerEm;
+  return Math.max(1, layout.lines.length) * cell + 2 * (style.strokePx ?? 3);
 }
 
 /** Where ass.ts would centre this caption, in pixels from the top. */
