@@ -40,7 +40,9 @@ node $S/profile.mjs --timings timings.json --log server.ndjson [--chat chat.json
 ```
 
 - `timings.json`: the replay's steps (`human` with a person estimate, `wait` measured), `startedAtMs`, `render`
-- `server.ndjson`: the server's pino stdout; `{"msg":"media job", job, ms, waitMs, ok}` lines give the per-job breakdown. Without them (older server) the page says so and falls back to request data
+- `server.ndjson`: the server's pino stdout; `{"msg":"media job", job, ms, waitMs, ok}` lines give the per-job breakdown. Without them (older server, or no media work ran) the page says so, shows requests in flight only and flags waits that requests don't explain
+- Requests with `via=replay` in the url are the replay's own polling: counted apart, never as the app's
+- Person time is the editing flow only; the export (tap + render wait, steps tagged `export`/`render`) is shown beside it. Render speed uses the server's encode time when the log has it
 - `chat.json`: `GET /projects/:id/chat`, for the agent's trace
 - `apps/mobile/e2e/standup-replay.mjs --record --review` does all of this (and exports 1080p at the end; `--skip-render` to skip)
 - Tests: `node --test .claude/skills/mobile-verify/scripts/test/*.test.mjs`

@@ -8,11 +8,13 @@
 //
 // Inputs
 //   timings.json  steps[] {name, kind: human|wait, start, seconds, humanSeconds?, note?, tag?}
+//                 (tag export|render = the export phase, reported apart from person time)
 //                 + totals, startedAtMs (run clock epoch), server.startedAtMs, render?
 //   server.log    pino JSON lines. `{"msg":"media job", job, ms, waitMs, ok, time}` when a
 //                 background media job finishes (`ms` = the job's own run time, `waitMs` =
 //                 time queued for a media slot before it); Fastify request lines
-//                 `{reqId, req:{method,url}}` / `{reqId, res:{statusCode}, responseTime}`.
+//                 `{reqId, req:{method,url}}` / `{reqId, res:{statusCode}, responseTime}`;
+//                 urls with `via=replay` are the replay's own calls (harness, not app).
 //   chat.json     GET /projects/:id/chat (messages with trace[] / ops[])
 //
 // Every time in profile.json is seconds on the run clock (0 = replay start) unless
@@ -62,6 +64,11 @@ function unionSeconds(intervals, from = -Infinity, to = Infinity) {
 }
 
 const overlap = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+/** The replay tags its own API calls so they never count as the app's polling. */
+export const HARNESS_QUERY = /[?&]via=replay(?:&|$)/;
+/** Export steps (the tap and the render wait) sit outside the comparable person time. */
+const EXPORT_TAGS = new Set(['export', 'render']);
+const isExport = (step) => EXPORT_TAGS.has(step.tag);
 
 /**
  * @param {{ timings: object, logText?: string, chat?: Array<object> }} input
@@ -81,45 +88,56 @@ export function buildProfile({ timings, logText = '', chat = null }) {
   if (!hasLog) notes.push('No server log: only the replay\'s own timings are shown.');
 
   // ── media jobs ────────────────────────────────────────────────────────────
-  const jobs = lines
-    .filter((l) => l.msg === 'media job' && typeof l.ms === 'number' && typeof l.time === 'number')
+  // Log values are data: coerce to plain strings/numbers; the page escapes them.
+  const str = (value, max = 120) => String(value).slice(0, max);
+  const jobLines = lines.filter((l) => l.msg === 'media job' && Number.isFinite(l.ms) && Number.isFinite(l.time));
+  const jobs = jobLines
     .map((l) => {
       const end = toRun(l.time);
       const waitMs = Number(l.waitMs) || 0;
       return {
-        job: l.job ?? 'job', ok: l.ok !== false, ms: l.ms, waitMs,
-        ...(l.assetId ? { assetId: l.assetId } : {}), ...(l.projectId ? { projectId: l.projectId } : {}), ...(l.renderId ? { renderId: l.renderId } : {}),
-        queuedAt: round(end - (l.ms + waitMs) / 1000, 3), start: round(end - l.ms / 1000, 3), end: round(end, 3),
+        job: str(l.job ?? 'job', 64), ok: l.ok !== false, ms: l.ms, waitMs,
+        ...(l.assetId ? { assetId: str(l.assetId) } : {}), ...(l.projectId ? { projectId: str(l.projectId) } : {}), ...(l.renderId ? { renderId: str(l.renderId) } : {}),
+        queuedAt: end == null ? null : round(end - (l.ms + waitMs) / 1000, 3), start: end == null ? null : round(end - l.ms / 1000, 3), end: end == null ? null : round(end, 3),
       };
     })
+    .filter((j) => j.end != null)
     .sort((a, b) => a.queuedAt - b.queuedAt);
+  if (jobs.length < jobLines.length) notes.push(`${jobLines.length - jobs.length} media job line(s) had no time anchor on the run clock and were left out.`);
   const hasMediaJobs = jobs.length > 0;
-  if (hasLog && !hasMediaJobs) notes.push('This server build does not log "media job" lines, so server work is inferred from HTTP requests only.');
+  if (hasLog && !hasMediaJobs) notes.push('No "media job" lines in the server log (older server, or no media work ran): server work is inferred from HTTP requests, and background work is not visible.');
 
-  const jobStats = {};
+  const jobStats = Object.create(null);
   for (const j of jobs) {
-    const s = (jobStats[j.job] ??= { count: 0, failed: 0, totalMs: 0, maxMs: 0, waitMs: 0 });
+    if (!Object.hasOwn(jobStats, j.job)) jobStats[j.job] = { count: 0, failed: 0, totalMs: 0, maxMs: 0, waitMs: 0 };
+    const s = jobStats[j.job];
     s.count += 1; s.failed += j.ok ? 0 : 1; s.totalMs += j.ms; s.maxMs = Math.max(s.maxMs, j.ms); s.waitMs += j.waitMs;
   }
   for (const s of Object.values(jobStats)) s.avgMs = Math.round(s.totalMs / s.count);
 
   // ── requests ──────────────────────────────────────────────────────────────
+  // The replay's own API calls carry `via=replay`: they are harness polling, not
+  // product polling, so they are counted apart and left out of every app stat.
   const open = new Map();
-  const requests = [];
+  const allRequests = [];
   for (const l of lines) {
     if (l.reqId == null) continue;
-    if (l.req?.url) open.set(l.reqId, { method: l.req.method ?? 'GET', url: l.req.url, startMs: l.time });
-    else if (l.res && typeof l.responseTime === 'number') {
+    if (l.req?.url) open.set(l.reqId, { method: str(l.req.method ?? 'GET', 12), url: str(l.req.url, 2048), startMs: l.time });
+    else if (l.res && Number.isFinite(l.responseTime)) {
       const begun = open.get(l.reqId);
       open.delete(l.reqId);
       if (!begun) continue;
-      const startMs = begun.startMs ?? (l.time - l.responseTime);
-      requests.push({
-        method: begun.method, route: routePattern(begun.url), status: l.res.statusCode,
-        ms: l.responseTime, start: toRun(startMs), end: toRun(startMs + l.responseTime),
+      const startMs = Number.isFinite(begun.startMs) ? begun.startMs : l.time - l.responseTime;
+      const start = Number.isFinite(startMs) ? toRun(startMs) : null;
+      allRequests.push({
+        method: begun.method, route: routePattern(begun.url), status: Number(l.res.statusCode) || 0, ms: l.responseTime,
+        start, end: start == null ? null : start + l.responseTime / 1000, harness: HARNESS_QUERY.test(begun.url),
       });
     }
   }
+  const requests = allRequests.filter((r) => !r.harness);
+  const harnessRequests = allRequests.filter((r) => r.harness);
+  const timed = (list) => list.filter((r) => r.start != null);
   const byRoute = new Map();
   for (const r of requests) {
     const key = `${r.method} ${r.route}`;
@@ -135,76 +153,85 @@ export function buildProfile({ timings, logText = '', chat = null }) {
   }).sort((a, b) => b.count - a.count || b.totalMs - a.totalMs);
 
   // ── per step ──────────────────────────────────────────────────────────────
+  const startedIn = (list, s) => timed(list).filter((r) => r.start >= s.start && r.start < s.end);
   const profiledSteps = steps.map((s) => {
     const out = { name: s.name, kind: s.kind, start: round(s.start, 3), end: round(s.end, 3), seconds: round(s.seconds, 3) };
     if (s.humanSeconds != null) out.humanSeconds = s.humanSeconds;
     if (s.note) out.note = s.note;
     if (s.tag) out.tag = s.tag;
+    if (isExport(s)) out.export = true;
     if (s.kind !== 'wait') return out;
-    const during = requests.filter((r) => r.start != null && r.start >= s.start && r.start < s.end);
-    const routeCounts = {};
-    for (const r of during) routeCounts[`${r.method} ${r.route}`] = (routeCounts[`${r.method} ${r.route}`] ?? 0) + 1;
-    out.requests = { count: during.length, byRoute: routeCounts, slowest: [...during].sort((a, b) => b.ms - a.ms).slice(0, 3).map((r) => ({ method: r.method, route: r.route, ms: round(r.ms, 1) })) };
-    // In flight during the wait, including requests that began before it (the agent's POST).
-    const inFlight = requests.filter((r) => r.start != null && overlap(r.start, r.end, s.start, s.end) > 0).map((r) => [r.start, r.end]);
-    let jobRuns = []; let jobSpans = [];
+    const during = startedIn(requests, s);
+    const routeCounts = Object.create(null);
+    for (const r of during) { const key = `${r.method} ${r.route}`; routeCounts[key] = (routeCounts[key] ?? 0) + 1; }
+    out.requests = {
+      count: during.length, byRoute: routeCounts, harness: startedIn(harnessRequests, s).length,
+      slowest: [...during].sort((a, b) => b.ms - a.ms).slice(0, 3).map((r) => ({ method: r.method, route: r.route, ms: round(r.ms, 1) })),
+    };
+    // In flight during the wait, including app requests that began before it (the agent's POST).
+    const inFlight = timed(requests).filter((r) => overlap(r.start, r.end, s.start, s.end) > 0).map((r) => [r.start, r.end]);
+    if (hasLog) out.requestBusySeconds = round(unionSeconds(inFlight, s.start, s.end), 3);
     if (hasMediaJobs) {
       const overlapping = jobs.filter((j) => overlap(j.queuedAt, j.end, s.start, s.end) > 0);
       out.jobs = overlapping.map((j) => ({ ...j, overlapSeconds: round(overlap(j.queuedAt, j.end, s.start, s.end), 3) }));
-      jobRuns = overlapping.map((j) => [j.start, j.end]);
-      jobSpans = overlapping.map((j) => [j.queuedAt, j.end]);
+      const jobRuns = overlapping.map((j) => [j.start, j.end]);
       out.jobBusySeconds = round(unionSeconds(jobRuns, s.start, s.end), 3);
       out.queueSeconds = round(unionSeconds(overlapping.map((j) => [j.queuedAt, j.start]), s.start, s.end), 3);
-    }
-    if (hasLog) out.requestBusySeconds = round(unionSeconds(inFlight, s.start, s.end), 3);
-    // Without job lines background work is invisible, so busy/idle would be a guess.
-    if (hasMediaJobs) {
       out.serverBusySeconds = round(unionSeconds([...jobRuns, ...inFlight], s.start, s.end), 3);
       // Nothing running, queued or in flight on the server: the wait is client side (poll gaps, UI).
-      out.idleSeconds = round(Math.max(0, s.seconds - unionSeconds([...jobSpans, ...inFlight], s.start, s.end)), 3);
+      out.idleSeconds = round(Math.max(0, s.seconds - unionSeconds([...overlapping.map((j) => [j.queuedAt, j.end]), ...inFlight], s.start, s.end)), 3);
+    } else if (hasLog) {
+      // Without job lines background work is invisible: no busy/idle claim, just how much requests explain.
+      out.requestCoverage = s.seconds > 0 ? round(out.requestBusySeconds / s.seconds, 3) : null;
+      out.uncovered = out.requestCoverage != null && out.requestCoverage < 0.5;
     }
     return out;
   });
   const waitSteps = profiledSteps.filter((s) => s.kind === 'wait');
   const pollingDuringWaits = waitSteps.reduce((t, s) => t + (s.requests?.count ?? 0), 0);
+  const harnessDuringWaits = waitSteps.reduce((t, s) => t + (s.requests?.harness ?? 0), 0);
 
   // ── render ────────────────────────────────────────────────────────────────
   let render = null;
+  const r = timings.render ?? null;
   const renderJobs = jobs.filter((j) => j.job === 'render');
-  if (timings.render?.seconds) {
-    const r = timings.render;
-    // A failed render has no speed to report.
-    const output = r.status === 'error' ? null : r.projectSeconds ?? r.outputSeconds ?? null;
-    const job = renderJobs.find((j) => j.renderId && j.renderId === r.id) ?? renderJobs.at(-1);
+  if (r || renderJobs.length) {
+    const job = (r?.id ? renderJobs.find((j) => j.renderId === r.id) : undefined) ?? renderJobs.at(-1) ?? null;
+    let status = r?.status ?? (job ? (job.ok ? 'done' : 'error') : 'unknown');
+    if (job && !job.ok) status = 'error';
+    const output = r?.projectSeconds ?? r?.outputSeconds ?? null;
+    const wallSeconds = Number.isFinite(r?.seconds) ? r.seconds : null;
+    // The server's own encode time is the cleaner speed; wall clock adds polling and queueing.
+    const serverSeconds = job?.ok ? job.ms / 1000 : null;
+    const basisSeconds = serverSeconds ?? wallSeconds;
+    const fast = status === 'done' && output > 0 && basisSeconds > 0;
     render = {
-      id: r.id ?? null, resolution: r.resolution ?? null, status: r.status ?? 'done', seconds: round(r.seconds),
-      outputSeconds: round(output), xRealtime: output ? round(output / r.seconds) : null,
-      secondsPerOutputMinute: output ? round(r.seconds / (output / 60), 1) : null,
-      ...(job ? { serverMs: job.ms, queueMs: job.waitMs } : {}),
+      id: r?.id ?? job?.renderId ?? null, resolution: r?.resolution ?? null, status, ...(r?.error ? { error: str(r.error, 300) } : {}),
+      seconds: round(wallSeconds), serverSeconds: round(serverSeconds), queueMs: job ? job.waitMs : null, outputSeconds: round(output),
+      speedBasis: fast ? (serverSeconds != null ? 'server' : 'wall') : null,
+      xRealtime: fast ? round(output / basisSeconds) : null,
+      secondsPerOutputMinute: fast ? round(basisSeconds / (output / 60), 1) : null,
+      wallXRealtime: status === 'done' && output > 0 && wallSeconds > 0 ? round(output / wallSeconds) : null,
     };
-  } else if (renderJobs.length) {
-    const job = renderJobs.at(-1);
-    render = { id: job.renderId ?? null, resolution: null, status: job.ok ? 'done' : 'error', seconds: round(job.ms / 1000), outputSeconds: null, xRealtime: null, secondsPerOutputMinute: null, serverMs: job.ms, queueMs: job.waitMs };
   }
-  if (renderJobs.length > 1) render.averageRenderMs = Math.round(renderJobs.reduce((t, j) => t + j.ms, 0) / renderJobs.length);
 
   // ── agent turn ────────────────────────────────────────────────────────────
   let agent = null;
   const agentStep = steps.find((s) => s.tag === 'agent') ?? steps.find((s) => s.kind === 'wait' && /agent/i.test(s.name));
-  const chatPosts = requests.filter((r) => r.method === 'POST' && r.route === '/projects/:id/chat');
+  const chatPosts = requests.filter((q) => q.method === 'POST' && q.route === '/projects/:id/chat');
   const messages = Array.isArray(chat) ? chat : Array.isArray(chat?.messages) ? chat.messages : null;
-  const lastReply = messages ? [...messages].reverse().find((m) => m.role === 'assistant') : null;
+  const lastReply = messages ? [...messages].reverse().find((m) => m?.role === 'assistant') : null;
   if (agentStep || chatPosts.length || lastReply) {
     agent = { seconds: agentStep ? round(agentStep.seconds) : null, serverMs: chatPosts.length ? round(chatPosts.at(-1).ms, 0) : null };
     if (lastReply) {
-      const trace = lastReply.trace ?? [];
-      const calls = trace.filter((t) => t.kind !== 'thought');
-      const tools = {};
-      for (const t of calls) tools[t.tool] = (tools[t.tool] ?? 0) + 1;
+      const trace = Array.isArray(lastReply.trace) ? lastReply.trace : [];
+      const calls = trace.filter((t) => t?.kind !== 'thought');
+      const tools = Object.create(null);
+      for (const t of calls) { const name = str(t?.tool ?? 'tool', 64); tools[name] = (tools[name] ?? 0) + 1; }
       agent.toolCalls = calls.length;
-      agent.failedToolCalls = calls.filter((t) => t.ok === false).length;
+      agent.failedToolCalls = calls.filter((t) => t?.ok === false).length;
       agent.thoughts = trace.length - calls.length;
-      agent.ops = (lastReply.ops ?? []).length;
+      agent.ops = Array.isArray(lastReply.ops) ? lastReply.ops.length : 0;
       agent.tools = tools;
       const asked = messages[messages.indexOf(lastReply) - 1];
       if (asked?.role === 'user' && asked.createdAt && lastReply.createdAt && agent.serverMs == null) {
@@ -220,24 +247,27 @@ export function buildProfile({ timings, logText = '', chat = null }) {
   }
 
   // ── totals ────────────────────────────────────────────────────────────────
-  const sum = (kind, field) => steps.filter((s) => s.kind === kind).reduce((t, s) => t + (s[field] ?? 0), 0);
-  const productWaitSeconds = sum('wait', 'seconds');
+  // Person time covers the editing flow only, so it stays comparable with runs
+  // that never exported; the export (tap + render wait) is reported beside it.
+  const sum = (kind, field, phase) => steps.filter((s) => s.kind === kind && (phase === undefined || isExport(s) === phase)).reduce((t, s) => t + (s[field] ?? 0), 0);
+  const productWaitSeconds = sum('wait', 'seconds', false);
+  const humanEstimateSeconds = sum('human', 'humanSeconds', false);
+  const renderWaitSeconds = sum('wait', 'seconds', true);
+  const exportPersonSeconds = sum('human', 'humanSeconds', true) + renderWaitSeconds;
   const automationSeconds = sum('human', 'seconds');
-  const humanEstimateSeconds = sum('human', 'humanSeconds');
-  // Server processes when the server reports them; otherwise time with a request in flight.
-  const requestBusySeconds = requests.length ? unionSeconds(requests.map((r) => [r.start, r.end])) : null;
-  const serverBusySource = hasMediaJobs ? 'media jobs' : requests.length ? 'requests' : null;
-  const serverBusySeconds = hasMediaJobs ? unionSeconds(jobs.map((j) => [j.start, j.end])) : requestBusySeconds;
+  const requestBusySeconds = timed(requests).length ? unionSeconds(timed(requests).map((q) => [q.start, q.end])) : null;
   const totals = {
     runSeconds: round(runSeconds),
     personSeconds: round(humanEstimateSeconds + productWaitSeconds),
     humanEstimateSeconds: round(humanEstimateSeconds),
     productWaitSeconds: round(productWaitSeconds),
+    renderWaitSeconds: round(renderWaitSeconds),
+    exportPersonSeconds: round(exportPersonSeconds),
     automationSeconds: round(automationSeconds),
     // Setup and glue outside any step: server start, app launch, marks, sleeps.
-    automationOverheadSeconds: round(Math.max(0, runSeconds - productWaitSeconds - automationSeconds)),
-    serverBusySeconds: round(serverBusySeconds),
-    serverBusySource,
+    automationOverheadSeconds: round(Math.max(0, runSeconds - productWaitSeconds - renderWaitSeconds - automationSeconds)),
+    // Server processes only when the server reports them (media jobs).
+    serverBusySeconds: hasMediaJobs ? round(unionSeconds(jobs.map((j) => [j.start, j.end]))) : null,
     requestBusySeconds: round(requestBusySeconds),
     jobSeconds: hasMediaJobs ? round(jobs.reduce((t, j) => t + j.ms, 0) / 1000) : null,
     queueSeconds: hasMediaJobs ? round(jobs.reduce((t, j) => t + j.waitMs, 0) / 1000) : null,
@@ -250,7 +280,7 @@ export function buildProfile({ timings, logText = '', chat = null }) {
     commit: timings.commit ?? null,
     source: {
       runStartMs, serverStartedAt: timings.server?.startedAtMs != null && runStartMs != null ? round(toRun(timings.server.startedAtMs), 3) : null,
-      logLines: lines.length, mediaJobLines: jobs.length, requestLines: requests.length, chat: Boolean(messages),
+      logLines: lines.length, mediaJobLines: jobs.length, requestLines: allRequests.length, harnessRequests: harnessRequests.length, chat: Boolean(messages),
     },
     hasMediaJobs,
     notes,
@@ -260,8 +290,9 @@ export function buildProfile({ timings, logText = '', chat = null }) {
     jobStats,
     requests: {
       total: requests.length, pollingDuringWaits, routes,
-      // Compact list for the page's timeline row.
-      timeline: requests.filter((r) => r.start != null).map((r) => ({ method: r.method, route: r.route, status: r.status, start: round(r.start, 3), end: round(r.end, 3), ms: round(r.ms, 1) })),
+      harness: { total: harnessRequests.length, duringWaits: harnessDuringWaits },
+      // Compact list for the page's timeline row (app requests only).
+      timeline: timed(requests).map((r) => ({ method: r.method, route: r.route, status: r.status, start: round(r.start, 3), end: round(r.end, 3), ms: round(r.ms, 1) })),
     },
     render,
     agent,

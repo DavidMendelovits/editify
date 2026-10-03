@@ -55,7 +55,8 @@
       "kind": "human",
       "start": 60,
       "seconds": 1,
-      "humanSeconds": 3
+      "humanSeconds": 3,
+      "tag": "export"
     },
     {
       "name": "Render 1080p",
@@ -67,10 +68,12 @@
   ],
   "totals": {
     "runSeconds": 95,
-    "productWaitSeconds": 70,
+    "productWaitSeconds": 40,
     "automationSeconds": 15.5,
-    "humanEstimateSeconds": 54,
-    "personSeconds": 124
+    "humanEstimateSeconds": 51,
+    "personSeconds": 91,
+    "renderWaitSeconds": 30,
+    "exportPersonSeconds": 33
   },
   "render": {
     "id": "c0ffee00-1234-4abc-9def-0123456789ab",

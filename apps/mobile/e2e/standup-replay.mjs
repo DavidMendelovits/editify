@@ -20,7 +20,7 @@
 // .claude/skills/mobile-verify/scripts/profile.mjs): which server jobs ran during
 // each wait, request/polling stats, render speed and the agent turn.
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,14 +51,19 @@ function ad(...argv) {
   return execFileSync('agent-device', [...argv, '--session', SESSION], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 function tryAd(...argv) { try { return ad(...argv); } catch { return undefined; } }
+// Every call from this script carries `via=replay` (visible in the pino req.url),
+// so profile.mjs can keep harness polling out of the app's request stats.
+const tagged = (path) => `${path}${path.includes('?') ? '&' : '?'}via=replay`;
 async function api(path, init) {
-  const response = await fetch(`${API}${path}`, init);
+  const response = await fetch(`${API}${tagged(path)}`, init);
   if (!response.ok) throw new Error(`${path} -> ${response.status}`);
   return response.json();
 }
+let serverExit; // set once the server child exits: polling a dead server is pointless
 async function until(check, { timeout = 600_000, every = 500, what }) {
   const start = Date.now();
   for (;;) {
+    if (serverExit) throw new Error(`server exited (${serverExit}) while waiting for ${what}`);
     const value = await check().catch(() => undefined);
     if (value) return value;
     if (Date.now() - start > timeout) throw new Error(`timed out waiting for ${what}`);
@@ -66,10 +71,10 @@ async function until(check, { timeout = 600_000, every = 500, what }) {
   }
 }
 /** A person's action: run it, time it, and record how long a person would take. */
-async function human(name, humanSeconds, run, note) {
+async function human(name, humanSeconds, run, note, tag) {
   const start = now();
   await run();
-  steps.push({ name, kind: 'human', start, seconds: now() - start, humanSeconds, note });
+  steps.push({ name, kind: 'human', start, seconds: now() - start, humanSeconds, note, ...(tag ? { tag } : {}) });
   console.log(`${start.toFixed(1).padStart(7)}s  human ${String(humanSeconds).padStart(4)}s  ${name}`);
 }
 /** Product latency: how long the app makes the person wait, measured from server state. */
@@ -108,8 +113,9 @@ const server = spawn('node', [...(envFile ? [`--env-file=${envFile}`] : []), '--
   stdio: ['ignore', serverLogFd, serverLogFd],
 });
 closeSync(serverLogFd); // the child keeps its own copy
+server.on('exit', (code, signal) => { serverExit = signal ?? `code ${code}`; });
 process.on('exit', () => { try { server.kill(); } catch {} });
-await until(() => fetch(`${API}/presets`).then((r) => r.ok), { what: 'server', every: 300, timeout: 30000 });
+await until(() => fetch(`${API}${tagged('/presets')}`).then((r) => r.ok), { what: 'server', every: 300, timeout: 30000 });
 
 // Simulator media for the cold flow (idempotent).
 const udid = Object.values(JSON.parse(execFileSync('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], { encoding: 'utf8' })).devices)
@@ -230,42 +236,57 @@ tryAd('close');
 
 // Export: the same request the export sheet sends, then the wait for the master.
 // Driven through the API (the recording has stopped), timed like any other step.
+// The export phase (tagged export/render) is reported beside person time, not in it.
+// A failed or stuck render is recorded, never fatal: the run's timings still get written.
 let render;
 if (exportRender) {
-  const projectSeconds = (await api(`/projects/${projectId}`)).duration;
-  let queued;
-  await human('Start the 1080p export', 3, async () => {
-    queued = await api(`/projects/${projectId}/render`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ resolution: '1080p' }) });
-  }, 'open export, pick 1080p, tap export (sent through the API)');
-  const renderStart = now();
-  const finished = await wait('Render 1080p', () => until(async () => {
-    const row = await api(`/renders/${queued.id}`);
-    return (row.status === 'done' || row.status === 'error') && row;
-  }, { what: 'render', every: 1000, timeout: 1_800_000 }), 'POST /projects/:id/render until GET /renders/:id is done', 'render');
-  const seconds = now() - renderStart;
-  render = { id: queued.id, resolution: finished.resolution, status: finished.status, seconds, projectSeconds,
-    xRealtime: projectSeconds ? projectSeconds / seconds : null, secondsPerOutputMinute: projectSeconds ? seconds / (projectSeconds / 60) : null,
-    ...(finished.error ? { error: finished.error } : {}) };
-  console.log(`render ${finished.status}: ${projectSeconds}s of output in ${seconds.toFixed(1)}s${render.xRealtime ? ` (${render.xRealtime.toFixed(2)}x realtime, ${render.secondsPerOutputMinute.toFixed(1)}s per output minute)` : ''}`);
+  let projectSeconds = null;
+  const renderStart = { at: null };
+  try {
+    projectSeconds = (await api(`/projects/${projectId}`)).duration;
+    let queued;
+    await human('Start the 1080p export', 3, async () => {
+      queued = await api(`/projects/${projectId}/render`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ resolution: '1080p' }) });
+    }, 'open export, pick 1080p, tap export (sent through the API)', 'export');
+    renderStart.at = now();
+    const timeout = Math.max(5 * 60_000, 3 * (projectSeconds ?? 0) * 1000);
+    const finished = await wait('Render 1080p', () => until(async () => {
+      const row = await api(`/renders/${queued.id}`);
+      return (row.status === 'done' || row.status === 'error') && row;
+    }, { what: 'render', every: 1000, timeout }), 'POST /projects/:id/render until GET /renders/:id is done', 'render');
+    const seconds = now() - renderStart.at;
+    const done = finished.status === 'done' && projectSeconds > 0;
+    render = { id: queued.id, resolution: finished.resolution, status: finished.status, seconds, projectSeconds,
+      xRealtime: done ? projectSeconds / seconds : null, secondsPerOutputMinute: done ? seconds / (projectSeconds / 60) : null,
+      ...(finished.error ? { error: finished.error } : {}) };
+  } catch (error) {
+    render = { status: 'error', error: String(error.message ?? error), projectSeconds, seconds: renderStart.at == null ? null : now() - renderStart.at, xRealtime: null, secondsPerOutputMinute: null };
+  }
+  console.log(render.xRealtime
+    ? `render done: ${render.projectSeconds}s of output in ${render.seconds.toFixed(1)}s (${render.xRealtime.toFixed(2)}x realtime wall clock, ${render.secondsPerOutputMinute.toFixed(1)}s per output minute)`
+    : `render ${render.status}${render.error ? `: ${render.error}` : ''}`);
 }
 // The agent's trace (tool calls, thoughts, ops) for the profile.
-try { writeFileSync(join(out, 'chat.json'), JSON.stringify(await api(`/projects/${projectId}/chat`), null, 2)); } catch {}
+if (!serverExit) try { writeFileSync(join(out, 'chat.json'), JSON.stringify(await api(`/projects/${projectId}/chat`), null, 2)); } catch {}
 server.kill();
 
 // ── report ─────────────────────────────────────────────────────────────────
-const sum = (kind, field) => steps.filter((s) => s.kind === kind).reduce((total, s) => total + s[field], 0);
+// Person time is the editing flow only (comparable with runs that never exported).
+const exportPhase = (s) => s.tag === 'export' || s.tag === 'render';
+const sum = (kind, field, phase = false) => steps.filter((s) => s.kind === kind && exportPhase(s) === phase).reduce((total, s) => total + s[field], 0);
 const report = {
   mode, at: new Date().toISOString(), startedAtMs: t0, server: { startedAtMs: serverStartedAtMs, log: 'server.ndjson' }, ...(render ? { render } : {}), commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
   steps, totals: {
-    runSeconds: now(), productWaitSeconds: sum('wait', 'seconds'), automationSeconds: sum('human', 'seconds'),
+    runSeconds: now(), productWaitSeconds: sum('wait', 'seconds'), automationSeconds: sum('human', 'seconds') + sum('human', 'seconds', true),
     humanEstimateSeconds: sum('human', 'humanSeconds'), personSeconds: sum('human', 'humanSeconds') + sum('wait', 'seconds'),
+    renderWaitSeconds: sum('wait', 'seconds', true), exportPersonSeconds: sum('human', 'humanSeconds', true) + sum('wait', 'seconds', true),
   },
 };
 writeFileSync(join(out, 'timings.json'), JSON.stringify(report, null, 2));
-const fmt = (s) => `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
+const fmt = (s) => { const whole = Math.round(s); return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, '0')}s`; };
 console.log(`\n| step | kind | measured | a person |\n|---|---|---|---|`);
 for (const s of steps) console.log(`| ${s.name} | ${s.kind} | ${s.seconds.toFixed(1)}s | ${(s.kind === 'wait' ? s.seconds : s.humanSeconds).toFixed(1)}s |`);
-console.log(`\nproduct waits ${fmt(report.totals.productWaitSeconds)} · a person ~${fmt(report.totals.personSeconds)} · this replay ${fmt(report.totals.runSeconds)}`);
+console.log(`\nproduct waits ${fmt(report.totals.productWaitSeconds)} · a person ~${fmt(report.totals.personSeconds)}${render ? ` (+ export ${fmt(report.totals.exportPersonSeconds)})` : ''} · this replay ${fmt(report.totals.runSeconds)}`);
 console.log(`timings: ${join(out, 'timings.json')}`);
 await sleep(300); // let the killed server's last log lines land
 const profilePath = join(out, 'profile.json');
@@ -274,10 +295,15 @@ try {
   execFileSync('node', [join(S, 'profile.mjs'), '--timings', join(out, 'timings.json'), '--log', serverLog, '--chat', join(out, 'chat.json'), '--out', profilePath], { stdio: 'ignore' });
   profiled = true;
   console.log(`profile: ${profilePath}`);
+  // The profile's speed prefers the server's encode time over this script's wall clock.
+  const speed = JSON.parse(readFileSync(profilePath, 'utf8')).render?.xRealtime;
+  if (render && speed != null) render.profileXRealtime = speed;
 } catch (error) { console.error(`profile failed: ${error.message}`); }
+const renderSpeed = render?.profileXRealtime ?? render?.xRealtime;
+const renderMeta = !render ? null : render.status !== 'done' ? 'failed' : renderSpeed != null ? `${renderSpeed.toFixed(2)}x` : null;
 if (record && args.includes('--review')) {
   const page = execFileSync('node', [join(S, 'build-review.mjs'), '--video', video, '--moments', join(out, 'moments.json'), '--slug', `standup-replay-${mode}`, '--meta', `mode=${mode}`, '--meta', `commit=${report.commit}`, '--meta', `person=~${fmt(report.totals.personSeconds)}`,
-    ...(render?.xRealtime ? ['--meta', `render=${render.xRealtime.toFixed(2)}x`] : []), ...(profiled ? ['--profile', profilePath] : [])], { encoding: 'utf8' }).trim();
+    ...(renderMeta ? ['--meta', `render=${renderMeta}`] : []), ...(profiled ? ['--profile', profilePath] : [])], { encoding: 'utf8' }).trim();
   console.log(execFileSync(join(S, 'serve-tailnet.sh'), [dirname(page)], { encoding: 'utf8' }).trim());
 }
 process.exit(0);
