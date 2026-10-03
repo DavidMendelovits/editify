@@ -38,6 +38,7 @@
     "expo-linking": "~8.0.12",
     "expo-router": "~6.0.21",
     "expo-share-intent": "~5.1.1",
+    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "expo-updates": "~29.0.20",
     "expo-video": "~3.0.15",
@@ -54,7 +55,9 @@
   },
   "devDependencies": {
     "@posthog/cli": "^0.18.9",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/react": "~19.1.10",
+    "better-sqlite3": "^12.11.1",
     "typescript": "~5.9.2",
     "vitest": "^3.2.7"
   }

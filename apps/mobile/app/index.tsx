@@ -15,6 +15,7 @@ import { setReportContext, track } from '../src/lib/telemetry';
 import { billingAvailable, useTier } from '../src/lib/purchases';
 import { colors, radius, space, type, fonts } from '../src/lib/theme';
 import { appVersion } from '../src/lib/version';
+import { releaseDeletedProjectMedia } from '../src/lib/local-media-native';
 
 const formats: Array<{ label: string; format: ProjectFormat; meta: string }> = [
   { label: 'Instagram Reel', format: '9:16', meta: '9:16 · UP TO 90S' },
@@ -41,7 +42,13 @@ export default function HomeScreen() {
     },
   });
   const remove = useMutation({
-    mutationFn: (id: string) => api.deleteProject(id),
+    mutationFn: async (id: string) => {
+      // Read before the delete: afterwards the project's media list is gone.
+      const media = await api.listAssets(id).catch(() => []);
+      await api.deleteProject(id);
+      // The phone's copies and proxies of media no other project uses (best effort).
+      void releaseDeletedProjectMedia(media.map((asset) => asset.id));
+    },
     onSuccess: async () => { track('project_delete'); await client.invalidateQueries({ queryKey: ['projects'] }); },
   });
 

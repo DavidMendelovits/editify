@@ -5,6 +5,8 @@ COPY package.json package-lock.json ./
 COPY apps/mobile/package.json apps/mobile/
 COPY packages/shared/package.json packages/shared/
 COPY server/package.json server/
+# npm ci runs patch-package (postinstall), which needs the patches.
+COPY patches ./patches
 RUN npm ci
 COPY . .
 # Compile before exporting: the web bundle resolves @editify/shared through its

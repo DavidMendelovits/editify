@@ -47,6 +47,9 @@ export default function ExportScreen() {
     onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
   });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
+  // TODO(T7): when the on-device export lands, mark it with useEngineActivity('export', …)
+  // (src/lib/engine-activity.ts) for its whole run. A server render doesn't load the phone,
+  // so it doesn't pause proxies or analyzers.
 
   useEffect(() => {
     if (status === 'done' || status === 'error') track(`render_${status}`);
