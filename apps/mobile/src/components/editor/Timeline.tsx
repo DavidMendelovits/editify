@@ -18,6 +18,10 @@ import {
 } from '../../lib/timeline';
 
 const RULER_HEIGHT = 24;
+// Web only: the browser picks its native pan at pointerdown, before React can
+// flip `scrollEnabled`, so the ruler opts out of touch panning up front (#110).
+// Cast because `touchAction` is a react-native-web style, not in RN's types.
+const RULER_TOUCH = (Platform.OS === 'web' ? { touchAction: 'none' } : {}) as object;
 const LANE_PADDING = 6;
 /** Below this much travel a release counts as a click, not a drag. */
 const CLICK_SLOP = 4;
@@ -89,6 +93,8 @@ export function Timeline({
   const scrollRef = useRef<ScrollView>(null);
   const scrollX = useRef(0);
   const scrubStart = useRef(0);
+  // Locks the timeline scroll while the ruler is scrubbing (#110).
+  const [scrubbing, setScrubbing] = useState(false);
   const fitted = useRef(false);
   // Culling window anchor, in content px. Updated with a half-buffer
   // hysteresis so ordinary scrolling re-renders the lanes only once per
@@ -188,9 +194,9 @@ export function Timeline({
   }, [fitPxPerSec]);
 
   const ruler = useHorizontalDrag({
-    onStart: (localX) => { onScrub(true); scrubStart.current = localX / pxPerSec; onSeek(Math.max(0, scrubStart.current)); },
+    onStart: (localX) => { setScrubbing(true); onScrub(true); scrubStart.current = localX / pxPerSec; onSeek(Math.max(0, scrubStart.current)); },
     onMove: (dx) => onSeek(Math.max(0, scrubStart.current + dx / pxPerSec)),
-    onEnd: () => onScrub(false),
+    onEnd: () => { setScrubbing(false); onScrub(false); },
   });
 
   function moveTarget(track: Track | undefined, clip: Clip, deltaSeconds: number): number {
@@ -505,7 +511,9 @@ export function Timeline({
 
         <ScrollView
           ref={scrollRef}
+          testID="timeline-scroll"
           horizontal
+          scrollEnabled={!scrubbing}
           showsHorizontalScrollIndicator
           scrollEventThrottle={16}
           onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -521,7 +529,7 @@ export function Timeline({
           contentContainerStyle={{ width: contentWidth }}
         >
           <View style={{ width: contentWidth }}>
-            <View {...ruler} style={[styles.ruler, { width: contentWidth }]}>
+            <View {...ruler} testID="timeline-ruler" style={[styles.ruler, RULER_TOUCH, { width: contentWidth }]}>
               {Array.from({ length: Math.max(0, lastTick - firstTick) }, (_unused, index) => (firstTick + index) * step).map((time) => (
                 // Ticks must not become the touch target: the scrub position is
                 // read from `locationX`, which is relative to whatever was hit.

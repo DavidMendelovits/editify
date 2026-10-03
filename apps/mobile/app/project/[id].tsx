@@ -669,7 +669,7 @@ export default function EditorScreen() {
   );
 
   return (
-    <Screen scroll={!wide} bleed header={header}>
+    <Screen scroll={!wide} scrollEnabled={!scrubbing} bleed header={header}>
       {/* Native counterpart of the overscroll guard above: no edge-swipe back. */}
       <Stack.Screen options={{ gestureEnabled: false }} />
       {feedbackOpen && (
