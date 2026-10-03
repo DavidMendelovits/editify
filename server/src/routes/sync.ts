@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { OperationError, syncCreateRequestSchema, syncPushRequestSchema } from '@editify/shared';
 import {
+  SyncChangeReusedError,
   SyncConflictError,
   SyncMismatchError,
   SyncNotFoundError,
@@ -10,6 +11,12 @@ import {
 } from '../db/pg-sync-store.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Per-route body cap, well under the app's 20 MB: a pushed change is a few
+ * hundred ops (a 2000-op proposal is about 0.5 MB) and a created project is
+ * one document.
+ */
+export const SYNC_BODY_LIMIT = 4 * 1024 * 1024;
 const logQuerySchema = z.object({
   since: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(1000).default(500),
@@ -29,7 +36,8 @@ const logQuerySchema = z.object({
  *
  * A push answers 409 { code: 'stale', revision } when the project moved on,
  * and 422 { code: 'mismatch' } when the server's result differs from the
- * phone's. A repeated changeId gets its original receipt.
+ * phone's. A repeated changeId gets its original receipt, or 409
+ * { code: 'change_id_reused' } when it arrives with a different change.
  */
 export function registerSyncRoutes(app: FastifyInstance, store: PgSyncStore | undefined): void {
   /** Sync rows belong to a Supabase user; shared-token and unauthenticated callers have none. */
@@ -51,6 +59,7 @@ export function registerSyncRoutes(app: FastifyInstance, store: PgSyncStore | un
     if (error instanceof SyncConflictError) {
       return await reply.code(409).send({ error: error.message, code: 'stale', expected: error.expected, revision: error.actual });
     }
+    if (error instanceof SyncChangeReusedError) return await reply.code(409).send({ error: error.message, code: 'change_id_reused' });
     if (error instanceof SyncProjectTakenError) return await reply.code(409).send({ error: error.message, code: 'taken' });
     if (error instanceof SyncMismatchError) {
       return await reply.code(422).send({ error: error.message, code: 'mismatch', hash: error.actualHash });
@@ -59,7 +68,7 @@ export function registerSyncRoutes(app: FastifyInstance, store: PgSyncStore | un
     throw error;
   };
 
-  app.post('/sync/projects', async (request, reply) => {
+  app.post('/sync/projects', { bodyLimit: SYNC_BODY_LIMIT }, async (request, reply) => {
     const user = await userOf(request, reply);
     if (!user || !store) return reply;
     try {
@@ -97,7 +106,7 @@ export function registerSyncRoutes(app: FastifyInstance, store: PgSyncStore | un
     }
   });
 
-  app.post<{ Params: { id: string } }>('/sync/projects/:id/changes', async (request, reply) => {
+  app.post<{ Params: { id: string } }>('/sync/projects/:id/changes', { bodyLimit: SYNC_BODY_LIMIT }, async (request, reply) => {
     const user = await userOf(request, reply);
     if (!user || !store) return reply;
     try {

@@ -13,7 +13,8 @@ import { AssetStore } from './db/asset-store.js';
 import { ChatStore } from './db/chat-store.js';
 import { createDatabase, type EditifyDatabase } from './db/database.js';
 import { InsightStore } from './db/insight-store.js';
-import { createPgPool, PgSyncStore } from './db/pg-sync-store.js';
+import { PgSyncStore } from './db/pg-sync-store.js';
+import { createPgPools } from './db/postgres.js';
 import { PgTurnLock } from './db/pg-turn-lock.js';
 import { AssetAccessError, ProjectStore, VersionConflictError } from './db/project-store.js';
 import { RenderStore } from './db/render-store.js';
@@ -66,7 +67,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   });
   const database = options.database ?? createDatabase();
   const databaseUrl = options.databaseUrl === undefined ? configuredDatabaseUrl : options.databaseUrl ?? undefined;
-  const pgPool = databaseUrl ? createPgPool(databaseUrl) : undefined;
+  // Throws on an unsafe configuration (remote host without TLS settled), so a bad deploy fails at boot.
+  const pg = databaseUrl ? createPgPools(databaseUrl) : undefined;
   const projects = new ProjectStore(database);
   const assets = new AssetStore(database);
   const renders = new RenderStore(database);
@@ -131,8 +133,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
-  registerAgentTurnRoutes(app, agent, pgPool ? { lock: new PgTurnLock(pgPool) } : {});
-  registerSyncRoutes(app, pgPool ? new PgSyncStore(pgPool) : undefined);
+  registerAgentTurnRoutes(app, agent, pg?.lock ? { lock: new PgTurnLock(pg.lock) } : {});
+  registerSyncRoutes(app, pg ? new PgSyncStore(pg.sync) : undefined);
   registerTelemetryRoutes(app, telemetry);
 
   app.setErrorHandler(async (error, _request, reply) => {
@@ -159,7 +161,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
   app.addHook('onClose', async () => {
     database.close();
-    await pgPool?.end();
+    await pg?.end();
   });
   return app;
 }

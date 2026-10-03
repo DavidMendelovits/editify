@@ -7,6 +7,7 @@ import {
   type AnalysisBundle,
 } from '@editify/shared';
 import type { AgentService } from '../agent/service.js';
+import { TurnCapacityError } from '../db/pg-turn-lock.js';
 
 /** How long a bundle and a finished proposal are remembered: a few retries' worth, not a session. */
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -197,7 +198,13 @@ export function registerAgentTurnRoutes(app: FastifyInstance, agent: AgentServic
       bundleDigest = body.bundleDigest;
     }
 
-    const release = await lock.tryAcquire(user, body.snapshot.project.id);
+    let release: (() => Promise<void>) | undefined;
+    try {
+      release = await lock.tryAcquire(user, body.snapshot.project.id);
+    } catch (error) {
+      if (!(error instanceof TurnCapacityError)) throw error;
+      return await reply.code(503).header('retry-after', '10').send({ error: error.message, code: 'capacity' });
+    }
     if (!release) {
       // The holder may be this very proposal, delivered twice at once: answer with its run.
       const inFlight = proposals.get(turnKey);

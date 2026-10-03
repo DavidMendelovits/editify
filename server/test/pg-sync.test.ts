@@ -17,12 +17,14 @@ import { buildApp } from '../src/app.js';
 import { createDatabase } from '../src/db/database.js';
 import {
   PgSyncStore,
+  SyncChangeReusedError,
   SyncConflictError,
   SyncMismatchError,
   SyncNotFoundError,
   SyncProjectTakenError,
 } from '../src/db/pg-sync-store.js';
-import { PgTurnLock } from '../src/db/pg-turn-lock.js';
+import { PgTurnLock, turnLockKey } from '../src/db/pg-turn-lock.js';
+import { createPgPools, pgSettings, type PgPools } from '../src/db/postgres.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { registerAgentTurnRoutes } from '../src/routes/agent-turn.js';
 import { registerSyncRoutes } from '../src/routes/sync.js';
@@ -92,6 +94,9 @@ async function prepare(): Promise<string | undefined> {
 }
 
 const skipReason = await prepare();
+// CI provides a Postgres service (.github/workflows/ci.yml), so there a missing database is a failure, not a skip.
+const inCi = Boolean(process.env.CI) && process.env.CI !== 'false';
+if (skipReason && inCi) throw new Error(`[pg-sync.test] CI must run these tests: ${skipReason}`);
 if (skipReason) console.warn(`[pg-sync.test] skipped: ${skipReason}`);
 
 let counter = 0;
@@ -146,6 +151,47 @@ describe('sync routes without DATABASE_URL', () => {
       if (saved === undefined) delete process.env.EDITIFY_NO_AUTH;
       else process.env.EDITIFY_NO_AUTH = saved;
     }
+  });
+});
+
+describe('postgres connection settings', () => {
+  const CA = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----';
+  const REMOTE = 'postgresql://postgres.ref:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres';
+
+  it('refuses a remote host with no CA and no explicit sslmode=no-verify', () => {
+    expect(() => pgSettings(REMOTE, {})).toThrow(/DATABASE_CA_CERT/);
+    expect(() => pgSettings(`${REMOTE}?sslmode=require`, {})).toThrow(/DATABASE_CA_CERT/);
+    expect(() => pgSettings(`${REMOTE}?sslmode=disable`, {})).toThrow(/DATABASE_CA_CERT/);
+  });
+
+  it('verifies against a given CA, and strips URL ssl parameters so they cannot override it', () => {
+    const settings = pgSettings(`${REMOTE}?sslmode=no-verify`, { DATABASE_CA_CERT: CA });
+    expect(settings.pool.ssl).toEqual({ ca: CA, rejectUnauthorized: true });
+    expect(settings.pool.connectionString).not.toMatch(/sslmode/);
+    expect(settings.pool.connectionTimeoutMillis).toBeGreaterThan(0);
+    expect(settings.sessionLocks).toBe(true);
+    expect(settings.warnings).toEqual([]);
+  });
+
+  it('accepts an explicit no-verify with a warning, and plaintext only on localhost', () => {
+    const unverified = pgSettings(`${REMOTE}?sslmode=no-verify`, {});
+    expect(unverified.pool.ssl).toEqual({ rejectUnauthorized: false });
+    expect(unverified.warnings.join(' ')).toMatch(/not checked/);
+    expect(pgSettings('postgresql://localhost/editify', {}).pool.ssl).toBeUndefined();
+    expect(pgSettings('postgresql:///editify?host=/tmp', {}).pool.ssl).toBeUndefined();
+  });
+
+  it('keeps sync but not the session lock on the transaction pooler (6543)', () => {
+    const settings = pgSettings(REMOTE.replace(':5432', ':6543'), { DATABASE_CA_CERT: CA });
+    expect(settings.sessionLocks).toBe(false);
+    expect(settings.warnings.join(' ')).toMatch(/6543/);
+    const pools = createPgPools(REMOTE.replace(':5432', ':6543'), { DATABASE_CA_CERT: CA });
+    expect(pools.lock).toBeUndefined();
+    void pools.end();
+  });
+
+  it('fails the boot of an app pointed at a remote database without TLS settled', async () => {
+    await expect(buildApp({ database: createDatabase(':memory:'), databaseUrl: REMOTE })).rejects.toThrow(/DATABASE_CA_CERT/);
   });
 });
 
@@ -261,6 +307,16 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
       const pulled = await store.get(ALICE, project.id);
       expect(pulled?.revision).toBe(writers * each);
       expect(projectHash(replayed)).toBe(projectHash(pulled?.project as Project));
+    });
+
+    it('refuses a change id reused for a different change, writing nothing', async () => {
+      const project = await created();
+      const original = push(0, [volume('clip-0', 0.5)]);
+      await store.push(ALICE, project.id, original);
+      await expect(store.push(ALICE, project.id, { ...original, ops: [volume('clip-0', 0.6)] })).rejects.toBeInstanceOf(SyncChangeReusedError);
+      await expect(store.push(ALICE, project.id, { ...original, runId: 'another-run' })).rejects.toBeInstanceOf(SyncChangeReusedError);
+      expect(await store.get(ALICE, project.id)).toMatchObject({ revision: 1, seq: 2 });
+      expect((await store.push(ALICE, project.id, original)).duplicate).toBe(true);
     });
 
     it('bumps nothing for a no-op, and its retry gets the same receipt', async () => {
@@ -399,6 +455,12 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
       expect(retry.json()).toEqual(first.json());
       expect(retry.headers['editify-sync-replay']).toBe('true');
 
+      const reused = await app.inject({ method: 'POST', url: `/sync/projects/${project.id}/changes`, headers, payload: { ...body, ops: [volume('clip-0', 0.2)] } });
+      expect(reused.statusCode).toBe(409);
+      expect(reused.json()).toMatchObject({ code: 'change_id_reused' });
+      const longId = await app.inject({ method: 'POST', url: '/sync/projects', headers, payload: { project: { ...project, id: 'x'.repeat(129) } } });
+      expect(longId.statusCode).toBe(400);
+
       const stale = await app.inject({ method: 'POST', url: `/sync/projects/${project.id}/changes`, headers, payload: push(0, [volume('clip-0', 0.7)]) });
       expect(stale.statusCode).toBe(409);
       expect(stale.json()).toMatchObject({ code: 'stale', expected: 0, revision: 1 });
@@ -441,6 +503,29 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
         ['sync_receipts', 'SELECT', '{authenticated}'],
       ]);
       for (const row of policies.rows) expect(row.qual).toMatch(/auth\.uid\(\).*= user_id/);
+    });
+
+    it('leaves anon nothing and authenticated only SELECT', async () => {
+      for (const table of ['sync_projects', 'sync_op_log', 'sync_receipts']) {
+        const { rows } = await pool.query<{ role: string; privilege: string }>(
+          `SELECT grantee AS role, privilege_type AS privilege FROM information_schema.role_table_grants
+           WHERE table_schema = 'public' AND table_name = $1 AND grantee IN ('anon', 'authenticated') ORDER BY 1, 2`,
+          [table],
+        );
+        expect(rows, table).toEqual([{ role: 'authenticated', privilege: 'SELECT' }]);
+      }
+    });
+
+    it('aborts, changing nothing, when a sync table already exists with a different shape', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('ALTER TABLE sync_receipts RENAME COLUMN request_digest TO digest');
+        await expect(client.query(readFileSync(MIGRATION, 'utf8'))).rejects.toThrow(/sync_receipts already exists without column request_digest/);
+      } finally {
+        await client.query('ROLLBACK');
+        client.release();
+      }
     });
 
     it('shows a signed-in client only its own rows and refuses its writes', async () => {
@@ -488,55 +573,137 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
       },
     });
 
-    /** One Fly machine: its own pool, so the lock has to hold across processes, not just across requests. */
-    async function machine(provider: ToolProvider): Promise<{ app: FastifyInstance; pool: pg.Pool }> {
-      const machinePool = new pg.Pool({ connectionString: TEST_URL, max: 4 });
+    /** One Fly machine: its own pools (the real config), so the lock has to hold across processes, not just requests. */
+    async function machine(provider: ToolProvider, env: NodeJS.ProcessEnv = {}): Promise<{ app: FastifyInstance; pools: PgPools }> {
+      const pools = createPgPools(TEST_URL, env);
       const app = Fastify();
       app.addHook('onRequest', async (request) => { request.userId = ALICE; });
-      registerAgentTurnRoutes(app, new AgentService(async () => provider), { lock: new PgTurnLock(machinePool) });
+      registerAgentTurnRoutes(app, new AgentService(async () => provider), { lock: new PgTurnLock(pools.lock as pg.Pool) });
       await app.ready();
-      return { app, pool: machinePool };
+      return { app, pools };
     }
 
-    it('blocks a second concurrent turn on the same project from another machine, and frees it when the first ends', async () => {
+    /** Whether this exact advisory key is held, by anyone. */
+    async function held(key: string): Promise<boolean> {
+      const { rowCount } = await pool.query(
+        `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 1
+           AND ((classid::bigint << 32) | objid::bigint) = $1::bigint`,
+        [key],
+      );
+      return (rowCount ?? 0) > 0;
+    }
+
+    function gated(): { provider: ToolProvider; running: Promise<void>; release: () => void } {
       let release: () => void = () => undefined;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       let started: () => void = () => undefined;
       const running = new Promise<void>((resolve) => { started = resolve; });
-      const slow: ToolProvider = {
-        name: 'mock',
-        async runTurn() { started(); await gate; return { text: 'Done.', toolCalls: [] }; },
-        async completeText() { return ''; },
+      return {
+        provider: { name: 'mock', async runTurn() { started(); await gate; return { text: 'Done.', toolCalls: [] }; }, async completeText() { return ''; } },
+        running,
+        release: () => release(),
       };
-      const quick: ToolProvider = {
-        name: 'mock',
-        async runTurn() { return { text: 'Done.', toolCalls: [] }; },
-        async completeText() { return ''; },
-      };
-      const first = await machine(slow);
-      const second = await machine(quick);
-      try {
-        const holding = first.app.inject({ method: 'POST', url: '/agent/turn', payload: turn('proposal-lock-1') as unknown as Record<string, unknown> });
-        await running;
-        const locks = await pool.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted");
-        expect(locks.rowCount).toBeGreaterThan(0);
+    }
 
-        const blocked = await second.app.inject({ method: 'POST', url: '/agent/turn', payload: turn('proposal-lock-2') as unknown as Record<string, unknown> });
+    const quick: ToolProvider = {
+      name: 'mock',
+      async runTurn() { return { text: 'Done.', toolCalls: [] }; },
+      async completeText() { return ''; },
+    };
+    const post = async (app: FastifyInstance, request: AgentTurnRequest) =>
+      await app.inject({ method: 'POST', url: '/agent/turn', payload: request as unknown as Record<string, unknown> });
+
+    it('blocks a second concurrent turn on the same project from another machine, and frees it when the first ends', async () => {
+      const slow = gated();
+      const first = await machine(slow.provider);
+      const second = await machine(quick);
+      const key = turnLockKey(ALICE, PROJECT);
+      try {
+        const holding = post(first.app, turn('proposal-lock-1'));
+        await slow.running;
+        expect(await held(key)).toBe(true);
+        expect(await held(turnLockKey(ALICE, 'lock-project-2'))).toBe(false);
+
+        const blocked = await post(second.app, turn('proposal-lock-2'));
         expect(blocked.statusCode).toBe(409);
         expect(blocked.json()).toMatchObject({ code: 'busy' });
-        const otherProject = await second.app.inject({ method: 'POST', url: '/agent/turn', payload: turn('proposal-lock-3', 'lock-project-2') as unknown as Record<string, unknown> });
-        expect(otherProject.statusCode).toBe(200);
+        expect((await post(second.app, turn('proposal-lock-3', 'lock-project-2'))).statusCode).toBe(200);
 
-        release();
+        slow.release();
         expect((await holding).statusCode).toBe(200);
-        const after = await second.app.inject({ method: 'POST', url: '/agent/turn', payload: turn('proposal-lock-4') as unknown as Record<string, unknown> });
-        expect(after.statusCode).toBe(200);
+        expect(await held(key)).toBe(false);
+        expect((await post(second.app, turn('proposal-lock-4'))).statusCode).toBe(200);
       } finally {
-        release();
+        slow.release();
         await first.app.close();
         await second.app.close();
-        await first.pool.end();
-        await second.pool.end();
+        await first.pools.end();
+        await second.pools.end();
+      }
+    });
+
+    it('releases the lock when the turn throws', async () => {
+      let started: () => void = () => undefined;
+      const running = new Promise<void>((resolve) => { started = resolve; });
+      let fail: (error: Error) => void = () => undefined;
+      const failing: ToolProvider = {
+        name: 'mock',
+        async runTurn() { started(); return await new Promise((_resolve, reject) => { fail = reject; }); },
+        async completeText() { return ''; },
+      };
+      const broken = await machine(failing);
+      const other = await machine(quick);
+      const key = turnLockKey(ALICE, 'lock-project-throws');
+      try {
+        const turning = post(broken.app, turn('proposal-throw-1', 'lock-project-throws'));
+        await running;
+        expect(await held(key)).toBe(true);
+        fail(new Error('model fell over'));
+        expect((await turning).statusCode).toBe(500);
+        expect(await held(key)).toBe(false);
+        expect((await post(other.app, turn('proposal-throw-2', 'lock-project-throws'))).statusCode).toBe(200);
+      } finally {
+        await broken.app.close();
+        await other.app.close();
+        await broken.pools.end();
+        await other.pools.end();
+      }
+    });
+
+    it('lets go of a lock held past the maximum turn duration', async () => {
+      const pools = createPgPools(TEST_URL, {});
+      const key = turnLockKey(ALICE, 'lock-project-hung');
+      try {
+        const release = await new PgTurnLock(pools.lock as pg.Pool, 50).tryAcquire(ALICE, 'lock-project-hung');
+        expect(release).toBeDefined();
+        expect(await held(key)).toBe(true);
+        await new Promise((resolve) => { setTimeout(resolve, 200); });
+        expect(await held(key)).toBe(false);
+        await release?.();
+      } finally {
+        await pools.end();
+      }
+    });
+
+    it('answers 503 instead of waiting when every lock connection is in a turn, leaving /sync its own pool', async () => {
+      const slow = gated();
+      const small = await machine(slow.provider, { DATABASE_LOCK_POOL_MAX: '1' });
+      try {
+        const holding = post(small.app, turn('proposal-cap-1', 'lock-project-cap-a'));
+        await slow.running;
+        const refused = await post(small.app, turn('proposal-cap-2', 'lock-project-cap-b'));
+        expect(refused.statusCode).toBe(503);
+        expect(refused.json()).toMatchObject({ code: 'capacity' });
+        // The sync pool is separate, so a push still goes through while the turn holds its connection.
+        const syncStore = new PgSyncStore(small.pools.sync);
+        const project = (await syncStore.create(ALICE, freshProject())).project;
+        expect((await syncStore.push(ALICE, project.id, push(0, [volume('clip-0', 0.5)]))).receipt.revision).toBe(1);
+        slow.release();
+        expect((await holding).statusCode).toBe(200);
+      } finally {
+        slow.release();
+        await small.app.close();
+        await small.pools.end();
       }
     });
   });

@@ -26,8 +26,11 @@ import { MAX_PROPOSAL_OPS } from './proposal.js';
 export const syncChangeIdSchema = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
 
 export const syncCreateRequestSchema = z.object({
-  /** `project.version` becomes the starting revision. */
-  project: z.lazy(() => projectSchema),
+  /** `project.version` becomes the starting revision. The id fits sync_projects.id (128 chars). */
+  project: z.lazy(() => projectSchema).refine((project) => project.id.length <= 128, {
+    message: 'Project id is longer than 128 characters',
+    path: ['id'],
+  }),
 });
 export type SyncCreateRequest = z.infer<typeof syncCreateRequestSchema>;
 

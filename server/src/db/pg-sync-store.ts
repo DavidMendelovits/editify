@@ -1,7 +1,9 @@
-import pg from 'pg';
+import { createHash } from 'node:crypto';
+import type pg from 'pg';
 import {
   OperationError,
   applyBatch,
+  canonicalJson,
   operationSchema,
   projectHash,
   projectSchema,
@@ -12,6 +14,7 @@ import {
   type SyncPushRequest,
   type SyncReceipt,
 } from '@editify/shared';
+import { IDLE_IN_TRANSACTION_TIMEOUT_MS, STATEMENT_TIMEOUT_MS } from './postgres.js';
 
 /*
  * Device-authoritative project sync in Postgres (decision 4A, OV4). The schema
@@ -37,18 +40,13 @@ import {
 export type PgPool = pg.Pool;
 type Queryable = pg.Pool | pg.PoolClient;
 
-/** One pool per process. Lazy: nothing connects until the first query. */
-export function createPgPool(connectionString: string): pg.Pool {
-  const pool = new pg.Pool({ connectionString, max: Number(process.env.DATABASE_POOL_MAX ?? 10) });
-  // An idle client losing its connection is reported here; unhandled, it would crash the process.
-  pool.on('error', (error) => { console.error('[sync] idle Postgres client error', error.message); });
-  return pool;
-}
-
 export async function withTransaction<T>(pool: pg.Pool, work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // SET LOCAL, not startup parameters: it works through any pooler mode and ends with the transaction.
+    await client.query(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL idle_in_transaction_session_timeout = ${IDLE_IN_TRANSACTION_TIMEOUT_MS}`);
     const result = await work(client);
     await client.query('COMMIT');
     return result;
@@ -72,6 +70,24 @@ export class SyncMismatchError extends Error {
     super('The change produced a different document on the server than on the device');
     this.name = 'SyncMismatchError';
   }
+}
+
+/** A change id came back with a different change: the client reused an idempotency key. */
+export class SyncChangeReusedError extends Error {
+  constructor(changeId: string) {
+    super(`Change id ${changeId} was already used for a different change`);
+    this.name = 'SyncChangeReusedError';
+  }
+}
+
+/** What makes two pushes "the same change": everything but the change id itself. */
+export function requestDigest(request: SyncPushRequest, operations: Operation[]): string {
+  return createHash('sha256').update(canonicalJson({
+    baseRevision: request.baseRevision,
+    ops: operations,
+    runId: request.runId ?? null,
+    expectedHash: request.expectedHash ?? null,
+  })).digest('hex');
 }
 
 export class SyncNotFoundError extends Error {
@@ -103,7 +119,7 @@ export interface SyncPushResult {
 }
 
 interface ProjectRow { user_id: string; doc: unknown; revision: string; last_seq: string }
-interface ReceiptRow { project_id: string; change_id: string; base_revision: string; revision: string; seq: string | null; hash: string }
+interface ReceiptRow { project_id: string; change_id: string; base_revision: string; revision: string; seq: string | null; hash: string; request_digest: string }
 interface LogRow {
   seq: string; kind: SyncLogKind; ops: unknown[]; revision: string; undone: boolean;
   run_id: string | null; undo_target_seq: string | null; change_id: string | null; created_at: Date;
@@ -219,12 +235,16 @@ export class PgSyncStore {
       const row = locked.rows[0];
       if (!row || row.user_id !== userId) throw new SyncNotFoundError(projectId);
 
+      const digest = requestDigest(request, operations);
       const seen = await client.query<ReceiptRow>(
-        `SELECT project_id, change_id, base_revision, revision, seq, hash
+        `SELECT project_id, change_id, base_revision, revision, seq, hash, request_digest
          FROM sync_receipts WHERE project_id = $1 AND change_id = $2`,
         [projectId, request.changeId],
       );
-      if (seen.rows[0]) return { receipt: toReceipt(seen.rows[0]), duplicate: true };
+      if (seen.rows[0]) {
+        if (seen.rows[0].request_digest !== digest) throw new SyncChangeReusedError(request.changeId);
+        return { receipt: toReceipt(seen.rows[0]), duplicate: true };
+      }
 
       const revision = Number(row.revision);
       if (revision !== request.baseRevision) throw new SyncConflictError(request.baseRevision, revision);
@@ -264,9 +284,9 @@ export class PgSyncStore {
         );
       }
       await client.query(
-        `INSERT INTO sync_receipts (project_id, change_id, user_id, base_revision, revision, seq, hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [projectId, receipt.changeId, userId, receipt.baseRevision, receipt.revision, receipt.seq, receipt.hash],
+        `INSERT INTO sync_receipts (project_id, change_id, user_id, base_revision, revision, seq, hash, request_digest)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [projectId, receipt.changeId, userId, receipt.baseRevision, receipt.revision, receipt.seq, receipt.hash, digest],
       );
       return { receipt, duplicate: false };
     });
