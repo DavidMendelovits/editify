@@ -157,6 +157,7 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             blurOnSubmit
             placeholder="Describe an edit…"
             placeholderTextColor={colors.muted}
+            accessibilityLabel="chat composer"
             multiline
             style={styles.input}
           />
