@@ -18,6 +18,8 @@ enum Spikes {
     case "S1": return PreviewSpike()
     case "S2": return ScrubSpike()
     case "S3": return EditSpike()
+    case "S4": return WriterSpike()
+    case "S5": return PlanPreviewSpike()
     case "S6": return SourcesSpike()
     case "S10": return ProxySpike()
     case "S11": return AnalyzerSpike()

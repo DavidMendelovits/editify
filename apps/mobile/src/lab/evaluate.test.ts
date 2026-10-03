@@ -54,6 +54,27 @@ describe('evaluate', () => {
     expect(evaluate(runs([leaked, leaked, held]))[0]!.verdict).toBe('no-go');
   });
 
+  it('judges the real renderer: S4 at 4K and 1080, S5 on compositor time and the visual match, S1 on the plan', () => {
+    const writer = (variant: string, exportSeconds: number, tagsCorrect = true) => ({
+      spike: 'S4' as const, variant, metrics: { exportSeconds, xRealtime: 60 / exportSeconds, tagsCorrect, fpsKept: true },
+    });
+    expect(evaluate(runs([writer('writer-60s-4k30', 28), writer('writer-60s-4k30', 29), writer('writer-60s-4k30', 29.5)]))[0]!.verdict).toBe('go');
+    expect(evaluate(runs([writer('writer-60s-4k30', 31), writer('writer-60s-4k30', 33), writer('writer-60s-4k30', 29)]))[0]!.verdict).toBe('no-go');
+    // The 1080 arm gets its own verdict, with the same checks.
+    const hd = evaluate(runs([writer('writer-60s-1080', 12), writer('writer-60s-1080', 13), writer('writer-60s-1080', 12, false)]))[0]!;
+    expect(hd).toMatchObject({ variant: 'writer-60s-1080', verdict: 'borderline' });
+    expect(hd.metrics.map((m) => m.metric)).toEqual(['exportSeconds', 'tagsCorrect', 'fpsKept', 'memPeakMB']);
+
+    const preview = (msPerFrame: number, visualMatch = true) => ({ spike: 'S5' as const, variant: 'preview1080', metrics: { msPerFrame, msPerFrameP95: msPerFrame * 2, visualMatch } });
+    expect(evaluate(runs([preview(2.5), preview(3), preview(3.9)]))[0]!.verdict).toBe('go');
+    expect(evaluate(runs([preview(4.2), preview(5), preview(3)]))[0]!.verdict).toBe('no-go');
+    expect(evaluate(runs([preview(2), preview(2, false), preview(2, false)]))[0]!.verdict).toBe('no-go');
+
+    const plan = (fpsSustained: number) => ({ variant: 'render1080-plan', metrics: { fpsSustained } });
+    expect(evaluate(runs([plan(30), plan(29.9), plan(29.6)]))[0]).toMatchObject({ variant: 'render1080-plan', verdict: 'go' });
+    expect(evaluate(runs([plan(24), plan(25), plan(30)]))[0]!.verdict).toBe('no-go');
+  });
+
   it('needs three ok runs before judging', () => {
     const result = evaluate(runs([{}, {}]))[0]!;
     expect(result.verdict).toBe('insufficient');

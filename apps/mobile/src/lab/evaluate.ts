@@ -48,6 +48,13 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
     { metric: 'fpsSustained', op: '>=', value: 29.5 },
     { metric: 'thermalEnd', op: '<=', value: 'fair' },
     { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
+  ], also: [
+    // P7 (5B): the same gate on the finished renderer, PlanPlayer playing the lab's stand-up cut.
+    { variant: 'render1080-plan', checks: [
+      { metric: 'fpsSustained', op: '>=', value: 29.5 },
+      { metric: 'thermalEnd', op: '<=', value: 'fair' },
+      { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
+    ] },
   ] },
   S2: { variant: 'hevc-source', checks: [
     { metric: 'newestFrameP95Ms', op: '<', value: 100 },
@@ -57,12 +64,22 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
     { metric: 'paramStallMs', op: '<', value: 1000 / 60 },
     { metric: 'structuralStallMs', op: '<', value: 100 },
   ] },
+  // S4 and S5 run PlanExporter and PlanPlayer on the lab's stand-up cut (src/lab/standup-plan.ts).
   S4: { variant: 'writer-60s-4k30', checks: [
     { metric: 'exportSeconds', op: '<', value: 30 },
     { metric: 'tagsCorrect', op: '==', value: true },
     { metric: 'fpsKept', op: '==', value: true },
     { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
+  ], also: [
+    // The 1080p SDR export the app ships today: held to the 4K budget, so it must clear it easily.
+    { variant: 'writer-60s-1080', checks: [
+      { metric: 'exportSeconds', op: '<', value: 30 },
+      { metric: 'tagsCorrect', op: '==', value: true },
+      { metric: 'fpsKept', op: '==', value: true },
+      { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
+    ] },
   ] },
+  // msPerFrame: the compositor's p50 per frame (msPerFrameP95 is reported beside it).
   S5: { variant: 'preview1080', checks: [
     { metric: 'msPerFrame', op: '<', value: 4 },
     { metric: 'visualMatch', op: '==', value: true },
