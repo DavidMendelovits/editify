@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { PlanEmoji } from '@editify/shared';
 import { dataRoot } from '../config.js';
 import { runProcess } from './process.js';
 
@@ -59,5 +60,93 @@ export async function rasterizeEmoji(text: string): Promise<string | null> {
     }
   })().finally(() => inFlight.delete(path));
   inFlight.set(path, pending);
+  return await pending;
+}
+
+/*
+ * Colour emoji for the plan render on hosts without Apple Color Emoji (the
+ * Linux server): Noto Color Emoji (Debian's fonts-noto-color-emoji, CBDT
+ * bitmaps at 109 px) drawn by Pillow with raqm (HarfBuzz) shaping, so skin
+ * tones, ZWJ sequences, flags and keycaps form one glyph. Neither libass nor
+ * ffmpeg 5.1/6.1 drawtext draws colour glyphs, and ffmpeg's librsvg decoder
+ * fills SVG text as paths (monochrome).
+ *
+ * Geometry is the plan's: the raster is the box-local picture of the overlay
+ * box (w x h), each emoji cluster drawn where Apple Color Emoji puts it with
+ * its pen at (x + i * sizePx, y): Core Text gives every cluster a 1 em advance
+ * and draws its square image from 0.875 em above the baseline to 0.125 em
+ * below. Noto's glyphs are mapped onto that square by their own full-bleed
+ * square (U+1F7E5, 120 px wide at 109 px, 8 px right of and 97 px above the
+ * pen), so a Noto emoji covers the cell the phone's does. The designs differ;
+ * the sizes and places match.
+ */
+
+/** Where Debian (and the runtime image) installs Noto Color Emoji; EMOJI_FONT overrides. */
+const NOTO_COLOR_EMOJI = ['/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf'];
+/** Bumped whenever the drawing below changes, so cached rasters are redrawn. */
+const NOTO_RASTER_VERSION = 1;
+
+const PILLOW = `
+import json, sys
+from PIL import Image, ImageDraw, ImageFont, features
+spec = json.loads(sys.argv[1])
+if not features.check('raqm'):
+    sys.exit(3)
+font = ImageFont.truetype(spec['font'], 109, layout_engine=ImageFont.Layout.RAQM)
+q = 120.0 / spec['size']
+Q = max(q, 1.0)
+r = Q / q
+canvas = Image.new('RGBA', (max(1, round(spec['w'] * Q)), max(1, round(spec['h'] * Q))), (0, 0, 0, 0))
+for cluster in spec['clusters']:
+    glyph = Image.new('RGBA', (144, 144), (0, 0, 0, 0))
+    ImageDraw.Draw(glyph).text((4, 112), cluster['text'], font=font, embedded_color=True, anchor='ls')
+    if r != 1.0:
+        glyph = glyph.resize((max(1, round(144 * r)), max(1, round(144 * r))), Image.LANCZOS)
+    layer = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+    layer.paste(glyph, (round(Q * cluster['x'] - 12 * r), round(Q * spec['y'] - 120 * r)))
+    canvas = Image.alpha_composite(canvas, layer)
+canvas.save(spec['out'])
+`;
+
+/** A grapheme cluster Noto Color Emoji draws (or a space, which only advances). */
+function drawable(cluster: string): boolean {
+  return cluster === ' ' || /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u.test(cluster);
+}
+
+const planInFlight = new Map<string, Promise<string | null>>();
+
+/**
+ * The plan render's emoji sticker picture: a transparent PNG to stretch over
+ * the overlay box, or null when this host cannot draw it in colour (the
+ * caller then draws it in monochrome with a QA note). macOS: Apple Color
+ * Emoji (rasterizeEmoji, the text's own line box, which the builder fit to
+ * the box). Elsewhere: Noto Color Emoji at the plan's geometry (above), when
+ * the font, python3 and Pillow with raqm are there; only emoji (and spaces).
+ */
+export async function rasterizePlanEmoji(emoji: PlanEmoji, box: { w: number; h: number }): Promise<string | null> {
+  if (process.platform === 'darwin') return await rasterizeEmoji(emoji.text);
+  const font = [process.env.EMOJI_FONT, ...NOTO_COLOR_EMOJI].find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+  if (!font) return null;
+  const clusters = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(emoji.text)].map((part) => part.segment);
+  if (clusters.length === 0 || !clusters.every(drawable)) return null;
+  const spec = {
+    font, size: emoji.sizePx, w: box.w, h: box.h, y: emoji.y,
+    clusters: clusters.map((text, index) => ({ text, x: emoji.x + index * emoji.sizePx })).filter((cluster) => cluster.text !== ' '),
+  };
+  const key = createHash('sha1').update(JSON.stringify({ v: NOTO_RASTER_VERSION, ...spec, font: undefined })).digest('hex');
+  const path = join(emojiRoot, `noto-${key}.png`);
+  if (existsSync(path)) return path;
+  const pending = planInFlight.get(path) ?? (async () => {
+    await mkdir(emojiRoot, { recursive: true });
+    const partial = `${path}.${process.pid}.tmp.png`;
+    try {
+      await runProcess('python3', ['-c', PILLOW, JSON.stringify({ ...spec, out: partial })]);
+      await rename(partial, path);
+      return path;
+    } catch {
+      return null;
+    }
+  })().finally(() => planInFlight.delete(path));
+  planInFlight.set(path, pending);
   return await pending;
 }

@@ -36,8 +36,9 @@ import { synthesizeMedia, type MediaSpec } from './helpers/plan-media.js';
  *   libass applies ligatures; an accepted difference in the schema), so text
  *   is checked by position instead: karaoke words and caption lanes are found
  *   in the plan's rectangles, lit or not, as the native suite checks them.
- * An emoji sticker the host cannot draw (no Apple Color Emoji, no raster) is
- * left out with a QA note; its box is then excluded from the comparison.
+ * An emoji sticker the host cannot draw in colour (no Apple Color Emoji or
+ * Noto Color Emoji, no raster) is drawn in monochrome with a QA note; its box
+ * is then excluded from the comparison.
  *
  * Needs ffmpeg with zscale, lut1d, libass and the other PLAN_RENDER_FILTERS.
  * Where they are missing the suite skips, except in CI (CI set), where the
@@ -412,10 +413,80 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     expect([15, 17, 18, 20, 23, 26].map(colour)).toEqual(['r', 'r', 'g', 'b', 'rg', 'r']);
   });
 
+  /** The overlays plan without its emoji sticker (frame 40's background for the emoji checks), rendered once. */
+  let withoutEmoji: Promise<string> | undefined;
+  const overlaysWithoutEmoji = (): Promise<string> => {
+    withoutEmoji ??= (async () => {
+      const { renderPlan } = await import('../src/media/plan/render.js');
+      const plan = render('overlays').plan;
+      const path = join(scratch, 'overlays-no-emoji.mp4');
+      await renderPlan({ ...plan, overlays: plan.overlays.filter((item) => item.kind !== 'emoji') }, (ref) => mediaPaths.get(ref.id),
+        { outputPath: path, workDir: join(scratch, 'overlays-no-emoji') });
+      return path;
+    })();
+    return withoutEmoji;
+  };
+  /** Frame 40 (1.33 s, before the b-roll covers it), the region around the emoji's box. */
+  const EMOJI_REGION = { x0: 100, y0: 210, x1: 260, y1: 390 };
+
+  it('draws the emoji sticker in colour on this host, in the cell Apple Color Emoji draws it in on the phone', async () => {
+    const { rasterizePlanEmoji } = await import('../src/media/emoji.js');
+    const overlay = render('overlays').plan.overlays.find((item) => item.kind === 'emoji')!;
+    const colour = await rasterizePlanEmoji(overlay.emoji!, overlay.box);
+    if (!colour) {
+      // Only a Linux host without Noto Color Emoji or Pillow (CI and the runtime image install both).
+      expect(process.platform).not.toBe('darwin');
+      expect(inCi).toBe(false);
+      return;
+    }
+    expect(render('overlays').notes).toEqual([]);
+    const plan = render('overlays').plan;
+    const background = decodeFrame(await overlaysWithoutEmoji(), 40, plan.size, false);
+    const mine = render('overlays').frames.get(40)!;
+    const theirs = readPng(join(goldens, 'overlays-040.png'));
+    // Ink: pixels the sticker changed (against the render without it). Same box, same size, same place.
+    const ink = (picture: Picture): Set<number> => {
+      const out = new Set<number>();
+      for (let y = EMOJI_REGION.y0; y < EMOJI_REGION.y1; y += 1) {
+        for (let x = EMOJI_REGION.x0; x < EMOJI_REGION.x1; x += 1) {
+          const at3 = (y * plan.size.w + x) * 3;
+          if (Math.max(...[0, 1, 2].map((c) => Math.abs(picture.rgb[at3 + c]! - background.rgb[at3 + c]!))) > 0.1) out.add(y * plan.size.w + x);
+        }
+      }
+      return out;
+    };
+    const a = ink(mine);
+    const b = ink(theirs);
+    const both = [...a].filter((index) => b.has(index)).length;
+    const iou = both / (a.size + b.size - both);
+    const centre = (set: Set<number>): [number, number] => {
+      let sx = 0;
+      let sy = 0;
+      for (const index of set) {
+        sx += index % plan.size.w;
+        sy += Math.floor(index / plan.size.w);
+      }
+      return [sx / set.size, sy / set.size];
+    };
+    const [ax, ay] = centre(a);
+    const [bx, by] = centre(b);
+    // Saturated warm colour where the sticker is (a monochrome glyph has none).
+    let warm = 0;
+    for (const index of a) {
+      const [r, g, bl] = [0, 1, 2].map((c) => mine.rgb[index * 3 + c]!) as Vec;
+      if (r > 0.7 && r - bl > 0.4) warm += 1;
+    }
+    console.log(`emoji sticker vs the native golden (frame 40): ink ${a.size} px vs ${b.size} px, IoU ${iou.toFixed(3)}, centres ${Math.hypot(ax - bx, ay - by).toFixed(2)} px apart, ${warm} warm px`);
+    // Measured: Apple Color Emoji (macOS, ffmpeg 9.0) IoU 0.96, centres 0.6 px apart, ink 0.99x; Noto Color Emoji
+    // (Debian 12, ffmpeg 5.1: a different fire design in the same cell) IoU 0.86, centres 1.4 px apart, ink 1.04x.
+    expect(iou).toBeGreaterThan(0.75);
+    expect(Math.hypot(ax - bx, ay - by)).toBeLessThan(3);
+    expect(a.size / b.size).toBeGreaterThan(0.8);
+    expect(a.size / b.size).toBeLessThan(1.25);
+    expect(warm).toBeGreaterThan(0.3 * a.size);
+  });
+
   it('draws an emoji sticker the host cannot colour in monochrome, with a note, never dropping it', async () => {
-    const notes = render('overlays').notes;
-    if (process.platform === 'darwin') expect(notes).toEqual([]);
-    else expect(notes.some((note) => note.includes('emoji-fire') && note.includes('monochrome'))).toBe(true);
     // The fallback path on every host: no rasterizer, no raster.
     const { renderPlan } = await import('../src/media/plan/render.js');
     const plan = render('overlays').plan;
@@ -423,7 +494,7 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     const result = await renderPlan(plan, (ref) => mediaPaths.get(ref.id),
       { outputPath: path, workDir: join(scratch, 'overlays-mono'), rasterizeEmoji: async () => null });
     expect(result.notes).toEqual([expect.stringContaining('Emoji sticker emoji-fire was drawn in monochrome')]);
-    // Frame 40 (1.33 s, before the b-roll covers it): white glyph pixels inside the emoji's box, none there without it.
+    // White glyph pixels inside the emoji's box, none there without it.
     const whiteIn = (file: string): number => {
       const picture = decodeFrame(file, 40, plan.size, false);
       let count = 0;
@@ -435,10 +506,7 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
       }
       return count;
     };
-    const withoutEmoji = join(scratch, 'overlays-no-emoji.mp4');
-    await renderPlan({ ...plan, overlays: plan.overlays.filter((item) => item.kind !== 'emoji') }, (ref) => mediaPaths.get(ref.id),
-      { outputPath: withoutEmoji, workDir: join(scratch, 'overlays-no-emoji') });
-    expect(whiteIn(path)).toBeGreaterThan(whiteIn(withoutEmoji) + 50);
+    expect(whiteIn(path)).toBeGreaterThan(whiteIn(await overlaysWithoutEmoji()) + 50);
   });
 
   it('keeps one colour pipeline across SDR, HLG and PQ sources (HLG out: reference white at 75% HLG)', () => {

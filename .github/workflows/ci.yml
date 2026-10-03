@@ -30,7 +30,8 @@ jobs:
             echo "::error::Video files are tracked in git. Upload them with scripts/bot/finish-demo.sh and link from the PR instead."; exit 1; fi
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
-      - run: sudo apt-get install -y ffmpeg
+      # fonts-noto-color-emoji + Pillow: the plan render's colour emoji stickers (server/src/media/emoji.ts).
+      - run: sudo apt-get install -y ffmpeg fonts-noto-color-emoji python3-pil
       # The RENDER_PLAN server render (server/src/media/plan, P6) needs these
       # filters (zscale = libzimg, subtitles = libass). Ubuntu's ffmpeg has
       # them; the plan render tests fail rather than skip when CI is set.
@@ -58,13 +59,14 @@ jobs:
     container: node:20-bookworm
     steps:
       - uses: actions/checkout@v4
-      - name: Install Debian's ffmpeg and the runtime image's emoji fallback font (retried; mirrors flake)
+      - name: Install Debian's ffmpeg and the runtime image's emoji fonts and Pillow (retried; mirrors flake)
         run: |
           for attempt in 1 2 3 4 5; do
-            apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-symbola && break
+            apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-symbola fonts-noto-color-emoji python3 python3-pip && break
             [ "$attempt" = 5 ] && exit 1
             sleep $((attempt * 10))
           done
+          pip3 install --no-cache-dir --break-system-packages pillow==11.3.0
       - run: ffmpeg -version | head -1
       - run: npm ci
       - run: npm run build -w @editify/shared

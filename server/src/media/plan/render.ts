@@ -17,7 +17,7 @@ import {
 } from '@editify/shared';
 import { measureLoudness } from '../../services/render-qa.js';
 import { locateAssFont } from '../ass.js';
-import { rasterizeEmoji } from '../emoji.js';
+import { rasterizePlanEmoji } from '../emoji.js';
 import { runProcess, UnsupportedMediaError } from '../process.js';
 import type { SourceColor } from '../color.js';
 import { planAss, spanFrames, type AssItem } from './ass.js';
@@ -76,9 +76,10 @@ import { gifTiming, orientationFilter, probePlanMedia, uprightSize, type GifTimi
  * - Callout cards are drawn from the plan's primitives (rounded card, vector
  *   glyph, Montserrat label) with libass on every platform; legacy drew a
  *   system-font PNG on macOS only and an ASS box elsewhere.
- * - Emoji stickers: rasterized with Apple Color Emoji where the host can
- *   (macOS, as legacy), else the plan's `raster` asset, else skipped with a
- *   QA note (legacy fell back to monochrome libass glyphs).
+ * - Emoji stickers: drawn in colour on every host: Apple Color Emoji on
+ *   macOS (as legacy), Noto Color Emoji at the plan's geometry elsewhere
+ *   (emoji.ts; legacy drew monochrome libass glyphs on Linux), else the
+ *   plan's `raster` asset, else in monochrome with a QA note.
  * - Loudness: the limiter is always on when targetLufs is set, so a hot mix
  *   inside the deadband is limited too (legacy limited only when it applied
  *   gain); gain and limiter run on the PCM master before the one AAC encode,
@@ -88,6 +89,9 @@ import { gifTiming, orientationFilter, probePlanMedia, uprightSize, type GifTimi
  *   refused nothing; this executor refuses an empty plan.
  */
 
+/** Draws an emoji sticker's payload as a PNG to stretch over its box (emoji.ts), or null when the host cannot. */
+export type EmojiRasterizer = (emoji: PlanEmoji, box: { w: number; h: number }) => Promise<string | null>;
+
 /** Resolves a plan asset to a file the requesting user may read, or undefined (see renderPlan's SECURITY note). */
 export type PlanAssetResolver = (ref: PlanAssetRef) => string | undefined | Promise<string | undefined>;
 
@@ -95,8 +99,8 @@ export interface RenderPlanOutput {
   outputPath: string;
   /** Scratch space for graphs, masks and the audio master. */
   workDir: string;
-  /** Emoji rasterizer (Apple Color Emoji); null where the host has none. Defaults to emoji.ts. */
-  rasterizeEmoji?: (text: string) => Promise<string | null>;
+  /** Emoji sticker rasterizer (a PNG for the overlay box); null where the host has none. Defaults to emoji.ts. */
+  rasterizeEmoji?: EmojiRasterizer;
   /** Keep `workDir` afterwards (tests read the audio master); removed by default. */
   keepWorkDir?: boolean;
 }
@@ -226,7 +230,7 @@ interface Context {
   media: Map<string, PlanMediaProbe>;
   workDir: string;
   notes: string[];
-  rasterize: (text: string) => Promise<string | null>;
+  rasterize: EmojiRasterizer;
   rasterPaths: Map<string, string>;
   files: number;
 }
@@ -705,9 +709,9 @@ async function spanToTimeline(graph: Graph, span: string, out: string, first: nu
 /** A sticker (image, GIF, emoji raster) as a rect-sized straight-alpha gbrap picture, for a sticker canvas. */
 interface Sticker { picture: string; at: [number, number]; frames: [number, number]; still: boolean }
 
-/** The emoji sticker's colour picture: the host's Apple Color Emoji rasterizer, else the plan's uploaded raster. */
+/** The emoji sticker's colour picture: the host's colour emoji rasterizer, else the plan's uploaded raster. */
 async function emojiRaster(overlay: PlanOverlay, context: Context): Promise<string | undefined> {
-  return (await context.rasterize(overlay.emoji!.text)) ?? (overlay.raster ? context.rasterPaths.get(overlay.raster.id) : undefined);
+  return (await context.rasterize(overlay.emoji!, overlay.box)) ?? (overlay.raster ? context.rasterPaths.get(overlay.raster.id) : undefined);
 }
 
 async function sticker(graph: Graph, overlay: PlanOverlay, context: Context): Promise<Sticker | undefined> {
@@ -1014,7 +1018,7 @@ async function renderInWorkDir(input: unknown, resolveAsset: PlanAssetResolver, 
   const context: Context = {
     plan, W: plan.size.w, H: plan.size.h, fps: plan.fps, total,
     luts: await lutFiles(), media, workDir: out.workDir, notes: [],
-    rasterize: out.rasterizeEmoji ?? rasterizeEmoji, rasterPaths, files: 0,
+    rasterize: out.rasterizeEmoji ?? rasterizePlanEmoji, rasterPaths, files: 0,
   };
 
   // Audio first: the master is measured before the final pass applies gain and the limiter.
@@ -1073,7 +1077,7 @@ async function renderInWorkDir(input: unknown, resolveAsset: PlanAssetResolver, 
     } else {
       if (run.length > 0) await flush();
       if (overlay.kind === 'emoji' && !(await emojiRaster(overlay, context))) {
-        // No colour emoji on this host and no raster: libass draws it in monochrome, as legacy did.
+        // No colour emoji font on this host and no raster: libass draws it in monochrome, as legacy did.
         context.notes.push(`Emoji sticker ${overlay.id} was drawn in monochrome: this server has no colour emoji font and the render has no raster for it.`);
         console.warn('[render-plan] emoji drawn in monochrome', { overlay: overlay.id });
         if (stickers.length > 0) await flush();
