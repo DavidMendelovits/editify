@@ -18,7 +18,8 @@ import UniformTypeIdentifiers
 ///            notice "Keep Editify open until the export finishes". Going to the background
 ///            stops it at once (iOS refuses Metal work from a backgrounded app) with
 ///            failed("Export stopped: Editify went to the background. ..."); the usual
-///            background grace only covers the cleanup.
+///            background grace only covers the cleanup. Auto-lock is off while it runs
+///            (it would background the app), restored on every terminal state.
 ///
 /// Why .gpu: EditifyCompositor renders with Core Image on Metal, and iOS refuses GPU work
 /// from a backgrounded app unless the continued-processing task asked for the GPU
@@ -89,6 +90,8 @@ final class ExportCenter: @unchecked Sendable {
     var notice: String?
     var queuedAt: Date?
     var backgroundGrace: UIBackgroundTaskIdentifier = .invalid
+    /// Screen auto-lock off while a foreground export runs (main thread only).
+    var awake: ScopedOverride<Bool>?
     var observers: [NSObjectProtocol] = []
     /// Throttle state for `send`.
     var lastState: String?
@@ -273,6 +276,10 @@ final class ExportCenter: @unchecked Sendable {
       job.notice = notice
       job.taskIdentifier = nil
     }
+    // Auto-lock would background the app and stop the export: keep the screen on until it ends.
+    let awake = ScopedOverride(read: { UIApplication.shared.isIdleTimerDisabled }, write: { UIApplication.shared.isIdleTimerDisabled = $0 })
+    awake.hold(true)
+    job.awake = awake
     // Metal work is refused once the app is in the background: stop at once, with a reason.
     job.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
       job.stop(Self.backgroundedMessage)
@@ -285,8 +292,11 @@ final class ExportCenter: @unchecked Sendable {
     Task.detached { [weak self] in await self?.run(job) }
   }
 
+  /// Every terminal state comes through here (finish), cancel and failure included.
   @MainActor
   private func endGrace(_ job: Job) {
+    job.awake?.release()
+    job.awake = nil
     for observer in job.observers { NotificationCenter.default.removeObserver(observer) }
     job.observers = []
     if job.backgroundGrace != .invalid {
@@ -458,20 +468,7 @@ final class ExportCenter: @unchecked Sendable {
       guard let url = containedFileURL(ref) else { throw AssetSource.NotFound(ref: id) }
       return url
     }
-    guard AssetSource.hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else {
-      throw AssetSource.NotFound(ref: id)
-    }
-    let options = PHImageRequestOptions()
-    options.version = .original
-    options.isNetworkAccessAllowed = false
-    options.deliveryMode = .highQualityFormat
-    let (data, type): (Data, String?) = try await withCheckedThrowingContinuation { continuation in
-      PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, type, _, info in
-        if let data { continuation.resume(returning: (data, type)) } else {
-          continuation.resume(throwing: (info?[PHImageErrorKey] as? Error) ?? AssetSource.NotFound(ref: id))
-        }
-      }
-    }
+    let (data, type) = try await AssetSource.originalImageData(ref)
     let ext = type.flatMap { UTType($0)?.preferredFilenameExtension } ?? "img"
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(filePrefix)still-\(UUID().uuidString).\(ext)")
     try data.write(to: url)

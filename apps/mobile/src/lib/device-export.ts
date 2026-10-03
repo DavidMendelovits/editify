@@ -269,12 +269,23 @@ export async function exportOnDevice(args: ExportOnDeviceArgs): Promise<DeviceEx
   try {
     const route = await routeExport(draft, args.deps, args.nameOf, args.resolution);
     if (route.kind === 'server') return { kind: 'server', route };
-    // Same assets, now laid out with each one's real stored size and rotation.
-    const plan = Object.keys(route.geometry).length > 0 ? args.build(route.geometry) ?? draft : draft;
+    // Same assets, now laid out with each one's real stored size and rotation. Never fall
+    // back to the draft silently: it would lay rotated clips out sideways.
+    const plan = Object.keys(route.geometry).length > 0 ? args.build(route.geometry) : draft;
+    if (!plan || !sameAssets(draft, plan)) {
+      console.warn('device export: the plan rebuilt with device geometry names other assets than its draft; rendering on the server');
+      return { kind: 'server', route: { kind: 'server', why: 'plan', missing: [] } };
+    }
     return { kind: 'device', view: await runNativeExport(args, plan, route.media) };
   } finally {
     lease.release();
   }
+}
+
+/** The same asset refs (id and kind), in any order. */
+export function sameAssets(a: RenderPlan, b: RenderPlan): boolean {
+  const key = (plan: RenderPlan): string => planAssetRefs(plan).map((ref) => `${ref.kind}:${ref.id}`).sort().join('\n');
+  return key(a) === key(b);
 }
 
 async function runNativeExport(args: ExportOnDeviceArgs, plan: RenderPlan, media: Record<string, string>): Promise<DeviceExportView> {

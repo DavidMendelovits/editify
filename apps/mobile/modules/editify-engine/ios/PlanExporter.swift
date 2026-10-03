@@ -486,6 +486,35 @@ enum ExportThrottle {
   }
 }
 
+/// Holds a setting at a value for a while and puts back exactly what was there before,
+/// once, however the hold ends (ExportCenter keeps the screen awake with it: auto-lock
+/// would send the app to the background and stop a foreground export).
+final class ScopedOverride<Value>: @unchecked Sendable {
+  private let read: () -> Value
+  private let write: (Value) -> Void
+  private var previous: Value?
+
+  init(read: @escaping () -> Value, write: @escaping (Value) -> Void) {
+    self.read = read
+    self.write = write
+  }
+
+  var isHeld: Bool { previous != nil }
+
+  /// A second hold while held keeps the first saved value.
+  func hold(_ value: Value) {
+    if previous == nil { previous = read() }
+    write(value)
+  }
+
+  /// Restores the saved value; a no-op when not held.
+  func release() {
+    guard let saved = previous else { return }
+    previous = nil
+    write(saved)
+  }
+}
+
 /// Resident memory high-water mark (phys_footprint, what jetsam counts).
 final class PeakMemory: @unchecked Sendable {
   private let lock = NSLock()

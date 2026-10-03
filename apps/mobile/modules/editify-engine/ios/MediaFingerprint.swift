@@ -127,7 +127,16 @@ enum MediaGeometry {
 
   /// nil when `url` is not an image ImageIO can read.
   static func ofImage(_ url: URL) -> [String: Any]? {
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0,
+    CGImageSourceCreateWithURL(url as CFURL, nil).flatMap(ofImage(source:))
+  }
+
+  /// A still's bytes (a Photos original), read the same way.
+  static func ofImage(data: Data) -> [String: Any]? {
+    CGImageSourceCreateWithData(data as CFData, nil).flatMap(ofImage(source:))
+  }
+
+  private static func ofImage(source: CGImageSource) -> [String: Any]? {
+    guard CGImageSourceGetCount(source) > 0,
           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
           let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
           let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, width > 0, height > 0 else { return nil }

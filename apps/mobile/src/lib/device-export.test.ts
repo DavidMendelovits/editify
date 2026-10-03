@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AssetMetadata, Project, RenderPlan } from '@editify/shared';
 import type { ExportProjectOptions, ExportStateEvent } from '../../modules/editify-engine';
 import {
@@ -281,6 +281,25 @@ describe('exportOnDevice', () => {
     });
     expect(seen).toEqual([{}, { 'asset-b': { width: 1920, height: 1080, rotation: 90 } }]);
     expect(JSON.parse(engine.calls[0]!.planJson).buildSeq).toBe(99);
+  });
+
+  it('goes to the server, loudly, when the rebuilt plan names other assets or fails to build', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const deps = await registry({ 'PH-b': { status: 'ok', fingerprint: { ...PRINT, geometry: { width: 1920, height: 1080, rotation: 90 } } } }, ['media/a.mov']);
+    await deps.store.record({ assetId: 'asset-a', fileUri: 'media/a.mov' });
+    await deps.store.record({ assetId: 'asset-b', phLocalId: 'PH-b', fingerprint: PRINT });
+    const engine = fakeEngine(() => undefined);
+    for (const rebuilt of [fixture('audio-duck-loudness'), null]) {
+      const outcome = await exportOnDevice({
+        build: (geometry) => (Object.keys(geometry).length > 0 ? rebuilt : fixture('crossfade')),
+        deps, native: engine.native, nameOf, onUpdate: () => undefined,
+      });
+      expect(outcome).toEqual({ kind: 'server', route: { kind: 'server', why: 'plan', missing: [] } });
+    }
+    expect(engine.calls).toHaveLength(0);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(isLeased(deps, 'asset-a')).toBe(false);
+    warn.mockRestore();
   });
 
   it('never leases or starts for 4K or a project that cannot become a plan', async () => {

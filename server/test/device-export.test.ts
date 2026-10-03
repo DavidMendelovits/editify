@@ -115,6 +115,7 @@ interface Report {
   };
   defaults: { bitrate1080pSdr: number };
   throttle: { sent: number; seconds: number };
+  awake: { held: boolean; restored: boolean; writes: number; isHeld: boolean; keepsOn: boolean };
 }
 
 let dir: string | undefined;
@@ -375,6 +376,11 @@ describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => 
     // 3 states x 1801 frame reports in 10.8 s: at most 10 a second plus the state changes.
     expect(report.throttle.sent).toBeGreaterThanOrEqual(3);
     expect(report.throttle.sent).toBeLessThanOrEqual(Math.ceil(report.throttle.seconds * 10) + 3);
+  });
+
+  it('keeps the screen awake for a foreground export and restores the setting exactly once', () => {
+    // hold(true) twice, release twice: on while held, back to off after, three writes (on, on, off).
+    expect(report.awake).toEqual({ held: true, restored: false, writes: 3, isHeld: false, keepsOn: true });
   });
 
   it('reports speed and memory for every export', () => {

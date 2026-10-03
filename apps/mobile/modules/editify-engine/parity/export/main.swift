@@ -515,6 +515,23 @@ do {
   }
   report["throttle"] = ["sent": sent, "seconds": time]
 }
+// The screen-awake hold (ExportCenter: isIdleTimerDisabled): restores what was there, once.
+do {
+  var setting = false
+  var writes = 0
+  let hold = ScopedOverride(read: { setting }, write: { setting = $0; writes += 1 })
+  hold.hold(true)
+  let heldValue = setting
+  hold.hold(true)  // a second hold keeps the first saved value
+  hold.release()
+  let restored = setting
+  hold.release()   // finish, failure and cancel may all release: only the first counts
+  var already = true
+  let other = ScopedOverride(read: { already }, write: { already = $0 })
+  other.hold(true)
+  other.release()
+  report["awake"] = ["held": heldValue, "restored": restored, "writes": writes, "isHeld": hold.isHeld, "keepsOn": already]
+}
 report["defaults"] = [
   "bitrate1080pSdr": PlanExporter.defaultBitrate(try RenderPlan.decode(try planJSON("packages/shared/fixtures/render-plans/caption-karaoke.json"))),
 ]

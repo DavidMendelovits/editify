@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Image, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { usePreventRemove } from '@react-navigation/native';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Brand } from '../../../src/components/Brand';
 import { Button } from '../../../src/components/Button';
@@ -85,15 +86,14 @@ export default function ExportScreen() {
   useEffect(() => () => abort.current?.abort(), []);
 
   // A foreground export can't outlive this screen: leaving asks, and stopping cancels cleanly.
+  // usePreventRemove also holds the native stack's swipe-back gesture while it runs.
   const navigation = useNavigation();
-  useEffect(() => navigation.addListener('beforeRemove', (event) => {
-    if (!busy.current || !abort.current) return;
-    event.preventDefault();
+  usePreventRemove(deviceBusy, ({ data }) => {
     Alert.alert('Leaving stops the export', 'Editify renders on this iPhone while this screen is open.', [
       { text: 'Keep exporting', style: 'cancel' },
-      { text: 'Stop and leave', style: 'destructive', onPress: () => { abort.current?.abort(); navigation.dispatch(event.data.action); } },
+      { text: 'Stop and leave', style: 'destructive', onPress: () => { abort.current?.abort(); navigation.dispatch(data.action); } },
     ]);
-  }), [navigation]);
+  });
 
   const renderOnServer = (note: string | null): void => {
     setServerNote(note);

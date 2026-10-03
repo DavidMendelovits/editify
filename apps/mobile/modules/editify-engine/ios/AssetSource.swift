@@ -79,10 +79,29 @@ enum AssetSource {
     }
     guard hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { return nil }
     if asset.mediaType == .image {
-      return asset.pixelWidth > 0 && asset.pixelHeight > 0 ? ["width": asset.pixelWidth, "height": asset.pixelHeight, "rotation": 0] : nil
+      // The ORIGINAL's header, the bytes the export draws (PHAsset.pixelWidth/Height describe
+      // the edited version when the photo was edited in Photos).
+      guard let original = try? await originalImageData(ref) else { return nil }
+      return MediaGeometry.ofImage(data: original.0)
     }
     guard let loaded = try? await load(ref, allowNetwork: false) else { return nil }
     return try? await MediaGeometry.of(loaded)
+  }
+
+  /// A Photos still's original bytes (`.original`, never downloading) and its UTI.
+  static func originalImageData(_ ref: String) async throws -> (Data, String?) {
+    guard hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { throw NotFound(ref: ref) }
+    let options = PHImageRequestOptions()
+    options.version = .original
+    options.isNetworkAccessAllowed = false
+    options.deliveryMode = .highQualityFormat
+    return try await withCheckedThrowingContinuation { continuation in
+      PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, type, _, info in
+        if let data { continuation.resume(returning: (data, type)) } else {
+          continuation.resume(throwing: (info?[PHImageErrorKey] as? Error) ?? NotFound(ref: ref))
+        }
+      }
+    }
   }
 
   /// Photos library access as the registry names it, read without prompting:
