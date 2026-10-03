@@ -55,28 +55,28 @@
     "captions": [
       {
         "id": "cap-hdr",
-        "rev": "r-cap-hdr-a1",
+        "rev": "ffc3b9df302b3a61",
         "start": 0,
         "end": 2,
         "lane": 0,
         "font": "Montserrat-Bold",
-        "sizePx": 24,
+        "sizePx": 13.658,
         "color": "#FFFFFF",
         "strokeColor": "#000000",
         "strokePx": 1,
         "emphasisColor": "#FACC15",
         "shadow": {
           "color": "#000000",
-          "opacity": 0.61,
-          "offsetPx": 1
+          "opacity": 0.607843,
+          "offsetPx": 0.333
         },
         "align": "center",
         "lines": [
           {
             "text": "GOLDEN HOUR",
-            "x": 92.9,
-            "y": 558,
-            "width": 174.2
+            "x": 125.492,
+            "y": 557.146,
+            "width": 109.016
           }
         ],
         "fitted": {

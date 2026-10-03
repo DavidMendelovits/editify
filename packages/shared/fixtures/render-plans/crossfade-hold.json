@@ -31,7 +31,7 @@
               "trackIndex": 0,
               "z": 0,
               "assetRef": {
-                "id": "asset-a",
+                "id": "asset-a-short",
                 "kind": "video"
               },
               "srcStart": 0,
@@ -58,7 +58,7 @@
               "trackIndex": 0,
               "z": 0,
               "assetRef": {
-                "id": "asset-a",
+                "id": "asset-a-short",
                 "kind": "video"
               },
               "srcStart": 2,
@@ -115,7 +115,7 @@
               "trackIndex": 0,
               "z": 0,
               "assetRef": {
-                "id": "asset-a",
+                "id": "asset-a-short",
                 "kind": "video"
               },
               "srcStart": 2.2,
@@ -202,7 +202,7 @@
         "id": "a",
         "clipId": "a",
         "assetRef": {
-          "id": "asset-a",
+          "id": "asset-a-short",
           "kind": "video"
         },
         "at": 0,

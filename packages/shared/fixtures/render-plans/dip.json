@@ -65,7 +65,7 @@
             {
               "clipId": "b",
               "trackIndex": 0,
-              "z": 0,
+              "z": 1,
               "assetRef": {
                 "id": "asset-b",
                 "kind": "video"
