@@ -1,4 +1,6 @@
 import { faceAt, type FaceTrack } from './analysis.js';
+import { captionFaceFor } from './caption-fonts.js';
+import { captionWords, fontMetrics, layoutCaption } from './caption-layout.js';
 import { clipTimelineDuration, type CaptionStyle, type Clip, type DeliveryPlatform, type Project } from './index.js';
 
 /**
@@ -123,14 +125,20 @@ function captionSize(style: CaptionStyle, frame: Frame): number {
 }
 
 /**
- * Rendered block height, estimated: libass wraps at the frame width less the
- * 40px side margins, and Montserrat Bold averages ~0.58 em per character.
+ * Rendered block height: the shared caption layout (caption-layout.ts, the
+ * same wrap and shrink the render plan draws) gives the line count and the
+ * fitted size at the frame width less the 40px side margins.
  */
 function blockHeight(text: string, style: CaptionStyle, frame: Frame): number {
   const size = captionSize(style, frame);
-  const wrapWidth = Math.max(1, frame.width - 80);
-  const lines = text.split(/\n/).reduce((total, line) => total + Math.max(1, Math.ceil(line.length * 0.58 * size / wrapWidth)), 0);
-  return lines * size * 1.15 + 2 * (style.strokePx ?? 3);
+  const face = captionFaceFor(style.font);
+  const metrics = fontMetrics(face);
+  // libass sizes the face so winAscent + winDescent is the ASS font size.
+  const em = (size * metrics.unitsPerEm) / (metrics.winAscent + metrics.winDescent);
+  const { words, breaks } = captionWords(text);
+  const layout = layoutCaption({ words, breaks, face, sizePx: em, maxWidth: Math.max(1, frame.width - 80) });
+  const lines = Math.max(1, layout.lines.length);
+  return lines * size * layout.scale * 1.15 + 2 * (style.strokePx ?? 3);
 }
 
 /** Where ass.ts would centre this caption, in pixels from the top. */
