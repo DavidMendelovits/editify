@@ -68,6 +68,7 @@ interface Render {
   audio?: {
     samples: number;
     overshootDropped: number;
+    shortfall?: number;
     windows: Record<string, Record<string, number>>;
     left: Record<string, Record<string, number>>;
     right: Record<string, Record<string, number>>;
@@ -181,7 +182,14 @@ describe.skipIf(!swiftAvailable)('render goldens (EditifyCompositor on macOS)', 
       if (item.audioEdits && item.audioEdits.length > 0) {
         expect(Math.max(...item.audioEdits.map((edit) => edit.end)), item.name).toBeCloseTo(plan.duration, 6);
       }
-      if (item.audio) expect(item.audio.samples, item.name).toBe(Math.round(plan.duration * 48000));
+      if (item.audio) {
+        expect(item.audio.samples, item.name).toBe(Math.round(plan.duration * 48000));
+        // Spectral time-pitch may end a sped-up entry up to one block (2048 frames)
+        // early on some machines (seen on the CI runner); the reader pads it, as export
+        // does. Plans without sped-up audio must come out exact.
+        const sped = ((plan as { audio?: Array<{ speed: number }> }).audio ?? []).some((entry) => entry.speed !== 1);
+        expect(item.audio.shortfall ?? 0, `${item.name} shortfall`).toBeLessThanOrEqual(sped ? 2048 : 0);
+      }
     }
     expect(render('trailing-carrier').audio!.samples).toBe(144000);
     // A 2x entry ending at the plan's end: time-pitch emits past the end, PlanMixTrim drops it.
