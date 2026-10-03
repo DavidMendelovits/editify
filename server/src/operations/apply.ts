@@ -263,8 +263,12 @@ export function applyOperation(input: Project, operation: Operation): Project {
       break;
     }
     case 'set_clip_properties': {
-      const resolved = operation.params.updates.map((update) => ({ update, clip: findClip(project, update.clipId).clip }));
-      for (const { update, clip } of resolved) {
+      const resolved = operation.params.updates.map((update) => ({ update, ...findClip(project, update.clipId) }));
+      for (const { update, clip, track } of resolved) {
+        if (update.text !== undefined) {
+          if (track.kind !== 'overlay' || clip.assetId) throw new OperationError('text can only be set on a text sticker (overlay clip without an asset)');
+          clip.text = update.text;
+        }
         if (update.volume !== undefined) clip.volume = update.volume;
         if (update.speed !== undefined) clip.speed = update.speed;
         if (update.transform !== undefined) clip.transform = update.transform;
