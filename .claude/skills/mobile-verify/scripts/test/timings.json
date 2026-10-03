@@ -1,0 +1,85 @@
+{
+  "mode": "cold",
+  "at": "2023-11-14T22:14:55.000Z",
+  "commit": "abc1234",
+  "startedAtMs": 1700000000000,
+  "server": {
+    "startedAtMs": 1700000001000,
+    "log": "server.ndjson"
+  },
+  "steps": [
+    {
+      "name": "Start a 9:16 project",
+      "kind": "human",
+      "start": 5,
+      "seconds": 1.5,
+      "humanSeconds": 2
+    },
+    {
+      "name": "Pick the clip",
+      "kind": "human",
+      "start": 7,
+      "seconds": 3,
+      "humanSeconds": 5
+    },
+    {
+      "name": "Upload the clip",
+      "kind": "wait",
+      "start": 10,
+      "seconds": 8,
+      "tag": "upload"
+    },
+    {
+      "name": "Preview playable (server proxy)",
+      "kind": "wait",
+      "start": 18,
+      "seconds": 12,
+      "note": "the 540p proxy gates the preview"
+    },
+    {
+      "name": "Ask the agent for a stand-up cut",
+      "kind": "human",
+      "start": 30,
+      "seconds": 10,
+      "humanSeconds": 44
+    },
+    {
+      "name": "Agent edits the project",
+      "kind": "wait",
+      "start": 40,
+      "seconds": 20,
+      "tag": "agent"
+    },
+    {
+      "name": "Start the 1080p export",
+      "kind": "human",
+      "start": 60,
+      "seconds": 1,
+      "humanSeconds": 3,
+      "tag": "export"
+    },
+    {
+      "name": "Render 1080p",
+      "kind": "wait",
+      "start": 61,
+      "seconds": 30,
+      "tag": "render"
+    }
+  ],
+  "totals": {
+    "runSeconds": 95,
+    "productWaitSeconds": 40,
+    "automationSeconds": 15.5,
+    "humanEstimateSeconds": 51,
+    "personSeconds": 91,
+    "renderWaitSeconds": 30,
+    "exportPersonSeconds": 33
+  },
+  "render": {
+    "id": "c0ffee00-1234-4abc-9def-0123456789ab",
+    "resolution": "1080p",
+    "status": "done",
+    "seconds": 30,
+    "projectSeconds": 60
+  }
+}
