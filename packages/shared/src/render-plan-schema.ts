@@ -127,7 +127,12 @@ import { calloutSchema } from './packets.js';
  * LIMITS
  * Every string, array and size is capped (PLAN_LIMITS) so a hostile plan
  * cannot make a server parse or render unbounded work. The caps sit well
- * above anything the builder emits for a real edit.
+ * above anything the builder emits for a real edit. The builder never
+ * degrades content to fit them: a project over a count cap fails to build
+ * with a RenderPlanBuildError a person can read ("10,100 stickers; the limit
+ * is 10,000"), and only an overflowing caption shrinks (see fitted). Native
+ * enforces the same caps on every plan it receives, since a preview may be
+ * built with selfCheck: false and skip this schema.
  *
  * WHAT THE PLAN OWNS
  * The plan's size, fps, colour and loudness win. exportProject() options
@@ -181,11 +186,11 @@ export const PLAN_LIMITS = {
   layersPerSegment: 32,
   /** Per key array: a per-frame zoom sample over a 10-minute clip at 60 fps fits. */
   keys: 50_000,
-  overlays: 2_000,
+  overlays: 10_000,
   captions: 10_000,
   linesPerCaption: 12,
   wordsPerLine: 200,
-  audio: 2_000,
+  audio: 10_000,
 } as const;
 
 const id = z.string().min(1).max(PLAN_LIMITS.idChars);
@@ -537,7 +542,16 @@ function planSchemas(mode: UnknownKeys) {
     width: z.number().finite().min(0),
     /**
      * Karaoke only. When present the line is drawn word by word, each word at
-     * its own `x`, and the words joined by single spaces equal `text`.
+     * its own `x`, and the words joined by single spaces equal `text`. A line
+     * the face cannot place word by word (right-to-left or fallback text) has
+     * exactly one word, the whole line (see caption.fitted.approximate).
+     *
+     * ASS (P6 server writer): one Dialogue per line, `\an7\pos(x, y -
+     * winAscent x sizePx / unitsPerEm)` (top-left of the line's cell), `\fs`
+     * as in caption.sizePx, karaoke `\k` from these word times. Two accepted
+     * differences: libass always applies ligatures (about 0.4 px per ligature
+     * at 100 px), and captions containing colour emoji have no exact server
+     * path in v1 (Linux libass has no colour emoji).
      */
     words: z.array(captionWord).min(1).max(PLAN_LIMITS.wordsPerLine).optional(),
   });
@@ -624,18 +638,20 @@ function planSchemas(mode: UnknownKeys) {
      * the layout shrank it by `scale` (sizePx already includes it). Never an
      * ellipsis. `shrunk: false` always has scale 1.
      * - `overflow: true`: even shrunk to the smallest normal step (0.25) it
-     *   did not fit three lines, so it shrank further, up to the PLAN_LIMITS
-     *   caps (12 lines, 500 characters, 200 words a line), and words longer
-     *   than PLAN_LIMITS.textChars were hard-broken. Text past the caps is
-     *   the only thing ever dropped, and only then.
+     *   did not fit three lines, so it shrank to the largest scale that fits
+     *   the PLAN_LIMITS caps (12 lines, 500 characters, 200 words a line),
+     *   never below 0.15, and words longer than PLAN_LIMITS.textChars were
+     *   hard-broken. Lines past 12 at 0.15 are the only text ever dropped.
      * - `approximate: true`: some text is in a script the bundled face does
      *   not cover (Greek, Thai, Hebrew, Arabic, CJK...). Core Text draws it in
      *   a system fallback face, and the layout measured it with a fallback
-     *   width (1 em for Han, Kana and Hangul, 0.6 em otherwise), so its
-     *   widths and wrap points are estimates. Right-to-left lines (Hebrew,
-     *   Arabic) are also laid out as one run: their karaoke words do not
-     *   light one by one; the whole line switches at once, at the caption
-     *   start (or with the last word before it, after earlier lines).
+     *   width per script (1 em Han, Kana and Hangul; 0.68 em Greek; 0.43 em
+     *   Arabic; 0.6 em otherwise), so its widths and wrap points are
+     *   estimates. In karaoke, a line containing such text, or any
+     *   right-to-left text, is ONE word: { w: the line's text, x: the line's
+     *   x, s: its first word's start, e: its last word's end }. Core Text
+     *   draws it as a single run with bidi, and it lights as a whole; lines
+     *   in the face keep word-by-word lighting.
      * The builder omits both rather than writing false.
      */
     fitted: obj({
