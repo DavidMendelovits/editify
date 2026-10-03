@@ -1,6 +1,7 @@
-import type { AgentTraceStep, ChatResponse, Project } from '@editify/shared';
+import type { AgentTraceStep, AgentTurnRequest, AnalysisBundle, ChatResponse, Project, Proposal } from '@editify/shared';
 import { runAgentLoop } from './loop.js';
 import type { ToolProvider } from './providers.js';
+import { runSnapshotTurn } from './snapshot-context.js';
 import type { ToolContext } from './tools.js';
 import { NO_DASHES_RULE } from './prose-style.js';
 
@@ -9,6 +10,11 @@ export class AgentService {
 
   async edit(ctx: ToolContext, message: string, onStep?: (step: AgentTraceStep) => void): Promise<ChatResponse> {
     return await runAgentLoop(await this.resolveProvider(), ctx, message, onStep ? { onStep } : {});
+  }
+
+  /** A stateless turn over the phone's snapshot: returns a proposal, writes nothing. */
+  async propose(request: AgentTurnRequest, bundle: AnalysisBundle | undefined, userId?: string): Promise<Proposal> {
+    return await runSnapshotTurn(await this.resolveProvider(), request, bundle, userId);
   }
 
   /**

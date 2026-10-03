@@ -20,6 +20,7 @@ import { SettingsStore } from './db/settings-store.js';
 import { TranscriptStore } from './db/transcript-store.js';
 import { OperationError } from './operations/apply.js';
 import { registerAccountRoutes } from './routes/account.js';
+import { registerAgentTurnRoutes } from './routes/agent-turn.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { isLegalRoute, registerLegalRoutes } from './routes/legal.js';
@@ -119,6 +120,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
+  registerAgentTurnRoutes(app, agent);
   registerTelemetryRoutes(app, telemetry);
 
   app.setErrorHandler(async (error, _request, reply) => {
@@ -133,6 +135,11 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
     if (error instanceof OperationError) {
       return await reply.code(400).send({ error: error.message });
+    }
+    // Fastify's own refusals (413 body too large, 415, malformed JSON) keep their status.
+    const status = (error as { statusCode?: unknown }).statusCode;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      return await reply.code(status).send({ error: error instanceof Error ? error.message : 'Bad request' });
     }
     app.log.error(error);
     return await reply.code(500).send({ error: error instanceof Error ? error.message : 'Internal server error' });

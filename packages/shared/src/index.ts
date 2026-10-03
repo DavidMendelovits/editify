@@ -518,3 +518,4 @@ export * from './takes.js';
 export * from './safezone.js';
 export * from './sync.js';
 export * from './sync-plan.js';
+export * from './proposal.js';

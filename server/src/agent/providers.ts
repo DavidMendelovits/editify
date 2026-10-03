@@ -116,6 +116,32 @@ function anthropicMessages(messages: LoopMessage[]): Array<{ role: 'user' | 'ass
   return result;
 }
 
+const EPHEMERAL = { type: 'ephemeral' } as const;
+
+/**
+ * Prompt caching (plan 3A). The cached prefix runs tools, then system, then
+ * messages, so a breakpoint on the last tool caches the tool definitions
+ * (identical for every turn with the same tool set) and one on the system
+ * block caches tools plus instructions for every later iteration of the turn,
+ * which re-sends both up to 24 times.
+ */
+export function anthropicRequestBody(system: string, messages: LoopMessage[], toolDefs: ToolDef[]): Record<string, unknown> {
+  return {
+    model: 'claude-sonnet-5',
+    max_tokens: 8192,
+    system: [{ type: 'text', text: system, cache_control: EPHEMERAL }],
+    messages: anthropicMessages(messages),
+    ...(toolDefs.length ? {
+      tools: toolDefs.map((tool, index) => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: jsonSchema(tool),
+        ...(index === toolDefs.length - 1 ? { cache_control: EPHEMERAL } : {}),
+      })),
+    } : {}),
+  };
+}
+
 export class AnthropicToolProvider implements ToolProvider {
   readonly name = 'anthropic' as const;
   constructor(private readonly apiKey: string) {}
@@ -128,17 +154,7 @@ export class AnthropicToolProvider implements ToolProvider {
         'x-api-key': this.apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model: 'claude-sonnet-5',
-        max_tokens: 8192,
-        system,
-        messages: anthropicMessages(messages),
-        ...(toolDefs.length ? {
-          tools: toolDefs.map((tool) => ({
-            name: tool.name, description: tool.description, input_schema: jsonSchema(tool),
-          })),
-        } : {}),
-      }),
+      body: JSON.stringify(anthropicRequestBody(system, messages, toolDefs)),
     });
     if (!response.ok) throw new Error(await providerFailureMessage(response));
     const json = await response.json() as { content?: AnthropicBlock[]; stop_reason?: string };

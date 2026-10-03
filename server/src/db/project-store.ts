@@ -24,7 +24,7 @@ export class VersionConflictError extends Error {
  * there is corruption, not an edit. Only a *newly* introduced pair throws: a
  * project that already overlaps has to stay editable so it can be repaired.
  */
-function assertNoNewVideoOverlap(before: Project, after: Project): void {
+export function assertNoNewVideoOverlap(before: Project, after: Project): void {
   const existing = new Set(findVideoOverlaps(before).map(overlapKey));
   const introduced = findVideoOverlaps(after).find((overlap) => !existing.has(overlapKey(overlap)));
   if (!introduced) return;
@@ -45,12 +45,12 @@ export class AssetAccessError extends OperationError {
   }
 }
 
-function assetIds(project: Project): Set<string> {
+export function assetIds(project: Project): Set<string> {
   return new Set(project.tracks.flatMap((track) => track.clips.flatMap((clip) => clip.assetId ?? [])));
 }
 
 /** Structural project comparison ignoring `version`, normalized through the schema so key order can't differ. */
-function sameDoc(left: Project, right: Project): boolean {
+export function sameDoc(left: Project, right: Project): boolean {
   return JSON.stringify(projectSchema.parse({ ...left, version: 0 }))
     === JSON.stringify(projectSchema.parse({ ...right, version: 0 }));
 }
