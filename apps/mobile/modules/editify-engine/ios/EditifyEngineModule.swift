@@ -304,11 +304,13 @@ public class EditifyEngineModule: Module {
       /// file symlinks on disk); only the hand-over runs on it. {accepted: false} when its
       /// (revision, buildSeq) is not newer than the last one this view accepted. How it was
       /// applied (in place or rebuilt) arrives as onPlan. Rejects a bad plan or media map.
-      AsyncFunction("setPlan") { (view: EditifyPlayerView, planJson: String, media: [String: Any]) async throws -> [String: Any] in
+      /// `mediaRetry` (optional): JS resolved the media again after onError 'mediaExpired'; only
+      /// such a plan is native's retry.
+      AsyncFunction("setPlan") { (view: EditifyPlayerView, planJson: String, media: [String: Any], mediaRetry: Bool?) async throws -> [String: Any] in
         let plan: RenderPlan
         do { plan = try RenderPlan.decode(Data(planJson.utf8)) } catch { throw PreviewMedia.Rejected(message: error.localizedDescription) }
         let refs = try PreviewMedia.validate(media, for: plan, origin: view.apiOrigin.url)
-        let accepted = await MainActor.run { view.setPlan(plan, media: refs) }
+        let accepted = await MainActor.run { view.setPlan(plan, media: refs, mediaRetry: mediaRetry ?? false) }
         return ["accepted": accepted]
       }
 

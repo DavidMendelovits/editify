@@ -295,9 +295,10 @@ export interface EditifyPlayerViewHandle {
   /**
    * A RenderPlan v1 as JSON and its media map {assetId: ref} (PHAsset id, app file URI, or the
    * user's server URL). `accepted: false` when its (revision, buildSeq) is not newer than the
-   * last one this view accepted. Rejects a plan or map the native side refuses.
+   * last one this view accepted. Rejects a plan or map the native side refuses. `mediaRetry`:
+   * the media was resolved again after onError 'mediaExpired'; only such a plan is native's retry.
    */
-  setPlan(planJson: string, media: Record<string, string>): Promise<{ accepted: boolean }>;
+  setPlan(planJson: string, media: Record<string, string>, mediaRetry?: boolean): Promise<{ accepted: boolean }>;
   play(): Promise<void>;
   pause(): Promise<void>;
   /** Exact seeks are zero-tolerance; inexact ones (mid-scrub) may land within a quarter second. */

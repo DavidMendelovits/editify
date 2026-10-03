@@ -22,10 +22,14 @@
 //    trims caches, unpark restores the time; unparked while still backgrounded,
 //    nothing runs until resume; teardown mid-build installs nothing.
 // 5. Server copies (refs on https://media.test, which the harness resolver maps to
-//    the local files): a token-only ref change keeps the item and the source; a
-//    failure then rebuilds on the new URL; a failure with no newer URL asks for
-//    media (mediaExpired) instead of retrying, the plan that follows rebuilds with
-//    the remote source reloaded, and a failure after that is an error.
+//    the local files): a token-only ref change rebuilds at once when paused, and
+//    while playing keeps the item and source until a pause, a rebuild, or a failure
+//    (rebuilt on the new URL); a failure with no newer URL asks for media
+//    (mediaExpired) instead of retrying; an untagged plan meanwhile doesn't end the
+//    wait, the tagged retry rebuilds with the remote source reloaded, and a failure
+//    after that is an error; a server copy failing to load asks the same way.
+//    Over HTTP (MediaServer.swift, checking each token's exp): the player acts before
+//    a token expires mid-play, and plays real frames from the fresh URL.
 // 6. Preview files: a download cancelled around its start never touches an
 //    invalidated session; a still added after teardown is deleted.
 // Prints one JSON report on stdout; server/test/native-preview.test.ts asserts on it.
@@ -207,8 +211,11 @@ _ = try writeVideo(proxyMedia, to: proxyURL)
 /// A server copy (`https://media.test/<id>/...?k=<token>`) stands for that id's local file.
 func resolver(_ refs: [String: String]) -> PlanAssetResolver {
   func local(_ value: String) -> URL? {
-    guard PlanPlayer.isRemote(value) else { return URL(string: value) }
-    guard let id = URL(string: value)?.pathComponents.dropFirst().first, let file = mediaRefs[id] else { return nil }
+    // The local media server is reached for real; media.test stands for the files.
+    guard let url = URL(string: value), url.host == "media.test" else { return URL(string: value) }
+    // A token that "expired" before the source loaded: the load fails, as the server's 401 would.
+    if value.hasSuffix("k=expired") { return nil }
+    guard let id = url.pathComponents.dropFirst().first, let file = mediaRefs[id] else { return nil }
     return URL(string: file)
   }
   return PlanAssetResolver(
@@ -351,9 +358,9 @@ final class Rig {
 
   /// Sets a plan and waits until it (or a later one) is applied and the item can play.
   @discardableResult
-  func apply(_ plan: RenderPlan, media: [String: String]? = nil) async throws -> PlanPlayer.Applied {
+  func apply(_ plan: RenderPlan, media: [String: String]? = nil, mediaRetry: Bool = false) async throws -> PlanPlayer.Applied {
     let before = applied.count
-    guard player.setPlan(plan, media: media ?? mediaRefs) else { throw HarnessError("plan (\(plan.revision), \(plan.buildSeq)) dropped") }
+    guard player.setPlan(plan, media: media ?? mediaRefs, mediaRetry: mediaRetry) else { throw HarnessError("plan (\(plan.revision), \(plan.buildSeq)) dropped") }
     try await expect("plan (\(plan.revision), \(plan.buildSeq)) applied") { applied.count > before }
     let result = applied.last!
     if result.mode == .failed { throw HarnessError("plan failed: \(result.error ?? "?")") }
@@ -755,29 +762,56 @@ func run() async throws -> [String: Any] {
     let talkAsset = { rig.player.built?.media.videos["asset-talk"].map { ObjectIdentifier($0.asset) } }
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t1"))
     _ = try await rig.frame(at: k, fps: 30)
-    // The hourly refresh: the same plan with only the token changed. Nothing reloads or rebuilds.
+    // Paused: a token-only refresh rebuilds on the new URL at once (nothing is moving).
     var item = rig.player.player.currentItem
     var asset = talkAsset()
-    let refreshed = try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t2"))
-    let tokenRefresh: [String: Any] = [
-      "mode": refreshed.mode.rawValue, "sameItem": rig.player.player.currentItem === item, "sameSource": talkAsset() == asset,
-      "stale": rig.player.tokenStale.sorted(),
+    let pausedRefresh = try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t2"))
+    try await rig.expect("back at its time after the paused refresh") { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
+    let paused: [String: Any] = [
+      "mode": pausedRefresh.mode.rawValue, "newItem": rig.player.player.currentItem !== item, "reloaded": talkAsset() != asset,
+      "stale": rig.player.tokenStale.sorted(), "timeKept": abs(rig.player.currentTime - Double(k) / 30) < 1e-3,
+    ]
+
+    // Playing: the item and source stay (no clock freeze); the source is token-stale.
+    rig.player.seek(to: 0, exact: true)
+    rig.player.play()
+    try await rig.expect("playing for the refresh") { rig.player.player.rate > 0 && rig.player.currentTime > 0.1 }
+    item = rig.player.player.currentItem
+    asset = talkAsset()
+    let playingRefresh = try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t3"))
+    let playing: [String: Any] = [
+      "mode": playingRefresh.mode.rawValue, "sameItem": rig.player.player.currentItem === item, "sameSource": talkAsset() == asset,
+      "stale": rig.player.tokenStale.sorted(), "playing": rig.player.player.rate > 0,
     ]
 
     watchdog.step("server copies: stale token fails")
-    // The old token expires under the loaded source: rebuilt on the URL already held, no JS round trip.
-    item = rig.player.player.currentItem
-    asset = talkAsset()
+    // The old token expires under the loaded source while playing: rebuilt on the URL already held, no JS round trip.
     rig.player.simulateItemFailure()
     try await rig.expect("rebuilt on the refreshed URL") { rig.player.player.currentItem !== item && rig.player.player.currentItem?.status == .readyToPlay }
-    try await rig.expect("the rebuilt item back at its time") { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
+    try await rig.expect("playing again after the stale rebuild") { rig.player.player.rate > 0 }
     let staleRetry: [String: Any] = [
       "rebuilt": rig.player.player.currentItem !== item, "reloaded": talkAsset() != asset, "stale": rig.player.tokenStale.sorted(),
-      "expired": rig.expired.count, "errors": rig.errors.count, "timeKept": abs(rig.player.currentTime - Double(k) / 30) < 1e-3,
+      "expired": rig.expired.count, "errors": rig.errors.count,
+    ]
+
+    watchdog.step("server copies: swap at the pause")
+    // Another refresh while playing, then a pause: the stale source moves to the new URL then.
+    _ = try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t4"))
+    let staleWhilePlaying = rig.player.tokenStale.sorted()
+    item = rig.player.player.currentItem
+    asset = talkAsset()
+    rig.player.pause()
+    try await rig.expect("rebuilt at the pause") { rig.player.player.currentItem !== item && rig.player.player.currentItem?.status == .readyToPlay }
+    try await rig.expect("the pause swap settled") { rig.player.tokenStale.isEmpty }
+    let pauseSwap: [String: Any] = [
+      "staleWhilePlaying": staleWhilePlaying, "rebuilt": rig.player.player.currentItem !== item, "reloaded": talkAsset() != asset,
+      "stale": rig.player.tokenStale.sorted(),
     ]
 
     watchdog.step("server copies: expired media")
     // No newer URL held: the player asks for media instead of retrying on the same URLs.
+    rig.player.seek(to: Double(k) / 30, exact: true)
+    try await rig.expect("parked at frame \(k) again") { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
     item = rig.player.player.currentItem
     asset = talkAsset()
     let appliedBefore = rig.applied.count
@@ -788,39 +822,146 @@ func run() async throws -> [String: Any] {
       "expired": rig.expired.count, "errors": rig.errors.count, "sameItem": rig.player.player.currentItem === item,
       "applied": rig.applied.count - appliedBefore, "state": "\(rig.player.remoteRetry)",
     ]
-    // JS re-resolved (a fresh token): that plan rebuilds with the remote source reloaded.
-    let retry = try await rig.apply(try decode(base, revision: 1, buildSeq: next()), media: serverCopy(token: "t3"))
-    try await rig.expect("the retried item back at its time") { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
-    let retried: [String: Any] = [
-      "mode": retry.mode.rawValue, "reloaded": talkAsset() != asset, "state": "\(rig.player.remoteRetry)",
-      "timeKept": abs(rig.player.currentTime - Double(k) / 30) < 1e-3,
+    // While JS refreshes the token, an edit from elsewhere lands (untagged, old URLs): it applies
+    // as usual, and the player keeps waiting for the tagged retry.
+    var trimmed = base
+    edit(&trimmed, ["video", "segments", 0, "layers", 0, "srcStart"], 0.25)
+    let interleaved = try await rig.apply(try decode(trimmed, revision: 2, buildSeq: next()), media: serverCopy(token: "t4"))
+    rig.player.simulateItemFailure()
+    try? await Task.sleep(nanoseconds: 200_000_000)
+    let interleave: [String: Any] = [
+      "mode": interleaved.mode.rawValue, "reloaded": talkAsset() != asset, "state": "\(rig.player.remoteRetry)",
+      "expired": rig.expired.count, "errors": rig.errors.count,
     ]
+    asset = talkAsset()
+    // JS re-resolved (a fresh token) and tagged the plan: it rebuilds with the remote source reloaded.
+    let retry = try await rig.apply(try decode(trimmed, revision: 2, buildSeq: next()), media: serverCopy(token: "t5"), mediaRetry: true)
+    let retried: [String: Any] = ["mode": retry.mode.rawValue, "reloaded": talkAsset() != asset, "state": "\(rig.player.remoteRetry)"]
     // That fails too: an error (JS falls back to PreviewPlayer), and no second request for media.
     rig.player.simulateItemFailure()
-    try await rig.expect("the second failure reported") { !rig.errors.isEmpty }
+    try await rig.expect("the failure after the retry reported") { !rig.errors.isEmpty }
     let fellBack: [String: Any] = ["expired": rig.expired.count, "errors": rig.errors.count]
+    rig.player.teardown()
 
     watchdog.step("server copies: structural edit swaps a stale source")
-    // Another refresh, then a structural edit: the rebuild it makes anyway moves the source to the new URL.
+    // A refresh while playing, then a structural edit: the rebuild it makes anyway moves the source.
     let fresh = Rig()
     try await fresh.apply(try decode(base, revision: 1, buildSeq: 1), media: serverCopy(token: "t4"))
+    fresh.player.play()
+    try await fresh.expect("playing for the structural edit") { fresh.player.player.rate > 0 }
     try await fresh.apply(try decode(base, revision: 1, buildSeq: 2), media: serverCopy(token: "t5"))
     let freshAsset = fresh.player.built?.media.videos["asset-talk"].map { ObjectIdentifier($0.asset) }
     let staleBefore = fresh.player.tokenStale.sorted()
-    var trimmed = base
-    edit(&trimmed, ["video", "segments", 0, "layers", 0, "srcStart"], 0.5)
     let structural = try await fresh.apply(try decode(trimmed, revision: 2, buildSeq: 3), media: serverCopy(token: "t5"))
     let structuralSwap: [String: Any] = [
       "staleBefore": staleBefore, "mode": structural.mode.rawValue,
       "reloaded": fresh.player.built?.media.videos["asset-talk"].map { ObjectIdentifier($0.asset) } != freshAsset,
       "staleAfter": fresh.player.tokenStale.sorted(),
     ]
-    report["serverCopies"] = [
-      "tokenRefresh": tokenRefresh, "staleRetry": staleRetry, "asked": asked, "retried": retried, "fellBack": fellBack,
-      "structuralSwap": structuralSwap,
-    ] as [String: Any]
-    rig.player.teardown()
     fresh.player.teardown()
+
+    watchdog.step("server copies: a source that fails to load")
+    // A server copy whose URL expired before it loaded: the same request for media, not an error.
+    let load = Rig()
+    try await load.apply(try decode(base, revision: 1, buildSeq: 1))
+    let failedLoad = load.applied.count
+    load.player.setPlan(try decode(base, revision: 1, buildSeq: 2), media: serverCopy(token: "expired"))
+    try await load.expect("the failed load reported") { load.applied.count > failedLoad }
+    try await load.expect("mediaExpired for the failed load") { !load.expired.isEmpty }
+    let loadFailure: [String: Any] = [
+      "mode": load.applied.last!.mode.rawValue, "expired": load.expired.count, "errors": load.errors.count,
+      "state": "\(load.player.remoteRetry)",
+    ]
+    let loadRetry = try await load.apply(try decode(base, revision: 1, buildSeq: 3), media: serverCopy(token: "t6"), mediaRetry: true)
+    let loadRetried: [String: Any] = ["mode": loadRetry.mode.rawValue, "state": "\(load.player.remoteRetry)", "errors": load.errors.count]
+    load.player.teardown()
+
+    report["serverCopies"] = [
+      "paused": paused, "playing": playing, "staleRetry": staleRetry, "pauseSwap": pauseSwap, "asked": asked,
+      "interleave": interleave, "retried": retried, "fellBack": fellBack, "structuralSwap": structuralSwap,
+      "loadFailure": loadFailure, "loadRetried": loadRetried,
+    ] as [String: Any]
+  }
+
+  // MARK: A real HTTP server: media tokens that expire mid-play
+  do {
+    watchdog.step("http: token expires mid-play")
+    let server = try MediaServer()
+    let port = try server.start()
+    let path = "/assets/asset-talk/proxy.mov"
+    server.serve(path, file: URL(string: mediaRefs["asset-talk"]!)!)
+    func refs(_ token: String) -> [String: String] {
+      var refs = mediaRefs
+      refs["asset-talk"] = "http://127.0.0.1:\(port)\(path)?k=\(token)"
+      return refs
+    }
+    let base = try fixture("overlays")
+    /// The picture really comes from the server: the frame's embedded code is its source frame.
+    func code(_ rig: Rig, at k: Int) async throws -> Int {
+      rig.player.pause()
+      return decodeCode(pixels(try await rig.frame(at: k, fps: 30).buffer, space: workingSpace))
+    }
+
+    // No newer URL held: the player asks for media before the server starts refusing reads,
+    // and plays on from the fresh URL JS sends.
+    let rig = Rig()
+    rig.player.expiryLead = 0.5
+    try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)))
+    _ = try await rig.frame(at: 0, fps: 30)
+    let started = CFAbsoluteTimeGetCurrent()
+    rig.player.play()
+    let reported = await rig.until(10) { !rig.expired.isEmpty || !rig.errors.isEmpty }
+    var expiring: [String: Any] = [
+      "reported": reported, "reportMs": (CFAbsoluteTimeGetCurrent() - started) * 1000, "expired": rig.expired.count, "errors": rig.errors.count,
+    ]
+    let retry = try await rig.apply(try decode(base, revision: 1, buildSeq: 2), media: refs(server.token(expiresIn: 600)), mediaRetry: true)
+    expiring["retryMode"] = retry.mode.rawValue
+    expiring["code"] = try await code(rig, at: 60)
+    expiring["errorsAfter"] = rig.errors.count
+    expiring["refused"] = server.refused
+    rig.player.teardown()
+
+    watchdog.step("http: refreshed token while playing")
+    // JS refreshed the token while playing (token-stale source): before the old token expires the
+    // item moves to the URL already held, with no request for media and no read refused.
+    let refusedBefore = server.refused
+    let stale = Rig()
+    stale.player.expiryLead = 0.5
+    try await stale.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)))
+    _ = try await stale.frame(at: 0, fps: 30)
+    stale.player.play()
+    try await stale.expect("playing on the short token") { stale.player.player.rate > 0 }
+    let item = stale.player.player.currentItem
+    let refreshed = try await stale.apply(try decode(base, revision: 1, buildSeq: 2), media: refs(server.token(expiresIn: 600)))
+    let staleWhilePlaying = stale.player.tokenStale.sorted()
+    let moved = await stale.until(10) { stale.player.player.currentItem !== item && stale.player.tokenStale.isEmpty }
+    try await stale.expect("playing on the refreshed URL") { stale.player.player.rate > 0 || stale.ends > 0 }
+    let staleSwap: [String: Any] = [
+      "mode": refreshed.mode.rawValue, "staleWhilePlaying": staleWhilePlaying, "moved": moved,
+      "expired": stale.expired.count, "errors": stale.errors.count, "refused": server.refused - refusedBefore,
+      "code": try await code(stale, at: 75),
+    ]
+    stale.player.teardown()
+
+    watchdog.step("http: expiry with no deadline")
+    // For the record (not asserted: a later OS may do better): with the deadline out of reach,
+    // what AVFoundation itself reports when the server starts refusing a loaded source.
+    let refusedBeforeSilent = server.refused
+    let silent = Rig()
+    silent.player.expiryLead = -3600
+    try await silent.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 1)))
+    _ = try await silent.frame(at: 0, fps: 30)
+    try? await Task.sleep(nanoseconds: 1_200_000_000)
+    silent.player.seek(to: 3.5, exact: true)
+    silent.player.play()
+    let silentReported = await silent.until(4) { !silent.expired.isEmpty || !silent.errors.isEmpty }
+    let withoutDeadline: [String: Any] = [
+      "refused": server.refused - refusedBeforeSilent, "reported": silentReported, "stalls": silent.stalls,
+      "time": silent.player.currentTime, "errors": silent.errors,
+    ]
+    silent.player.teardown()
+    report["http"] = ["expiring": expiring, "staleSwap": staleSwap, "withoutDeadline": withoutDeadline, "requests": server.requests.count] as [String: Any]
+    server.stop()
   }
 
   // MARK: Preview files: downloads cancelled around their start, stills after teardown

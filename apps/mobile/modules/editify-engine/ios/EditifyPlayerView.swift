@@ -102,9 +102,10 @@ final class EditifyPlayerView: ExpoView {
   // MARK: Commands (from the module's View functions, on the main thread)
 
   /// Hands over a plan and its media map (validated off the main thread: PreviewMedia.validate).
+  /// `mediaRetry`: the media was resolved again after onError 'mediaExpired' (PlanPlayer.setPlan).
   /// False when the plan is not newer than the last one this view accepted.
-  func setPlan(_ plan: RenderPlan, media: [String: String]) -> Bool {
-    guard core.setPlan(plan, media: media) else { return false }
+  func setPlan(_ plan: RenderPlan, media: [String: String], mediaRetry: Bool) -> Bool {
+    guard core.setPlan(plan, media: media, mediaRetry: mediaRetry) else { return false }
     backgroundColor = UIColor(red: plan.background.red, green: plan.background.green, blue: plan.background.blue, alpha: 1)
     return true
   }

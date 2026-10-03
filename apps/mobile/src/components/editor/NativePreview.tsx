@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { AssetMetadata, Clip, Operation, OverlayPlacement, Project, RenderPlan } from '@editify/shared';
 import { EditifyEngine, editifyPlayerView, type EditifyPlayerViewHandle } from '../../../modules/editify-engine';
 import { API_URL, assetOriginalUrl, assetProxyUrl, onAccessTokenChange } from '../../lib/api';
@@ -27,7 +27,8 @@ import { usePlayhead, type PlayheadClock } from './usePlayback';
  *   playhead moved by the user (tap, scrub) ─▶ exact seek (native coalesces a scrub's seeks)
  *   playing ─▶ play() / pause(); native end or interruption ─▶ onEnded
  *   server copies failed (native 'mediaExpired', e.g. a token that expired in the background)
- *     ─▶ refresh the session, resolve the media again, send a forced plan (native retries on it)
+ *     ─▶ refresh the session, resolve the media again, send it as a plan tagged mediaRetry (native
+ *        retries on that plan only; edits landing meanwhile apply as usual)
  *   any other native failure, a failed retry, or a project that can't become a plan ─▶
  *     onUnavailable (the editor falls back to PreviewPlayer)
  *
@@ -164,6 +165,12 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
     fallback: unavailable,
   }), [unavailable]);
   useEffect(() => () => recovery.dispose(), [recovery]);
+  // JS resolves nothing while the app is in the background: the recovery's timeout waits for it.
+  useEffect(() => {
+    recovery.setActive(AppState.currentState === 'active');
+    const subscription = AppState.addEventListener('change', (state) => recovery.setActive(state === 'active'));
+    return () => subscription.remove();
+  }, [recovery]);
 
   // A proxy became ready (or went away) for an asset on screen: resolve again, so native swaps it in.
   const localIds = media?.local.join('|') ?? '';
@@ -188,18 +195,21 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   const feeder = useRef<PlanFeeder | null>(null);
   /** The last plan sent and its media, for a view that attaches after it was built. */
   const lastSent = useRef<{ plan: RenderPlan; media: Record<string, string> } | undefined>(undefined);
-  const deliver = useCallback((target: EditifyPlayerViewHandle, next: RenderPlan, map: Record<string, string>) => {
-    target.setPlan(JSON.stringify(next), map).catch((error: unknown) => {
+  const deliver = useCallback((target: EditifyPlayerViewHandle, next: RenderPlan, map: Record<string, string>, mediaRetry = false) => {
+    // Only a retry passes the flag (an older binary's setPlan takes two arguments).
+    const sent = mediaRetry ? target.setPlan(JSON.stringify(next), map, true) : target.setPlan(JSON.stringify(next), map);
+    sent.catch((error: unknown) => {
       unavailable(`setPlan: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, [unavailable]);
   const feederFor = (): PlanFeeder => {
     if (feeder.current) return feeder.current;
     feeder.current = new PlanFeeder({
-      send: (next, map) => {
+      send: (next, map, mediaRetry) => {
         plans.set(next);
         lastSent.current = { plan: next, media: map };
-        if (view.current) deliver(view.current, next, map);
+        if (mediaRetry) recovery.retrySent(next.buildSeq);
+        if (view.current) deliver(view.current, next, map, mediaRetry);
       },
       onUnbuildable: () => {
         // Assets still loading is a wait, not a failure.
@@ -218,9 +228,10 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   useEffect(() => {
     // Media resolved for an older set of assets (a clip was just added): wait for the new map.
     if (!size || !media || !refs || refs.some((item) => media.media[item.id] === undefined)) return;
-    const force = forcedMedia.current === media;
-    if (force) forcedMedia.current = undefined;
-    feederFor().update({ project, assets, size, media: media.media, geometry: media.geometry }, force);
+    // The resolve native asked for goes as the tagged retry, even if its URLs didn't change.
+    const mediaRetry = forcedMedia.current === media;
+    if (mediaRetry) forcedMedia.current = undefined;
+    feederFor().update({ project, assets, size, media: media.media, geometry: media.geometry }, mediaRetry);
   }, [project, assets, size, media, refs]);
   const attach = useCallback((node: EditifyPlayerViewHandle | null) => {
     view.current = node;
@@ -311,7 +322,7 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
               live.current.onEnded();
             }}
             onError={(event) => recovery.onError(event.nativeEvent, hasRemoteRef.current)}
-            onPlan={(event) => recovery.onPlan(event.nativeEvent.mode)}
+            onPlan={(event) => recovery.onPlan(event.nativeEvent)}
           />
           {buffering && (
             <View pointerEvents="none" style={styles.buffering}>
