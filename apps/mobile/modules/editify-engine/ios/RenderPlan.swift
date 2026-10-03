@@ -487,7 +487,7 @@ extension RenderPlan {
       try check(entry.end <= duration + RenderPlan.epsilon, "audio entry \(entry.id) ends past the duration")
       try check(!entry.gainKeys.isEmpty, "an audio entry has at least one gain key")
       try keys(entry.gainKeys.map(\.t), from: entry.at, to: entry.end, "gainKeys")
-      try check(entry.gainKeys.allSatisfy { $0.gain.isFinite && $0.gain >= 0 && $0.gain <= 4 }, "gain must be 0...4")
+      try check(entry.gainKeys.allSatisfy { $0.gain.isFinite && $0.gain >= 0 && $0.gain <= 1 }, "gain must be 0...1")
       for fade in [entry.fadeIn, entry.fadeOut] {
         try seconds(fade.duration, "fade duration")
         try check(fade.duration <= entry.end - entry.at + RenderPlan.epsilon, "a fade is longer than its entry")

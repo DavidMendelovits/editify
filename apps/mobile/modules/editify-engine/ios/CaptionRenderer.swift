@@ -252,8 +252,6 @@ final class CaptionRenderer: @unchecked Sendable {
   func draw(_ caption: RenderPlan.Caption, sung: Int, scale: CGFloat) throws -> Bitmap? {
     let metrics = try fonts.verticalMetrics(caption.font)
     let size = CGFloat(caption.sizePx)
-    let ascender = metrics.ascender * size
-    let descender = metrics.descender * size
     let pad = CGFloat(caption.box?.padPx ?? 0)
     let stroke = CGFloat(caption.strokePx)
     let shadow = CGFloat(caption.shadow?.offsetPx ?? 0)
@@ -315,8 +313,9 @@ final class CaptionRenderer: @unchecked Sendable {
       let boxes = CGMutablePath()
       let radius = CGFloat(box.radiusPx) * scale
       for line in caption.lines {
-        let top = point(line.x - box.padPx, line.y - Double(ascender) - box.padPx)
-        let bottom = point(line.x + line.width + box.padPx, line.y + Double(descender) + box.padPx)
+        // The line's cell (OS/2 winAscent / winDescent), grown by padPx (libass BorderStyle 3).
+        let top = point(line.x - box.padPx, line.y - Double(metrics.winAscent * size) - box.padPx)
+        let bottom = point(line.x + line.width + box.padPx, line.y + Double(metrics.winDescent * size) + box.padPx)
         let rect = CGRect(x: top.x, y: bottom.y, width: bottom.x - top.x, height: top.y - bottom.y)
         let corner = min(radius, rect.width / 2, rect.height / 2)
         boxes.addPath(CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil))

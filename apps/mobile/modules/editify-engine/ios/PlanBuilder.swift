@@ -576,7 +576,7 @@ enum PlanBuilder {
 /// gainKeys x fadeIn x fadeOut as linear volume ramps. AVAudioMix ramps are
 /// linear, so stretches where two factors move at once (a product of lines)
 /// or a half-sine fade moves are split into pieces of at most 4 ms.
-/// AVAudioMix volume is 0...1: gains above 1 are clamped here (see report).
+/// Gains are 0...1 (the schema caps gainKeys at 1, matching AVAudioMix).
 enum AudioRamps {
   struct Ramp: Equatable { let start: Double; let end: Double; let from: Double; let to: Double }
 
