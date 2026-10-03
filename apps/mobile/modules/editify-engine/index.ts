@@ -264,6 +264,8 @@ export const EditifyEngine = requireOptionalNativeModule<EditifyEngineNative>('E
 /** The native clock: ~30 Hz while playing, and once whenever a seek lands. */
 export interface PlayerTimeEvent { time: number; playing: boolean }
 export interface PlayerReadyEvent { duration: number }
+/** Waiting for media (true) or moving again (false). */
+export interface PlayerStallEvent { buffering: boolean }
 /** `end`: the timeline ran out. `interrupted`: iOS paused it (the app left the foreground, a call). */
 export interface PlayerEndedEvent { reason: 'end' | 'interrupted' }
 export interface PlayerErrorEvent { message: string }
@@ -278,10 +280,12 @@ export interface PlayerPlanEvent {
   mode: 'update' | 'rebuild' | 'empty' | 'failed';
   ms: number;
   audioSwapped: boolean;
+  /** The sound changed while playing: its mix goes in once edits pause (~250 ms), one skip per burst. */
+  audioDeferred: boolean;
   error?: string;
 }
 
-/** The view's ref. Every call goes to the main thread; seeks coalesce natively. */
+/** The view's ref. Transport calls run in call order on the main thread; seeks coalesce natively. */
 export interface EditifyPlayerViewHandle {
   /**
    * A RenderPlan v1 as JSON and its media map {assetId: ref} (PHAsset id, app file URI, or the
@@ -291,16 +295,18 @@ export interface EditifyPlayerViewHandle {
   setPlan(planJson: string, media: Record<string, string>): Promise<{ accepted: boolean }>;
   play(): Promise<void>;
   pause(): Promise<void>;
-  /** Exact seeks are zero-tolerance. */
+  /** Exact seeks are zero-tolerance; inexact ones (mid-scrub) may land within a quarter second. */
   seek(time: number, exact: boolean): Promise<void>;
   setMuted(muted: boolean): Promise<void>;
   currentTime(): Promise<number>;
 }
 
 export interface EditifyPlayerViewProps extends ViewProps {
+  /** `scheme://host[:port]` of the app's API: the only server remote media may come from (https in release builds). */
+  apiOrigin?: string | undefined;
   onTime?: (event: NativeSyntheticEvent<PlayerTimeEvent>) => void;
   onReady?: (event: NativeSyntheticEvent<PlayerReadyEvent>) => void;
-  onStall?: (event: NativeSyntheticEvent<Record<string, never>>) => void;
+  onStall?: (event: NativeSyntheticEvent<PlayerStallEvent>) => void;
   onEnded?: (event: NativeSyntheticEvent<PlayerEndedEvent>) => void;
   onError?: (event: NativeSyntheticEvent<PlayerErrorEvent>) => void;
   onPlan?: (event: NativeSyntheticEvent<PlayerPlanEvent>) => void;

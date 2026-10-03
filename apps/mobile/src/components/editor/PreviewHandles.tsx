@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { PanResponder, Platform, Pressable, StyleSheet, Text, View, type GestureResponderHandlers } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import type { Clip, Operation, OverlayPlacement, PlanOverlay, Project, RenderPlan } from '@editify/shared';
@@ -6,6 +6,7 @@ import { clipEnd } from '../../lib/timeline';
 import {
   captionViewRect, DEFAULT_PLACEMENT, HandleDrag, planFit, planToViewRect, type Size, type ViewRect,
 } from '../../lib/preview-handles';
+import type { PlanStore } from '../../lib/native-preview';
 import { colors, fonts, radius, type } from '../../lib/theme';
 import { usePlayheadSelector, type PlayheadClock } from './usePlayback';
 
@@ -17,12 +18,13 @@ import { usePlayheadSelector, type PlayheadClock } from './usePlayback';
  * Every overlay on screen gets an invisible hit box (tap selects, drag moves); the selected
  * one gets an outline and the RN preview's three corner grips (delete, duplicate,
  * resize-and-rotate). A selected caption gets an outline. While a finger moves, `onDrag`
- * sends a parameter-only plan update (the overlay's box); the patched plan comes back as
- * `plan`, so the outline follows what native draws. The release commits one set_overlay,
+ * sends a parameter-only plan update (the overlay's box); the patched plan comes back through
+ * `plans`, so the outline follows what native draws. The release commits one set_overlay,
  * as PreviewPlayer's Sticker does.
  */
 interface Props {
-  plan: RenderPlan | undefined;
+  /** The last plan sent to native (drag patches included): this layer re-renders per plan, the preview doesn't. */
+  plans: PlanStore;
   project: Project;
   clock: PlayheadClock;
   /** The native view's size in points (the plan is aspect-fitted inside it). */
@@ -30,9 +32,10 @@ interface Props {
   selectedId: string | undefined;
   onSelect: (clipId: string | undefined) => void;
   onApply: (ops: Operation[]) => void;
-  /** A handle moved: send the parameter-only update (the next `plan` carries the patched box). */
+  /** A handle moved: send the parameter-only update (the next plan carries the patched box). */
   onDrag: (clip: Clip, placement: OverlayPlacement) => void;
-  onDragEnd: () => void;
+  /** `committed`: a set_overlay was just applied for it. */
+  onDragEnd: (committed: boolean) => void;
 }
 
 const HANDLE = 28;
@@ -44,7 +47,8 @@ function visibleAt(items: ReadonlyArray<{ id: string; start: number; end: number
   return ids;
 }
 
-export function PreviewHandles({ plan, project, clock, view, selectedId, onSelect, onApply, onDrag, onDragEnd }: Props) {
+export function PreviewHandles({ plans, project, clock, view, selectedId, onSelect, onApply, onDrag, onDragEnd }: Props) {
+  const plan = useSyncExternalStore(plans.subscribe, plans.get, plans.get);
   const overlayItems = plan?.overlays;
   const captionItems = plan?.captions;
   const overlayIds = usePlayheadSelector(clock, useCallback((time: number) => visibleAt(overlayItems ?? [], time), [overlayItems]));
@@ -96,7 +100,7 @@ function OverlayHandle({ overlay, clip, planSize, view, selected, onSelect, onAp
   onSelect: Props['onSelect'];
   onApply: Props['onApply'];
   onDrag: (clip: Clip, placement: OverlayPlacement) => void;
-  onDragEnd: () => void;
+  onDragEnd: (committed: boolean) => void;
 }) {
   const rect = planToViewRect(overlay.box, planSize, view);
   const fit = planFit(planSize, view);
@@ -125,7 +129,7 @@ function OverlayHandle({ overlay, clip, planSize, view, selected, onSelect, onAp
         latest.current.onDrag(latest.current.clip, placement);
       },
       onCommit: (ops) => latest.current.onApply(ops),
-      onEnd: () => { setGuides(undefined); latest.current.onDragEnd(); },
+      onEnd: (committed) => { setGuides(undefined); latest.current.onDragEnd(committed); },
     });
   };
 

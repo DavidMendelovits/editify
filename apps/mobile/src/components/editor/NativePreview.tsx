@@ -2,13 +2,13 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { AssetMetadata, Clip, Operation, OverlayPlacement, Project, RenderPlan } from '@editify/shared';
 import { EditifyEngine, editifyPlayerView, type EditifyPlayerViewHandle } from '../../../modules/editify-engine';
-import { assetOriginalUrl, assetProxyUrl } from '../../lib/api';
+import { API_URL, assetOriginalUrl, assetProxyUrl, onAccessTokenChange } from '../../lib/api';
 import { useEngineActivity } from '../../lib/engine-activity';
-import { leaseMedia } from '../../lib/local-media';
+import { leaseMedia, type MediaLease } from '../../lib/local-media';
 import { localMedia } from '../../lib/local-media-native';
 import {
-  followsNativeTime, isExternalSeek, PlanFeeder, previewPlanSize, projectAssetRefs, resolvePreviewMedia, serverPreviewMedia,
-  type PreviewMedia,
+  createPlanStore, followsNativeTime, isExternalSeek, PlanFeeder, previewPlanSize, projectAssetRefs, redactMediaToken, resolvePreviewMedia,
+  serverPreviewMedia, urlOrigin, type PreviewMedia,
 } from '../../lib/native-preview';
 import { colors, fonts, radius, space, type } from '../../lib/theme';
 import { formatTimecode } from '../../lib/timeline';
@@ -30,7 +30,11 @@ import { usePlayhead, type PlayheadClock } from './usePlayback';
  *
  * Media (resolvePreviewMedia): 1080p proxies when ready, the local original otherwise, the
  * user's server copy for anything not on this iPhone; the local ones stay leased while this
- * is mounted, and a proxy finishing (or going away) re-resolves.
+ * is mounted (a new lease is taken before the old one goes), and a proxy finishing (or going
+ * away) or a new auth token (server URLs carry it) re-resolves.
+ *
+ * Scrubbing seeks with a tolerance; the scrub's end lands one exact seek. Native stalls show
+ * a small "Buffering" tag.
  */
 export interface NativePreviewProps {
   project: Project;
@@ -66,9 +70,11 @@ const ASPECT: Record<Project['format'], number> = { '9:16': 9 / 16, '1:1': 1, '1
 const RESOLVE_AFTER_PROXY_MS = 500;
 
 const SERVER = { proxy: assetProxyUrl, original: assetOriginalUrl };
+/** The only server native accepts remote media from. */
+const API_ORIGIN = urlOrigin(API_URL) ?? undefined;
 
 export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>(function NativePreview(props, ref) {
-  const { project, assets, clock, playing, selectedId, onTogglePlay, onSeek, onSelect, onApply, onTimeUpdate, onEnded, onUnavailable } = props;
+  const { project, assets, clock, playing, scrubbing, selectedId, onTogglePlay, onSeek, onSelect, onApply, onTimeUpdate, onEnded, onUnavailable } = props;
   const PlayerView = editifyPlayerView();
   const view = useRef<EditifyPlayerViewHandle | null>(null);
   const [wrap, setWrap] = useState({ width: 0, height: 0 });
@@ -76,15 +82,16 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   const ratio = PixelRatio.get();
   const { width: stageWidth, height: stageHeight } = stage;
   const size = useMemo(() => previewPlanSize(project.format, { width: stageWidth, height: stageHeight }, ratio), [project.format, stageWidth, stageHeight, ratio]);
-  const [plan, setPlan] = useState<RenderPlan>();
+  const plans = useMemo(createPlanStore, []);
   const [dragging, setDragging] = useState(false);
+  const [buffering, setBuffering] = useState(false);
   // Handle drags hold the engine's playback flag too: proxies and analyzers wait out a 60 Hz redraw.
   useEngineActivity('playback', dragging);
 
   // Latest callbacks for the long-lived feeder and native events.
   const live = useRef({ onTimeUpdate, onEnded, onUnavailable, playing, project, assets });
   live.current = { onTimeUpdate, onEnded, onUnavailable, playing, project, assets };
-  const unavailable = useCallback((reason: string) => live.current.onUnavailable(reason), []);
+  const unavailable = useCallback((reason: string) => live.current.onUnavailable(redactMediaToken(reason)), []);
 
   // ─── Media: resolved per asset set, leased while mounted ───
   const refs = useMemo(() => projectAssetRefs(project, assets), [project, assets]);
@@ -93,11 +100,16 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   const [resolveTick, setResolveTick] = useState(0);
   const refsRef = useRef(refs);
   refsRef.current = refs;
+  /** The lease on the media in use: replaced (new first, then old released) on every resolve. */
+  const lease = useRef<MediaLease | null>(null);
+  useEffect(() => () => {
+    lease.current?.release();
+    lease.current = null;
+  }, []);
   useEffect(() => {
     const wanted = refsRef.current;
     if (!wanted) return undefined;
     let cancelled = false;
-    let release: (() => void) | undefined;
     void (async () => {
       const deps = await localMedia();
       if (cancelled) return;
@@ -105,8 +117,10 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
         setMedia(serverPreviewMedia(wanted, SERVER));
         return;
       }
-      const lease = leaseMedia(deps, wanted.map((item) => item.id));
-      release = () => lease.release();
+      // No gap: the old lease holds until the new one is taken.
+      const previous = lease.current;
+      lease.current = leaseMedia(deps, wanted.map((item) => item.id));
+      previous?.release();
       try {
         const resolved = await resolvePreviewMedia(wanted, deps, SERVER);
         if (!cancelled) setMedia(resolved);
@@ -114,11 +128,15 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
         if (!cancelled) setMedia(serverPreviewMedia(wanted, SERVER));
       }
     })();
-    return () => {
-      cancelled = true;
-      release?.();
-    };
+    return () => { cancelled = true; };
   }, [assetKey, resolveTick]);
+
+  // Server URLs carry the auth token (`k=`): a refreshed token mints them again (native reloads only those).
+  const hasRemote = (media?.remote.length ?? 0) > 0;
+  useEffect(() => {
+    if (!hasRemote) return undefined;
+    return onAccessTokenChange(() => setResolveTick((tick) => tick + 1));
+  }, [hasRemote]);
 
   // A proxy became ready (or went away) for an asset on screen: resolve again, so native swaps it in.
   const localIds = media?.local.join('|') ?? '';
@@ -152,7 +170,7 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
     if (feeder.current) return feeder.current;
     feeder.current = new PlanFeeder({
       send: (next, map) => {
-        setPlan(next);
+        plans.set(next);
         lastSent.current = { plan: next, media: map };
         if (view.current) deliver(view.current, next, map);
       },
@@ -184,9 +202,9 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
     setDragging(true);
     feeder.current?.drag(clip, placement);
   }, []);
-  const onDragEnd = useCallback(() => {
+  const onDragEnd = useCallback((committed: boolean) => {
     setDragging(false);
-    feeder.current?.endDrag();
+    feeder.current?.endDrag(committed);
   }, []);
 
   // ─── The clock ───
@@ -194,12 +212,20 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   const reported = useRef<number | undefined>(undefined);
   /** The first item lands at 0: bring it to the playhead once (later rebuilds keep their own time). */
   const placed = useRef(false);
+  const scrubbingRef = useRef(scrubbing);
+  scrubbingRef.current = scrubbing;
   useEffect(() => clock.subscribe(() => {
     const time = clock.get();
     if (!isExternalSeek(time, reported.current)) return;
     reported.current = time;
-    void view.current?.seek(time, true).catch(() => undefined);
+    // Mid-scrub, any nearby frame will do (fast); the scrub's end lands exactly (below).
+    void view.current?.seek(time, !scrubbingRef.current).catch(() => undefined);
   }), [clock]);
+  const wasScrubbing = useRef(scrubbing);
+  useEffect(() => {
+    if (wasScrubbing.current && !scrubbing) void view.current?.seek(clock.get(), true).catch(() => undefined);
+    wasScrubbing.current = scrubbing;
+  }, [clock, scrubbing]);
   useEffect(() => {
     const target = view.current;
     if (!target) return;
@@ -233,6 +259,8 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
           <PlayerView
             ref={attach}
             style={StyleSheet.absoluteFill}
+            apiOrigin={API_ORIGIN}
+            onStall={(event) => setBuffering(event.nativeEvent.buffering)}
             onReady={() => {
               if (placed.current) return;
               placed.current = true;
@@ -255,9 +283,14 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
             }}
             onError={(event) => unavailable(`native: ${event.nativeEvent.message}`)}
           />
+          {buffering && (
+            <View pointerEvents="none" style={styles.buffering}>
+              <Text style={styles.bufferingText}>Buffering</Text>
+            </View>
+          )}
           {stage.width > 0 && (
             <PreviewHandles
-              plan={plan}
+              plans={plans}
               project={project}
               clock={clock}
               view={stage}
@@ -319,4 +352,6 @@ const styles = StyleSheet.create({
   timecode: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base, fontVariant: ['tabular-nums'] },
   timecodeMuted: { color: colors.muted, fontFamily: fonts.semibold, fontSize: type.base, fontVariant: ['tabular-nums'] },
   pressed: { opacity: 0.65 },
+  buffering: { position: 'absolute', top: space.sm, left: space.sm, paddingHorizontal: space.sm, paddingVertical: 2, borderRadius: radius.sm, backgroundColor: 'rgba(17,17,19,0.8)' },
+  bufferingText: { color: colors.text, fontFamily: fonts.semibold, fontSize: type.xs },
 });

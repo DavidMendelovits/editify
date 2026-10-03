@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { applyBatch, type AssetMetadata, type Clip, type OverlayPlacement, type Project, type RenderPlan } from '@editify/shared';
 import { HandleDrag } from './preview-handles';
 import {
-  buildPreviewPlan, followsNativeTime, isExternalSeek, NATIVE_PREVIEW_FLAG, patchOverlayPlacement, PlanFeeder, previewAssetInfo,
+  buildPreviewPlan, createPlanStore, followsNativeTime, isExternalSeek, NATIVE_PREVIEW_FLAG, redactMediaToken, urlOrigin, patchOverlayPlacement, PlanFeeder, previewAssetInfo,
   previewPlanSize, previewRoute, projectAssetRefs, resolvePreviewMedia, serverPreviewMedia, type FeedInput,
 } from './native-preview';
 import { createLocalMediaStore, migrate, type MediaDeps, type MediaFingerprint, type MediaGeometry, type MediaNative, type MediaProbe } from './local-media';
@@ -162,7 +162,7 @@ describe('PlanFeeder', () => {
     expect(sent[2]!.plan.overlays[0]!.box.x).toBe(Math.round(0.35 * SIZE.w));
     expect(sent[2]!.plan.revision).toBe(12);
     expect(sent[2]!.media).toEqual({ 'asset-talk': 'PH-1' });
-    feeder.endDrag();
+    feeder.endDrag(false);
     expect(sent).toHaveLength(4);
     expect(sent[3]!.plan.revision).toBe(13);
     const order = sent.map((item) => item.plan.buildSeq);
@@ -197,7 +197,7 @@ describe('PlanFeeder', () => {
     const drag = new HandleDrag({
       clipId: 'logo', start: logo.overlay!, stage, mode: 'move',
       onPreview: (placement) => feeder.drag(logo, placement),
-      onEnd: () => feeder.endDrag(),
+      onEnd: (committed) => feeder.endDrag(committed),
       onCommit: (ops) => {
         // The editor paints the op (same version until the server answers) and the preview rebuilds from it.
         project = applyBatch(project, ops);
@@ -215,6 +215,98 @@ describe('PlanFeeder', () => {
     expect(final.overlays[0]!.box).toEqual(dragged.at(-1));
     expect(final.buildSeq).toBe(sent.length);
     expect(sent.map((plan) => plan.buildSeq)).toEqual(sent.map((_, index) => index + 1));
+  });
+});
+
+describe('a drag that ends without a commit', () => {
+  // The reviewer's probe: native must not keep a position the project never got.
+  const timersOf = () => {
+    let pending: (() => void) | undefined;
+    return { setTimer: (run: () => void) => { pending = run; return 1; }, clearTimer: () => { pending = undefined; }, run: () => { const fire = pending; pending = undefined; fire?.(); } };
+  };
+  const input = (project: Project): FeedInput => ({ project, assets: ASSETS, size: SIZE, media: { 'asset-talk': 'PH-1' }, geometry: {} });
+  const fire = clipOf(PROJECT, 'fire');
+  const projectX = Math.round(fire.overlay!.x * SIZE.w);
+
+  for (const finish of ['cancel', 'tap-release', 'release-on-start'] as const) {
+    it(`sends the project's plan again after a ${finish}`, () => {
+      const timers = timersOf();
+      const sent: RenderPlan[] = [];
+      const commits: unknown[] = [];
+      const feeder = new PlanFeeder({ send: (plan) => sent.push(plan), ...timers });
+      feeder.update(input(PROJECT));
+      timers.run();
+      const drag = new HandleDrag({
+        clipId: 'fire', start: fire.overlay!, stage: { width: 270, height: 480 }, mode: 'move',
+        onPreview: (placement) => feeder.drag(fire, placement),
+        onCommit: (ops) => commits.push(ops),
+        onEnd: (committed) => feeder.endDrag(committed),
+      });
+      drag.move(2, 0);
+      drag.move(40, 30);
+      const box = (plan: RenderPlan): number => plan.overlays.find((overlay) => overlay.id === 'fire')!.box.x;
+      expect(box(sent.at(-1)!)).not.toBe(projectX);
+      if (finish === 'cancel') drag.cancel();
+      else if (finish === 'tap-release') { drag.move(2, 0); drag.release(2, 0); }
+      else { drag.move(0, 0); drag.release(0, 0); }
+      expect(commits).toEqual([]);
+      // At once, not after a window: nothing is coming to replace the dragged position.
+      expect(box(sent.at(-1)!)).toBe(projectX);
+      const count = sent.length;
+      timers.run();
+      feeder.update(input(PROJECT));
+      timers.run();
+      expect(sent).toHaveLength(count);
+      expect(sent.map((plan) => plan.buildSeq)).toEqual(sent.map((_, index) => index + 1));
+    });
+  }
+
+  it('lets a commit painted inside the window win over the pre-drag project', () => {
+    const timers = timersOf();
+    const sent: RenderPlan[] = [];
+    const feeder = new PlanFeeder({ send: (plan) => sent.push(plan), ...timers });
+    feeder.update(input(PROJECT));
+    timers.run();
+    let project = PROJECT;
+    const drag = new HandleDrag({
+      clipId: 'fire', start: fire.overlay!, stage: { width: 270, height: 480 }, mode: 'move',
+      onPreview: (placement) => feeder.drag(fire, placement),
+      // The editor's paint lands after the release (a React render later), inside the window.
+      onCommit: (ops) => { project = applyBatch(project, ops); },
+      onEnd: (committed) => feeder.endDrag(committed),
+    });
+    drag.move(54, 0);
+    drag.release(54, 0);
+    const dragged = sent.at(-1)!.overlays.find((overlay) => overlay.id === 'fire')!.box.x;
+    feeder.update(input(project));
+    timers.run();
+    const final = sent.at(-1)!.overlays.find((overlay) => overlay.id === 'fire')!.box.x;
+    expect(final).toBe(dragged);
+    // Never back to the old position in between.
+    expect(sent.slice(-2).map((plan) => plan.overlays.find((overlay) => overlay.id === 'fire')!.box.x)).not.toContain(projectX);
+  });
+});
+
+describe('logging', () => {
+  it('never logs a media token', () => {
+    expect(redactMediaToken('setPlan: could not open https://api.test/assets/a/proxy.mp4?k=eyJhbGciOi.x.y failed'))
+      .toBe('setPlan: could not open https://api.test/assets/a/proxy.mp4?k=[redacted] failed');
+    expect(redactMediaToken('https://h/x?a=1&k=abc&b=2')).toBe('https://h/x?a=1&k=[redacted]&b=2');
+    expect(urlOrigin('https://api.editify.app/v1')).toBe('https://api.editify.app');
+    expect(urlOrigin('http://192.168.1.4:3001')).toBe('http://192.168.1.4:3001');
+    expect(urlOrigin('file:///x')).toBeNull();
+  });
+
+  it('keeps the last plan in a store only its subscribers hear', () => {
+    const store = createPlanStore();
+    let heard = 0;
+    const stop = store.subscribe(() => { heard += 1; });
+    const plan = buildPreviewPlan(PROJECT, ASSETS, SIZE, {}, { revision: 1, buildSeq: 1 })!;
+    store.set(plan);
+    expect(store.get()).toBe(plan);
+    stop();
+    store.set(plan);
+    expect(heard).toBe(1);
   });
 });
 

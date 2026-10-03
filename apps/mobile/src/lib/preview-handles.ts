@@ -128,8 +128,11 @@ export interface HandleDragOptions {
   onPreview: (placement: OverlayPlacement) => void;
   /** Release after a real change: the ops to commit (one set_overlay, as the RN Sticker sends). */
   onCommit: (ops: Operation[]) => void;
-  /** Release or cancel: the drag is over (preview can stop overriding the plan). */
-  onEnd?: () => void;
+  /**
+   * Release or cancel: the drag is over. `committed` says whether onCommit just ran (it runs
+   * first, so the commit is painted before the preview stops overriding the plan).
+   */
+  onEnd?: (committed: boolean) => void;
 }
 
 /** Tap, not drag: under this many points of travel a release only selects. */
@@ -167,10 +170,13 @@ export class HandleDrag {
     const { start, clipId, mode } = this.options;
     const next = this.placementAt(dx, dy);
     const tapped = mode === 'move' && Math.abs(dx) < TAP_SLOP && Math.abs(dy) < TAP_SLOP;
-    this.options.onEnd?.();
-    if (tapped || samePlacement(next, start)) return undefined;
+    if (tapped || samePlacement(next, start)) {
+      this.options.onEnd?.(false);
+      return undefined;
+    }
     const ops: Operation[] = [{ type: 'set_overlay', params: { clipId, overlay: next } }];
     this.options.onCommit(ops);
+    this.options.onEnd?.(true);
     return ops;
   }
 
@@ -178,7 +184,7 @@ export class HandleDrag {
   cancel(): void {
     if (this.done) return;
     this.done = true;
-    this.options.onEnd?.();
+    this.options.onEnd?.(false);
   }
 }
 

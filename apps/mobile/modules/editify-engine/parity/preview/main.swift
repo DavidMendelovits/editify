@@ -14,8 +14,12 @@
 //    frame redraws; a structural update (a trimmed clip) rebuilds the item and
 //    keeps the time, paused and playing; a stale (revision, buildSeq) is dropped;
 //    60 Hz box updates for 2 s while playing (latencies, frame intervals, stalls,
-//    an audio tap's continuity); an audio-parameter swap while playing; a proxy
-//    replaced by its original reloads only that asset.
+//    an audio tap's continuity, sticker bitmaps from the cache); a burst of
+//    audio-parameter edits while playing (one deferred mix swap); a proxy replaced
+//    by its original reloads only that asset.
+// 4. Lifecycle: suspended (backgrounded) plans and seeks wait for resume; a failed
+//    item is rebuilt once, a second failure reported; park drops the item and
+//    trims caches, unpark restores the time; teardown mid-build installs nothing.
 // Prints one JSON report on stdout; server/test/native-preview.test.ts asserts on it.
 
 import AVFoundation
@@ -216,7 +220,7 @@ final class Rig {
       switch event {
       case .plan(let applied): self.applied.append(applied)
       case .time(_, let playing): if !playing { self.seeksLanded += 1 }
-      case .stall: self.stalls += 1
+      case .buffering(let on): if on { self.stalls += 1 }
       case .ended: self.ends += 1
       case .error(let message): self.errors.append(message)
       case .ready: self.readies += 1
@@ -464,6 +468,7 @@ func run() async throws -> [String: Any] {
     let output = rig.output!
     var frameWalls: [Double] = []
     let stallsBefore = rig.stalls
+    let drawsBefore = rig.player.graphics.draws
     let appliedBefore = rig.applied.count
     let startWall = CFAbsoluteTimeGetCurrent()
     let startTime = rig.player.currentTime
@@ -502,22 +507,96 @@ func run() async throws -> [String: Any] {
       "audioSwaps": updates.filter(\.audioSwapped).count,
       "latencyMs": stats(updates.map(\.milliseconds)), "decodeMs": stats(decodeMs),
       "stalls": rig.stalls - stallsBefore, "wallSeconds": endWall - startWall, "playedSeconds": played,
+      // The emoji and callout stay put while the logo moves: their bitmaps come from the cache.
+      "stickerRedraws": rig.player.graphics.draws - drawsBefore, "fps": 30,
       "frames": frameWalls.count, "frameIntervalMs": stats(intervals), "playingAfter": rig.player.player.rate > 0,
       "audio": tapContinuity(rig.tap, from: startWall + 0.05, to: endWall),
     ] as [String: Any]
 
-    // An audio-parameter edit while playing (the music gain): the mix is swapped on the same item.
-    var quieter = base
-    edit(&quieter, ["audio", 0, "gainKeys", 0, "gain"], 0.5)
+    // A burst of audio-parameter edits while playing (a gain slider): one mix swap, after the burst.
+    let swapsBefore = rig.player.audioMixSwaps
     let swapWall = CFAbsoluteTimeGetCurrent()
-    let swapped = try await rig.apply(try decode(quieter, revision: 2, buildSeq: next()))
+    var burst: [PlanPlayer.Applied] = []
+    for step in 1...5 {
+      var quieter = base
+      edit(&quieter, ["audio", 0, "gainKeys", 0, "gain"], 1 - 0.1 * Double(step))
+      burst.append(try await rig.apply(try decode(quieter, revision: 2, buildSeq: next())))
+      try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+    let swapsDuringBurst = rig.player.audioMixSwaps - swapsBefore
+    _ = await rig.until(2) { rig.player.audioMixSwaps > swapsBefore }
+    let swapLandedMs = (CFAbsoluteTimeGetCurrent() - swapWall) * 1000
     try? await Task.sleep(nanoseconds: 500_000_000)
     report["audioSwap"] = [
-      "mode": swapped.mode.rawValue, "audioSwapped": swapped.audioSwapped, "playingAfter": rig.player.player.rate > 0,
+      "modes": Array(Set(burst.map(\.mode.rawValue))).sorted(), "deferred": burst.filter(\.audioDeferred).count, "edits": burst.count,
+      "swapsDuringBurst": swapsDuringBurst, "swaps": rig.player.audioMixSwaps - swapsBefore, "swapLandedMs": swapLandedMs,
+      "playingAfter": rig.player.player.rate > 0,
       "audio": tapContinuity(rig.tap, from: swapWall - 0.2, to: CFAbsoluteTimeGetCurrent()),
     ] as [String: Any]
     rig.player.pause()
     rig.player.teardown()
+  }
+
+  // MARK: Lifecycle: background suspend, item failure retried once, parked, torn down mid-build
+  do {
+    let rig = Rig()
+    let base = try fixture("overlays")
+    try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
+    let k = 40
+    let time = CMTime(value: CMTimeValue(k), timescale: 30)
+    _ = try await rig.frame(at: k, fps: 30)
+    // Backgrounded: a plan and a seek wait; nothing is composited until resume.
+    rig.player.suspend()
+    let appliedBefore = rig.applied.count
+    var moved = base
+    edit(&moved, ["overlays", 0, "box", "y"], 560)
+    let accepted = rig.player.setPlan(try decode(moved, revision: 1, buildSeq: next()), media: mediaRefs)
+    rig.player.seek(to: 0.5, exact: true)
+    try? await Task.sleep(nanoseconds: 300_000_000)
+    let appliedWhileSuspended = rig.applied.count - appliedBefore
+    let framesWhileSuspended = rig.output?.hasNewPixelBuffer(forItemTime: time) ?? false
+    rig.player.seek(to: Double(k) / 30, exact: true)
+    rig.player.resume()
+    _ = await rig.until(3) { rig.applied.count > appliedBefore }
+    let resumedFrame = await rig.newFrame(at: time)
+    var suspend: [String: Any] = ["accepted": accepted, "appliedWhileSuspended": appliedWhileSuspended, "frameWhileSuspended": framesWhileSuspended,
+                                  "appliedAfterResume": rig.applied.count - appliedBefore]
+    if let resumedFrame { suspend["movedAfterResume"] = linear(resumedFrame, 55, 520) }
+
+    // An item failure (the GPU refused a render) rebuilds once at the same time; a second is reported.
+    let itemBefore = rig.player.player.currentItem
+    rig.player.simulateItemFailure()
+    _ = await rig.until(3) { rig.player.player.currentItem?.status == .readyToPlay && rig.player.player.currentItem !== itemBefore }
+    _ = await rig.until(2) { abs(rig.player.currentTime - Double(k) / 30) < 1e-3 }
+    let rebuiltItem = rig.player.player.currentItem !== itemBefore
+    let errorsAfterFirst = rig.errors.count
+    let timeAfterRetry = rig.player.currentTime
+    rig.player.simulateItemFailure()
+    _ = await rig.until(1) { rig.errors.count > errorsAfterFirst }
+    let failure: [String: Any] = ["rebuilt": rebuiltItem, "errorsAfterFirst": errorsAfterFirst, "timeAfterRetry": timeAfterRetry,
+                                  "errorsAfterSecond": rig.errors.count]
+
+    // Parked (the view left the window): no item, caches trimmed; back at the same time.
+    let parkedTime = rig.player.currentTime
+    rig.player.park()
+    let parked: [String: Any] = ["item": rig.player.player.currentItem != nil, "stickerBitmaps": rig.player.graphics.count]
+    rig.player.unpark()
+    _ = await rig.until(3) { rig.player.player.currentItem?.status == .readyToPlay }
+    _ = await rig.until(2) { abs(rig.player.currentTime - parkedTime) < 1e-3 }
+    report["lifecycle"] = [
+      "suspend": suspend, "failure": failure, "parked": parked,
+      "unparked": ["item": rig.player.player.currentItem != nil, "timeKept": abs(rig.player.currentTime - parkedTime) < 1e-3] as [String: Any],
+    ] as [String: Any]
+    rig.player.teardown()
+
+    // Torn down while a plan's sources load: nothing is installed or reported.
+    let gone = Rig()
+    gone.player.setPlan(try decode(base, revision: 1, buildSeq: 1), media: mediaRefs)
+    gone.player.teardown()
+    try? await Task.sleep(nanoseconds: 300_000_000)
+    var lifecycle = report["lifecycle"] as! [String: Any]
+    lifecycle["teardown"] = ["applied": gone.applied.count, "item": gone.player.player.currentItem != nil]
+    report["lifecycle"] = lifecycle
   }
 
   // MARK: 60 Hz box updates for 1 s while paused: the frame keeps redrawing (OV10)

@@ -270,18 +270,31 @@ export class PlanFeeder {
     this.seq += 1;
     this.current = patched;
     this.signature = undefined;
+    // Native now holds a position the project may never get (a cancelled drag): the project's
+    // plan goes again when the drag ends.
+    this.dirty = true;
     this.options.send(patched, this.input.media);
     return patched;
   }
 
-  /** The drag ended (released or cancelled): anything that changed meanwhile rebuilds now. */
-  endDrag(): void {
+  /**
+   * The drag ended. Committed (a set_overlay is being painted): the project's plan follows
+   * after the coalescing window, so the painted placement is what it sends. Not committed
+   * (cancelled, a tap, back where it started): the project's plan goes now, taking native back
+   * off the dragged position.
+   */
+  endDrag(committed: boolean): void {
     if (this.dragging === undefined) return;
     this.dragging = undefined;
-    if (this.dirty && this.timer === undefined) {
-      this.flush();
+    if (!this.dirty) return;
+    if (this.timer !== undefined) this.options.clearTimer(this.timer);
+    this.timer = undefined;
+    if (committed) {
       this.arm();
+      return;
     }
+    this.flush();
+    this.arm();
   }
 
   dispose(): void {
@@ -323,6 +336,46 @@ export class PlanFeeder {
       this.arm();
     }, this.options.debounceMs);
   }
+}
+
+// ─── The plan the handles draw from ───
+
+/**
+ * The last plan sent, as a tiny external store: a drag sends 60 plans a second, and only the
+ * handles (which draw from it) should re-render for each, not the whole preview.
+ */
+export interface PlanStore {
+  get: () => RenderPlan | undefined;
+  set: (plan: RenderPlan) => void;
+  subscribe: (listener: () => void) => () => void;
+}
+
+export function createPlanStore(): PlanStore {
+  let current: RenderPlan | undefined;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => current,
+    set: (plan) => {
+      current = plan;
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+  };
+}
+
+/** `scheme://host[:port]` of a URL (RN's URL class has no `origin`), or null. */
+export function urlOrigin(url: string): string | null {
+  return /^(https?:\/\/[^/?#]+)/i.exec(url)?.[1] ?? null;
+}
+
+// ─── Logging ───
+
+/** Text safe to log or send as telemetry: any media token (a `k=` query, see api.ts mediaUrl) blanked. */
+export function redactMediaToken(text: string): string {
+  return text.replace(/([?&]k=)[^&\s"')]*/g, '$1[redacted]');
 }
 
 // ─── The clock ───

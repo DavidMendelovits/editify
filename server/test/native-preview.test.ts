@@ -23,7 +23,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * absolute difference <= 0.01, blurred max <= 0.1.
  *
  * Timing numbers (update latency, frame intervals) are reported and bounded
- * loosely: a CI VM renders on the CPU, a phone is the real measure (P7).
+ * loosely, as ratios where they can be: a CI VM may render at ~20 fps on the
+ * CPU, and a phone is the real measure (P7). The audio checks skip, saying so,
+ * on a runner whose audio tap gets no callbacks (no output device).
  */
 const root = resolve(fileURLToPath(import.meta.url), '../../..');
 const engine = join(root, 'apps/mobile/modules/editify-engine');
@@ -52,8 +54,18 @@ interface Report {
   drag60: {
     sent: number; applied: number; modes: string[]; audioSwaps: number; latencyMs: Stats; decodeMs: Stats; stalls: number;
     wallSeconds: number; playedSeconds: number; frames: number; frameIntervalMs: Stats; playingAfter: boolean; audio: Continuity;
+    stickerRedraws: number; fps: number;
   };
-  audioSwap: { mode: string; audioSwapped: boolean; playingAfter: boolean; audio: Continuity };
+  audioSwap: {
+    modes: string[]; edits: number; deferred: number; swapsDuringBurst: number; swaps: number; swapLandedMs: number; playingAfter: boolean; audio: Continuity;
+  };
+  lifecycle: {
+    suspend: { accepted: boolean; appliedWhileSuspended: number; frameWhileSuspended: boolean; appliedAfterResume: number; movedAfterResume?: Vec };
+    failure: { rebuilt: boolean; errorsAfterFirst: number; errorsAfterSecond: number; timeAfterRetry: number };
+    parked: { item: boolean; stickerBitmaps: number };
+    unparked: { item: boolean; timeKept: boolean };
+    teardown: { applied: number; item: boolean };
+  };
   pausedDrag60: { sent: number; applied: number; refreshedFrames: number; refreshIntervalMs: Stats; stillAtTime: boolean; finalAtLast?: Vec };
   proxySwap: { first: string; second: string; proxyCode: number; reloaded: boolean; othersKept: boolean; originalCompare: Compare };
   renderCap: { scale4k: number; scale4kInView: number };
@@ -83,6 +95,8 @@ beforeAll(async () => {
     pausedRefreshIntervalMs: report.pausedDrag60.refreshIntervalMs,
     structuralResumeMs: report.structural.playing.movingMs,
     audioSwapJumpMs: report.audioSwap.audio.largestSourceJumpMs,
+    audioSwapLandedMs: report.audioSwap.swapLandedMs,
+    tapCallbacks: report.drag60.audio.callbacks,
   }));
 }, 600000);
 
@@ -148,7 +162,7 @@ describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
 
   it('takes 60 Hz box updates while playing without stalling', () => {
     const drag = report.drag60;
-    expect(drag.sent).toBeGreaterThanOrEqual(110);
+    expect(drag.sent).toBeGreaterThanOrEqual(drag.wallSeconds * 50);
     // Coalesced at most: never more applied than sent, and the last one always lands.
     expect(drag.applied).toBeGreaterThan(0);
     expect(drag.applied).toBeLessThanOrEqual(drag.sent);
@@ -156,30 +170,56 @@ describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
     expect(drag.audioSwaps).toBe(0);
     expect(drag.stalls).toBe(0);
     expect(drag.playingAfter).toBe(true);
-    expect(drag.playedSeconds).toBeGreaterThan(1.7);
-    expect(drag.frames).toBeGreaterThan(40);
-    expect(drag.latencyMs.p95).toBeLessThan(50);
+    // Playback kept pace with the wall clock, and frames kept coming (at least 15 fps on a slow VM).
+    expect(drag.playedSeconds / drag.wallSeconds).toBeGreaterThan(0.85);
+    expect(drag.frames / drag.wallSeconds).toBeGreaterThan(15);
+    expect(drag.latencyMs.p95).toBeLessThan(1000 / 60 * 3);
+    // Only the logo moved: the emoji and callout bitmaps came from the cache.
+    expect(drag.stickerRedraws).toBe(0);
   });
 
-  it('keeps the sound continuous while the video composition swaps 60 times a second', () => {
+  it('keeps the sound continuous while the video composition swaps 60 times a second', (ctx) => {
     const audio = report.drag60.audio;
-    if (audio.callbacks === 0) return; // no audio device on this runner: nothing to tap
+    if (audio.callbacks === 0) {
+      console.info('native preview: the audio tap got no callbacks on this runner (no output device); continuity unchecked');
+      ctx.skip();
+    }
     expect(audio.sourceJumps).toBe(0);
-    expect(audio.seconds).toBeGreaterThan(1.7);
+    expect(audio.seconds / report.drag60.wallSeconds).toBeGreaterThan(0.85);
     expect(audio.maxWallGapMs).toBeLessThan(250);
   });
 
-  it('keeps playing through an audio-parameter swap', () => {
-    // Replacing the item's audio mix restarts its render chain: the tap shows how far the
-    // sound jumps (about 170 ms on a Mac), reported for the phone check rather than bounded.
-    expect(report.audioSwap).toMatchObject({ mode: 'update', audioSwapped: true, playingAfter: true });
+  it('swaps the mix once after a burst of sound edits while playing, and keeps playing', (ctx) => {
+    const swap = report.audioSwap;
+    expect(swap.modes).toEqual(['update']);
+    expect(swap.deferred).toBe(swap.edits);
+    expect(swap.swapsDuringBurst).toBe(0);
+    expect(swap.swaps).toBe(1);
+    expect(swap.playingAfter).toBe(true);
+    if (swap.audio.callbacks === 0) {
+      console.info('native preview: the audio tap got no callbacks on this runner; the swap skip is unmeasured');
+      ctx.skip();
+    }
+    // Replacing a mix restarts the audio chain: a skip, bounded.
+    expect(Math.abs(swap.audio.largestSourceJumpMs)).toBeLessThan(300);
+  });
+
+  it('waits out the background, retries a failed item once, parks and tears down cleanly', () => {
+    const { suspend, failure, parked, unparked, teardown } = report.lifecycle;
+    expect(suspend).toMatchObject({ accepted: true, appliedWhileSuspended: 0, frameWhileSuspended: false, appliedAfterResume: 1 });
+    expect(Math.min(...suspend.movedAfterResume!)).toBeGreaterThan(0.95);
+    expect(failure).toMatchObject({ rebuilt: true, errorsAfterFirst: 0, errorsAfterSecond: 1 });
+    expect(failure.timeAfterRetry).toBeCloseTo(40 / 30, 6);
+    expect(parked).toEqual({ item: false, stickerBitmaps: 0 });
+    expect(unparked).toEqual({ item: true, timeKept: true });
+    expect(teardown).toEqual({ applied: 0, item: false });
   });
 
   it('redraws the paused frame through 60 Hz box updates', () => {
     const paused = report.pausedDrag60;
     expect(paused.stillAtTime).toBe(true);
     expect(paused.applied).toBeGreaterThan(0);
-    expect(paused.refreshedFrames).toBeGreaterThan(paused.sent / 4);
+    expect(paused.refreshedFrames).toBeGreaterThan(paused.sent / 6);
     expect(Math.min(...paused.finalAtLast!)).toBeGreaterThan(0.95);
   });
 

@@ -294,38 +294,45 @@ public class EditifyEngineModule: Module {
     View(EditifyPlayerView.self) {
       Events("onTime", "onReady", "onStall", "onEnded", "onError", "onPlan")
 
+      /// The app's API origin (EXPO_PUBLIC_API_URL): remote media must come from it.
+      Prop("apiOrigin") { (view: EditifyPlayerView, origin: String?) in
+        view.apiOrigin = origin.flatMap(URL.init(string:))
+      }
+
       /// A RenderPlan v1 (JSON, built for the view's size) and its media map {assetId: ref from
-      /// resolveMedia 'preview'}. Decoded and checked here, off the main thread; {accepted: false}
-      /// when its (revision, buildSeq) is not newer than the last one this view accepted. How it
-      /// was applied (in place or rebuilt) arrives as onPlan. Rejects a bad plan or media map.
+      /// resolveMedia 'preview'}. Decoded here, off the main thread; the map is checked on it.
+      /// {accepted: false} when its (revision, buildSeq) is not newer than the last one this view
+      /// accepted. How it was applied (in place or rebuilt) arrives as onPlan. Rejects a bad plan
+      /// or media map.
       AsyncFunction("setPlan") { (view: EditifyPlayerView, planJson: String, media: [String: Any]) async throws -> [String: Any] in
         let plan: RenderPlan
         do { plan = try RenderPlan.decode(Data(planJson.utf8)) } catch { throw PreviewMedia.Rejected(message: error.localizedDescription) }
-        let refs = try PreviewMedia.validate(media, for: plan)
-        let accepted = await MainActor.run { view.setPlan(plan, media: refs) }
+        let accepted = try await MainActor.run { try view.setPlan(plan, media: media) }
         return ["accepted": accepted]
       }
 
+      // The transport runs in call order on the main queue (FIFO): a pause sent after a play
+      // can never land first.
       AsyncFunction("play") { (view: EditifyPlayerView) in
-        await MainActor.run { view.play() }
-      }
+        MainActor.assumeIsolated { view.play() }
+      }.runOnQueue(.main)
 
       AsyncFunction("pause") { (view: EditifyPlayerView) in
-        await MainActor.run { view.pause() }
-      }
+        MainActor.assumeIsolated { view.pause() }
+      }.runOnQueue(.main)
 
       /// Seeks coalesce natively (one in flight, the newest queued): a scrub can call this per frame.
       AsyncFunction("seek") { (view: EditifyPlayerView, time: Double, exact: Bool) in
-        await MainActor.run { view.seek(time, exact: exact) }
-      }
+        MainActor.assumeIsolated { view.seek(time, exact: exact) }
+      }.runOnQueue(.main)
 
       AsyncFunction("setMuted") { (view: EditifyPlayerView, muted: Bool) in
-        await MainActor.run { view.setMuted(muted) }
-      }
+        MainActor.assumeIsolated { view.setMuted(muted) }
+      }.runOnQueue(.main)
 
       AsyncFunction("currentTime") { (view: EditifyPlayerView) -> Double in
-        await MainActor.run { view.currentTime }
-      }
+        MainActor.assumeIsolated { view.currentTime }
+      }.runOnQueue(.main)
     }
   }
 

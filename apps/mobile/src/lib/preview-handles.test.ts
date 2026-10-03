@@ -105,6 +105,9 @@ describe('HandleDrag', () => {
     expect(onCommit).toHaveBeenCalledOnce();
     expect(onCommit).toHaveBeenCalledWith(ops);
     expect(onEnd).toHaveBeenCalledOnce();
+    expect(onEnd).toHaveBeenCalledWith(true);
+    // The commit is painted before the drag lets go of the plan.
+    expect(onCommit.mock.invocationCallOrder[0]!).toBeLessThan(onEnd.mock.invocationCallOrder[0]!);
     // A finished drag ignores late events.
     expect(drag.release(90, 0)).toBeUndefined();
     drag.move(90, 0);
@@ -137,5 +140,6 @@ describe('HandleDrag', () => {
     expect(drag.release(30, 30)).toBeUndefined();
     expect(onCommit).not.toHaveBeenCalled();
     expect(onEnd).toHaveBeenCalledOnce();
+    expect(onEnd).toHaveBeenCalledWith(false);
   });
 });
