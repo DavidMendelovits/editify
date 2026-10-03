@@ -31,6 +31,20 @@ REVIEW=$(node $S/build-review.mjs --video "$OUT/flow.mp4" --moments "$OUT/moment
 $S/serve-tailnet.sh "$(dirname "$REVIEW")"     # prints the URL to send
 ```
 
+## Profiling
+
+`--profile profile.json` adds a Profile section under the video: person time vs this replay (stacked bars), a timeline of person steps against server jobs and requests, each user wait with the server jobs that ran during it (run time, media-slot queue, idle), render speed (x realtime, seconds per output minute), the agent turn (tool calls, thoughts, ops) and per-route request stats (p50/p95, polling). Home cards show person time and render speed.
+
+```bash
+node $S/profile.mjs --timings timings.json --log server.ndjson [--chat chat.json] --out profile.json
+```
+
+- `timings.json`: the replay's steps (`human` with a person estimate, `wait` measured), `startedAtMs`, `render`
+- `server.ndjson`: the server's pino stdout; `{"msg":"media job", job, ms, waitMs, ok}` lines give the per-job breakdown. Without them (older server) the page says so and falls back to request data
+- `chat.json`: `GET /projects/:id/chat`, for the agent's trace
+- `apps/mobile/e2e/standup-replay.mjs --record --review` does all of this (and exports 1080p at the end; `--skip-render` to skip)
+- Tests: `node --test .claude/skills/mobile-verify/scripts/test/*.test.mjs`
+
 ## Moment kinds
 
 - `step`: something the flow did ("Opened project", "Imported memo")
@@ -45,4 +59,4 @@ Mark right after the UI shows the result, not when the command was sent. Asserti
 - `--hide-touches` is faster and more reliable for gesture-heavy simulator runs; drop it when taps should be visible
 - Serving: `serve-dir.mjs` (loopback, Range so video seeks) behind one `tailscale serve --http=8790` mapping. The Mac App Store tailscaled can't serve folders directly. Other `tailscale serve` mappings are never touched; ports via `REVIEWS_PORT` / `REVIEWS_LOCAL_PORT`
 - The loopback server is a background `node` process (pid in `~/editify-reviews/.server.pid`); `serve-tailnet.sh` restarts it if it's gone (e.g. after a reboot)
-- Room to build on: `review.json` per review is the data model; add fields there (pass/fail, logs, perf samples) and render them in `build-review.mjs`
+- Room to build on: `review.json` per review is the data model (it carries `profile` when given); add fields there and render them in `build-review.mjs`

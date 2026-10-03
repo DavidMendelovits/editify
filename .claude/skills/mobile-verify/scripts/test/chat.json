@@ -1,0 +1,62 @@
+[
+  {
+    "id": "m1",
+    "role": "user",
+    "content": "Use the standup clip preset",
+    "createdAt": "2023-11-14T22:14:00.000Z"
+  },
+  {
+    "id": "m2",
+    "role": "assistant",
+    "content": "Done.",
+    "createdAt": "2023-11-14T22:14:18.500Z",
+    "ops": [
+      {
+        "type": "a"
+      },
+      {
+        "type": "b"
+      },
+      {
+        "type": "c"
+      },
+      {
+        "type": "d"
+      }
+    ],
+    "trace": [
+      {
+        "kind": "thought",
+        "tool": "think",
+        "input": null,
+        "ok": true,
+        "summary": "plan"
+      },
+      {
+        "tool": "get_transcript",
+        "input": {},
+        "ok": true,
+        "summary": ""
+      },
+      {
+        "tool": "remove_silences",
+        "input": {},
+        "ok": false,
+        "summary": "retry"
+      },
+      {
+        "kind": "thought",
+        "tool": "think",
+        "input": null,
+        "ok": true,
+        "summary": "retry"
+      },
+      {
+        "tool": "remove_silences",
+        "input": {},
+        "ok": true,
+        "summary": ""
+      }
+    ]
+  }
+]

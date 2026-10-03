@@ -2,7 +2,7 @@
 // Stand-up workflow replay: the same flow a person does on the phone, driven
 // by agent-device against a local server, with every step timed.
 //
-//   node apps/mobile/e2e/standup-replay.mjs [--mode cold|warm] [--record] [--review]
+//   node apps/mobile/e2e/standup-replay.mjs [--mode cold|warm] [--record] [--review] [--skip-render]
 //
 //   cold  empty server: pick the 4K clip from the camera roll and the memo from
 //         Files, wait for real processing (what a person waits for today)
@@ -13,10 +13,14 @@
 // takes) or `wait` (product latency, measured from server state). The report
 // adds them up: "how long would this take a person" = human estimates + waits.
 //
-//   setup server ─▶ open app ─▶ steps (agent-device + server polling) ─▶ timings.json
-//                                                     └─(--record)─▶ review page
+//   setup server ─▶ open app ─▶ steps (agent-device + server polling) ─▶ export 1080p ─▶ timings.json
+//        └─ server.ndjson (pino log) ──────────────────────────────▶ profile.json ─(--record)─▶ review page
+//
+// The run dir keeps timings.json, server.ndjson, chat.json and profile.json (see
+// .claude/skills/mobile-verify/scripts/profile.mjs): which server jobs ran during
+// each wait, request/polling stats, render speed and the agent turn.
 import { execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +30,7 @@ const repo = resolve(here, '../../..');
 const args = process.argv.slice(2);
 const mode = args.includes('--mode') ? args[args.indexOf('--mode') + 1] : 'cold';
 const record = args.includes('--record');
+const exportRender = !args.includes('--skip-render');
 const SESSION = 'standup-replay';
 const DEVICE = process.env.SIM_DEVICE ?? 'iPhone 17 Pro Max';
 const API = 'http://127.0.0.1:3001';
@@ -68,11 +73,11 @@ async function human(name, humanSeconds, run, note) {
   console.log(`${start.toFixed(1).padStart(7)}s  human ${String(humanSeconds).padStart(4)}s  ${name}`);
 }
 /** Product latency: how long the app makes the person wait, measured from server state. */
-async function wait(name, run, note) {
+async function wait(name, run, note, tag) {
   const start = now();
   const value = await run();
   const seconds = now() - start;
-  steps.push({ name, kind: 'wait', start, seconds, note });
+  steps.push({ name, kind: 'wait', start, seconds, note, ...(tag ? { tag } : {}) });
   console.log(`${start.toFixed(1).padStart(7)}s  wait  ${seconds.toFixed(1).padStart(5)}s  ${name}`);
   return value;
 }
@@ -93,11 +98,16 @@ if (mode === 'warm') {
 } else {
   mkdirSync(dataDir, { recursive: true });
 }
+// stdout + stderr (pino JSON lines) go to the run dir for profile.mjs.
+const serverLog = join(out, 'server.ndjson');
+const serverLogFd = openSync(serverLog, 'w');
+const serverStartedAtMs = Date.now();
 const server = spawn('node', [...(envFile ? [`--env-file=${envFile}`] : []), '--import', 'tsx', 'src/index.ts'], {
   cwd: join(repo, 'server'),
   env: { ...process.env, EDITIFY_DATA_DIR: dataDir, MEDIA_IMPORT_DIR: MEDIA, PORT: '3001', EDITIFY_TOKEN: '', SUPABASE_URL: '' },
-  stdio: ['ignore', 'ignore', 'ignore'],
+  stdio: ['ignore', serverLogFd, serverLogFd],
 });
+closeSync(serverLogFd); // the child keeps its own copy
 process.on('exit', () => { try { server.kill(); } catch {} });
 await until(() => fetch(`${API}/presets`).then((r) => r.ok), { what: 'server', every: 300, timeout: 30000 });
 
@@ -167,12 +177,12 @@ if (mode === 'warm') {
     tap(ref); tap('label="Done"');
   });
   mark('Picked the clip');
-  const asset = await wait('Upload the clip', () => until(async () => (await api(`/assets?projectId=${projectId}`))[0], { what: 'upload' }));
+  const asset = await wait('Upload the clip', () => until(async () => (await api(`/assets?projectId=${projectId}`))[0], { what: 'upload' }), undefined, 'upload');
   mark('Clip uploaded', 'check');
   if (/Allow Full Access/.test(tryAd('snapshot', '-i') ?? '')) {
     await human('Allow full Photos access', 3, () => tap('label="Allow Full Access"'), 'iOS asks after the pick');
   }
-  await wait('Preview playable (server proxy)', () => until(async () => (await api(`/assets/${asset.id}`)).status === 'ready', { what: 'proxy', every: 1000 }), 'the 540p proxy gates the preview');
+  await wait('Preview playable (server proxy)', () => until(async () => (await api(`/assets/${asset.id}`)).status === 'ready', { what: 'proxy', every: 1000 }), 'the 540p proxy gates the preview', 'proxy');
   mark('Preview playable', 'check');
   await human('Pick the voice memo from Files', 6, async () => {
     tap('label="add media from documents"'); await sleep(1200);
@@ -187,7 +197,7 @@ if (mode === 'warm') {
   await wait('Memo uploaded and auto-synced', () => until(async () => {
     const project = await api(`/projects/${projectId}`);
     return project.tracks.flatMap((t) => t.clips).some((c) => c.assetId && c.start > 50 && c.start < 70) && project;
-  }, { what: 'sync' }));
+  }, { what: 'sync' }), undefined, 'sync');
   mark('Memo synced', 'check');
 }
 
@@ -211,18 +221,41 @@ mark('Sent to the agent');
 await wait('Agent edits the project', () => until(async () => {
   const messages = await api(`/projects/${projectId}/chat`);
   return messages.length >= before + 2 && messages.at(-1).role === 'assistant';
-}, { what: 'agent', every: 1000 }));
+}, { what: 'agent', every: 1000 }), undefined, 'agent');
 mark('Agent done', 'check');
 await human('Watch the result', 10, async () => { for (let i = 0; i < 4; i += 1) ad('scroll', 'up', '4000'); tap('label="play"'); await sleep(10000); tryAd('press', 'label="pause"'); });
 
 if (record) ad('record', 'stop');
 tryAd('close');
+
+// Export: the same request the export sheet sends, then the wait for the master.
+// Driven through the API (the recording has stopped), timed like any other step.
+let render;
+if (exportRender) {
+  const projectSeconds = (await api(`/projects/${projectId}`)).duration;
+  let queued;
+  await human('Start the 1080p export', 3, async () => {
+    queued = await api(`/projects/${projectId}/render`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ resolution: '1080p' }) });
+  }, 'open export, pick 1080p, tap export (sent through the API)');
+  const renderStart = now();
+  const finished = await wait('Render 1080p', () => until(async () => {
+    const row = await api(`/renders/${queued.id}`);
+    return (row.status === 'done' || row.status === 'error') && row;
+  }, { what: 'render', every: 1000, timeout: 1_800_000 }), 'POST /projects/:id/render until GET /renders/:id is done', 'render');
+  const seconds = now() - renderStart;
+  render = { id: queued.id, resolution: finished.resolution, status: finished.status, seconds, projectSeconds,
+    xRealtime: projectSeconds ? projectSeconds / seconds : null, secondsPerOutputMinute: projectSeconds ? seconds / (projectSeconds / 60) : null,
+    ...(finished.error ? { error: finished.error } : {}) };
+  console.log(`render ${finished.status}: ${projectSeconds}s of output in ${seconds.toFixed(1)}s${render.xRealtime ? ` (${render.xRealtime.toFixed(2)}x realtime, ${render.secondsPerOutputMinute.toFixed(1)}s per output minute)` : ''}`);
+}
+// The agent's trace (tool calls, thoughts, ops) for the profile.
+try { writeFileSync(join(out, 'chat.json'), JSON.stringify(await api(`/projects/${projectId}/chat`), null, 2)); } catch {}
 server.kill();
 
 // ── report ─────────────────────────────────────────────────────────────────
 const sum = (kind, field) => steps.filter((s) => s.kind === kind).reduce((total, s) => total + s[field], 0);
 const report = {
-  mode, at: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
+  mode, at: new Date().toISOString(), startedAtMs: t0, server: { startedAtMs: serverStartedAtMs, log: 'server.ndjson' }, ...(render ? { render } : {}), commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
   steps, totals: {
     runSeconds: now(), productWaitSeconds: sum('wait', 'seconds'), automationSeconds: sum('human', 'seconds'),
     humanEstimateSeconds: sum('human', 'humanSeconds'), personSeconds: sum('human', 'humanSeconds') + sum('wait', 'seconds'),
@@ -234,8 +267,17 @@ console.log(`\n| step | kind | measured | a person |\n|---|---|---|---|`);
 for (const s of steps) console.log(`| ${s.name} | ${s.kind} | ${s.seconds.toFixed(1)}s | ${(s.kind === 'wait' ? s.seconds : s.humanSeconds).toFixed(1)}s |`);
 console.log(`\nproduct waits ${fmt(report.totals.productWaitSeconds)} · a person ~${fmt(report.totals.personSeconds)} · this replay ${fmt(report.totals.runSeconds)}`);
 console.log(`timings: ${join(out, 'timings.json')}`);
+await sleep(300); // let the killed server's last log lines land
+const profilePath = join(out, 'profile.json');
+let profiled = false;
+try {
+  execFileSync('node', [join(S, 'profile.mjs'), '--timings', join(out, 'timings.json'), '--log', serverLog, '--chat', join(out, 'chat.json'), '--out', profilePath], { stdio: 'ignore' });
+  profiled = true;
+  console.log(`profile: ${profilePath}`);
+} catch (error) { console.error(`profile failed: ${error.message}`); }
 if (record && args.includes('--review')) {
-  const page = execFileSync('node', [join(S, 'build-review.mjs'), '--video', video, '--moments', join(out, 'moments.json'), '--slug', `standup-replay-${mode}`, '--meta', `mode=${mode}`, '--meta', `commit=${report.commit}`, '--meta', `person=~${fmt(report.totals.personSeconds)}`], { encoding: 'utf8' }).trim();
+  const page = execFileSync('node', [join(S, 'build-review.mjs'), '--video', video, '--moments', join(out, 'moments.json'), '--slug', `standup-replay-${mode}`, '--meta', `mode=${mode}`, '--meta', `commit=${report.commit}`, '--meta', `person=~${fmt(report.totals.personSeconds)}`,
+    ...(render?.xRealtime ? ['--meta', `render=${render.xRealtime.toFixed(2)}x`] : []), ...(profiled ? ['--profile', profilePath] : [])], { encoding: 'utf8' }).trim();
   console.log(execFileSync(join(S, 'serve-tailnet.sh'), [dirname(page)], { encoding: 'utf8' }).trim());
 }
 process.exit(0);
