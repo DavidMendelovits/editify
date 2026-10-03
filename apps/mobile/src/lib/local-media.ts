@@ -34,7 +34,7 @@
  * can have changed under it. Paths are stored relative to the native media root
  * (`mediaRoot()`), because the app container's absolute path changes on every update.
  */
-import type { AssetRef } from '@editify/shared';
+import type { PlanAssetRef } from '@editify/shared';
 
 // ─── Types shared with the native engine (structural, so tests need no native module) ───
 
@@ -370,7 +370,7 @@ export type ServerReason =
   | 'file-missing'  // the app copy was removed (only when there is no PHAsset to fall back on)
   | 'unreadable';   // the source is there but couldn't be opened
 
-interface ResolvedBase { assetId: string; kind: AssetRef['kind'] }
+interface ResolvedBase { assetId: string; kind: PlanAssetRef['kind'] }
 
 export type ResolvedMedia =
   /** The PHAsset original, still the uploaded clip. `ref` is the PHAsset id. */
@@ -397,7 +397,7 @@ export function absoluteUri(native: Pick<MediaNative, 'mediaRoot'>, relative: st
   return `${root.endsWith('/') ? root : `${root}/`}${relative}`;
 }
 
-export async function resolveMedia(ref: AssetRef, deps: MediaDeps, options: ResolveOptions = {}): Promise<ResolvedMedia> {
+export async function resolveMedia(ref: PlanAssetRef, deps: MediaDeps, options: ResolveOptions = {}): Promise<ResolvedMedia> {
   const base: ResolvedBase = { assetId: ref.id, kind: ref.kind };
   const row = await deps.store.lookup(ref.id);
   if (!row) return { ...base, state: 'server', reason: 'no-row' };
@@ -427,7 +427,7 @@ export async function resolveMedia(ref: AssetRef, deps: MediaDeps, options: Reso
  * iCloud, server) is returned untouched for the caller to deal with.
  */
 export async function analyzeMedia(
-  ref: AssetRef,
+  ref: PlanAssetRef,
   deps: MediaDeps,
   parts: string[] | null = null,
   options: Record<string, unknown> | null = null,
@@ -705,7 +705,7 @@ export interface ImportCandidate {
   /** The picked/shared/recorded file; empty or a blob: URL when there is none on disk. */
   uri: string;
   name: string;
-  kind: AssetRef['kind'];
+  kind: PlanAssetRef['kind'];
   origin: ImportOrigin;
   /** ImagePicker's `assetId` (a PHAsset localIdentifier), when it gave one. */
   phLocalId?: string | null;
@@ -813,7 +813,7 @@ async function fingerprintOf(native: MediaNative, uri: string): Promise<MediaFin
 }
 
 /** Timeline kind from a MIME type, falling back to the extension. */
-export function mediaKindOf(mimeType: string | undefined | null, name: string): AssetRef['kind'] {
+export function mediaKindOf(mimeType: string | undefined | null, name: string): PlanAssetRef['kind'] {
   if (mimeType?.startsWith('image/')) return 'image';
   if (mimeType?.startsWith('audio/')) return 'audio';
   if (mimeType?.startsWith('video/')) return 'video';
