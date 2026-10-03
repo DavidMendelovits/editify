@@ -7,6 +7,7 @@ import {
   type AnalysisBundle,
 } from '@editify/shared';
 import type { AgentService } from '../agent/service.js';
+import { TurnCapacityError, TurnLockUnavailableError } from '../db/pg-turn-lock.js';
 
 /** How long a bundle and a finished proposal are remembered: a few retries' worth, not a session. */
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -97,9 +98,30 @@ class BundleCache {
   }
 }
 
+/** One turn in flight per (user, project). */
+export interface TurnLock {
+  /** A release function, or undefined when a turn already holds this project. */
+  tryAcquire(user: string, projectId: string): Promise<(() => Promise<void>) | undefined>;
+}
+
+/** This process's memory: exact on one machine, and the fallback when DATABASE_URL is unset. */
+export function memoryTurnLock(): TurnLock {
+  const running = new Set<string>();
+  return {
+    async tryAcquire(user, projectId) {
+      const key = `${user}\u0000${projectId}`;
+      if (running.has(key)) return undefined;
+      running.add(key);
+      return async () => { running.delete(key); };
+    },
+  };
+}
+
 export interface AgentTurnOptions {
   rate?: { capacity: number; refillPerSecond: number };
   now?: () => number;
+  /** Shared across machines when Postgres is configured (db/pg-turn-lock.ts). */
+  lock?: TurnLock;
 }
 
 /**
@@ -116,19 +138,23 @@ export interface AgentTurnOptions {
  *     │ (only now is an inline bundle cached: a refused request leaves nothing behind)
  *   run the turn ─▶ { proposal, bundleDigest }
  *
- * ponytail: the bundle cache, idempotency record, project lock and rate
- * buckets are this process's memory, which is exact on one machine. With N
- * Fly machines (decision 4A) a retry or a second turn can land elsewhere: the
- * lock moves to a Postgres advisory lock and the rest to a shared store when
- * project sync moves to Postgres (T9). A bundle miss already degrades to a
- * 409 the client answers by resending it.
+ * The project lock is a Postgres advisory lock when DATABASE_URL is set, so
+ * it holds across N Fly machines (decision 4A), and this process's memory
+ * otherwise.
+ *
+ * ponytail: the bundle cache, idempotency record and rate buckets are still
+ * this process's memory, exact on one machine. With N machines a retry can
+ * land elsewhere and run the model again (the phone still commits a proposal
+ * once, deduped by its id), and the rate allowance is per machine. Move them
+ * to a shared store if that cost shows up. A bundle miss already degrades to
+ * a 409 the client answers by resending it.
  */
 export function registerAgentTurnRoutes(app: FastifyInstance, agent: AgentService, options: AgentTurnOptions = {}): void {
   const now = options.now ?? Date.now;
   const rate = options.rate ?? DEFAULT_RATE;
   const bundles = new BundleCache(now);
   const proposals = new TtlCache<Promise<AgentTurnResponse>>(PROPOSAL_LIMIT, now);
-  const running = new Set<string>();
+  const lock = options.lock ?? memoryTurnLock();
   const buckets = new Map<string, { tokens: number; at: number }>();
 
   /** Seconds until the user may start another turn; 0 takes one now. */
@@ -172,19 +198,33 @@ export function registerAgentTurnRoutes(app: FastifyInstance, agent: AgentServic
       bundleDigest = body.bundleDigest;
     }
 
-    const lockKey = `${user}\u0000${body.snapshot.project.id}`;
-    if (running.has(lockKey)) {
+    let release: (() => Promise<void>) | undefined;
+    try {
+      release = await lock.tryAcquire(user, body.snapshot.project.id);
+    } catch (error) {
+      if (error instanceof TurnCapacityError) {
+        return await reply.code(503).header('retry-after', '10').send({ error: error.message, code: 'capacity' });
+      }
+      if (error instanceof TurnLockUnavailableError) {
+        return await reply.code(503).header('retry-after', '10').send({ error: error.message, code: 'lock_unavailable' });
+      }
+      throw error;
+    }
+    if (!release) {
+      // The holder may be this very proposal, delivered twice at once: answer with its run.
+      const inFlight = proposals.get(turnKey);
+      if (inFlight) return await inFlight;
       return await reply.code(409).send({ error: 'An AI edit is already running on this project.', code: 'busy' });
     }
     const wait = takeToken(user);
     if (wait > 0) {
+      await release();
       const retryAfter = Math.ceil(wait);
       return await reply.code(429).header('retry-after', String(retryAfter))
         .send({ error: `Too many AI edits in a row. Try again in ${retryAfter}s.`, retryAfter });
     }
 
     if (bundle && inline && bundleDigest) bundles.set(user, bundleDigest, bundle, inline.json.length);
-    running.add(lockKey);
     const pending = agent.propose(body, bundle, request.userId)
       .then((proposal): AgentTurnResponse => ({ proposal, ...(bundleDigest ? { bundleDigest } : {}) }));
     proposals.set(turnKey, pending);
@@ -195,7 +235,7 @@ export function registerAgentTurnRoutes(app: FastifyInstance, agent: AgentServic
       proposals.delete(turnKey);
       throw error;
     } finally {
-      running.delete(lockKey);
+      await release();
     }
   });
 }
