@@ -24,8 +24,10 @@
 - **Context:** Held off main on purpose (decision 3A) so the 1.0 binary stays on iOS 15.1. The deployment target change alters the runtime fingerprint, so preview gets a new native build, not an OTA. Plan: `~/.claude/plans/idempotent-beaming-puppy.md`.
 - **Blocked by:** 1.0 submitted to App Store review.
 
-## Pick one HDR delivery policy for both renderers
-- **What:** Decide between HLG passthrough and PQ for on-device export, then make server `color.ts` match or label the difference in the export sheet.
-- **Why:** iPhones shoot HLG Dolby Vision 8.4. The server's "Keep HDR (BT.2020 PQ)" (`export.tsx:22`, `server/src/media/color.ts`) transcodes to PQ, so the same project would give two different HDR files depending on where it rendered.
-- **Context:** Lab spike S4 measures HLG, PQ and SDR outputs (`ffprobe` color tags). Decide with those files in hand.
-- **Blocked by:** S4 results.
+## Animated caption styles (CapCut/Mirage parity)
+- **What:** Word pop-in, bounce, scale-on-sung and auto emoji as caption styles, drawn by the native CaptionRenderer and by the server's ASS writer.
+- **Why:** Short-form creators expect the CapCut/Mirage looks. v1 captions only switch a word's colour when it is sung, so an Editify export reads as static next to theirs.
+- **Pros:** Uses the pipeline P2/P3 build anyway: captions are plan data drawn in the compositor, so preview and export animate the same frames.
+- **Cons:** Every animation needs a matching ASS form (`\t`, `\fscx`) for the server fallback, or the server has to render those captions as images. The CaptionRenderer's bitmap cache grows with each animation phase.
+- **Context:** Start from `captionStyleSchema` (`packages/shared/src/index.ts`) and the render plan's caption entries (`packages/shared/src/render-plan-schema.ts`: `words[].s/e` are already absolute timeline seconds, and `e` is unused in v1). CaptionRenderer caches per caption and animation phase, so the cache key grows from (id, rev, sung-word count, scale) to include the phase. Out of scope in `~/.claude/plans/on-device-export.md`.
+- **Depends on:** P2 render plan (`buildRenderPlan`) + P3 CaptionRenderer.

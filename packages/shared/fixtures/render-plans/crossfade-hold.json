@@ -1,0 +1,242 @@
+{
+  "description": "A 0.6 s crossfade where clip a has only 0.2 s of source past its out point: it plays that handle, then holds its last frame for the remaining 0.4 s under clip b; audio crossfades only over the real 0.2 s.",
+  "plan": {
+    "version": 1,
+    "revision": 5,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 4,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "truePeakDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 2,
+          "layers": [
+            {
+              "clipId": "a",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-a",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": []
+            }
+          ]
+        },
+        {
+          "start": 2,
+          "end": 2.2,
+          "layers": [
+            {
+              "clipId": "a",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-a",
+                "kind": "video"
+              },
+              "srcStart": 2,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": []
+            },
+            {
+              "clipId": "b",
+              "trackIndex": 0,
+              "z": 1,
+              "assetRef": {
+                "id": "asset-b",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [
+                {
+                  "t": 2,
+                  "value": 0
+                },
+                {
+                  "t": 2.2,
+                  "value": 0.333333
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "start": 2.2,
+          "end": 2.6,
+          "layers": [
+            {
+              "clipId": "a",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-a",
+                "kind": "video"
+              },
+              "srcStart": 2.2,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2.2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "hold": {
+                "frameAt": 2.166667
+              }
+            },
+            {
+              "clipId": "b",
+              "trackIndex": 0,
+              "z": 1,
+              "assetRef": {
+                "id": "asset-b",
+                "kind": "video"
+              },
+              "srcStart": 0.2,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2.2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [
+                {
+                  "t": 2.2,
+                  "value": 0.333333
+                },
+                {
+                  "t": 2.6,
+                  "value": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "start": 2.6,
+          "end": 4,
+          "layers": [
+            {
+              "clipId": "b",
+              "trackIndex": 0,
+              "z": 1,
+              "assetRef": {
+                "id": "asset-b",
+                "kind": "video"
+              },
+              "srcStart": 0.6,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2.6,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": [
+      {
+        "id": "a",
+        "assetRef": {
+          "id": "asset-a",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 2.2,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.2,
+          "curve": "linear"
+        }
+      },
+      {
+        "id": "b",
+        "assetRef": {
+          "id": "asset-b",
+          "kind": "video"
+        },
+        "at": 2,
+        "in": 0,
+        "out": 2,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 2,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.2,
+          "curve": "linear"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

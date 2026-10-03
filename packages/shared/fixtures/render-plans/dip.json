@@ -1,0 +1,149 @@
+{
+  "description": "A 0.6 s dip to black at 2 s: clip a dims to black over its last 0.3 s and clip b rises from black over its first 0.3 s, both staying opaque; audio fades linearly on the same windows.",
+  "plan": {
+    "version": 1,
+    "revision": 4,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 4,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "truePeakDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 2,
+          "layers": [
+            {
+              "clipId": "a",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-a",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": [
+                {
+                  "t": 1.7,
+                  "value": 0
+                },
+                {
+                  "t": 2,
+                  "value": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "start": 2,
+          "end": 4,
+          "layers": [
+            {
+              "clipId": "b",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-b",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": [
+                {
+                  "t": 2,
+                  "value": 1
+                },
+                {
+                  "t": 2.3,
+                  "value": 0
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": [
+      {
+        "id": "a",
+        "assetRef": {
+          "id": "asset-a",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 2,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.3,
+          "curve": "linear"
+        }
+      },
+      {
+        "id": "b",
+        "assetRef": {
+          "id": "asset-b",
+          "kind": "video"
+        },
+        "at": 2,
+        "in": 0,
+        "out": 2,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 2,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.3,
+          "curve": "linear"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

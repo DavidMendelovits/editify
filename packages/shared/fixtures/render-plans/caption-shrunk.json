@@ -1,0 +1,122 @@
+{
+  "description": "A caption too long for its styled 30 px at 360 wide: the layout shrank it to 24 px (scale 0.8) over three lines and flagged it, with no ellipsis.",
+  "plan": {
+    "version": 1,
+    "revision": 11,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 3,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "truePeakDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 3,
+          "layers": [
+            {
+              "clipId": "talk",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [
+      {
+        "id": "cap-long",
+        "rev": "r-cap-long-a1",
+        "start": 0,
+        "end": 3,
+        "lane": 0,
+        "font": "Montserrat-Bold",
+        "sizePx": 24,
+        "color": "#FFFFFF",
+        "strokeColor": "#000000",
+        "strokePx": 1,
+        "emphasisColor": "#FACC15",
+        "shadow": {
+          "color": "#000000",
+          "opacity": 0.61,
+          "offsetPx": 1
+        },
+        "align": "center",
+        "lines": [
+          {
+            "text": "NOBODY TELLS YOU THIS",
+            "x": 13.7,
+            "y": 498,
+            "width": 332.6
+          },
+          {
+            "text": "ABOUT RUNNING A",
+            "x": 61.2,
+            "y": 526,
+            "width": 237.6
+          },
+          {
+            "text": "MARATHON IN THE RAIN",
+            "x": 21.6,
+            "y": 554,
+            "width": 316.8
+          }
+        ],
+        "fitted": {
+          "shrunk": true,
+          "scale": 0.8
+        }
+      }
+    ],
+    "audio": [
+      {
+        "id": "talk",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 3,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

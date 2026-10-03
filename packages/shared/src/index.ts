@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { captionFontSchema } from './caption-fonts.js';
 import { calloutSchema } from './packets.js';
 
 export const projectFormatSchema = z.enum(['9:16', '1:1', '16:9']);
@@ -13,7 +14,8 @@ export const deliveryPlatformSchema = z.enum(['instagram', 'tiktok', 'shorts', '
 export type DeliveryPlatform = z.infer<typeof deliveryPlatformSchema>;
 
 export const captionStyleSchema = z.object({
-  font: z.string().min(1).default('Montserrat'),
+  /** One of the bundled caption fonts (OV7); unknown legacy values parse as the default. */
+  font: captionFontSchema,
   size: z.number().min(10).max(200).default(52),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#FFFFFF'),
   position: z.enum(['top', 'center', 'bottom']).default('bottom'),
@@ -520,3 +522,5 @@ export * from './sync.js';
 export * from './sync-plan.js';
 export * from './proposal.js';
 export * from './project-sync.js';
+export * from './caption-fonts.js';
+export * from './render-plan-schema.js';

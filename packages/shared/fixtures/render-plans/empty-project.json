@@ -1,0 +1,25 @@
+{
+  "description": "A project with no clips: duration 0, nothing to draw or play.",
+  "plan": {
+    "version": 1,
+    "revision": 0,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 0,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "truePeakDb": -1
+    },
+    "video": {
+      "segments": []
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": []
+  }
+}

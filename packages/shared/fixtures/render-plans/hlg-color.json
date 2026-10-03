@@ -1,0 +1,110 @@
+{
+  "description": "An HLG master: one HDR clip composited in linear BT.2020 with a white caption placed at the 203-nit reference white, encoded HLG 10-bit.",
+  "plan": {
+    "version": 1,
+    "revision": 13,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 2,
+    "color": "hlg",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "truePeakDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 2,
+          "layers": [
+            {
+              "clipId": "sunset",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-hlg",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [
+      {
+        "id": "cap-hdr",
+        "rev": "r-cap-hdr-a1",
+        "start": 0,
+        "end": 2,
+        "lane": 0,
+        "font": "Montserrat-Bold",
+        "sizePx": 24,
+        "color": "#FFFFFF",
+        "strokeColor": "#000000",
+        "strokePx": 1,
+        "emphasisColor": "#FACC15",
+        "shadow": {
+          "color": "#000000",
+          "opacity": 0.61,
+          "offsetPx": 1
+        },
+        "align": "center",
+        "lines": [
+          {
+            "text": "GOLDEN HOUR",
+            "x": 92.9,
+            "y": 558,
+            "width": 174.2
+          }
+        ],
+        "fitted": {
+          "shrunk": false,
+          "scale": 1
+        }
+      }
+    ],
+    "audio": [
+      {
+        "id": "sunset",
+        "assetRef": {
+          "id": "asset-hlg",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 2,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

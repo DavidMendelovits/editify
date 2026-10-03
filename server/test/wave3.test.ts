@@ -146,7 +146,7 @@ describe('ASS overlap defence', () => {
   }
 
   it('clamps an overlapping event that shares a vertical anchor', () => {
-    const style = { font: 'Montserrat', size: 52, color: '#FFFFFF', position: 'bottom' as const, emphasis: 'bold' as const };
+    const style = { font: 'Montserrat' as const, size: 52, color: '#FFFFFF', position: 'bottom' as const, emphasis: 'bold' as const };
     const ass = generateAss(project([
       { id: 'cap-1', start: 0, in: 0, out: 2, text: 'FIRST', style },
       { id: 'cap-2', start: 1, in: 0, out: 2, text: 'SECOND', style },
