@@ -1,7 +1,7 @@
 import Accelerate
 import Foundation
 
-/// On-device audio sync: a line-for-line port of server/src/media/sync.ts
+/// On-device audio sync: a line-for-line port of packages/shared/src/sync.ts
 /// (plan decision 1A), with the FFTs on vDSP. The TypeScript file is the
 /// spec; server/test/sync-parity.test.ts feeds both the same PCM and fails
 /// when they disagree, so change the two together.

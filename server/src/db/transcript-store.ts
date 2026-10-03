@@ -1,34 +1,25 @@
-import { z } from 'zod';
+import {
+  energyAnalysisSchema,
+  transcriptResultSchema,
+  transcriptSegmentSchema,
+  transcriptWordSchema,
+  type EnergyAnalysis,
+  type TranscriptResult,
+  type TranscriptSegment,
+  type TranscriptWord,
+} from '@editify/shared';
 import type { EditifyDatabase } from './database.js';
 
-export const transcriptWordSchema = z.object({
-  w: z.string(),
-  s: z.number().min(0),
-  e: z.number().min(0),
-});
-
-export const transcriptSegmentSchema = z.object({
-  text: z.string(),
-  s: z.number().min(0),
-  e: z.number().min(0),
-});
-
-export const transcriptResultSchema = z.object({
-  language: z.string(),
-  durationProcessedSeconds: z.number().min(0),
-  words: z.array(transcriptWordSchema),
-  segments: z.array(transcriptSegmentSchema),
-});
-
-export type TranscriptWord = z.infer<typeof transcriptWordSchema>;
-export type TranscriptSegment = z.infer<typeof transcriptSegmentSchema>;
-export type TranscriptResult = z.infer<typeof transcriptResultSchema>;
-
-export const energyAnalysisSchema = z.object({
-  cellSeconds: z.literal(0.05),
-  rmsDb: z.array(z.number()),
-});
-export type EnergyAnalysis = z.infer<typeof energyAnalysisSchema>;
+export {
+  energyAnalysisSchema,
+  transcriptResultSchema,
+  transcriptSegmentSchema,
+  transcriptWordSchema,
+  type EnergyAnalysis,
+  type TranscriptResult,
+  type TranscriptSegment,
+  type TranscriptWord,
+};
 
 export interface StoredTranscript extends TranscriptResult {
   assetId: string;

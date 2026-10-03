@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
+import { faceAt, faceTrackSchema, type FaceBox, type FaceTrack } from '@editify/shared';
 import { dataRoot } from '../config.js';
 import type { StoredAsset } from '../db/asset-store.js';
 import type { EditifyDatabase } from '../db/database.js';
@@ -10,22 +10,7 @@ const FACE_TRACK_TIMEOUT_MS = 5 * 60 * 1000;
 const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts/face_track.py');
 const defaultModelPath = join(dataRoot, 'models', 'face_detection_yunet_2023mar.onnx');
 
-/**
- * One face box per sample, normalized to the decoded source frame:
- * `[t, top, bottom, left, right]`, or `[t, null]` when no face was found.
- */
-export const faceTrackSchema = z.object({
-  fps: z.number().positive(),
-  width: z.number().int().min(0),
-  height: z.number().int().min(0),
-  samples: z.array(z.union([
-    z.tuple([z.number(), z.number(), z.number(), z.number(), z.number()]),
-    z.tuple([z.number(), z.null()]),
-  ])),
-});
-export type FaceTrack = z.infer<typeof faceTrackSchema>;
-
-export interface FaceBox { top: number; bottom: number; left: number; right: number }
+export { faceAt, faceTrackSchema, type FaceBox, type FaceTrack };
 
 export type FaceTrackRunner = (mediaPath: string) => Promise<FaceTrack>;
 
@@ -65,26 +50,6 @@ export function runFaceTrack(mediaPath: string): Promise<FaceTrack> {
       }
     });
   });
-}
-
-/** Misses shorter than this hold the last seen face; longer means the speaker left. */
-const HOLD_SECONDS = 1;
-
-/** The face at source second `t`: the nearest sample, holding across short misses. */
-export function faceAt(track: FaceTrack, t: number): FaceBox | undefined {
-  let best: FaceBox | undefined;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const sample of track.samples) {
-    if (sample[1] === null) continue;
-    const distance = Math.abs(sample[0] - t);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      const [, top, bottom, left, right] = sample;
-      best = { top, bottom, left, right };
-    }
-    if (sample[0] > t + HOLD_SECONDS) break;
-  }
-  return bestDistance <= HOLD_SECONDS ? best : undefined;
 }
 
 /**
