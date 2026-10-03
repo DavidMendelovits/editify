@@ -85,6 +85,12 @@ export function createSnapshotContext(request: AgentTurnRequest, bundle: Analysi
   const deviceCommands: DeviceCommand[] = [];
   const assets = new Map(request.snapshot.assets.map((asset) => [asset.id, storedAsset(asset)]));
   const analysisOf = (assetId: string) => bundle?.assets[assetId];
+  const transcriptOf = (assetId: string): StoredTranscript | undefined => {
+    const transcript = readyPart(analysisOf(assetId)?.transcript);
+    if (!transcript) return undefined;
+    const energy = readyPart(analysisOf(assetId)?.energy);
+    return { assetId, createdAt: '', ...transcript, ...(energy ? { energy } : {}) };
+  };
 
   // OV1: a split the model did not name gets an id derived from the proposal,
   // written into the op itself, so the phone's replay needs no id generator.
@@ -155,12 +161,9 @@ export function createSnapshotContext(request: AgentTurnRequest, bundle: Analysi
     styleDoc: request.snapshot.styleDoc ?? null,
     currentVersion: project.version,
     transcripts: {
-      get: (assetId): StoredTranscript | undefined => {
-        const transcript = readyPart(analysisOf(assetId)?.transcript);
-        if (!transcript) return undefined;
-        const energy = readyPart(analysisOf(assetId)?.energy);
-        return { assetId, createdAt: '', ...transcript, ...(energy ? { energy } : {}) };
-      },
+      get: transcriptOf,
+      // Nothing to promote: the phone's analysis is the only transcriber here.
+      getForTimeline: transcriptOf,
       // Never Whisper: the phone transcribes, and sends the words when it has them.
       transcribe: async () => { throw new Error(`Transcription ${NOT_HERE}; the phone sends the words once its analysis finishes`); },
       ensureEnergy: async (asset) => {

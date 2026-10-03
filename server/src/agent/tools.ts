@@ -66,7 +66,7 @@ export interface ToolContext {
   assets: Pick<AssetStore, 'get' | 'getInProject' | 'listForProject' | 'link' | 'getByOriginalName' | 'upsert'>;
   styleDoc: string | null;
   currentVersion: number;
-  transcripts: Pick<TranscriptService, 'get' | 'transcribe' | 'ensureEnergy'>;
+  transcripts: Pick<TranscriptService, 'get' | 'getForTimeline' | 'transcribe' | 'ensureEnergy'>;
   /** Loudness curves known without a transcript (a stateless turn's bundle); check_mix reads these before measuring. */
   energyOf?: (assetId: string) => EnergyAnalysis | undefined;
   insights: Pick<InsightService, 'getOrCreate'>;
