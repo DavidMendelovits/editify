@@ -3,7 +3,9 @@ import { File as ExpoFile } from 'expo-file-system';
 import { discardSharedCopy } from './shared-files';
 import * as ImagePicker from 'expo-image-picker';
 import type { AssetMetadata } from '@editify/shared';
-import { uploadAsset } from './api';
+import { uploadAsset, type UploadBytes } from './api';
+import { mediaKindOf, stageImport, type ImportCandidate } from './local-media';
+import { localMedia } from './local-media-native';
 import type { ImportProgress } from './upload-progress';
 import type { SharedFile } from './share-intake';
 
@@ -16,7 +18,10 @@ export interface PickResult {
 
 export type PickProgress = (progress: ImportProgress) => void;
 
-interface PendingFile { uri: string; name: string; mimeType?: string; file?: File; size?: number }
+/** Where an import came from, for the local media registry (decision 3A). Absent: nothing is kept (web drops). */
+type LocalSource = Pick<ImportCandidate, 'kind' | 'origin' | 'phLocalId'>;
+
+interface PendingFile { uri: string; name: string; mimeType?: string; file?: File; size?: number; local?: LocalSource }
 
 /** Progress lands on React state, and a native upload reports every chunk. */
 const PROGRESS_INTERVAL_MS = 250;
@@ -68,7 +73,7 @@ async function uploadAll(projectId: string | undefined, files: PendingFile[], on
     for (let index = next++; index < files.length; index = next++) {
       const file = files[index] as PendingFile;
       try {
-        uploaded[index] = await uploadAsset({ ...file, ...(projectId ? { projectId } : {}) }, (bytes, expected) => {
+        uploaded[index] = await uploadKeepingLocal(projectId, file, (bytes, expected) => {
           sent[index] = bytes;
           // The upload knows the real size even when the picker did not report one.
           if (!sizes[index] && expected > 0) sizes[index] = expected;
@@ -83,6 +88,41 @@ async function uploadAll(projectId: string | undefined, files: PendingFile[], on
     }
   }));
   return { assets: uploaded.filter((asset) => asset !== undefined), failed };
+}
+
+/**
+ * One upload, with the local media registry around it: the file is staged first
+ * (copied into Application Support, or referenced by its PHAsset id), uploaded from
+ * there, and recorded under the server's asset id once the upload lands. A failed
+ * upload removes its copy. The registry never fails an import that reached the server.
+ */
+async function uploadKeepingLocal(projectId: string | undefined, file: PendingFile, onBytes?: UploadBytes): Promise<AssetMetadata> {
+  const registry = file.local ? await localMedia() : null;
+  const staged = registry && file.local
+    ? await stageImport({ uri: file.uri, name: file.name, ...file.local }, registry).catch(() => undefined)
+    : undefined;
+  const { local: _local, ...upload } = file;
+  let asset: AssetMetadata;
+  try {
+    asset = await uploadAsset({ ...upload, uri: staged?.uploadUri ?? file.uri, ...(projectId ? { projectId } : {}) }, onBytes);
+  } catch (error) {
+    staged?.abort();
+    throw error;
+  }
+  await staged?.commit(asset.id).catch(() => undefined);
+  return asset;
+}
+
+/**
+ * A single file from a sheet (a sticker image, a voice-over take) through the same
+ * registry path as the pickers. Throws when the upload fails.
+ */
+export async function uploadMediaFile(
+  projectId: string | undefined,
+  file: { uri: string; name: string; mimeType?: string },
+  local: LocalSource,
+): Promise<AssetMetadata> {
+  return await uploadKeepingLocal(projectId, { ...file, local });
 }
 
 const libraryOptions: ImagePicker.ImagePickerOptions = {
@@ -136,6 +176,8 @@ export async function pickFromPhotos(projectId: string | undefined, onProgress?:
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
     ...(file.fileSize ? { size: file.fileSize } : {}),
     ...(file.file ? { file: file.file } : {}),
+    // The PHAsset id when the picker gave one; the registry decides whether to copy.
+    local: { kind: 'video', origin: 'photos', phLocalId: file.assetId ?? null },
   })), onProgress);
 }
 
@@ -153,17 +195,23 @@ export async function pickFromFiles(projectId: string | undefined, onProgress?: 
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
     ...(file.size ? { size: file.size } : {}),
     ...(file.file ? { file: file.file } : {}),
+    local: { kind: mediaKindOf(file.mimeType, file.name), origin: 'files' },
   })), onProgress);
 }
 
 /**
  * Files handed over by the OS share sheet (a Voice Memos recording, a Photos
  * video). The share extension copies each one into the app's own storage, and
- * nothing else ever deletes those copies, so once a file is on the server its
- * copy goes; a failed one stays for a retry.
+ * nothing else ever deletes those copies. The import copies it again into
+ * Application Support before uploading (local-media.ts), and that durable copy is
+ * the one the registry keeps; so once a file is on the server, the share
+ * extension's copy goes. A failed one stays for a retry.
  */
 export async function uploadShared(projectId: string | undefined, files: SharedFile[], onProgress?: PickProgress): Promise<PickResult> {
-  const result = await uploadAll(projectId, files, onProgress);
+  const result = await uploadAll(projectId, files.map((file) => ({
+    ...file,
+    local: { kind: mediaKindOf(file.mimeType, file.name), origin: 'share' as const },
+  })), onProgress);
   const failed = new Set(result.failed);
   for (const file of files) if (!failed.has(file.name)) discardSharedCopy(file.uri);
   return result;

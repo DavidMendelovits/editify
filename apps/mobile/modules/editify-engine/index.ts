@@ -2,8 +2,11 @@ import { requireOptionalNativeModule, type EventSubscription } from 'expo-module
 import type { AnalysisPartStatus } from '@editify/shared';
 import type { LabRow, SpikeId } from '../../src/lab/evaluate';
 
-/** Parts the device scheduler runs per asset (decision 8A order). Sync is per pair, outside the queue. */
-export type NativeAnalysisPart = 'decode' | 'words' | 'laughter' | 'energy' | 'faces';
+/**
+ * Parts the device scheduler runs per asset (decision 8A order). Sync is per pair, outside the queue.
+ * `proxy` is the 1080p preview proxy (10B): queued only by `ensureProxy` or by naming it.
+ */
+export type NativeAnalysisPart = 'decode' | 'words' | 'proxy' | 'laughter' | 'energy' | 'faces';
 
 /**
  * What every analyzer call returns: the 6A status and analyzer version, data
@@ -29,6 +32,38 @@ export interface NativeLaughter {
   spans: Array<{ s: number; e: number; confidence: number; meanConfidence: number; windows: number }>;
 }
 export interface NativeEnergy { cellSeconds: number; rmsDb: number[]; onsetPeaks: number[] }
+/** A ready `proxy` part's data. `path` is relative to `mediaRoot()`; `reused` means it was already on disk. */
+export interface NativeProxy {
+  path: string;
+  bytes: number;
+  reused?: boolean;
+  width?: number;
+  height?: number;
+  fps?: number;
+  color?: 'hlg' | 'pq' | 'sdr';
+  codec?: 'hevc-main10' | 'h264-high';
+  audio?: 'passthrough' | 'aac' | 'none';
+  exportMs?: number;
+}
+
+/** What identifies a source in the local media registry (OV2). `audio` is null without an audio track, `color` without video. */
+export interface NativeFingerprint {
+  duration: number;
+  bytes: number;
+  audio: string | null;
+  color: 'hlg' | 'pq' | 'sdr' | null;
+}
+
+export type PhotosAccess = 'all' | 'limited' | 'denied' | 'undetermined';
+
+/** `probeMedia` / `downloadMedia`: where a PHAsset id or file:// URI stands right now. */
+export type NativeProbe =
+  | { status: 'ok'; fingerprint: NativeFingerprint }
+  | { status: 'icloud' }
+  | { status: 'unreachable'; error: string }
+  | { status: 'missing'; access: PhotosAccess }
+  | { status: 'failed'; error: string };
+
 export interface NativeFaces {
   fps: number;
   width: number;
@@ -61,7 +96,8 @@ export interface AnalyzeOptions { facesFps?: number; locale?: string; allowModel
 /** `phase: 'download'` is the iCloud original being fetched before the analyzer starts. */
 export type ProgressEvent =
   | { spike: SpikeId; run: number; fraction: number }
-  | { part: NativeAnalysisPart | 'proxy'; assetId?: string; ref?: string; fraction: number; phase?: 'download' };
+  | { part: NativeAnalysisPart; assetId?: string; ref?: string; fraction: number; phase?: 'download' }
+  | { part: 'download'; ref: string; requestId: string; fraction: number; phase: 'download' };
 /**
  * A part's status changed. Carries no data: on `ready`, read it with `getAnalysis`.
  * `removed` means `cancelAnalysis` dropped a part that was still pending. `revision`
@@ -70,7 +106,7 @@ export type ProgressEvent =
 export type AnalysisStatusEvent =
   | { assetId: string; part: NativeAnalysisPart; revision?: number; status: AnalysisPartStatus; analyzerVersion: string; error?: string; removed?: undefined }
   | { assetId: string; part: NativeAnalysisPart; revision?: number; removed: true };
-export interface AnalysisStateEvent { playbackActive: boolean; thermal: string; heavyPaused: boolean }
+export interface AnalysisStateEvent { playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean }
 
 interface EditifyEngineNative {
   runSpike(spike: SpikeId, variant: string, run: number, params: Record<string, unknown>): Promise<LabRow>;
@@ -100,7 +136,28 @@ interface EditifyEngineNative {
   setFocusAsset(assetId: string | null): Promise<void>;
   cancelAnalysis(assetId: string): Promise<void>;
   getAnalysis(assetId: string): Promise<NativeAssetAnalysis>;
-  schedulerState(): Promise<{ playbackActive: boolean; thermal: string; heavyPaused: boolean; queued: unknown[]; running: unknown[]; focus: string | null }>;
+  schedulerState(): Promise<{ playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean; queued: unknown[]; running: unknown[]; focus: string | null }>;
+  /** True while an export renders: a running proxy is cancelled (restarted after), words and faces pause. */
+  setExportActive(active: boolean): Promise<void>;
+
+  // Local media registry (decision 3A) and preview proxies (10B + OV9).
+  /** Photos library access, read without prompting. */
+  photosAccess(): PhotosAccess;
+  /** Application Support/Editify/ as a file:// URL with a trailing slash; registry paths are relative to it. */
+  mediaRoot(): string;
+  /** Copies a file:// URI into media/ (durable, excluded from backup); `path` is relative to `mediaRoot()`. */
+  durableCopy(uri: string, name: string): Promise<{ path: string; uri: string }>;
+  /** A PHAsset id (loaded as `.original`) or file:// URI: fingerprinted when on the device, never downloaded. */
+  probeMedia(ref: string): Promise<NativeProbe>;
+  /** `probeMedia`, downloading an iCloud original first; `progress` events carry `requestId`. Rejects when cancelled. */
+  downloadMedia(ref: string, requestId: string): Promise<NativeProbe>;
+  cancelDownload(requestId: string): void;
+  /** Queues the asset's 1080p preview proxy; `analysisStatus` / `progress` events with part 'proxy' follow. */
+  ensureProxy(assetId: string, ref: string): Promise<void>;
+  /** The preview opened this proxy (least recently opened is evicted first). False when there is none. */
+  touchProxy(assetId: string): boolean;
+  /** The proxy store's byte budget (default 4 GB); applied at once. */
+  setProxyBudget(bytes: number): Promise<void>;
 
   addListener(event: 'progress', listener: (event: ProgressEvent) => void): EventSubscription;
   addListener(event: 'analysisStatus', listener: (event: AnalysisStatusEvent) => void): EventSubscription;

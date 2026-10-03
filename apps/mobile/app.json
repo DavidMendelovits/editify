@@ -87,7 +87,8 @@
             "deploymentTarget": "26.0"
           }
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true
