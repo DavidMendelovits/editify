@@ -31,6 +31,14 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: sudo apt-get install -y ffmpeg
+      # The RENDER_PLAN server render (server/src/media/plan, P6) needs these
+      # filters (zscale = libzimg, subtitles = libass). Ubuntu's ffmpeg has
+      # them; the plan render tests fail rather than skip when CI is set.
+      - name: ffmpeg has the plan render's filters
+        run: |
+          for f in zscale lut1d maskedmerge blend subtitles perspective alimiter premultiply unpremultiply negate extractplanes mergeplanes rotate tpad aeval; do
+            ffmpeg -hide_banner -filters | grep -qE "^ [A-Z.|]+ $f " || { echo "::error::ffmpeg lacks the $f filter"; exit 1; }
+          done
       - run: npm ci
       - run: npm run lint:copy
       - run: npm run build -w @editify/shared

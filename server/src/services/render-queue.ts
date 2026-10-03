@@ -2,9 +2,11 @@ import type { AssetStore } from '../db/asset-store.js';
 import type { ProjectStore } from '../db/project-store.js';
 import type { RenderRecord, RenderStore } from '../db/render-store.js';
 import type { HdrHandling } from '../media/color.js';
+import { renderPlanEnabled } from '../config.js';
+import { renderProjectFromPlan } from '../media/plan/project.js';
 import { renderProject } from '../media/render.js';
 import { slotMediaJob } from './media-jobs.js';
-import { runRenderQa, type LoudnessMode } from './render-qa.js';
+import { runRenderQa, type LoudnessMode, type PlannedQa } from './render-qa.js';
 
 export class RenderQueue {
   private readonly pending: string[] = [];
@@ -72,11 +74,29 @@ export class RenderQueue {
         try {
           // Queued renders stay serial here; the shared pool additionally keeps
           // this one from stacking on top of two import encodes.
-          const outputPath = await slotMediaJob('render', { projectId: project.id, renderId: id }, `render ${id}`, () =>
-            renderProject(project, record.resolution, id, this.assets, this.hdrById.get(id) ?? 'sdr'));
-          // QA runs before 'done' because normalizing rewrites the file a client would download.
-          // A QA failure is reported on the record, never as a failed render.
-          const qa = await runRenderQa(outputPath, project, this.assets, this.loudnessById.get(id) ?? 'normalize')
+          const hdr = this.hdrById.get(id) ?? 'sdr';
+          const loudness = this.loudnessById.get(id) ?? 'normalize';
+          // RENDER_PLAN (plan P6): the shared RenderPlan drives the render, loudness included. Off: legacy
+          // render.ts unchanged, the rollback path.
+          // TODO(P6): delete transitions.ts, duck.ts and ass.ts's lane trimming once RENDER_PLAN defaults on.
+          const usePlan = renderPlanEnabled();
+          let planned: PlannedQa | undefined;
+          const outputPath = await slotMediaJob('render', { projectId: project.id, renderId: id }, `render ${id}`, async () => {
+            if (!usePlan) return await renderProject(project, record.resolution, id, this.assets, hdr);
+            const result = await renderProjectFromPlan(project, record.resolution, id, this.assets, {
+              hdr, loudness, ownerId: this.projects.ownerId(project.id),
+            });
+            const { decision, measuredLufs } = result.loudness;
+            planned = {
+              normalized: decision.gainDb !== 0 && measuredLufs !== null ? { fromLufs: measuredLufs, gainDb: decision.gainDb } : null,
+              notes: result.notes,
+            };
+            return result.outputPath;
+          });
+          // QA runs before 'done' because legacy normalizing rewrites the file a client would download (the plan
+          // path normalized inside the render, so QA only measures). A QA failure is reported on the record,
+          // never as a failed render.
+          const qa = await runRenderQa(outputPath, project, this.assets, planned ? 'off' : loudness, planned)
             .catch((error: unknown) => {
               console.warn('[render] QA failed', { renderId: id, error: error instanceof Error ? error.message : String(error) });
               return undefined;

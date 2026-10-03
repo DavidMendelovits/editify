@@ -136,6 +136,16 @@ export class ProjectStore {
     return rows.map((row) => projectSchema.parse(JSON.parse(row.doc_json)));
   }
 
+  /**
+   * The project's owner: a user id, null for a NULL-owner (pre-auth) project,
+   * undefined when there is no such project. The plan render scopes asset
+   * reads to it.
+   */
+  ownerId(id: string): string | null | undefined {
+    const row = this.database.prepare('SELECT user_id FROM projects WHERE id = ?').get(id) as { user_id: string | null } | undefined;
+    return row ? row.user_id : undefined;
+  }
+
   get(id: string, userId?: string): Project | undefined {
     const row = (userId === undefined
       ? this.database.prepare('SELECT doc_json FROM projects WHERE id = ?').get(id)
