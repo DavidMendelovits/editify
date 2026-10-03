@@ -34,6 +34,7 @@ import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProg
 import type { ImportProgress } from '../../src/lib/upload-progress';
 import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
 import { isAudioOnly } from '../../src/lib/media';
+import { playheadStart } from '../../src/lib/timeline';
 import { describeSync } from '../../src/lib/sync-messages';
 import { isReadStep, type AgentTraceStep } from '../../src/lib/agent';
 import { setReportContext, track } from '../../src/lib/telemetry';
@@ -507,7 +508,8 @@ export default function EditorScreen() {
           ...(content.callout
             ? { text: content.callout.text, callout: { variant: content.callout.variant } }
             : content.asset ? { assetId: content.asset.id } : { text: content.emoji ?? '★' }),
-          start: round3(clock.get()),
+          // On the frame on screen, so a paused preview draws it at once.
+          start: playheadStart(clock.get(), project?.fps ?? 30),
           in: 0,
           out: 3,
           // Callout cards read as text, so they land wider than a sticker.

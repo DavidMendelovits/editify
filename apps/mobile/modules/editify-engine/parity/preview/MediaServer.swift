@@ -5,6 +5,9 @@
 // (a few times the clip's bitrate), so a player is still reading the clip while it plays,
 // as it is with a real proxy over a phone's network. (CoreMedia refuses a 206 shorter than
 // the range it asked for, so the trickle, not short responses, keeps it reading.)
+// `clockShift` runs the server's clock ahead of this machine's (a phone with a skewed clock),
+// and `failing` cuts every transfer and answers 500 until it is cleared (a dropped
+// connection, a server error).
 
 import Foundation
 import Network
@@ -17,12 +20,16 @@ final class MediaServer: @unchecked Sendable {
   private var files: [String: URL] = [:]
   private var tokens = Set<String>()
   private var open: [ObjectIdentifier: NWConnection] = [:]
-  private var counts = (served: 0, refused: 0)
+  private var counts = (served: 0, refused: 0, failed: 0)
+  private var failingNow = false
+  /// Seconds the server's clock runs ahead of this machine's: it mints and checks `exp` by it.
+  let clockShift: TimeInterval
   private var log: [String] = []
   private let started = CFAbsoluteTimeGetCurrent()
 
-  init(bytesPerSecond: Int = 64 << 10) throws {
+  init(bytesPerSecond: Int = 64 << 10, clockShift: TimeInterval = 0) throws {
     self.bytesPerSecond = bytesPerSecond
+    self.clockShift = clockShift
     let parameters = NWParameters.tcp
     parameters.requiredInterfaceType = .loopback
     parameters.allowLocalEndpointReuse = true
@@ -54,7 +61,8 @@ final class MediaServer: @unchecked Sendable {
 
   /// A JWT-shaped media token (unsigned: only its `exp` matters here) that expires in `seconds`, accepted.
   func token(expiresIn seconds: Double) -> String {
-    let claims = try! JSONSerialization.data(withJSONObject: ["exp": Date().timeIntervalSince1970 + seconds, "jti": UUID().uuidString])
+    let now = Date().timeIntervalSince1970 + clockShift
+    let claims = try! JSONSerialization.data(withJSONObject: ["iat": now, "exp": now + seconds, "jti": UUID().uuidString])
     let payload = claims.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
       .replacingOccurrences(of: "=", with: "")
     let token = "eyJhbGciOiJub25lIn0.\(payload).sig"
@@ -63,6 +71,19 @@ final class MediaServer: @unchecked Sendable {
   }
 
   var served: Int { lock.withLock { counts.served } }
+  var failed: Int { lock.withLock { counts.failed } }
+
+  /// On: every transfer in flight is cut and every request answered 500. Off: back to normal.
+  func setFailing(_ on: Bool) {
+    let cut = lock.withLock { () -> [NWConnection] in
+      failingNow = on
+      guard on else { return [] }
+      defer { open = [:] }
+      return Array(open.values)
+    }
+    note(on ? "failing: cut \(cut.count) transfer(s)" : "serving again")
+    cut.forEach { $0.cancel() }
+  }
   /// One line per request: seconds since start, the range asked for, the answer.
   var requests: [String] { lock.withLock { log } }
 
@@ -110,7 +131,12 @@ final class MediaServer: @unchecked Sendable {
     guard parts.count >= 2, let url = URLComponents(string: "http://local\(parts[1])") else { return send(connection, status: "400 Bad Request") }
     let method = parts[0]
     let token = url.queryItems?.first { $0.name == "k" }?.value ?? ""
-    let expired = PlanPlayer.tokenExpiry("http://local/?k=\(token)").map { $0 <= Date() } ?? false
+    if lock.withLock({ failingNow }) {
+      note("\(method) 500")
+      lock.withLock { counts.failed += 1 }
+      return send(connection, status: "500 Internal Server Error")
+    }
+    let expired = PlanPlayer.tokenExpiry("http://local/?k=\(token)").map { $0.timeIntervalSince1970 <= Date().timeIntervalSince1970 + clockShift } ?? false
     let (file, allowed) = lock.withLock { (files[url.path], tokens.contains(token) && !expired) }
     let range = lines.dropFirst().first { $0.lowercased().hasPrefix("range:") } ?? "no range"
     guard allowed else {

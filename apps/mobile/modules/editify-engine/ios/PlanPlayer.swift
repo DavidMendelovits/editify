@@ -37,10 +37,11 @@ import CoreImage
 /// `teardown` is final.
 ///
 /// Failures (`recover`):
-///   item failed (status, failedToPlayToEnd, an HTTP 401/403 in its error log), or a loaded
-///   source's media token about to expire (JWT `exp` less `expiryLead`: measured on macOS, a
-///   read the server refuses fails nothing, logs nothing and stalls nothing; the composition
-///   clock runs on over missing frames) ─▶ suspended? ─▶ handled once it runs
+///   item failed (status, failedToPlayToEnd, an HTTP 401/403 in its error log, in its status
+///   or its comment), or a loaded source's media token about to expire (JWT `exp`, moved to
+///   this device's clock by `tokenClockOffset`, less `expiryLead`: measured on macOS, a read
+///   the server refuses fails nothing, logs nothing and stalls nothing; the composition clock
+///   runs on over missing frames) ─▶ suspended? ─▶ handled once it runs
 ///     ├─ a remote source still reads with a token the last refresh replaced ─▶
 ///     │    rebuild on the URLs already held (those sources reloaded)
 ///     ├─ the plan plays the user's server copies ─▶ `.mediaExpired` (once): JS
@@ -49,6 +50,16 @@ import CoreImage
 ///     │    `.error`. Untagged plans meanwhile apply as usual and leave the wait on.
 ///     └─ local media only ─▶ rebuilt once at the same time; failing again is `.error`
 ///   a plan's server copy failed to load (prepare) ─▶ the same `.mediaExpired` and retry
+///
+/// Silent drops (a dropped connection, a 5xx, a session revoked on the server): measured on
+/// macOS, AVFoundation stops asking the compositor for frames (the picture freezes while the
+/// clock runs on) and reports nothing else. While playing remote sources, the clock running
+/// past the compositor's latest request (or source frames handed over missing) for
+/// `starveWindow` (buffering shows at once), or a 5xx / network error in the error log, is a
+/// reconnect: every remote source reloaded and the item rebuilt at the same time, retried
+/// after `reconnectDelays` while the server stays out of reach. Reconnecting natively recovers
+/// best: the URLs are fine, the connection isn't, and AVFoundation never asks again on its
+/// own. Out of attempts ─▶ the failure policy above (`.mediaExpired`, then `.error`).
 ///
 /// Media tokens: server URLs carry the auth token (`k=`), which JS refreshes about
 /// hourly. A ref that differs only in its token names the same bytes. Paused, the item is
@@ -164,7 +175,31 @@ final class PlanPlayer {
   private var expiryCheck: DispatchWorkItem?
   /// How long before a source's token expires the player acts (moves to a newer URL it holds,
   /// or asks for media): AVFoundation reports nothing when the server starts refusing reads.
-  var expiryLead: TimeInterval = 5
+  /// After Supabase's own refresh (auth-js refreshes 90 to 60 s before expiry, so a newer URL
+  /// is usually held by then) and under its 90 s margin (so the session JS refreshes on
+  /// `.mediaExpired` is a new one).
+  var expiryLead: TimeInterval = 30
+  /// Seconds this device's clock runs ahead of the auth server's (JS measures it when a token is
+  /// issued): a token's `exp` is server time, the deadline is device time.
+  private(set) var tokenClockOffset: TimeInterval = 0
+  /// Remote sources that stopped delivering frames (a dropped connection, a 5xx, a session revoked
+  /// on the server: AVFoundation reports none of it) are reconnected: every remote source
+  /// reloaded and the item rebuilt at the same time, after each of these delays in turn.
+  /// Attempts reset after `cleanPlayback` seconds of frames arriving; once they run out the
+  /// failure policy takes over (`.mediaExpired`, then `.error`).
+  var reconnectDelays: [TimeInterval] = [0, 1, 2, 4]
+  static let starveWindow: TimeInterval = 0.5
+  static let starveLag: TimeInterval = 0.2
+  static let cleanPlayback: TimeInterval = 5
+  private var reconnects = 0
+  private var reconnectWork: DispatchWorkItem?
+  /// The next apply rebuilds with every remote source reloaded (a reconnect).
+  private var reloadRemote = false
+  /// The missing-frame watch on the item playing: the compositor's count at the last tick, when
+  /// it began growing (nil: not growing), and when it last grew.
+  private var starve: (item: ObjectIdentifier?, count: Int, since: CFAbsoluteTime?, grew: CFAbsoluteTime) = (nil, 0, nil, 0)
+  /// Reconnects so far (the harness reads it).
+  private(set) var reconnectCount = 0
   private let fonts: PlanFonts
   private let captions: CaptionRenderer
   private let cache = PlanMediaCache()
@@ -206,6 +241,7 @@ final class PlanPlayer {
       MainActor.assumeIsolated {
         guard let self, self.player.rate != 0 else { return }
         self.onEvent?(.time(time.seconds, playing: true))
+        self.watchStarvation()
       }
     }
     playerObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
@@ -225,6 +261,8 @@ final class PlanPlayer {
     audioSwapWork = nil
     expiryCheck?.cancel()
     expiryCheck = nil
+    reconnectWork?.cancel()
+    reconnectWork = nil
     detachItemObservers()
     player.pause()
     player.replaceCurrentItem(with: nil)
@@ -243,8 +281,9 @@ final class PlanPlayer {
   /// native waits for fresh media (an edit from another device, say) applies as usual and
   /// never ends the wait, so it can't spend the retry on URLs that may have expired.
   @discardableResult
-  func setPlan(_ plan: RenderPlan, media: [String: String], mediaRetry: Bool = false) -> Bool {
+  func setPlan(_ plan: RenderPlan, media: [String: String], mediaRetry: Bool = false, tokenClockOffset: TimeInterval? = nil) -> Bool {
     guard !torndown, ordering.accept(revision: plan.revision, buildSeq: plan.buildSeq) else { return false }
+    if let tokenClockOffset, tokenClockOffset.isFinite { self.tokenClockOffset = tokenClockOffset }
     pending = (plan, media, DispatchTime.now().uptimeNanoseconds, mediaRetry || (pending?.retry ?? false))
     latest = (plan, media)
     startPump()
@@ -307,7 +346,8 @@ final class PlanPlayer {
       MainActor.assumeIsolated { self?.tokenExpiring() }
     }
     expiryCheck = work
-    DispatchQueue.main.asyncAfter(wallDeadline: .now() + max(0, first.timeIntervalSinceNow - expiryLead), execute: work)
+    // `exp` is the server's clock; on this device's clock the token dies `tokenClockOffset` later.
+    DispatchQueue.main.asyncAfter(wallDeadline: .now() + max(0, first.timeIntervalSinceNow + tokenClockOffset - expiryLead), execute: work)
   }
 
   /// A loaded source's token is about to expire. The server will refuse its next read, and
@@ -339,13 +379,14 @@ final class PlanPlayer {
     // The plan JS tagged as its answer to `.mediaExpired`: it rebuilds with every remote source reloaded.
     let mediaRetry = retry && remoteRetry == .awaiting
     let reloading = reloadStale
+    let reconnecting = reloadRemote
     // Token-stale sources move to their new URLs at a rebuild. Paused, that rebuild happens now
     // (nothing is moving, so nothing freezes); playing, it waits for the next pause (`pause`).
     let stale = tokenStale.union(tokenOnly)
-    let rebuilding = mediaRetry || reloading || player.currentItem == nil || (!stale.isEmpty && !wantsPlay)
+    let rebuilding = mediaRetry || reloading || reconnecting || player.currentItem == nil || (!stale.isEmpty && !wantsPlay)
       || built.map { PlanBuilder.structureKey(plan) != $0.layout.structureKey } ?? true
     if rebuilding { changed.formUnion(stale) }
-    if mediaRetry { changed.formUnion(refs.filter { Self.isRemote($0.value) }.map(\.key)) }
+    if mediaRetry || reconnecting { changed.formUnion(refs.filter { Self.isRemote($0.value) }.map(\.key)) }
     var options = PlanBuildOptions(renderScale: renderScale(for: plan), fonts: fonts, captions: captions, media: cache)
     options.graphics = graphics
     let elapsed = { Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6 }
@@ -375,6 +416,7 @@ final class PlanPlayer {
       scheduleExpiryCheck()
       // Only the apply that saw the request satisfies it (one already loading may not have).
       if reloading { reloadStale = false }
+      if reconnecting { reloadRemote = false }
       if mediaRetry {
         remoteRetry = .retried
       } else if remoteRetry == .retried, !tokenOnly.isEmpty {
@@ -394,6 +436,12 @@ final class PlanPlayer {
       // The item on screen (if any) stays: the host decides whether to fall back.
       let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
       report(Applied(revision: plan.revision, buildSeq: plan.buildSeq, mode: .failed, milliseconds: elapsed(), audioSwapped: false, audioDeferred: false, error: message))
+      if reconnecting {
+        // The server is still out of reach: the next attempt, or the failure policy after the last.
+        reloadRemote = false
+        reconnect(message)
+        return
+      }
       // A source that failed to load from the user's server (an expired URL, most often) gets
       // the same one media retry as an item failure; the retry itself failing is an error.
       if !mediaRetry, refs.values.contains(where: Self.isRemote) {
@@ -495,6 +543,8 @@ final class PlanPlayer {
     audioSwapWork = nil
     expiryCheck?.cancel()
     expiryCheck = nil
+    reconnectWork?.cancel()
+    reconnectWork = nil
     detachItemObservers()
     player.pause()
     player.replaceCurrentItem(with: nil)
@@ -615,6 +665,66 @@ final class PlanPlayer {
     startPump()
   }
 
+  // MARK: Silent drops
+
+  /// On the 30 Hz clock while playing remote sources: starving (the clock `starveLag` past the
+  /// latest frame the compositor was asked for, or source frames going missing) for
+  /// `starveWindow` is a silent drop. Buffering shows as soon as it starts.
+  private func watchStarvation() {
+    guard wantsPlay, !seeking, chase == nil, let item = player.currentItem, let compositor = item.customVideoCompositor as? EditifyCompositor,
+          currentRefs.values.contains(where: Self.isRemote) else { return }
+    let now = CFAbsoluteTimeGetCurrent()
+    let count = compositor.missingSourceFrames
+    let composed = compositor.composedUpToSeconds
+    guard starve.item == ObjectIdentifier(item) else {
+      starve = (ObjectIdentifier(item), count, nil, now)
+      return
+    }
+    let starving = count > starve.count || (composed >= 0 && currentTime - composed > Self.starveLag)
+    starve.count = count
+    if starving {
+      starve.grew = now
+      if starve.since == nil {
+        starve.since = now
+        setBuffering(true)
+      }
+      if let since = starve.since, now - since >= Self.starveWindow, reconnectWork == nil, !reloadRemote {
+        starve.since = nil
+        reconnect("the media stopped arriving")
+      }
+    } else if starve.since != nil {
+      starve.since = nil
+      setBuffering(false)
+    } else if reconnectWork == nil, !reloadRemote, now - starve.grew > Self.cleanPlayback {
+      reconnects = 0
+    }
+  }
+
+  /// One reconnect attempt (after its delay): every remote source reloaded, the item rebuilt at
+  /// the same time. Out of attempts: the failure policy (`recover`).
+  private func reconnect(_ message: String) {
+    guard reconnects < reconnectDelays.count, latest != nil, player.currentItem != nil else {
+      reconnects = 0
+      if let item = player.currentItem { itemFailed(item, message) }
+      return
+    }
+    let delay = reconnectDelays[reconnects]
+    reconnects += 1
+    reconnectCount += 1
+    setBuffering(true)
+    let work = DispatchWorkItem { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self, !self.torndown, let latest = self.latest else { return }
+        self.reconnectWork = nil
+        self.reloadRemote = true
+        if self.pending == nil { self.pending = (latest.plan, latest.media, DispatchTime.now().uptimeNanoseconds, false) }
+        self.startPump()
+      }
+    }
+    reconnectWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+  }
+
   /// Host-initiated stop (the app left the foreground, the view left the window): paused, and said so.
   func interrupt() {
     guard wantsPlay else { return }
@@ -723,8 +833,9 @@ final class PlanPlayer {
     // The server refusing a read (the media token expired under a loaded source) may never fail
     // the item: it can buffer forever instead. The error log names the HTTP status.
     itemObservers.append(center.addObserver(forName: AVPlayerItem.newErrorLogEntryNotification, object: item, queue: .main) { [weak self] _ in
-      guard let status = item.errorLog()?.events.last?.errorStatusCode, Self.isTokenRefusal(status) else { return }
-      MainActor.assumeIsolated { self?.tokenRefused(item, status: status) }
+      guard let entry = item.errorLog()?.events.last else { return }
+      let kind = Self.classifyErrorLog(status: entry.errorStatusCode, domain: entry.errorDomain, comment: entry.errorComment)
+      MainActor.assumeIsolated { self?.errorLogged(item, kind, entry.errorComment ?? "HTTP \(entry.errorStatusCode)") }
     })
     itemObservers.append(center.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main) { [weak self] note in
       let message = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription ?? "Playback failed"
@@ -766,13 +877,31 @@ final class PlanPlayer {
     recover(from: message)
   }
 
-  nonisolated static func isTokenRefusal(_ status: Int) -> Bool { status == 401 || status == 403 }
+  enum ErrorLogKind: String { case tokenRefused, transient, other }
 
-  /// The server refused a read of a remote source (its token expired): an item failure, so the
-  /// policy below rebuilds on a newer URL already held or asks JS for fresh media.
-  private func tokenRefused(_ item: AVPlayerItem, status: Int) {
-    guard currentRefs.values.contains(where: Self.isRemote) else { return }
-    itemFailed(item, "the server refused the media (HTTP \(status))")
+  /// What an error-log entry says. The status is an HTTP code for some loads, a negative
+  /// CoreMedia code (-12660, -12938...) for others, with the HTTP status only in the comment
+  /// ("HTTP 403: Forbidden"), so both are read, whatever the domain.
+  nonisolated static func classifyErrorLog(status: Int, domain: String, comment: String?) -> ErrorLogKind {
+    let text = comment ?? ""
+    func says(_ pattern: String) -> Bool { text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil }
+    if status == 401 || status == 403 || says(#"HTTP[ /:]*40[13]\b"#) { return .tokenRefused }
+    let networkCodes = [NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost,
+                        NSURLErrorNotConnectedToInternet, NSURLErrorDataNotAllowed, NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed]
+    if (500..<600).contains(status) || says(#"HTTP[ /:]*5\d\d\b"#) || (domain == NSURLErrorDomain && networkCodes.contains(status)) { return .transient }
+    return .other
+  }
+
+  /// An error-log entry on a plan with remote sources. Refused (a token): an item failure, so the
+  /// policy rebuilds on a newer URL held or asks JS for fresh media. Transient (5xx, the network
+  /// gone): a reconnect, as for a silent drop.
+  private func errorLogged(_ item: AVPlayerItem, _ kind: ErrorLogKind, _ message: String) {
+    guard item === player.currentItem, currentRefs.values.contains(where: Self.isRemote) else { return }
+    switch kind {
+    case .tokenRefused: itemFailed(item, "the server refused the media (\(message))")
+    case .transient: if reconnectWork == nil, !reloadRemote { reconnect("the media stopped arriving (\(message))") }
+    case .other: break
+    }
   }
 
   /// The failure policy (the diagram at the top). Every branch retries at most once before `.error`.

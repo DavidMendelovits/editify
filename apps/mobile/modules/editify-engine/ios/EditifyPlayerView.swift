@@ -103,9 +103,10 @@ final class EditifyPlayerView: ExpoView {
 
   /// Hands over a plan and its media map (validated off the main thread: PreviewMedia.validate).
   /// `mediaRetry`: the media was resolved again after onError 'mediaExpired' (PlanPlayer.setPlan).
+  /// `tokenClockOffset`: seconds this device's clock runs ahead of the auth server's.
   /// False when the plan is not newer than the last one this view accepted.
-  func setPlan(_ plan: RenderPlan, media: [String: String], mediaRetry: Bool) -> Bool {
-    guard core.setPlan(plan, media: media, mediaRetry: mediaRetry) else { return false }
+  func setPlan(_ plan: RenderPlan, media: [String: String], mediaRetry: Bool, tokenClockOffset: Double?) -> Bool {
+    guard core.setPlan(plan, media: media, mediaRetry: mediaRetry, tokenClockOffset: tokenClockOffset) else { return false }
     backgroundColor = UIColor(red: plan.background.red, green: plan.background.green, blue: plan.background.blue, alpha: 1)
     return true
   }

@@ -89,8 +89,17 @@ interface Report {
   http: {
     expiring: { reported: boolean; reportMs: number; expired: number; errors: number; retryMode: string; code: number; errorsAfter: number; refused: number };
     staleSwap: { mode: string; staleWhilePlaying: string[]; moved: boolean; expired: number; errors: number; refused: number; code: number };
-    withoutDeadline: { refused: number; reported: boolean; stalls: number; time: number };
   };
+  skew: Record<'withoutOffset' | 'withOffset', { reported: boolean; expired: number; refusedBeforeReport: number }>;
+  silentDrop: {
+    backSoon: {
+      detected: boolean; cutToDetectMs: number; starveToDetectMs: number; buffering: boolean; reconnects: number; failedRequests: number;
+      recovered: boolean; expired: number; errors: number; code: number;
+    };
+    staysDown: { asked: boolean; expired: number; errors: number; reconnects: number; retryMode: string; code: number; errorsAfter: number };
+  };
+  errorLogKinds: string[];
+  stickerAdd: Record<'onFrame' | 'roundedUp' | 'floored', { mode: string; changed: number; timeKept: boolean }> & { errors: string[] };
   previewFiles: { runs: number; ended: number; cancelled: number; keptDeleted: boolean; lateDeleted: boolean; lateThrew: boolean; held: number };
   /** False on a machine with no audio output device (CI VMs): muted players, no tap. */
   audioDevice: boolean;
@@ -284,15 +293,50 @@ describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
   });
 
   it('acts before a media token expires mid-play over HTTP, instead of playing on over refused reads', () => {
-    const { expiring, staleSwap, withoutDeadline } = report.http;
-    // AVFoundation itself reports nothing when the server starts refusing (logged, not asserted).
-    console.info('native preview: a refused read with no deadline:', JSON.stringify(withoutDeadline));
-    // No newer URL held: mediaExpired well before the 2.5 s token runs out, then the fresh URL plays
+    const { expiring, staleSwap } = report.http;
+    // No newer URL held: mediaExpired before the 5 s token runs out, then the fresh URL plays
     // real frames from the server (the embedded code is the source frame).
     expect(expiring).toMatchObject({ reported: true, expired: 1, errors: 0, retryMode: 'rebuild', code: 60, errorsAfter: 0, refused: 0 });
-    expect(expiring.reportMs).toBeLessThan(5000);
+    expect(expiring.reportMs).toBeLessThan(8000);
     // A refreshed token held while playing: moved to it before the old one expired, no read refused.
     expect(staleSwap).toEqual({ mode: 'update', staleWhilePlaying: ['asset-talk'], moved: true, expired: 0, errors: 0, refused: 0, code: 75 });
+  });
+
+  it('moves token deadlines to the device clock: a phone 20 s behind gets no read refused', () => {
+    const { withoutOffset, withOffset } = report.skew;
+    // Without the offset the deadline comes 20 s late and the server refuses reads first.
+    expect(withoutOffset.refusedBeforeReport).toBeGreaterThan(0);
+    expect(withOffset).toEqual({ reported: true, expired: 1, refusedBeforeReport: 0 });
+  });
+
+  it('catches a silent drop within a second of starving and reconnects natively, or asks for media if the server stays down', () => {
+    const { backSoon, staysDown } = report.silentDrop;
+    console.info('native preview silent drop:', JSON.stringify({ cutToDetectMs: backSoon.cutToDetectMs, starveToDetectMs: backSoon.starveToDetectMs }));
+    expect(backSoon).toMatchObject({ detected: true, buffering: true, recovered: true, expired: 0, errors: 0, code: 100 });
+    expect(backSoon.starveToDetectMs).toBeGreaterThan(0);
+    expect(backSoon.starveToDetectMs).toBeLessThan(2000);
+    // The buffer ahead (about a second at this rate) plays out first; a CI VM is slower.
+    expect(backSoon.cutToDetectMs).toBeLessThan(8000);
+    expect(staysDown).toMatchObject({ asked: true, expired: 1, errors: 0, reconnects: 3, retryMode: 'rebuild', code: 100, errorsAfter: 0 });
+  });
+
+  it('reads token refusals and transient failures from error-log entries, whatever the code', () => {
+    expect(report.errorLogKinds).toEqual([
+      'tokenRefused', 'tokenRefused', 'tokenRefused', 'tokenRefused', // 401/403 as status, or in a CoreMedia comment
+      'other', 'other', // 404, and a 401 that is really 4013
+      'transient', 'transient', 'transient', 'transient', // 503 in a comment, 500, offline, connection lost
+      'other',
+    ]);
+  });
+
+  it('draws a sticker added while paused at the frame on screen at once', () => {
+    const { onFrame, roundedUp, floored, errors } = report.stickerAdd;
+    expect(onFrame).toMatchObject({ mode: 'update', timeKept: true });
+    expect(onFrame.changed).toBeGreaterThan(500);
+    expect(floored).toEqual(onFrame);
+    // The old stamp (rounded up to the ms) starts on the next frame: [start, end) is right not to draw it.
+    expect(roundedUp).toMatchObject({ mode: 'update', changed: 0, timeKept: true });
+    expect(errors).toEqual([]);
   });
 
   it('never starts a download on an invalidated session, and deletes a still that lands after teardown', () => {

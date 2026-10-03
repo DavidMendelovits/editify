@@ -374,6 +374,24 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   /// seek or a rebuild drops the backlog at once, as in Apple's AVCustomEdit).
   nonisolated(unsafe) private var generation = 0  // under generationLock
   private let generationLock = NSLock()
+  /// Under generationLock. A remote source whose bytes stopped arriving (a dropped connection,
+  /// a 5xx, a refused token) shows up only here: measured on macOS, AVFoundation stops asking
+  /// for frames (the picture freezes, the clock runs on), or asks and hands over no source frame.
+  nonisolated(unsafe) private var missing = 0
+  nonisolated(unsafe) private var composedUpTo = -1.0
+
+  /// Source frames the instructions expected and AVFoundation didn't hand over, so far.
+  var missingSourceFrames: Int {
+    generationLock.lock(); defer { generationLock.unlock() }
+    return missing
+  }
+
+  /// The latest composition time asked for, in seconds (-1: none yet). Requests run ahead of the
+  /// clock while sources flow; PlanPlayer reads a clock past it as starvation.
+  var composedUpToSeconds: Double {
+    generationLock.lock(); defer { generationLock.unlock() }
+    return composedUpTo
+  }
 
   let supportsHDRSourceFrames = true
   let supportsWideColorSourceFrames = true
@@ -414,6 +432,10 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   }
 
   func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
+    let asked = request.compositionTime.seconds
+    generationLock.lock()
+    if asked.isFinite { composedUpTo = max(composedUpTo, asked) }
+    generationLock.unlock()
     let queuedAt = currentGeneration
     renderQueue.async { [self] in
       if queuedAt != currentGeneration {
@@ -428,7 +450,17 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
       do {
         let state = instruction.state
         let t = state.timelineSeconds(request.compositionTime)
-        let image = try FrameRenderer.compose(instruction, at: t) { request.sourceFrame(byTrackID: $0) }
+        var absent = 0
+        let image = try FrameRenderer.compose(instruction, at: t) { id in
+          let frame = request.sourceFrame(byTrackID: id)
+          if frame == nil { absent += 1 }
+          return frame
+        }
+        if absent > 0 {
+          generationLock.lock()
+          missing += absent
+          generationLock.unlock()
+        }
         PlanColorPipeline.tag(output, state.plan.color)
         let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(output), height: CVPixelBufferGetHeight(output))
         // A render task, waited on, so a failed render (the GPU refused, say, with the app
@@ -447,6 +479,8 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   func cancelAllPendingVideoCompositionRequests() {
     generationLock.lock()
     generation += 1
+    // A seek or a rebuild: the frames asked for so far no longer say where the clock is.
+    composedUpTo = -1
     generationLock.unlock()
   }
 }

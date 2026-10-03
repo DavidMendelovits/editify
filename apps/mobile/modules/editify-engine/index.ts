@@ -290,15 +290,21 @@ export interface PlayerPlanEvent {
   error?: string;
 }
 
+export interface SetPlanOptions {
+  /** The media was resolved again after onError 'mediaExpired': only such a plan is native's retry. */
+  mediaRetry?: boolean;
+  /** Seconds this device's clock runs ahead of the auth server's (media-token `exp` is server time). */
+  tokenClockOffset?: number;
+}
+
 /** The view's ref. Transport calls run in call order on the main thread; seeks coalesce natively. */
 export interface EditifyPlayerViewHandle {
   /**
    * A RenderPlan v1 as JSON and its media map {assetId: ref} (PHAsset id, app file URI, or the
    * user's server URL). `accepted: false` when its (revision, buildSeq) is not newer than the
-   * last one this view accepted. Rejects a plan or map the native side refuses. `mediaRetry`:
-   * the media was resolved again after onError 'mediaExpired'; only such a plan is native's retry.
+   * last one this view accepted. Rejects a plan or map the native side refuses.
    */
-  setPlan(planJson: string, media: Record<string, string>, mediaRetry?: boolean): Promise<{ accepted: boolean }>;
+  setPlan(planJson: string, media: Record<string, string>, options?: SetPlanOptions): Promise<{ accepted: boolean }>;
   play(): Promise<void>;
   pause(): Promise<void>;
   /** Exact seeks are zero-tolerance; inexact ones (mid-scrub) may land within a quarter second. */

@@ -11,6 +11,7 @@ import {
   resolvePreviewMedia, serverPreviewMedia, urlOrigin, type PreviewMedia,
 } from '../../lib/native-preview';
 import { freshSession } from '../../lib/supabase';
+import { tokenClockOffset } from '../../lib/token-clock';
 import { colors, fonts, radius, space, type } from '../../lib/theme';
 import { formatTimecode } from '../../lib/timeline';
 import { PreviewHandles } from './PreviewHandles';
@@ -196,8 +197,10 @@ export const NativePreview = forwardRef<NativePreviewHandle, NativePreviewProps>
   /** The last plan sent and its media, for a view that attaches after it was built. */
   const lastSent = useRef<{ plan: RenderPlan; media: Record<string, string> } | undefined>(undefined);
   const deliver = useCallback((target: EditifyPlayerViewHandle, next: RenderPlan, map: Record<string, string>, mediaRetry = false) => {
-    // Only a retry passes the flag (an older binary's setPlan takes two arguments).
-    const sent = mediaRetry ? target.setPlan(JSON.stringify(next), map, true) : target.setPlan(JSON.stringify(next), map);
+    // Options only when there are any (an older binary's setPlan takes two arguments).
+    const offset = tokenClockOffset();
+    const options = { ...(mediaRetry ? { mediaRetry: true } : {}), ...(offset !== undefined ? { tokenClockOffset: offset } : {}) };
+    const sent = Object.keys(options).length > 0 ? target.setPlan(JSON.stringify(next), map, options) : target.setPlan(JSON.stringify(next), map);
     sent.catch((error: unknown) => {
       unavailable(`setPlan: ${error instanceof Error ? error.message : String(error)}`);
     });

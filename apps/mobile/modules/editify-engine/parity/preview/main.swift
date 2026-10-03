@@ -29,7 +29,12 @@
 //    wait, the tagged retry rebuilds with the remote source reloaded, and a failure
 //    after that is an error; a server copy failing to load asks the same way.
 //    Over HTTP (MediaServer.swift, checking each token's exp): the player acts before
-//    a token expires mid-play, and plays real frames from the fresh URL.
+//    a token expires mid-play, and plays real frames from the fresh URL; with the
+//    server's clock 20 s ahead, the clock offset keeps every read accepted; a silent
+//    drop (transfers cut, 500s) is caught from the compositor falling behind the clock
+//    and reconnected natively, or handed to JS (mediaExpired) if the server stays down;
+//    the error-log matcher classifies CoreMedia and CFNetwork entries. A sticker added
+//    while paused at the frame on screen is drawn at once.
 // 6. Preview files: a download cancelled around its start never touches an
 //    invalidated session; a still added after teardown is deleted.
 // Prints one JSON report on stdout; server/test/native-preview.test.ts asserts on it.
@@ -358,9 +363,9 @@ final class Rig {
 
   /// Sets a plan and waits until it (or a later one) is applied and the item can play.
   @discardableResult
-  func apply(_ plan: RenderPlan, media: [String: String]? = nil, mediaRetry: Bool = false) async throws -> PlanPlayer.Applied {
+  func apply(_ plan: RenderPlan, media: [String: String]? = nil, mediaRetry: Bool = false, tokenClockOffset: Double? = nil) async throws -> PlanPlayer.Applied {
     let before = applied.count
-    guard player.setPlan(plan, media: media ?? mediaRefs, mediaRetry: mediaRetry) else { throw HarnessError("plan (\(plan.revision), \(plan.buildSeq)) dropped") }
+    guard player.setPlan(plan, media: media ?? mediaRefs, mediaRetry: mediaRetry, tokenClockOffset: tokenClockOffset) else { throw HarnessError("plan (\(plan.revision), \(plan.buildSeq)) dropped") }
     try await expect("plan (\(plan.revision), \(plan.buildSeq)) applied") { applied.count > before }
     let result = applied.last!
     if result.mode == .failed { throw HarnessError("plan failed: \(result.error ?? "?")") }
@@ -420,6 +425,23 @@ func whiteAndRed(_ buffer: CVPixelBuffer, x: Double, y: Double, w: Double, h: Do
     }
   }
   return ["white": white, "red": red]
+}
+
+/// The source frame (its embedded code) the player shows paused at frame k of a plan whose
+/// talk clip plays from a server. Bytes may still be on their way (the server trickles them; a
+/// CI VM is slow): a paused seek lands on the last frame decoded, so it seeks again until the
+/// frame at k arrives, for up to 15 s, and returns what it shows then.
+@MainActor
+func serverCode(_ rig: Rig, at k: Int) async throws -> Int {
+  rig.player.pause()
+  let deadline = CFAbsoluteTimeGetCurrent() + 15
+  var shown = -1
+  repeat {
+    shown = decodeCode(pixels(try await rig.frame(at: k, fps: 30).buffer, space: workingSpace))
+    if shown == k { break }
+    try? await Task.sleep(nanoseconds: 300_000_000)
+  } while CFAbsoluteTimeGetCurrent() < deadline
+  return shown
 }
 
 @MainActor
@@ -505,6 +527,59 @@ func run() async throws -> [String: Any] {
     ]
     if let after { entry["doingAfter"] = whiteAndRed(after, x: doing.x, y: doing.y, w: doing.w, h: doing.h) }
     report["captionStyle"] = entry
+    rig.player.teardown()
+  }
+
+  // MARK: A sticker added while paused, starting at the playhead
+  do {
+    watchdog.step("sticker added while paused")
+    let rig = Rig()
+    let base = try fixture("overlays")
+    try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
+    let k = 41
+    let time = CMTime(value: CMTimeValue(k), timescale: 30)
+    let (before, _) = try await rig.frame(at: k, fps: 30)
+    let box = (x: 290.0, y: 590.0)
+    /// Pixels in the new sticker's box that changed from the frame without it.
+    func changed(_ frame: CVPixelBuffer?) -> Int {
+      guard let frame else { return -1 }
+      let a = pixels(before, space: workingSpace), b = pixels(frame, space: workingSpace)
+      var count = 0
+      for y in Int(box.y - 40)..<Int(box.y + 40) {
+        for x in Int(box.x - 40)..<Int(box.x + 40) where zip(a.at(x, y), b.at(x, y)).contains(where: { abs($0 - $1) > 0.1 }) { count += 1 }
+      }
+      return count
+    }
+    func adding(start: Double, revision: Int) async throws -> [String: Any] {
+      var plan = base
+      var overlays = plan["overlays"] as! [[String: Any]]
+      var sticker = overlays.first { $0["id"] as? String == "emoji-fire" }!
+      sticker["id"] = "sticker-added-\(revision)"
+      sticker["z"] = overlays.count
+      sticker["start"] = start
+      sticker["end"] = start + 3 > 4 ? 4 : start + 3
+      var stickerBox = sticker["box"] as! [String: Any]
+      stickerBox["x"] = box.x
+      stickerBox["y"] = box.y
+      sticker["box"] = stickerBox
+      overlays.append(sticker)
+      plan["overlays"] = overlays
+      let landed = rig.seeksLanded
+      let applied = try await rig.apply(try decode(plan, revision: revision, buildSeq: next()))
+      try await rig.expect("the paused frame redrawn after the add") { rig.seeksLanded > landed }
+      let frame = await rig.newFrame(at: time)
+      // Back to the plan without it, for the next case.
+      _ = try await rig.apply(try decode(base, revision: revision + 1, buildSeq: next()))
+      _ = await rig.newFrame(at: time)
+      return ["mode": applied.mode.rawValue, "changed": changed(frame), "timeKept": abs(rig.player.currentTime - Double(k) / 30) < 1e-3]
+    }
+    // At the frame on screen (the builder keeps 6 decimals): drawn on the paused frame at once.
+    let onFrame = try await adding(start: (Double(k) / 30 * 1e6).rounded() / 1e6, revision: 2)
+    // At the playhead rounded UP to the millisecond (what the editor stamped): [start, end) starts
+    // on the next frame, so the paused frame rightly lacks it (the app now floors to the frame).
+    let roundedUp = try await adding(start: (Double(k) / 30 * 1000).rounded() / 1000, revision: 4)
+    let floored = try await adding(start: (Double(k) / 30 * 1000).rounded(.down) / 1000, revision: 6)
+    report["stickerAdd"] = ["onFrame": onFrame, "roundedUp": roundedUp, "floored": floored, "errors": rig.errors] as [String: Any]
     rig.player.teardown()
   }
 
@@ -896,17 +971,13 @@ func run() async throws -> [String: Any] {
       return refs
     }
     let base = try fixture("overlays")
-    /// The picture really comes from the server: the frame's embedded code is its source frame.
-    func code(_ rig: Rig, at k: Int) async throws -> Int {
-      rig.player.pause()
-      return decodeCode(pixels(try await rig.frame(at: k, fps: 30).buffer, space: workingSpace))
-    }
 
-    // No newer URL held: the player asks for media before the server starts refusing reads,
+    // No newer URL held: the player asks for media before the server starts refusing reads
+    // (tokens live 5 s: long enough for a slow CI VM to load and start playing first),
     // and plays on from the fresh URL JS sends.
     let rig = Rig()
-    rig.player.expiryLead = 0.5
-    try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)))
+    rig.player.expiryLead = 1
+    try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 5)))
     _ = try await rig.frame(at: 0, fps: 30)
     let started = CFAbsoluteTimeGetCurrent()
     rig.player.play()
@@ -916,7 +987,7 @@ func run() async throws -> [String: Any] {
     ]
     let retry = try await rig.apply(try decode(base, revision: 1, buildSeq: 2), media: refs(server.token(expiresIn: 600)), mediaRetry: true)
     expiring["retryMode"] = retry.mode.rawValue
-    expiring["code"] = try await code(rig, at: 60)
+    expiring["code"] = try await serverCode(rig, at: 60)
     expiring["errorsAfter"] = rig.errors.count
     expiring["refused"] = server.refused
     rig.player.teardown()
@@ -926,8 +997,8 @@ func run() async throws -> [String: Any] {
     // item moves to the URL already held, with no request for media and no read refused.
     let refusedBefore = server.refused
     let stale = Rig()
-    stale.player.expiryLead = 0.5
-    try await stale.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)))
+    stale.player.expiryLead = 1
+    try await stale.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 5)))
     _ = try await stale.frame(at: 0, fps: 30)
     stale.player.play()
     try await stale.expect("playing on the short token") { stale.player.player.rate > 0 }
@@ -939,28 +1010,121 @@ func run() async throws -> [String: Any] {
     let staleSwap: [String: Any] = [
       "mode": refreshed.mode.rawValue, "staleWhilePlaying": staleWhilePlaying, "moved": moved,
       "expired": stale.expired.count, "errors": stale.errors.count, "refused": server.refused - refusedBefore,
-      "code": try await code(stale, at: 75),
+      "code": try await serverCode(stale, at: 75),
     ]
     stale.player.teardown()
 
-    watchdog.step("http: expiry with no deadline")
-    // For the record (not asserted: a later OS may do better): with the deadline out of reach,
-    // what AVFoundation itself reports when the server starts refusing a loaded source.
-    let refusedBeforeSilent = server.refused
-    let silent = Rig()
-    silent.player.expiryLead = -3600
-    try await silent.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 1)))
-    _ = try await silent.frame(at: 0, fps: 30)
-    try? await Task.sleep(nanoseconds: 1_200_000_000)
-    silent.player.seek(to: 3.5, exact: true)
-    silent.player.play()
-    let silentReported = await silent.until(4) { !silent.expired.isEmpty || !silent.errors.isEmpty }
-    let withoutDeadline: [String: Any] = [
-      "refused": server.refused - refusedBeforeSilent, "reported": silentReported, "stalls": silent.stalls,
-      "time": silent.player.currentTime, "errors": silent.errors,
+    report["http"] = ["expiring": expiring, "staleSwap": staleSwap] as [String: Any]
+    server.stop()
+  }
+
+  // MARK: A server whose clock runs 20 s ahead (a phone's clock 20 s behind)
+  do {
+    watchdog.step("http: skewed clock")
+    let server = try MediaServer(clockShift: 20)
+    let port = try server.start()
+    let path = "/assets/asset-talk/proxy.mov"
+    server.serve(path, file: URL(string: mediaRefs["asset-talk"]!)!)
+    let base = try fixture("overlays")
+    func refs(_ token: String) -> [String: String] {
+      var refs = mediaRefs
+      refs["asset-talk"] = "http://127.0.0.1:\(port)\(path)?k=\(token)"
+      return refs
+    }
+    /// Plays a token that dies 2.5 s from now (by the server's clock) for up to 4 s.
+    func play(offset: Double?) async throws -> [String: Any] {
+      let refusedBefore = server.refused
+      let rig = Rig()
+      rig.player.expiryLead = 1
+      try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)), tokenClockOffset: offset)
+      _ = try await rig.frame(at: 0, fps: 30)
+      rig.player.play()
+      let reported = await rig.until(4) { !rig.expired.isEmpty || !rig.errors.isEmpty }
+      // A refusal still in flight is counted once its request lands.
+      try? await Task.sleep(nanoseconds: 300_000_000)
+      defer { rig.player.teardown() }
+      return ["reported": reported, "expired": rig.expired.count, "refusedBeforeReport": server.refused - refusedBefore]
+    }
+    // Without the offset the deadline is 20 s late: reads are refused first (the silent-drop
+    // watch then catches them). With it (JS measured the device 20 s behind) none is.
+    let withoutOffset = try await play(offset: nil)
+    let withOffset = try await play(offset: -20)
+    report["skew"] = ["withoutOffset": withoutOffset, "withOffset": withOffset] as [String: Any]
+    server.stop()
+  }
+
+  // MARK: Silent drops: the server cuts every transfer and answers 500, then comes back
+  do {
+    watchdog.step("http: silent drop")
+    // Just above the clip's bitrate (~24 KB/s), so little is buffered ahead when the drop comes.
+    let server = try MediaServer(bytesPerSecond: 28 << 10)
+    let port = try server.start()
+    let path = "/assets/asset-talk/proxy.mov"
+    server.serve(path, file: URL(string: mediaRefs["asset-talk"]!)!)
+    let base = try fixture("overlays")
+    func refs(_ token: String) -> [String: String] {
+      var refs = mediaRefs
+      refs["asset-talk"] = "http://127.0.0.1:\(port)\(path)?k=\(token)"
+      return refs
+    }
+    let token = server.token(expiresIn: 600)
+
+    // Back within the reconnect attempts: recovered natively, nothing asked of JS.
+    let rig = Rig()
+    try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(token))
+    _ = try await rig.frame(at: 0, fps: 30)
+    rig.player.play()
+    try await rig.expect("playing before the drop") { rig.player.player.rate > 0 && rig.player.currentTime > 0.2 }
+    let stallsBefore = rig.stalls
+    server.setFailing(true)
+    let cut = CFAbsoluteTimeGetCurrent()
+    var starvedAt: Double?
+    let detected = await rig.until(8) {
+      if starvedAt == nil, rig.stalls > stallsBefore { starvedAt = CFAbsoluteTimeGetCurrent() }
+      return rig.player.reconnectCount > 0
+    }
+    let detectedAt = CFAbsoluteTimeGetCurrent()
+    try? await Task.sleep(nanoseconds: 1_000_000_000)
+    server.setFailing(false)
+    let recovered = await rig.until(15) { rig.player.player.rate > 0 && rig.player.currentTime > 3 || rig.ends > 0 }
+    var drop: [String: Any] = [
+      "detected": detected, "cutToDetectMs": (detectedAt - cut) * 1000,
+      "starveToDetectMs": starvedAt.map { (detectedAt - $0) * 1000 } ?? -1, "buffering": rig.stalls > stallsBefore,
+      "reconnects": rig.player.reconnectCount, "failedRequests": server.failed, "recovered": recovered,
+      "expired": rig.expired.count, "errors": rig.errors.count,
     ]
-    silent.player.teardown()
-    report["http"] = ["expiring": expiring, "staleSwap": staleSwap, "withoutDeadline": withoutDeadline, "requests": server.requests.count] as [String: Any]
+    drop["code"] = try await serverCode(rig, at: 100)
+    rig.player.teardown()
+
+    watchdog.step("http: silent drop, server stays down")
+    // Down through every attempt: the failure policy (mediaExpired); back for the tagged retry.
+    let down = Rig()
+    down.player.reconnectDelays = [0, 0.2, 0.2]
+    try await down.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(token))
+    _ = try await down.frame(at: 0, fps: 30)
+    down.player.play()
+    try await down.expect("playing before the outage") { down.player.player.rate > 0 && down.player.currentTime > 0.2 }
+    server.setFailing(true)
+    let asked = await down.until(10) { !down.expired.isEmpty || !down.errors.isEmpty }
+    var outage: [String: Any] = ["asked": asked, "expired": down.expired.count, "errors": down.errors.count, "reconnects": down.player.reconnectCount]
+    server.setFailing(false)
+    let retry = try await down.apply(try decode(base, revision: 1, buildSeq: 2), media: refs(server.token(expiresIn: 600)), mediaRetry: true)
+    outage["retryMode"] = retry.mode.rawValue
+    outage["code"] = try await serverCode(down, at: 100)
+    outage["errorsAfter"] = down.errors.count
+    down.player.teardown()
+    report["silentDrop"] = ["backSoon": drop, "staysDown": outage] as [String: Any]
+
+    // The error-log matcher on entries as CoreMedia and CFNetwork write them.
+    let samples: [(Int, String, String?)] = [
+      (401, "NSURLErrorDomain", nil), (403, "CoreMediaErrorDomain", nil),
+      (-12660, "CoreMediaErrorDomain", "HTTP 403: Forbidden"), (-12938, "CoreMediaErrorDomain", "HTTP 401: Unauthorized"),
+      (-12938, "CoreMediaErrorDomain", "HTTP 404: File Not Found"), (-12938, "CoreMediaErrorDomain", "HTTP 4013"),
+      (-12660, "CoreMediaErrorDomain", "HTTP 503: Service Unavailable"), (500, "CoreMediaErrorDomain", nil),
+      (NSURLErrorNotConnectedToInternet, NSURLErrorDomain, "The Internet connection appears to be offline."),
+      (NSURLErrorNetworkConnectionLost, NSURLErrorDomain, nil), (-12645, "CoreMediaErrorDomain", "No matching mediaFile found"),
+    ]
+    report["errorLogKinds"] = samples.map { PlanPlayer.classifyErrorLog(status: $0.0, domain: $0.1, comment: $0.2).rawValue }
     server.stop()
   }
 
@@ -1017,7 +1181,6 @@ func run() async throws -> [String: Any] {
     let startWall = CFAbsoluteTimeGetCurrent()
     var nextSend = startWall
     var lastY = 120.0
-    var lastBuffer: CVPixelBuffer?
     while CFAbsoluteTimeGetCurrent() - startWall < 1 {
       if CFAbsoluteTimeGetCurrent() >= nextSend {
         var plan = base
@@ -1027,14 +1190,21 @@ func run() async throws -> [String: Any] {
         sent += 1
         nextSend += 1.0 / 60
       }
-      if output.hasNewPixelBuffer(forItemTime: time), let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) {
+      if output.hasNewPixelBuffer(forItemTime: time), output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) != nil {
         refreshed.append(CFAbsoluteTimeGetCurrent())
-        lastBuffer = buffer
       }
       try? await Task.sleep(nanoseconds: 1_000_000)
     }
     try await rig.expect("the last paused drag plan applied") { rig.applied.last?.buildSeq == buildSeq }
-    let final = await rig.newFrame(at: time, timeout: 0.5) ?? lastBuffer
+    // On a slow VM the last plan's own redraw may still be on its way (or was already taken in the
+    // loop): the property is that the paused frame ends up showing the last box. The same box once
+    // more redraws it, and that frame is waited for.
+    var settle = base
+    edit(&settle, ["overlays", 0, "box", "y"], lastY)
+    let landed = rig.seeksLanded
+    try await rig.apply(try decode(settle, revision: 1, buildSeq: next()))
+    try await rig.expect("the settling redraw landed") { rig.seeksLanded > landed }
+    let final = await rig.newFrame(at: time, timeout: 10)
     let intervals = zip(refreshed, refreshed.dropFirst()).map { ($1 - $0) * 1000 }
     var entry: [String: Any] = [
       "sent": sent, "applied": rig.applied.count - appliedBefore, "refreshedFrames": refreshed.count,
