@@ -458,6 +458,8 @@ final class LaughterObserver: NSObject, SNResultsObserving, @unchecked Sendable 
 enum TempFiles {
   static let pcmPrefix = "pcm-"
   static let proxyPrefix = "gemini-proxy-"
+  /// On-device exports (ExportCenter): a finished file stays for the share sheet until next launch.
+  static let exportPrefix = "editify-export-"
 
   static func url(prefix: String, extension ext: String) -> URL {
     FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)\(UUID().uuidString).\(ext)")
@@ -466,7 +468,7 @@ enum TempFiles {
   static func sweep() {
     let directory = FileManager.default.temporaryDirectory
     let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-    for name in names where name.hasPrefix(pcmPrefix) || name.hasPrefix(proxyPrefix) {
+    for name in names where name.hasPrefix(pcmPrefix) || name.hasPrefix(proxyPrefix) || name.hasPrefix(exportPrefix) {
       try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
     }
   }

@@ -68,6 +68,42 @@ enum AssetSource {
     }
   }
 
+  /// MediaGeometry for a ref (file:// URI or PHAsset id), never downloading: an image file
+  /// by its header, a Photos still by its PHAsset size (already upright, so rotation 0), a
+  /// video by its track. nil when there is no picture or the source can't be read.
+  static func geometry(_ ref: String) async -> [String: Any]? {
+    if ref.hasPrefix("file://") {
+      guard let url = URL(string: ref) else { return nil }
+      if let image = MediaGeometry.ofImage(url) { return image }
+      return try? await MediaGeometry.of(AVURLAsset(url: url))
+    }
+    guard hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { return nil }
+    if asset.mediaType == .image {
+      // The ORIGINAL's header, the bytes the export draws (PHAsset.pixelWidth/Height describe
+      // the edited version when the photo was edited in Photos).
+      guard let original = try? await originalImageData(ref) else { return nil }
+      return MediaGeometry.ofImage(data: original.0)
+    }
+    guard let loaded = try? await load(ref, allowNetwork: false) else { return nil }
+    return try? await MediaGeometry.of(loaded)
+  }
+
+  /// A Photos still's original bytes (`.original`, never downloading) and its UTI.
+  static func originalImageData(_ ref: String) async throws -> (Data, String?) {
+    guard hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { throw NotFound(ref: ref) }
+    let options = PHImageRequestOptions()
+    options.version = .original
+    options.isNetworkAccessAllowed = false
+    options.deliveryMode = .highQualityFormat
+    return try await withCheckedThrowingContinuation { continuation in
+      PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, type, _, info in
+        if let data { continuation.resume(returning: (data, type)) } else {
+          continuation.resume(throwing: (info?[PHImageErrorKey] as? Error) ?? NotFound(ref: ref))
+        }
+      }
+    }
+  }
+
   /// Photos library access as the registry names it, read without prompting:
   /// 'all' | 'limited' | 'denied' | 'undetermined'. Only 'all' can load an arbitrary
   /// picked PHAsset later; the app never asks (the system picker needs no permission).

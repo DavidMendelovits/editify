@@ -41,12 +41,22 @@ import type { PlanAssetRef } from '@editify/shared';
 export type MediaColor = 'hlg' | 'pq' | 'log' | 'sdr';
 export type PhotosAccess = 'all' | 'limited' | 'denied' | 'undetermined';
 
+/**
+ * Stored pixel size and the clockwise rotation (0, 90, 180, 270) that shows the picture
+ * upright (`MediaGeometry` in MediaFingerprint.swift): the track's preferred transform for
+ * video, EXIF orientation for stills. The server's asset records keep the coded size with
+ * no rotation, so the render plan takes these instead.
+ */
+export interface MediaGeometry { width: number; height: number; rotation: number }
+
 /** What the engine measures (`MediaFingerprint.swift`). `audio` is an envelope hash ("e1:…"). */
 export interface MediaFingerprint {
   duration: number;
   bytes: number;
   audio: string | null;
   color: MediaColor | null;
+  /** The video track's geometry; null without video, absent from older engines. */
+  geometry?: MediaGeometry | null;
 }
 
 export type MediaProbe =
@@ -80,6 +90,8 @@ export interface MediaNative {
   /** Size of a file:// URI, 0 when unknown. */
   fileSize(uri: string): number;
   removeFile(uri: string): void;
+  /** MediaGeometry of a PHAsset id or file:// URI (never downloading); null when unreadable or not a picture. */
+  geometry(ref: string): Promise<MediaGeometry | null>;
   ensureProxy(assetId: string, ref: string): Promise<void>;
   touchProxy(assetId: string): boolean;
   removeProxy(assetId: string): void;
@@ -125,6 +137,8 @@ export const LOCAL_MEDIA_MIGRATIONS: readonly string[] = [
    ALTER TABLE local_media ADD COLUMN last_used INTEGER;
    ALTER TABLE local_media ADD COLUMN server_reason TEXT;
    CREATE TABLE IF NOT EXISTS local_media_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT)`,
+  // MediaGeometry ("width,height,rotation") for the render plan (T7): rotated phone clips and photos.
+  'ALTER TABLE local_media ADD COLUMN geometry TEXT',
 ];
 
 /** Brings the database to the newest schema; safe to call on every launch. Returns the version. */
@@ -160,6 +174,7 @@ export interface LocalMediaRow {
   duration: number | null;
   bytes: number | null;
   color: MediaColor | null;
+  geometry: MediaGeometry | null;
   serverOnly: boolean;
   serverReason: ServerReason | null;
   /** Last time resolve handed this source out (ms); drives copy eviction. */
@@ -187,6 +202,7 @@ interface RawRow {
   duration: number | null;
   bytes: number | null;
   color: string | null;
+  geometry: string | null;
   server_only: number;
   server_reason: string | null;
   last_used: number | null;
@@ -201,6 +217,8 @@ export interface LocalMediaStore {
   markServerOnly(assetId: string, reason?: ServerReason): Promise<void>;
   /** Trust-on-first-use for a row stored without one. */
   setFingerprint(assetId: string, fingerprint: MediaFingerprint): Promise<void>;
+  /** Only touches an existing row. */
+  setGeometry(assetId: string, geometry: MediaGeometry): Promise<void>;
   /** Only touches an existing row. */
   setProxy(assetId: string, status: ProxyStatus | null, proxyUri: string | null): Promise<void>;
   /** Resolve handed this source out now. */
@@ -224,15 +242,15 @@ export function createLocalMediaStore(db: SqlDb, now: () => number = Date.now): 
       const fingerprint = entry.fingerprint ?? null;
       const at = now();
       await db.runAsync(
-        `INSERT INTO local_media (asset_id, ph_local_id, file_uri, file_bytes, fingerprint, duration, bytes, color, server_only, server_reason, last_used, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+        `INSERT INTO local_media (asset_id, ph_local_id, file_uri, file_bytes, fingerprint, duration, bytes, color, geometry, server_only, server_reason, last_used, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
          ON CONFLICT(asset_id) DO UPDATE SET
            ph_local_id = excluded.ph_local_id, file_uri = excluded.file_uri, file_bytes = excluded.file_bytes,
            fingerprint = excluded.fingerprint, duration = excluded.duration, bytes = excluded.bytes, color = excluded.color,
-           server_only = 0, server_reason = NULL, last_used = excluded.last_used, updated_at = excluded.updated_at`,
+           geometry = excluded.geometry, server_only = 0, server_reason = NULL, last_used = excluded.last_used, updated_at = excluded.updated_at`,
         entry.assetId, entry.phLocalId ?? null, entry.fileUri ?? null, entry.fileBytes ?? null,
         fingerprint?.audio ?? null, fingerprint?.duration ?? null, fingerprint?.bytes ?? null, fingerprint?.color ?? null,
-        at, at,
+        geometryText(fingerprint?.geometry), at, at,
       );
     },
     async markServerOnly(assetId, reason = 'server-only') {
@@ -247,6 +265,9 @@ export function createLocalMediaStore(db: SqlDb, now: () => number = Date.now): 
         'UPDATE local_media SET fingerprint = ?, duration = ?, bytes = ?, color = ?, updated_at = ? WHERE asset_id = ?',
         fingerprint.audio, fingerprint.duration, fingerprint.bytes, fingerprint.color, now(), assetId,
       );
+    },
+    async setGeometry(assetId, geometry) {
+      await db.runAsync('UPDATE local_media SET geometry = ? WHERE asset_id = ?', geometryText(geometry), assetId);
     },
     async setProxy(assetId, status, proxyUri) {
       await db.runAsync(
@@ -304,11 +325,45 @@ function fromRaw(raw: RawRow): LocalMediaRow {
     duration: raw.duration,
     bytes: raw.bytes,
     color: raw.color as MediaColor | null,
+    geometry: parseGeometry(raw.geometry),
     serverOnly: raw.server_only === 1,
     serverReason: raw.server_reason as ServerReason | null,
     lastUsed: raw.last_used,
     updatedAt: raw.updated_at,
   };
+}
+
+function geometryText(geometry: MediaGeometry | null | undefined): string | null {
+  return geometry ? `${geometry.width},${geometry.height},${geometry.rotation}` : null;
+}
+
+function parseGeometry(text: string | null): MediaGeometry | null {
+  if (!text) return null;
+  const [width, height, rotation] = text.split(',').map(Number);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(rotation)) return null;
+  return { width: width!, height: height!, rotation: rotation! };
+}
+
+/** A valid geometry from the engine, or null (a missing key, an older engine, garbage). */
+export function asGeometry(value: unknown): MediaGeometry | null {
+  if (!value || typeof value !== 'object') return null;
+  const { width, height, rotation } = value as Record<string, unknown>;
+  if (typeof width !== 'number' || typeof height !== 'number' || typeof rotation !== 'number') return null;
+  if (!(width > 0) || !(height > 0) || ![0, 90, 180, 270].includes(rotation)) return null;
+  return { width, height, rotation };
+}
+
+/**
+ * The geometry of a locally resolved source: the registry's, else a fresh probe's, else the
+ * engine reads it now and the registry keeps it. null when the engine can't tell.
+ */
+export async function mediaGeometry(media: Extract<ResolvedMedia, { state: 'local' | 'file' }>, deps: MediaDeps): Promise<MediaGeometry | null> {
+  const row = await deps.store.lookup(media.assetId);
+  if (row?.geometry) return row.geometry;
+  const probed = media.state === 'local' ? asGeometry(media.fingerprint.geometry) : null;
+  const geometry = probed ?? asGeometry(await deps.native.geometry(media.ref).catch(() => null));
+  if (geometry && row) await deps.store.setGeometry(media.assetId, geometry);
+  return geometry;
 }
 
 // ─── Fingerprints (OV2) ───

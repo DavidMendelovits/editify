@@ -52,7 +52,12 @@ export interface NativeFingerprint {
   bytes: number;
   audio: string | null;
   color: 'hlg' | 'pq' | 'log' | 'sdr' | null;
+  /** The video track's stored size and clockwise display rotation; null without video. */
+  geometry?: NativeGeometry | null;
 }
+
+/** Stored pixel size and the clockwise rotation (0, 90, 180, 270) that shows it upright. */
+export interface NativeGeometry { width: number; height: number; rotation: number }
 
 export type PhotosAccess = 'all' | 'limited' | 'denied' | 'undetermined';
 
@@ -107,6 +112,60 @@ export type AnalysisStatusEvent =
   | { assetId: string; part: NativeAnalysisPart; revision?: number; status: AnalysisPartStatus; analyzerVersion: string; error?: string; removed?: undefined }
   | { assetId: string; part: NativeAnalysisPart; revision?: number; removed: true };
 export interface AnalysisStateEvent { playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean }
+
+/**
+ * On-device export (plan P4). States follow the plan's export state machine: `queued`
+ * (the background task waits for iOS; cancellable), then `resolving` (media), `measuring`
+ * (loudness pass), `writing` (the render; `progress` is presented video time / duration),
+ * `saving` (Photos), and one of `done` / `failed` / `cancelled`. `progress` is the current
+ * state's own 0..1.
+ */
+export type ExportStateName = 'queued' | 'resolving' | 'measuring' | 'writing' | 'saving' | 'done' | 'failed' | 'cancelled';
+
+/** What a finished device export measured (PlanExportStats.dictionary). */
+export interface NativeExportStats {
+  seconds: number;
+  xRealtime: number;
+  peakMemMB: number;
+  /** The mix before gain (null: silent, or loudness off). */
+  lufsIn: number | null;
+  /** Measured on what reached the AAC encoder (after gain and limiter), not on the encoded file. */
+  lufsOut: number | null;
+  /** True peak before AAC encoding: the encoded file can read a few tenths of a dB higher. */
+  truePeakPreEncode: number | null;
+  gainDb: number;
+  limiterOn: boolean;
+  limiterMaxReductionDb: number;
+  frames: number;
+  bytes: number;
+  videoBitrate: number;
+  codec: 'h264-high' | 'hevc-main10';
+}
+
+export interface ExportStateEvent {
+  id: string;
+  state: ExportStateName;
+  progress: number;
+  /** `background`: a BGContinuedProcessingTask with GPU access; `foreground`: Editify must stay open. */
+  mode?: 'background' | 'foreground';
+  /** Shown while it runs, e.g. "Keep Editify open until it finishes." */
+  notice?: string;
+  error?: string;
+  /** done: the .mp4 (kept until the next launch), for the share sheet. */
+  fileUri?: string;
+  savedToPhotos?: boolean;
+  stats?: NativeExportStats;
+}
+
+export interface ExportProjectOptions {
+  /** Every asset the plan names → the ref resolveMedia returned for export (PHAsset id or app file URI). */
+  media: Record<string, string>;
+  /** 'photos' (default) saves with add-only access; 'file' only keeps the file for sharing. */
+  destination?: 'photos' | 'file';
+  /** Encoder knobs only: the plan's size, colour and loudness always win. */
+  videoBitrate?: number;
+  keyframeInterval?: number;
+}
 
 interface EditifyEngineNative {
   runSpike(spike: SpikeId, variant: string, run: number, params: Record<string, unknown>): Promise<LabRow>;
@@ -164,6 +223,8 @@ interface EditifyEngineNative {
   removeMedia(path: string): void;
   /** Deletes an asset's preview proxy. */
   removeProxy(assetId: string): void;
+  /** Geometry of a PHAsset id or file:// URI (video track or still), never downloading; null when unreadable. */
+  mediaGeometry(ref: string): Promise<NativeGeometry | null>;
   /** A PHAsset id (loaded as `.original`) or file:// URI: fingerprinted when on the device, never downloaded. */
   probeMedia(ref: string): Promise<NativeProbe>;
   /** `probeMedia`, downloading an iCloud original first; `progress` events carry `requestId`. Rejects when cancelled. */
@@ -176,10 +237,19 @@ interface EditifyEngineNative {
   /** The proxy store's byte budget (default 4 GB), clamped to 256 MB-1 TB and applied at once; false for a non-number. */
   setProxyBudget(bytes: number): Promise<boolean>;
 
+  // On-device export (plan P4). One at a time; a second call rejects while one runs.
+  /** Validates the plan and media map (rejects on bad input), starts, and answers the export id. */
+  exportProject(planJson: string, options: ExportProjectOptions): Promise<string>;
+  /** Cancels a queued or running export; its temp file is removed. Unknown ids are ignored. */
+  cancelExport(id: string): void;
+  /** Whether this phone can keep exporting in the background (BGContinuedProcessingTask with GPU). */
+  exportCapabilities(): { backgroundGPU: boolean };
+
   addListener(event: 'progress', listener: (event: ProgressEvent) => void): EventSubscription;
   addListener(event: 'analysisStatus', listener: (event: AnalysisStatusEvent) => void): EventSubscription;
   addListener(event: 'analysisState', listener: (event: AnalysisStateEvent) => void): EventSubscription;
+  addListener(event: 'exportState', listener: (event: ExportStateEvent) => void): EventSubscription;
 }
 
-/** iOS-only native engine (null on web and in builds without it): the capability lab and the device analyzers. */
+/** iOS-only native engine (null on web and in builds without it): the capability lab, the device analyzers and export. */
 export const EditifyEngine = requireOptionalNativeModule<EditifyEngineNative>('EditifyEngine');
