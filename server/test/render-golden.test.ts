@@ -1,4 +1,5 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -83,15 +84,19 @@ let report: Report;
 /** Kept after the run when set (CI uploads it on failure). */
 const keepOut = process.env.GOLDEN_OUT_DIR;
 
-beforeAll(() => {
+// Async on purpose: the build and the render take minutes on a CI runner, and a
+// blocked event loop starves vitest's worker RPC ("Timeout calling onTaskUpdate").
+const run = promisify(execFile);
+
+beforeAll(async () => {
   if (!swiftAvailable) return;
   dir = mkdtempSync(join(tmpdir(), 'editify-render-golden-'));
   const binary = join(dir, 'render-golden');
   const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath']
     .map((name) => join(engine, 'ios', `${name}.swift`));
-  execFileSync('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, join(engine, 'parity/render-golden/main.swift'), '-o', binary]);
+  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, join(engine, 'parity/render-golden/main.swift'), '-o', binary], { maxBuffer: 64 << 20 });
   const args = [join(goldens, 'manifest.json'), root, join(dir, 'work'), keepOut ?? join(dir, 'out'), ...(bless ? ['--bless'] : [])];
-  report = JSON.parse(execFileSync(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20 })) as Report;
+  report = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20 })).stdout) as Report;
 }, 600000);
 
 afterAll(() => {
