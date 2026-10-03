@@ -33,7 +33,56 @@ struct PlanBuildOptions {
   /// Output pixels per plan pixel: 1 for export, view.w / plan.w for a preview drawn at view size.
   var renderScale: CGFloat = 1
   var fonts: PlanFonts = .shared
+  /// A player passes its own renderer and media cache so caption bitmaps and
+  /// decoded images survive rebuilds; export gets fresh ones.
+  var captions: CaptionRenderer?
+  var media = PlanMediaCache()
   var captionCacheBytes = 64 << 20
+}
+
+/// Sources a plan uses, loaded once. `PlanBuilder.prepare(_:resolver:reusing:)`
+/// keeps every source a previous preparation already loaded, so a rebuild
+/// after an edit only loads what is new.
+final class PreparedMedia: @unchecked Sendable {
+  struct Video {
+    /// Held so the track stays usable: an AVAssetTrack does not keep its asset alive.
+    let asset: AVAsset
+    let track: AVAssetTrack
+    let range: CMTimeRange
+    let frameDuration: CMTime
+    let orientation: CGImagePropertyOrientation
+    let canProvideSampleCursors: Bool
+
+    var lastFrameStart: CMTime { max(range.start, range.end - frameDuration) }
+  }
+
+  struct Audio {
+    let asset: AVAsset
+    /// nil: the asset has no sound (an entry for it plays silence).
+    let track: AVAssetTrack?
+    let range: CMTimeRange
+  }
+
+  fileprivate(set) var videos: [String: Video] = [:]
+  fileprivate(set) var audios: [String: Audio] = [:]
+  fileprivate(set) var images: [String: URL] = [:]
+  fileprivate(set) var carrier: Audio?
+
+  var assets: [AVAsset] { videos.values.map(\.asset) + audios.values.map(\.asset) + (carrier.map { [$0.asset] } ?? []) }
+}
+
+/// Where each plan element landed in the composition. A plan whose
+/// `structureKey` matches can reuse the composition and rebuild only the
+/// video composition and audio mix (a parameter-only edit: zoom keys,
+/// opacity, overlays, captions, gains).
+struct CompositionLayout {
+  let structureKey: String
+  /// Per segment, per layer: the composition track (nil for a still).
+  let layerTracks: [[CMPersistentTrackID?]]
+  let brollTracks: [String: CMPersistentTrackID]
+  /// Audio entry id to its composition track.
+  let audioTracks: [String: CMPersistentTrackID]
+  let carrierTrack: CMPersistentTrackID?
 }
 
 /// A plan as AVFoundation objects. AVPlayerItem (EditifyPlayerView) and
@@ -44,8 +93,8 @@ struct BuiltPlan {
   let videoComposition: AVVideoComposition
   let audioMix: AVMutableAudioMix
   let state: PlanRenderState
-  /// The resolved source assets, kept alive for as long as the composition is used.
-  let sources: [AVAsset]
+  let layout: CompositionLayout
+  let media: PreparedMedia
   /// Set it on the AVPlayerItem / AVAssetReaderAudioMixOutput as well as the
   /// mix: time-stretched sound keeps its pitch (atempo's job on the server).
   static let audioTimePitchAlgorithm: AVAudioTimePitchAlgorithm = .spectral
@@ -57,39 +106,39 @@ struct BuiltPlan {
 /// Video: one composition track per concurrently needed layer. A clip that
 /// continues into the next segment keeps its track (so its decoder keeps
 /// running); other layers take any track idle by then. B-roll overlays get
-/// tracks of their own. Source time is mapped by inserting the source range
-/// and scaling it to the timeline span (speed). Sampling follows the schema:
-/// the source range starts at srcStart + 1e-6, so a timeline frame shows the
-/// latest source frame with PTS <= s + 1e-6; holds insert a sliver at frameAt
-/// and stretch it over the segment; a source that runs out holds its last frame.
+/// tracks of their own. Speed is the source range scaled to the timeline span
+/// (speed 1 inserts exactly, unscaled). Sampling follows the schema: the
+/// source range starts at srcStart + 1e-6, so a timeline frame shows the
+/// latest source frame with PTS <= s + 1e-6. A hold inserts a sliver that
+/// starts on the held frame's own PTS and ends before the next frame, stretched
+/// over the segment; a source that runs out holds its last frame.
 ///
-/// Audio: entries share tracks when they do not overlap; each is the source
-/// range [in, out) scaled by 1 / speed (spectral time-pitch), with volume
-/// ramps for gainKeys x fadeIn x fadeOut.
+/// Audio, on the 48 kHz sample grid: entries share tracks when they do not
+/// overlap; each plays source [in, out) from `at`. Speed 1 is inserted
+/// unscaled (no time-pitch processing at all); other speeds are scaled to
+/// their span with spectral time-pitch. Volume ramps carry
+/// gainKeys x fadeIn x fadeOut. Silence fills every track from the last
+/// sound to `duration`, so the mix and the composition last exactly the plan.
 enum PlanBuilder {
-  /// Seconds as a source time on a microsecond grid, rounded down after the
-  /// sampling rule's +1e-6.
+  static let audioRate = 48_000.0
+
+  /// Seconds as a source time after the sampling rule's +1e-6, rounded down
+  /// on a nanosecond grid. (On a microsecond grid the float sum can land a
+  /// hair under the microsecond it means: 0.333333 + 1e-6 floors to 333333 us,
+  /// before frame 10's PTS of 1/3 s, and shows frame 9.)
   static func sourceTime(_ seconds: Double) -> CMTime {
-    CMTime(value: Int64(((seconds + RenderPlan.epsilon) * 1_000_000).rounded(.down)), timescale: 1_000_000)
+    CMTime(value: Int64(((seconds + RenderPlan.epsilon) * 1_000_000_000).rounded(.down)), timescale: 1_000_000_000)
   }
 
   static func microseconds(_ seconds: Double) -> CMTime {
     CMTime(value: Int64((seconds * 1_000_000).rounded()), timescale: 1_000_000)
   }
 
-  /// Hold slivers: short enough never to reach the next source frame.
+  static func sample(_ seconds: Double) -> Int64 { Int64((seconds * audioRate).rounded()) }
+  static func sampleTime(_ sample: Int64) -> CMTime { CMTime(value: sample, timescale: CMTimeScale(audioRate)) }
+
+  /// The longest a hold sliver may be.
   static let holdSliver = CMTime(value: 100, timescale: 1_000_000)
-
-  struct VideoSource {
-    /// Held so the track stays usable: an AVAssetTrack does not keep its asset alive.
-    let asset: AVAsset
-    let track: AVAssetTrack
-    let range: CMTimeRange
-    let frameDuration: CMTime
-    let orientation: CGImagePropertyOrientation
-
-    var lastFrameStart: CMTime { max(range.start, range.end - frameDuration) }
-  }
 
   private final class Slot {
     let track: AVMutableCompositionTrack
@@ -97,34 +146,50 @@ enum PlanBuilder {
     var lastKey: String?
     var lastSegment = -2
     init(track: AVMutableCompositionTrack) { self.track = track }
+
+    /// Moves the cursor to `time`: an empty edit across a gap; never backwards
+    /// over content (that would split the previous edit), so an overlap trims
+    /// the previous edit's tail instead.
+    func advance(to time: CMTime) {
+      if cursor < time {
+        track.insertEmptyTimeRange(CMTimeRange(start: cursor, end: time))
+      } else if cursor > time {
+        assertionFailure("composition track overlap: \(cursor.seconds) > \(time.seconds)")
+        track.removeTimeRange(CMTimeRange(start: time, end: cursor))
+      }
+      cursor = time
+    }
   }
 
-  // swiftlint:disable:next function_body_length cyclomatic_complexity
-  static func build(_ plan: RenderPlan, resolver: PlanAssetResolver, options: PlanBuildOptions = PlanBuildOptions()) async throws -> BuiltPlan {
-    guard plan.duration > 0, plan.frameCount > 0, let lastSegment = plan.video.segments.last else { throw PlanBuildError.emptyPlan }
-    let fps = Int32(plan.fps)
-    let frameTime = { (frame: Int64) in CMTime(value: frame, timescale: fps) }
-    let planEnd = frameTime(plan.gridFrame(lastSegment.end))
+  // MARK: Loading
 
-    // Media, each ref loaded once.
-    var videoSources: [String: VideoSource] = [:]
-    var stills: [String: PlanStill] = [:]
-    var gifs: [String: PlanGif] = [:]
-    func video(_ ref: RenderPlan.AssetRef) async throws -> VideoSource {
-      if let cached = videoSources[ref.id] { return cached }
+  /// Loads every source the plan names that `previous` does not already hold.
+  static func prepare(_ plan: RenderPlan, resolver: PlanAssetResolver, reusing previous: PreparedMedia? = nil) async throws -> PreparedMedia {
+    let media = PreparedMedia()
+    if let previous {
+      media.videos = previous.videos
+      media.audios = previous.audios
+      media.images = previous.images
+      media.carrier = previous.carrier
+    }
+    func video(_ ref: RenderPlan.AssetRef) async throws {
+      if media.videos[ref.id] != nil { return }
       let asset = try await resolver.asset(ref)
       guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw PlanBuildError.noVideoTrack(ref.id) }
-      let (range, minFrame, rate, transform) = try await track.load(.timeRange, .minFrameDuration, .nominalFrameRate, .preferredTransform)
+      let (range, minFrame, rate, transform, cursors) = try await track.load(
+        .timeRange, .minFrameDuration, .nominalFrameRate, .preferredTransform, .canProvideSampleCursors)
       let frame = minFrame.isValid && minFrame > .zero ? minFrame : CMTime(value: 1, timescale: CMTimeScale(max(1, rate.rounded())))
-      let source = VideoSource(asset: asset, track: track, range: range, frameDuration: frame, orientation: AnalysisMath.orientation(of: transform))
-      videoSources[ref.id] = source
-      return source
+      media.videos[ref.id] = PreparedMedia.Video(asset: asset, track: track, range: range, frameDuration: frame,
+                                                 orientation: AnalysisMath.orientation(of: transform), canProvideSampleCursors: cursors)
+    }
+    func image(_ ref: RenderPlan.AssetRef) async throws {
+      if media.images[ref.id] == nil { media.images[ref.id] = try await resolver.imageFile(ref) }
     }
     for segment in plan.video.segments {
       for layer in segment.layers {
         switch layer.assetRef.kind {
-        case .video: _ = try await video(layer.assetRef)
-        case .image: if stills[layer.assetRef.id] == nil { stills[layer.assetRef.id] = try PlanStill.load(try await resolver.imageFile(layer.assetRef)) }
+        case .video: try await video(layer.assetRef)
+        case .image: try await image(layer.assetRef)
         case .audio: throw PlanBuildError.composition("a video layer cannot draw an audio asset")
         }
       }
@@ -132,26 +197,71 @@ enum PlanBuilder {
     for item in plan.overlays {
       guard let media = item.media else { continue }
       switch item.kind {
-      case .gif: if gifs[media.assetRef.id] == nil { gifs[media.assetRef.id] = try PlanGif.load(try await resolver.imageFile(media.assetRef)) }
-      case .image: if stills[media.assetRef.id] == nil { stills[media.assetRef.id] = try PlanStill.load(try await resolver.imageFile(media.assetRef)) }
-      case .broll: _ = try await video(media.assetRef)
+      case .gif, .image: try await image(media.assetRef)
+      case .broll: try await video(media.assetRef)
       case .emoji, .callout: break
       }
     }
+    for entry in plan.audio where media.audios[entry.assetRef.id] == nil {
+      let asset = try await resolver.asset(entry.assetRef)
+      let track = try await asset.loadTracks(withMediaType: .audio).first
+      let range = try await track?.load(.timeRange) ?? .zero
+      media.audios[entry.assetRef.id] = PreparedMedia.Audio(asset: asset, track: track, range: range)
+    }
+    if media.carrier == nil {
+      let asset = AVURLAsset(url: try PlanCarrier.silence())
+      guard let track = try await asset.loadTracks(withMediaType: .audio).first else { throw PlanBuildError.composition("no carrier track") }
+      media.carrier = PreparedMedia.Audio(asset: asset, track: track, range: try await track.load(.timeRange))
+    }
+    return media
+  }
+
+  /// Load and assemble in one go (export).
+  static func build(_ plan: RenderPlan, resolver: PlanAssetResolver, options: PlanBuildOptions = PlanBuildOptions()) async throws -> BuiltPlan {
+    try assemble(plan, media: try await prepare(plan, resolver: resolver), options: options)
+  }
+
+  /// A parameter-only edit: the same composition with a new video composition
+  /// and audio mix. nil when the plan's structure changed (assemble instead).
+  static func update(_ built: BuiltPlan, to plan: RenderPlan, options: PlanBuildOptions) throws -> BuiltPlan? {
+    guard structureKey(plan) == built.layout.structureKey else { return nil }
+    return try finish(plan, composition: built.composition, layout: built.layout, media: built.media, options: options)
+  }
+
+  /// Everything that decides the composition's edits. Keys, opacity, dims,
+  /// overlay boxes, captions and gains are not in it.
+  static func structureKey(_ plan: RenderPlan) -> String {
+    var parts: [String] = ["\(plan.fps)|\(plan.duration)"]
+    for segment in plan.video.segments {
+      parts.append("s\(segment.start)-\(segment.end)")
+      for layer in segment.layers {
+        parts.append("l\(layer.clipId)|\(layer.assetRef.id)|\(layer.assetRef.kind)|\(layer.srcStart)|\(layer.speed)|\(layer.hold?.frameAt ?? -1)")
+      }
+    }
+    for item in plan.overlays where item.kind == .broll {
+      let media = item.media
+      parts.append("b\(item.id)|\(item.start)|\(item.end)|\(media?.assetRef.id ?? "")|\(media?.srcStart ?? 0)|\(media?.speed ?? 1)|\(media?.loop ?? false)")
+    }
+    for entry in plan.audio { parts.append("a\(entry.id)|\(entry.assetRef.id)|\(entry.at)|\(entry.in)|\(entry.out)|\(entry.speed)") }
+    return parts.joined(separator: "\n")
+  }
+
+  // MARK: Composition
+
+  // swiftlint:disable:next function_body_length cyclomatic_complexity
+  static func assemble(_ plan: RenderPlan, media: PreparedMedia, options: PlanBuildOptions = PlanBuildOptions()) throws -> BuiltPlan {
+    guard plan.duration > 0, plan.frameCount > 0, let lastSegment = plan.video.segments.last else { throw PlanBuildError.emptyPlan }
+    let fps = Int32(plan.fps)
+    let frameTime = { (frame: Int64) in CMTime(value: frame, timescale: fps) }
+    let planEnd = frameTime(plan.gridFrame(lastSegment.end))
 
     let composition = AVMutableComposition()
     var videoSlots: [Slot] = []
-    func newVideoSlot() throws -> Slot {
-      guard let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-        throw PlanBuildError.composition("could not add a video track")
+    func newSlot(_ type: AVMediaType) throws -> Slot {
+      guard let track = composition.addMutableTrack(withMediaType: type, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+        throw PlanBuildError.composition("could not add a \(type.rawValue) track")
       }
-      let slot = Slot(track: track)
-      videoSlots.append(slot)
-      return slot
-    }
-    func advance(_ slot: Slot, to time: CMTime) throws {
-      if slot.cursor < time { slot.track.insertEmptyTimeRange(CMTimeRange(start: slot.cursor, end: time)) }
-      slot.cursor = time
+      return Slot(track: track)
     }
 
     // Video layers, segment by segment.
@@ -170,14 +280,20 @@ enum PlanBuilder {
         }
       }
       for (layerIndex, layer) in segment.layers.enumerated() where layer.assetRef.kind == .video && assigned[layerIndex] == nil {
-        let slot = try videoSlots.first(where: { !used.contains(ObjectIdentifier($0)) && $0.cursor <= start }) ?? newVideoSlot()
+        let slot: Slot
+        if let free = videoSlots.first(where: { !used.contains(ObjectIdentifier($0)) && $0.cursor <= start }) {
+          slot = free
+        } else {
+          slot = try newSlot(.video)
+          videoSlots.append(slot)
+        }
         assigned[layerIndex] = slot
         used.insert(ObjectIdentifier(slot))
       }
       var ids = [CMPersistentTrackID?](repeating: nil, count: segment.layers.count)
       for (layerIndex, layer) in segment.layers.enumerated() {
-        guard let slot = assigned[layerIndex], let source = videoSources[layer.assetRef.id] else { continue }
-        try advance(slot, to: start)
+        guard let slot = assigned[layerIndex], let source = media.videos[layer.assetRef.id] else { continue }
+        slot.advance(to: start)
         try insert(source, into: slot.track, at: start, duration: end - start,
                    srcStart: layer.srcStart, speed: layer.speed, hold: layer.hold?.frameAt, loop: false)
         slot.cursor = end
@@ -192,7 +308,7 @@ enum PlanBuilder {
     var brollSlots: [Slot] = []
     var brollTracks: [String: CMPersistentTrackID] = [:]
     for item in plan.overlays.sorted(by: { $0.start < $1.start }) where item.kind == .broll {
-      guard let media = item.media, let source = videoSources[media.assetRef.id] else { continue }
+      guard let itemMedia = item.media, let source = media.videos[itemMedia.assetRef.id] else { continue }
       let start = microseconds(item.start)
       let end = min(microseconds(item.end), planEnd)
       guard end > start else { continue }
@@ -200,92 +316,96 @@ enum PlanBuilder {
       if let free = brollSlots.first(where: { $0.cursor <= start }) {
         slot = free
       } else {
-        slot = try newVideoSlot()
+        slot = try newSlot(.video)
         brollSlots.append(slot)
+        videoSlots.append(slot)
       }
-      try advance(slot, to: start)
+      slot.advance(to: start)
       try insert(source, into: slot.track, at: start, duration: end - start,
-                 srcStart: media.srcStart, speed: media.speed, hold: nil, loop: media.loop ?? false)
+                 srcStart: itemMedia.srcStart, speed: itemMedia.speed, hold: nil, loop: itemMedia.loop ?? false)
       slot.cursor = end
       brollTracks[item.id] = slot.track.trackID
     }
 
     // Every video track spans the whole timeline, and there is always one, so
-    // the composition lasts exactly `duration` and frames are requested even
-    // where nothing but the background shows.
-    if videoSlots.isEmpty { _ = try newVideoSlot() }
-    for slot in videoSlots { try advance(slot, to: planEnd) }
+    // frames are requested even where nothing but the background shows.
+    if videoSlots.isEmpty { videoSlots.append(try newSlot(.video)) }
+    for slot in videoSlots { slot.advance(to: planEnd) }
 
-    // Audio.
-    let audioMix = AVMutableAudioMix()
-    var audioSlots: [(slot: Slot, end: Double, parameters: AVMutableAudioMixInputParameters)] = []
-    var audioAssets: [AVAsset] = []
-    for entry in plan.audio.sorted(by: { $0.at < $1.at }) {
-      let asset = try await resolver.asset(entry.assetRef)
-      audioAssets.append(asset)
-      guard let source = try await asset.loadTracks(withMediaType: .audio).first else { continue }
-      let sourceRange = try await source.load(.timeRange)
-      let from = microseconds(entry.in)
-      let to = min(microseconds(entry.out), sourceRange.end)
-      guard to > from else { continue }
-      let index: Int
-      if let free = audioSlots.firstIndex(where: { $0.end <= entry.at + RenderPlan.epsilon }) {
-        index = free
+    // Audio on the 48 kHz grid.
+    var audioSlots: [Slot] = []
+    var audioTracks: [String: CMPersistentTrackID] = [:]
+    for entry in plan.audio.sorted(by: { ($0.at, $0.id) < ($1.at, $1.id) }) {
+      guard let source = media.audios[entry.assetRef.id], let sourceTrack = source.track else { continue }
+      let atSample = sample(entry.at)
+      let endSample = sample(entry.end)
+      let fromSample = sample(entry.in)
+      // The source's last whole sample.
+      let sourceEnd = Int64((source.range.end.seconds * audioRate).rounded(.down))
+      guard endSample > atSample, sourceEnd > fromSample else { continue }
+      // Speed 1 plays exactly the span; other speeds play [in, out) scaled into it.
+      let wanted = entry.speed == 1 ? endSample - atSample : sample(entry.out) - fromSample
+      let length = min(wanted, sourceEnd - fromSample)
+      guard length > 0 else { continue }
+      let at = sampleTime(atSample)
+      let slot: Slot
+      if let free = audioSlots.first(where: { $0.cursor <= at }) {
+        slot = free
       } else {
-        guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-          throw PlanBuildError.composition("could not add an audio track")
-        }
-        let parameters = AVMutableAudioMixInputParameters(track: track)
-        parameters.audioTimePitchAlgorithm = BuiltPlan.audioTimePitchAlgorithm
-        audioSlots.append((Slot(track: track), 0, parameters))
-        index = audioSlots.count - 1
+        slot = try newSlot(.audio)
+        audioSlots.append(slot)
       }
-      let slot = audioSlots[index].slot
-      let at = CMTime(value: Int64((entry.at * 48_000).rounded()), timescale: 48_000)
-      try advance(slot, to: at)
+      slot.advance(to: at)
       do {
-        try slot.track.insertTimeRange(CMTimeRange(start: from, end: to), of: source, at: at)
+        try slot.track.insertTimeRange(CMTimeRange(start: sampleTime(fromSample), duration: sampleTime(length)), of: sourceTrack, at: at)
       } catch {
         throw PlanBuildError.composition("audio \(entry.id): \(error.localizedDescription)")
       }
-      let played = (to - from).seconds / entry.speed
-      let span = CMTime(value: Int64((played * 48_000).rounded()), timescale: 48_000)
-      if entry.speed != 1 || to - from != span {
-        slot.track.scaleTimeRange(CMTimeRange(start: at, duration: to - from), toDuration: span)
+      var span = sampleTime(length)
+      if entry.speed != 1 {
+        // A source that runs short keeps the speed and ends early.
+        let spanSamples = length == wanted ? endSample - atSample : Int64((Double(length) / entry.speed).rounded())
+        span = sampleTime(max(1, spanSamples))
+        slot.track.scaleTimeRange(CMTimeRange(start: at, duration: sampleTime(length)), toDuration: span)
       }
       slot.cursor = at + span
-      audioSlots[index].end = entry.end
-      for ramp in AudioRamps.ramps(entry) {
-        audioSlots[index].parameters.setVolumeRamp(
-          fromStartVolume: Float(ramp.from), toEndVolume: Float(ramp.to),
-          timeRange: CMTimeRange(start: CMTime(seconds: ramp.start, preferredTimescale: 48_000),
-                                 end: CMTime(seconds: ramp.end, preferredTimescale: 48_000)))
-      }
+      audioTracks[entry.id] = slot.track.trackID
     }
-    var mixParameters = audioSlots.map(\.parameters)
 
-    // A composition lasts until its last real media; empty edits do not
-    // count. Where the plan ends on background only (a trailing empty
-    // segment, captions over nothing, a stills-only plan), a silent carrier
-    // track holds the composition open to `duration`.
-    if composition.duration < planEnd {
-      let carrier = AVURLAsset(url: try PlanCarrier.silence())
-      audioAssets.append(carrier)
-      guard let source = try await carrier.loadTracks(withMediaType: .audio).first,
-            let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-        throw PlanBuildError.composition("could not add the carrier track")
+    // A composition, and the audio mix read from it, last only until their
+    // last real media; empty edits do not count. Unscaled copies of a short
+    // silent WAV fill from the end of all sound to `duration`.
+    var carrierTrack: CMPersistentTrackID?
+    let soundEnd = audioSlots.map(\.cursor).max() ?? .zero
+    if soundEnd < planEnd, let carrier = media.carrier, let carrierSource = carrier.track {
+      let slot = try newSlot(.audio)
+      slot.advance(to: soundEnd)
+      while slot.cursor < planEnd {
+        let piece = min(carrier.range.duration, planEnd - slot.cursor)
+        try slot.track.insertTimeRange(CMTimeRange(start: carrier.range.start, duration: piece), of: carrierSource, at: slot.cursor)
+        slot.cursor = slot.cursor + piece
       }
-      let range = try await source.load(.timeRange)
-      try track.insertTimeRange(range, of: source, at: .zero)
-      track.scaleTimeRange(CMTimeRange(start: .zero, duration: range.duration), toDuration: planEnd)
-      let silent = AVMutableAudioMixInputParameters(track: track)
-      silent.setVolume(0, at: .zero)
-      mixParameters.append(silent)
+      carrierTrack = slot.track.trackID
     }
-    audioMix.inputParameters = mixParameters
 
-    // Draw-time state: pre-drawn payloads, the caption renderer.
+    let layout = CompositionLayout(structureKey: structureKey(plan), layerTracks: layerTracks, brollTracks: brollTracks,
+                                   audioTracks: audioTracks, carrierTrack: carrierTrack)
+    return try finish(plan, composition: composition, layout: layout, media: media, options: options)
+  }
+
+  // MARK: Video composition and audio mix
+
+  // swiftlint:disable:next function_body_length
+  private static func finish(_ plan: RenderPlan, composition: AVMutableComposition, layout: CompositionLayout,
+                             media: PreparedMedia, options: PlanBuildOptions) throws -> BuiltPlan {
+    let fps = Int32(plan.fps)
+    let frameTime = { (frame: Int64) in CMTime(value: frame, timescale: fps) }
     let scale = options.renderScale
+    let even = { (value: Int) in max(2, Int((CGFloat(value) * scale / 2).rounded()) * 2) }
+    let renderSize = CGSize(width: even(plan.size.w), height: even(plan.size.h))
+
+    // Fail now, not mid-export, when a caption face is missing.
+    for face in Set(plan.captions.map(\.font)) { _ = try options.fonts.verticalMetrics(face) }
     var drawn: [String: OverlayGraphics.Drawn] = [:]
     for item in plan.overlays {
       if let emoji = item.emoji, let bitmap = OverlayGraphics.emoji(emoji, box: item.box, scale: scale) { drawn[item.id] = bitmap }
@@ -293,35 +413,40 @@ enum PlanBuilder {
         drawn[item.id] = bitmap
       }
     }
-    let even = { (value: Int) in max(2, Int((CGFloat(value) * scale / 2).rounded()) * 2) }
-    let renderSize = CGSize(width: even(plan.size.w), height: even(plan.size.h))
-    let state = PlanRenderState(plan: plan, scale: scale, renderSize: renderSize, stills: stills, gifs: gifs, drawnOverlays: drawn,
-                                captions: CaptionRenderer(fonts: options.fonts, budgetBytes: options.captionCacheBytes))
-    // Fail now, not mid-export, when a caption face is missing.
-    for face in Set(plan.captions.map(\.font)) { _ = try options.fonts.verticalMetrics(face) }
+    let state = PlanRenderState(plan: plan, scale: scale, renderSize: renderSize, media: options.media,
+                                captions: options.captions ?? CaptionRenderer(fonts: options.fonts, budgetBytes: options.captionCacheBytes))
 
     var instructions: [EditifyInstruction] = []
     for (index, segment) in plan.video.segments.enumerated() {
-      let start = frameTime(plan.gridFrame(segment.start))
-      let end = frameTime(plan.gridFrame(segment.end))
       var layers: [ResolvedLayer] = []
       for (layerIndex, layer) in segment.layers.enumerated() {
-        if layer.assetRef.kind == .image, let still = stills[layer.assetRef.id] {
-          layers.append(ResolvedLayer(layer: layer, source: .still(still.image)))
-        } else if let id = layerTracks[index][layerIndex], let source = videoSources[layer.assetRef.id] {
+        if layer.assetRef.kind == .image, let url = media.images[layer.assetRef.id] {
+          // Decoded no larger than the most zoomed cover-fit needs.
+          let info = try options.media.info(url)
+          let zoom = CGFloat(layer.cropKeys.map(\.scale).max() ?? 1)
+          let side = info.longSide(toCover: renderSize.width * zoom, renderSize.height * zoom)
+          layers.append(ResolvedLayer(layer: layer, source: .still(try options.media.image(url, longSide: side))))
+        } else if let id = layout.layerTracks[index][layerIndex], let source = media.videos[layer.assetRef.id] {
           layers.append(ResolvedLayer(layer: layer, source: .track(id, source.orientation)))
         }
       }
       let overlaps = { (from: Double, to: Double) in from < segment.end - RenderPlan.epsilon && to > segment.start + RenderPlan.epsilon }
       var overlays: [ResolvedOverlay] = []
       for item in plan.overlays where overlaps(item.start, item.end) {
+        let boxWidth = CGFloat(item.box.w) * scale, boxHeight = CGFloat(item.box.h) * scale
         switch item.kind {
         case .image:
-          if let id = item.media?.assetRef.id, let still = stills[id] { overlays.append(ResolvedOverlay(overlay: item, content: .still(still.image))) }
+          if let id = item.media?.assetRef.id, let url = media.images[id] {
+            let side = try options.media.info(url).longSide(toCover: boxWidth, boxHeight)
+            overlays.append(ResolvedOverlay(overlay: item, content: .still(try options.media.image(url, longSide: side))))
+          }
         case .gif:
-          if let id = item.media?.assetRef.id, let gif = gifs[id] { overlays.append(ResolvedOverlay(overlay: item, content: .gif(gif))) }
+          if let id = item.media?.assetRef.id, let url = media.images[id] {
+            let gif = try options.media.gif(url)
+            overlays.append(ResolvedOverlay(overlay: item, content: .gif(gif, longSide: gif.info.longSide(toCover: boxWidth, boxHeight))))
+          }
         case .broll:
-          if let id = item.media?.assetRef.id, let track = brollTracks[item.id], let source = videoSources[id] {
+          if let id = item.media?.assetRef.id, let track = layout.brollTracks[item.id], let source = media.videos[id] {
             overlays.append(ResolvedOverlay(overlay: item, content: .broll(track, source.orientation)))
           }
         case .emoji, .callout:
@@ -329,8 +454,8 @@ enum PlanBuilder {
         }
       }
       let captions = plan.captions.filter { overlaps($0.start, $0.end) }
-      instructions.append(EditifyInstruction(timeRange: CMTimeRange(start: start, end: end), segmentIndex: index,
-                                             layers: layers, overlays: overlays, captions: captions, state: state))
+      let range = CMTimeRange(start: frameTime(plan.gridFrame(segment.start)), end: frameTime(plan.gridFrame(segment.end)))
+      instructions.append(EditifyInstruction(timeRange: range, segmentIndex: index, layers: layers, overlays: overlays, captions: captions, state: state))
     }
 
     let tags = PlanColorPipeline.tags(plan.color)
@@ -343,12 +468,62 @@ enum PlanBuilder {
       instructions: instructions,
       renderSize: renderSize))
 
-    return BuiltPlan(plan: plan, composition: composition, videoComposition: videoComposition, audioMix: audioMix, state: state,
-                     sources: videoSources.values.map(\.asset) + audioAssets)
+    // One input per audio track: the ramps of every entry on it.
+    var inputs: [CMPersistentTrackID: AVMutableAudioMixInputParameters] = [:]
+    for entry in plan.audio {
+      guard let id = layout.audioTracks[entry.id], let track = composition.track(withTrackID: id) else { continue }
+      let parameters = inputs[id] ?? {
+        let made = AVMutableAudioMixInputParameters(track: track)
+        made.audioTimePitchAlgorithm = BuiltPlan.audioTimePitchAlgorithm
+        inputs[id] = made
+        return made
+      }()
+      for ramp in AudioRamps.ramps(entry) {
+        let start = sampleTime(sample(ramp.start)), end = sampleTime(sample(ramp.end))
+        guard end > start else { continue }
+        parameters.setVolumeRamp(fromStartVolume: Float(ramp.from), toEndVolume: Float(ramp.to), timeRange: CMTimeRange(start: start, end: end))
+      }
+    }
+    if let id = layout.carrierTrack, let track = composition.track(withTrackID: id) {
+      let silent = AVMutableAudioMixInputParameters(track: track)
+      silent.setVolume(0, at: .zero)
+      inputs[id] = silent
+    }
+    let audioMix = AVMutableAudioMix()
+    audioMix.inputParameters = inputs.keys.sorted().compactMap { inputs[$0] }
+
+    return BuiltPlan(plan: plan, composition: composition, videoComposition: videoComposition, audioMix: audioMix,
+                     state: state, layout: layout, media: media)
+  }
+
+  // MARK: Video edits
+
+  /// The held frame's own PTS, and a sliver short enough never to reach the next frame.
+  static func heldFrame(_ source: PreparedMedia.Video, at time: CMTime) -> (start: CMTime, sliver: CMTime) {
+    let clamped = min(max(time, source.range.start), source.lastFrameStart)
+    if source.canProvideSampleCursors, let cursor = source.track.makeSampleCursor(presentationTimeStamp: clamped) {
+      if cursor.presentationTimeStamp > clamped { _ = cursor.stepInPresentationOrder(byCount: -1) }
+      let pts = cursor.presentationTimeStamp
+      let next = cursor.copy() as! AVSampleCursor
+      let gap = next.stepInPresentationOrder(byCount: 1) == 1 && next.presentationTimeStamp > pts
+        ? next.presentationTimeStamp - pts : source.frameDuration
+      return sliver(after: pts, gap: gap)
+    }
+    return sliver(after: clamped, gap: source.frameDuration)
+  }
+
+  /// A sliver inside [pts, pts + gap): it starts a microsecond (at most a
+  /// quarter of the gap) after the PTS, the sampling rule's bias, because a
+  /// stretched edit that starts exactly on a frame boundary can map back a
+  /// hair before it and show the previous frame; it ends by half the gap.
+  private static func sliver(after pts: CMTime, gap: CMTime) -> (start: CMTime, sliver: CMTime) {
+    let bias = min(CMTime(value: 1, timescale: 1_000_000), CMTimeMultiplyByRatio(gap, multiplier: 1, divisor: 4))
+    let length = min(holdSliver, CMTimeMultiplyByRatio(gap, multiplier: 1, divisor: 2) - bias)
+    return (pts + bias, length)
   }
 
   /// Places source time srcStart (+ (t - at) * speed) on `track` over [at, at + duration).
-  static func insert(_ source: VideoSource, into track: AVMutableCompositionTrack, at: CMTime, duration: CMTime,
+  static func insert(_ source: PreparedMedia.Video, into track: AVMutableCompositionTrack, at: CMTime, duration: CMTime,
                      srcStart: Double, speed: Double, hold: Double?, loop: Bool) throws {
     func place(_ range: CMTimeRange, at time: CMTime, over span: CMTime) throws {
       do {
@@ -360,8 +535,8 @@ enum PlanBuilder {
     }
     func holdFrame(_ frameStart: CMTime, at time: CMTime, over span: CMTime) throws {
       guard span > .zero else { return }
-      let start = min(max(frameStart, source.range.start), source.lastFrameStart)
-      try place(CMTimeRange(start: start, duration: holdSliver), at: time, over: span)
+      let held = heldFrame(source, at: frameStart)
+      try place(CMTimeRange(start: held.start, duration: held.sliver), at: time, over: span)
     }
 
     if let hold {
@@ -373,14 +548,15 @@ enum PlanBuilder {
     var from = sourceTime(srcStart)
     while cursor < end {
       let remaining = end - cursor
-      let wanted = CMTime(seconds: remaining.seconds * speed, preferredTimescale: 1_000_000)
+      // Speed 1 takes exactly the span (no scaling); others on the microsecond grid.
+      let wanted = speed == 1 ? remaining : CMTime(seconds: remaining.seconds * speed, preferredTimescale: 1_000_000)
       let available = source.range.end - from
       if available >= wanted {
         try place(CMTimeRange(start: from, duration: wanted), at: cursor, over: remaining)
         return
       }
       if available > .zero {
-        let span = CMTime(seconds: available.seconds / speed, preferredTimescale: 1_000_000)
+        let span = speed == 1 ? available : CMTime(seconds: available.seconds / speed, preferredTimescale: 1_000_000)
         if span > .zero {
           try place(CMTimeRange(start: from, duration: available), at: cursor, over: min(span, remaining))
           cursor = cursor + min(span, remaining)
@@ -452,16 +628,17 @@ enum AudioRamps {
   private static func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
 }
 
-/// A short silent WAV, written once per process: the carrier that keeps a
-/// composition as long as its plan. PCM in a WAV needs no encoder.
+/// A short silent WAV, written once per process: the carrier copied (never
+/// stretched) after the last sound. PCM in a WAV needs no encoder.
 enum PlanCarrier {
   private static let lock = NSLock()
+  static let seconds: UInt32 = 2
 
   static func silence() throws -> URL {
     lock.lock(); defer { lock.unlock() }
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("editify-carrier-silence-v1.wav")
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("editify-carrier-silence-v2.wav")
     if FileManager.default.fileExists(atPath: url.path) { return url }
-    let rate: UInt32 = 48_000, frames: UInt32 = 4_800
+    let rate: UInt32 = 48_000, frames: UInt32 = 48_000 * seconds
     var data = Data()
     func append<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
     data.append(contentsOf: Array("RIFF".utf8)); append(UInt32(36 + frames * 2))

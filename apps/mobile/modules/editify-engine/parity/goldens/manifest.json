@@ -150,6 +150,36 @@
      "delayCs": 1
     }
    ]
+  },
+  "asset-vfr": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 4,
+   "base": [
+    0.1,
+    0.1,
+    0.1
+   ],
+   "frameDurations600": [
+    20,
+    10,
+    30
+   ]
+  },
+  "asset-surround": {
+   "kind": "audio",
+   "seconds": 4,
+   "channelTones": [
+    200,
+    300,
+    400,
+    50,
+    500,
+    600
+   ]
   }
  },
  "renders": [
@@ -276,7 +306,8 @@
       }
      ]
     }
-   ]
+   ],
+   "sequential": true
   },
   {
    "name": "dip",
@@ -372,7 +403,8 @@
      220,
      440
     ]
-   }
+   },
+   "sequential": true
   },
   {
    "name": "zoom",
@@ -887,7 +919,11 @@
       }
      ]
     }
-   ]
+   ],
+   "audio": {
+    "windows": [],
+    "tones": []
+   }
   },
   {
    "name": "mixed-color-sdr",
@@ -977,7 +1013,76 @@
       }
      ]
     }
-   ]
+   ],
+   "audio": {
+    "windows": [],
+    "tones": []
+   }
+  },
+  {
+   "name": "trailing-carrier",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/trailing-carrier.json",
+   "frames": [
+    {
+     "k": 75,
+     "golden": true
+    },
+    {
+     "k": 30,
+     "code": true
+    }
+   ],
+   "audio": {
+    "windows": [
+     {
+      "name": "a",
+      "from": 0.2,
+      "to": 0.98
+     },
+     {
+      "name": "b",
+      "from": 1.02,
+      "to": 1.8
+     },
+     {
+      "name": "tail",
+      "from": 2.2,
+      "to": 2.9
+     }
+    ],
+    "tones": [
+     220,
+     440
+    ]
+   }
+  },
+  {
+   "name": "surround",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/surround.json",
+   "frames": [],
+   "audio": {
+    "windows": [
+     {
+      "name": "all",
+      "from": 0.2,
+      "to": 1.8
+     }
+    ],
+    "tones": [
+     200,
+     300,
+     400,
+     50,
+     500,
+     600
+    ]
+   }
+  },
+  {
+   "name": "hold-vfr",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/hold-vfr.json",
+   "frames": [],
+   "sequential": true
   }
  ]
 }

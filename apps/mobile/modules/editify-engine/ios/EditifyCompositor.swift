@@ -3,28 +3,23 @@ import CoreImage
 import Metal
 
 /// Everything one built plan needs at draw time, shared by all of its
-/// instructions: the plan, decoded stills and GIFs, pre-drawn emoji and
-/// callout bitmaps, the caption renderer and the colour targets. Immutable
-/// after PlanBuilder makes it, apart from the caches inside CaptionRenderer.
+/// instructions: the plan, the media cache GIF frames decode through, the
+/// caption renderer and the render size. Immutable after PlanBuilder makes it,
+/// apart from the caches (shared with the player across rebuilds).
 final class PlanRenderState: @unchecked Sendable {
   let plan: RenderPlan
   /// Output pixels per plan pixel (1 for export; view.w / plan.w for a preview at another size).
   let scale: CGFloat
   let renderSize: CGSize
-  let stills: [String: PlanStill]
-  let gifs: [String: PlanGif]
-  let drawnOverlays: [String: OverlayGraphics.Drawn]
+  let media: PlanMediaCache
   let captions: CaptionRenderer
   let background: CIImage
 
-  init(plan: RenderPlan, scale: CGFloat, renderSize: CGSize, stills: [String: PlanStill], gifs: [String: PlanGif],
-       drawnOverlays: [String: OverlayGraphics.Drawn], captions: CaptionRenderer) {
+  init(plan: RenderPlan, scale: CGFloat, renderSize: CGSize, media: PlanMediaCache, captions: CaptionRenderer) {
     self.plan = plan
     self.scale = scale
     self.renderSize = renderSize
-    self.stills = stills
-    self.gifs = gifs
-    self.drawnOverlays = drawnOverlays
+    self.media = media
     self.captions = captions
     let rect = CGRect(origin: .zero, size: renderSize)
     let color = plan.background
@@ -80,7 +75,8 @@ struct ResolvedLayer {
 struct ResolvedOverlay {
   enum Content {
     case still(CIImage)
-    case gif(PlanGif)
+    /// Frames decode lazily, their longest side at most `longSide`.
+    case gif(PlanGif, longSide: Int)
     case broll(CMPersistentTrackID, CGImagePropertyOrientation)
     case drawn(OverlayGraphics.Drawn)
   }
@@ -302,10 +298,11 @@ enum FrameRenderer {
       switch item.content {
       case .still(let still):
         content = stretch(still, to: CGSize(width: boxWidth, height: boxHeight))
-      case .gif(let gif):
+      case .gif(let gif, let longSide):
         guard let media = item.overlay.media else { continue }
         let time = media.srcStart + (t - item.overlay.start) * media.speed
-        content = stretch(gif.frame(at: time, loop: media.loop ?? false), to: CGSize(width: boxWidth, height: boxHeight))
+        let frame = try state.media.image(gif.url, index: gif.frameIndex(at: time, loop: media.loop ?? false), longSide: longSide)
+        content = stretch(frame, to: CGSize(width: boxWidth, height: boxHeight))
       case .broll(let id, let orientation):
         guard let buffer = sourceFrame(id) else { continue }
         content = stretch(PlanColorPipeline.source(buffer, output: plan.color).oriented(orientation), to: CGSize(width: boxWidth, height: boxHeight))
@@ -326,9 +323,8 @@ enum FrameRenderer {
 
     for caption in instruction.captions where visible(caption.start, caption.end, at: t) {
       guard let bitmap = try state.captions.bitmap(caption, at: t, scale: scale) else { continue }
-      let height = CGFloat(bitmap.image.height)
-      let placed = CIImage(cgImage: bitmap.image)
-        .transformed(by: CGAffineTransform(translationX: bitmap.originX, y: rect.height - bitmap.originY - height))
+      let placed = bitmap.ciImage
+        .transformed(by: CGAffineTransform(translationX: bitmap.originX, y: rect.height - bitmap.originY - CGFloat(bitmap.image.height)))
       image = placed.composited(over: image)
     }
 
@@ -370,6 +366,11 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
 
   private let renderQueue = DispatchQueue(label: "editify.compositor")
   private var renderContext: AVVideoCompositionRenderContext?
+  /// Bumped by cancelAllPendingVideoCompositionRequests: a request queued
+  /// under an older generation finishes cancelled instead of rendering (a
+  /// seek or a rebuild drops the backlog at once, as in Apple's AVCustomEdit).
+  private var generation = 0
+  private let generationLock = NSLock()
 
   let supportsHDRSourceFrames = true
   let supportsWideColorSourceFrames = true
@@ -392,16 +393,30 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
     kCVPixelBufferMetalCompatibilityKey as String: true,
   ]
   let requiredPixelBufferAttributesForRenderContext: [String: any Sendable] = [
-    kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, kCVPixelFormatType_32BGRA],
+    // 10-bit first so HLG keeps its depth; 8-bit 4:2:0 for SDR writers and players.
+    kCVPixelBufferPixelFormatTypeKey as String: [
+      kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+      kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_32BGRA,
+    ],
     kCVPixelBufferMetalCompatibilityKey as String: true,
   ]
+
+  private var currentGeneration: Int {
+    generationLock.lock(); defer { generationLock.unlock() }
+    return generation
+  }
 
   func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {
     renderQueue.sync { renderContext = newRenderContext }
   }
 
   func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
+    let queuedAt = currentGeneration
     renderQueue.async { [self] in
+      if queuedAt != currentGeneration {
+        request.finishCancelledRequest()
+        return
+      }
       guard let instruction = request.videoCompositionInstruction as? EditifyInstruction,
             let output = renderContext?.newPixelBuffer() else {
         request.finish(with: PlanBuildError.compositor("no plan instruction or output buffer"))
@@ -422,6 +437,8 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   }
 
   func cancelAllPendingVideoCompositionRequests() {
-    renderQueue.sync {}
+    generationLock.lock()
+    generation += 1
+    generationLock.unlock()
   }
 }

@@ -38,6 +38,10 @@ struct Manifest: Decodable {
     let toneHz: Double?
     let orientation: UInt32?
     let frames: [GifFrame]?
+    /// Audio: one tone per channel (6 = 5.1 in L R C LFE Ls Rs order).
+    let channelTones: [Double]?
+    /// Video: per-frame durations in 1/600 s, cycled (variable frame rate).
+    let frameDurations600: [Int]?
   }
   struct GifFrame: Decodable { let rgb: [Double]; let delayCs: Int }
   struct Probe: Decodable { let name: String; let x: Double; let y: Double; let r: Int? }
@@ -57,6 +61,8 @@ struct Manifest: Decodable {
     let downscale: Int?
     let frames: [Frame]
     let audio: Audio?
+    /// Read every frame in one pass and decode its code strip.
+    let sequential: Bool?
   }
   let goldens: String           // repo-relative goldens directory
   let fonts: String             // repo-relative directory holding <face>.ttf
@@ -138,12 +144,26 @@ func toneSamples(hz: Double, from start: Int, count: Int, rate: Double) -> [Floa
   return samples
 }
 
-func audioSampleBuffer(_ samples: [Float], start: Int, rate: Double) throws -> CMSampleBuffer {
+func channelToneSamples(_ tones: [Double], from start: Int, count: Int, rate: Double) -> [Float] {
+  var samples = [Float](repeating: 0, count: count * tones.count)
+  for index in 0..<count {
+    for (channel, hz) in tones.enumerated() {
+      samples[index * tones.count + channel] = Float(0.25 * sin(2 * .pi * hz * Double(start + index) / rate))
+    }
+  }
+  return samples
+}
+
+func audioSampleBuffer(_ samples: [Float], start: Int, rate: Double, channels: Int = 2) throws -> CMSampleBuffer {
   var description = AudioStreamBasicDescription(
     mSampleRate: rate, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-    mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+    mBytesPerPacket: UInt32(4 * channels), mFramesPerPacket: 1, mBytesPerFrame: UInt32(4 * channels), mChannelsPerFrame: UInt32(channels),
+    mBitsPerChannel: 32, mReserved: 0)
   var format: CMAudioFormatDescription?
-  CMAudioFormatDescriptionCreate(allocator: nil, asbd: &description, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
+  var layout = AudioChannelLayout()
+  layout.mChannelLayoutTag = channels == 6 ? kAudioChannelLayoutTag_AAC_5_1 : kAudioChannelLayoutTag_Stereo
+  CMAudioFormatDescriptionCreate(allocator: nil, asbd: &description, layoutSize: MemoryLayout<AudioChannelLayout>.size, layout: &layout,
+                                 magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
   var block: CMBlockBuffer?
   let bytes = samples.count * 4
   CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: bytes, blockAllocator: nil, customBlockSource: nil,
@@ -151,7 +171,7 @@ func audioSampleBuffer(_ samples: [Float], start: Int, rate: Double) throws -> C
   samples.withUnsafeBytes { _ = CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block!, offsetIntoDestination: 0, dataLength: bytes) }
   var buffer: CMSampleBuffer?
   let status = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
-    allocator: nil, dataBuffer: block!, formatDescription: format!, sampleCount: samples.count / 2,
+    allocator: nil, dataBuffer: block!, formatDescription: format!, sampleCount: samples.count / channels,
     presentationTimeStamp: CMTime(value: CMTimeValue(start), timescale: CMTimeScale(rate)), packetDescriptions: nil, sampleBufferOut: &buffer)
   guard status == noErr, let buffer else { throw HarnessError("audio sample buffer: \(status)") }
   return buffer
@@ -229,7 +249,13 @@ func writeVideo(_ media: Manifest.Media, to url: URL) throws -> String {
         CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey, colour[AVVideoYCbCrMatrixKey]! as CFString, .shouldPropagate)
         ciContext.render(Pattern.frame(frame, width: width, height: height, base: media.base ?? [0.1, 0.1, 0.1]), to: buffer,
                          bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: space)
-        if !adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(fps))) {
+        let pts: CMTime
+        if let pattern = media.frameDurations600, !pattern.isEmpty {
+          pts = CMTime(value: CMTimeValue((0..<frame).reduce(0) { $0 + pattern[$1 % pattern.count] }), timescale: 600)
+        } else {
+          pts = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(fps))
+        }
+        if !adaptor.append(buffer, withPresentationTime: pts) {
           failure = writer.error ?? HarnessError("append failed"); input.markAsFinished(); group.leave(); return
         }
         frame += 1
@@ -273,8 +299,15 @@ func writeVideo(_ media: Manifest.Media, to url: URL) throws -> String {
 func writeAudio(_ media: Manifest.Media, to url: URL) throws {
   try? FileManager.default.removeItem(at: url)
   let writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
+  // Manifest order L R C LFE Ls Rs; AAC 5.1 stores C L R Ls Rs LFE.
+  let named = media.channelTones ?? [media.toneHz ?? 440, media.toneHz ?? 440]
+  let tones = named.count == 6 ? [2, 0, 1, 4, 5, 3].map { named[$0] } : named
+  var layout = AudioChannelLayout()
+  layout.mChannelLayoutTag = tones.count == 6 ? kAudioChannelLayoutTag_AAC_5_1 : kAudioChannelLayoutTag_Stereo
   let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-    AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: 192_000,
+    AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: tones.count,
+    AVEncoderBitRateKey: tones.count == 6 ? 384_000 : 192_000,
+    AVChannelLayoutKey: Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size),
   ])
   input.expectsMediaDataInRealTime = false
   writer.add(input)
@@ -285,7 +318,7 @@ func writeAudio(_ media: Manifest.Media, to url: URL) throws {
   while cursor < total {
     while !input.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.001) }
     let count = min(1024, total - cursor)
-    input.append(try audioSampleBuffer(toneSamples(hz: media.toneHz ?? 440, from: cursor, count: count, rate: 48_000), start: cursor, rate: 48_000))
+    input.append(try audioSampleBuffer(channelToneSamples(tones, from: cursor, count: count, rate: 48_000), start: cursor, rate: 48_000, channels: tones.count))
     cursor += count
   }
   input.markAsFinished()
@@ -360,9 +393,13 @@ for (id, media) in manifest.media.sorted(by: { $0.key < $1.key }) {
     mediaFiles[id] = url
     let source = CGImageSourceCreateWithURL(url as CFURL, nil)!
     let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-    let still = try PlanStill.load(url)
+    let cache = PlanMediaCache()
+    let info = try cache.info(url)
+    let full = try cache.image(url, longSide: info.longSide(toCover: 10_000, 10_000))
+    let small = try cache.image(url, longSide: info.longSide(toCover: 25, 25))
     mediaReport[id] = ["orientation": (properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1,
-                       "uprightWidth": Int(still.image.extent.width), "uprightHeight": Int(still.image.extent.height)]
+                       "uprightWidth": Int(full.extent.width), "uprightHeight": Int(full.extent.height),
+                       "downsampled": [Int(small.extent.width), Int(small.extent.height)]]
   case "gif":
     let url = work.appendingPathComponent("\(id).gif")
     try writeGif(media, to: url)
@@ -373,7 +410,7 @@ for (id, media) in manifest.media.sorted(by: { $0.key < $1.key }) {
       let gif = (CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any])?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
       delays.append((gif?[kCGImagePropertyGIFUnclampedDelayTime] as? NSNumber)?.doubleValue ?? -1)
     }
-    let loaded = try PlanGif.load(url)
+    let loaded = try PlanGif.read(url)
     mediaReport[id] = ["unclampedDelays": delays, "starts": loaded.starts, "total": loaded.total]
   default:
     throw HarnessError("unknown media kind \(media.kind)")
@@ -435,7 +472,8 @@ func readFrame(_ built: BuiltPlan, frame k: Int) throws -> CVPixelBuffer {
   return buffer
 }
 
-func readMix(_ built: BuiltPlan) throws -> [Float] {
+/// The stereo mix as left and right channels.
+func readMix(_ built: BuiltPlan) throws -> (left: [Float], right: [Float]) {
   let reader = try AVAssetReader(asset: built.composition)
   let output = AVAssetReaderAudioMixOutput(audioTracks: built.composition.tracks(withMediaType: .audio), audioSettings: [
     AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2,
@@ -445,16 +483,56 @@ func readMix(_ built: BuiltPlan) throws -> [Float] {
   output.audioTimePitchAlgorithm = BuiltPlan.audioTimePitchAlgorithm
   reader.add(output)
   guard reader.startReading() else { throw HarnessError("audio reader: \(reader.error?.localizedDescription ?? "?")") }
-  var mono: [Float] = []
+  var left: [Float] = [], right: [Float] = []
+  // Place every buffer by its PTS and keep [0, duration): time-pitch processing
+  // emits a tail past the end, which T7's writer must drop the same way.
+  let total = Int((built.composition.duration.seconds * 48_000).rounded())
+  left = [Float](repeating: 0, count: total)
+  right = [Float](repeating: 0, count: total)
+  var written = 0
   while let sample = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(sample) {
     let length = CMBlockBufferGetDataLength(block)
     var bytes = [Float](repeating: 0, count: length / 4)
     _ = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
+    let first = Int((CMSampleBufferGetPresentationTimeStamp(sample).seconds * 48_000).rounded())
     var index = 0
-    while index + 1 < bytes.count { mono.append((bytes[index] + bytes[index + 1]) / 2); index += 2 }
+    while index + 1 < bytes.count {
+      let at = first + index / 2
+      if at >= 0, at < total { left[at] = bytes[index]; right[at] = bytes[index + 1]; written = max(written, at + 1) }
+      index += 2
+    }
   }
+  left = Array(left.prefix(written))
+  right = Array(right.prefix(written))
   guard reader.status != .failed else { throw HarnessError("audio reader: \(reader.error?.localizedDescription ?? "?")") }
-  return mono
+  return (left, right)
+}
+
+/// Every output frame in one pass, each frame's code strip decoded (see Pattern).
+func sequentialCodes(_ built: BuiltPlan) throws -> [Int] {
+  let reader = try AVAssetReader(asset: built.composition)
+  let output = AVAssetReaderVideoCompositionOutput(videoTracks: built.composition.tracks(withMediaType: .video), videoSettings: [
+    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+  ])
+  output.videoComposition = built.videoComposition
+  reader.add(output)
+  guard reader.startReading() else { throw HarnessError("reader: \(reader.error?.localizedDescription ?? "?")") }
+  var codes: [Int] = []
+  while let sample = output.copyNextSampleBuffer(), let buffer = CMSampleBufferGetImageBuffer(sample) {
+    codes.append(decodeCode(pixels(buffer, space: workingSpace)))
+  }
+  guard reader.status != .failed else { throw HarnessError("reader: \(reader.error?.localizedDescription ?? "?")") }
+  return codes
+}
+
+func decodeCode(_ linear: Pixels) -> Int {
+  var value = 0
+  let block = Double(linear.width) / Double(Pattern.codeBits)
+  for bit in 0..<Pattern.codeBits {
+    let p = linear.at(Int(block * (Double(bit) + 0.5)), Int(20 * Double(linear.width) / 360))
+    value = value << 1 | (p[0] > 0.5 ? 1 : 0)
+  }
+  return value
 }
 
 /// Amplitude of a pure tone in a Hann-windowed stretch (Goertzel), in sample units.
@@ -570,8 +648,8 @@ var report: [String: Any] = ["media": mediaReport]
 
 // MARK: Executor checks (no media): the Swift parse, the audio ramps, the caption cache.
 
-func decodeOutcome(_ mutate: (inout [String: Any]) -> Void) -> String {
-  let fixture = repo.appendingPathComponent("packages/shared/fixtures/render-plans/caption-karaoke.json")
+func decodeOutcome(_ name: String = "caption-karaoke", _ mutate: (inout [String: Any]) -> Void) -> String {
+  let fixture = repo.appendingPathComponent("packages/shared/fixtures/render-plans/\(name).json")
   guard let wrapper = try? JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any],
         var plan = wrapper["plan"] as? [String: Any] else { return "fixture unreadable" }
   mutate(&plan)
@@ -615,6 +693,9 @@ checks["decode"] = [
   "segmentGap": decodeOutcome { edit(&$0, ["video", "segments", 0, "end"], 2.9) },
   "badColour": decodeOutcome { $0["background"] = "#12345" },
   "unknownFace": decodeOutcome { edit(&$0, ["captions", 0, "font"], "Inter-Bold") },
+  "overlaysFixture": decodeOutcome("overlays") { _ in },
+  "zeroCalloutCard": decodeOutcome("overlays") { edit(&$0, ["overlays", 3, "callout", "card", "w"], 0) },
+  "zeroCalloutGlyph": decodeOutcome("overlays") { edit(&$0, ["overlays", 3, "callout", "glyph", "h"], 0) },
 ]
 let rampEntry = try JSONDecoder().decode(RenderPlan.AudioEntry.self, from: JSONSerialization.data(withJSONObject: [
   "id": "e", "clipId": "c", "assetRef": ["id": "a", "kind": "audio"], "at": 1.0, "in": 0.0, "out": 1.0, "speed": 1.0,
@@ -658,6 +739,40 @@ checks["captionCache"] = [
 var ordering = PlanOrdering()
 let offered = [(3, 1), (3, 1), (2, 9), (3, 2), (4, 0), (4, 0)]
 checks["ordering"] = ["accepted": offered.map { ordering.accept(revision: $0.0, buildSeq: $0.1) }]
+// Rebuilds: a parameter-only edit keeps the composition; media and caches carry over.
+func fixturePlan(_ name: String, _ mutate: (inout [String: Any]) -> Void = { _ in }) throws -> RenderPlan {
+  let wrapper = try JSONSerialization.jsonObject(with: Data(contentsOf: repo.appendingPathComponent("packages/shared/fixtures/render-plans/\(name).json"))) as! [String: Any]
+  var plan = wrapper["plan"] as! [String: Any]
+  mutate(&plan)
+  return try RenderPlan.decode(JSONSerialization.data(withJSONObject: plan))
+}
+let sharedMedia = PlanMediaCache()
+let sharedOptions = PlanBuildOptions(fonts: fonts, captions: CaptionRenderer(fonts: fonts), media: sharedMedia)
+let basePlan = try fixturePlan("overlays")
+let firstMedia = try await PlanBuilder.prepare(basePlan, resolver: resolver)
+let first = try PlanBuilder.assemble(basePlan, media: firstMedia, options: sharedOptions)
+let decodedAfterFirst = sharedMedia.cachedImages
+let zoomed = try fixturePlan("overlays") {
+  edit(&$0, ["video", "segments", 0, "layers", 0, "cropKeys", 0, "scale"], 1.2)
+  edit(&$0, ["overlays", 2, "box", "x"], 150)
+}
+let moved = try fixturePlan("overlays") {
+  edit(&$0, ["audio", 0, "at"], 0.5)
+  edit(&$0, ["audio", 0, "out"], 3.5)
+  edit(&$0, ["audio", 0, "gainKeys", 0, "t"], 0.5)
+}
+let updated = try PlanBuilder.update(first, to: zoomed, options: sharedOptions)
+let notUpdated = try PlanBuilder.update(first, to: moved, options: sharedOptions)
+let secondMedia = try await PlanBuilder.prepare(moved, resolver: resolver, reusing: firstMedia)
+_ = try PlanBuilder.assemble(moved, media: secondMedia, options: sharedOptions)
+checks["rebuild"] = [
+  "parameterEditUpdates": updated != nil,
+  "sameComposition": updated.map { $0.composition === first.composition } ?? false,
+  "newVideoComposition": updated.map { $0.videoComposition !== first.videoComposition } ?? false,
+  "structuralEditRefused": notUpdated == nil,
+  "assetsReused": secondMedia.videos["asset-talk"]?.asset === firstMedia.videos["asset-talk"]?.asset,
+  "imagesDecodedOnce": decodedAfterFirst > 0 && sharedMedia.cachedImages == decodedAfterFirst,
+]
 checks["sdrCurve"] = ["0.18": PlanColorPipeline.sdrCurve(0.18), "1": PlanColorPipeline.sdrCurve(1), "2": PlanColorPipeline.sdrCurve(2)]
 report["checks"] = checks
 var renders: [[String: Any]] = []
@@ -679,6 +794,13 @@ for render in manifest.renders {
   entry["instructions"] = built.videoComposition.instructions.count
   entry["durationSeconds"] = built.composition.duration.seconds
   entry["renderSize"] = [built.videoComposition.renderSize.width, built.videoComposition.renderSize.height]
+  // Audio edits: where each track ends, and how many edits are time-scaled (speed 1 must have none).
+  entry["audioEdits"] = built.composition.tracks(withMediaType: .audio).map { track -> [String: Any] in
+    let real = track.segments.filter { !$0.isEmpty }
+    let scaled = real.filter { abs($0.timeMapping.source.duration.seconds - $0.timeMapping.target.duration.seconds) > 1e-9 }
+    return ["end": track.timeRange.end.seconds, "edits": real.count, "scaled": scaled.count, "carrier": track.trackID == built.layout.carrierTrack]
+  }
+  if render.sequential == true { entry["sequentialCodes"] = try sequentialCodes(built) }
   let outputSpace = PlanColorPipeline.outputSpace(plan.color)
   var frames: [[String: Any]] = []
   for frame in render.frames {
@@ -717,15 +839,7 @@ for render in manifest.renders {
       probes[rect.name] = ["brightestLinear": best.1.map(Double.init), "brightestEncoded": best.2.map(Double.init)]
     }
     result["probes"] = probes
-    if frame.code == true {
-      var value = 0
-      let block = Double(encoded.width) / Double(Pattern.codeBits)
-      for bit in 0..<Pattern.codeBits {
-        let p = linear.at(Int(block * (Double(bit) + 0.5)), Int(20 * Double(encoded.width) / 360))
-        value = value << 1 | (p[0] > 0.5 ? 1 : 0)
-      }
-      result["code"] = value
-    }
+    if frame.code == true { result["code"] = decodeCode(linear) }
     if frame.golden == true {
       let file = "\(render.name)-\(String(format: "%03d", frame.k)).png"
       let rendered = outDir.appendingPathComponent(file)
@@ -747,16 +861,23 @@ for render in manifest.renders {
   }
   entry["frames"] = frames
   if let audio = render.audio {
-    let mix = try readMix(built)
-    var windows: [String: Any] = [:]
+    let (left, right) = try readMix(built)
+    let mix = zip(left, right).map { ($0 + $1) / 2 }
+    var windows: [String: Any] = [:], leftWindows: [String: Any] = [:], rightWindows: [String: Any] = [:]
     for window in audio.windows {
       let from = max(0, Int(window.from * 48_000)), to = min(mix.count, Int(window.to * 48_000))
-      let slice = from < to ? mix[from..<to] : []
-      var tones: [String: Double] = [:]
-      for hz in audio.tones { tones[String(Int(hz))] = toneAmplitude(slice, hz: hz) }
+      var tones: [String: Double] = [:], lefts: [String: Double] = [:], rights: [String: Double] = [:]
+      for hz in audio.tones {
+        let key = String(Int(hz))
+        tones[key] = toneAmplitude(from < to ? mix[from..<to] : [], hz: hz)
+        lefts[key] = toneAmplitude(from < to ? left[from..<to] : [], hz: hz)
+        rights[key] = toneAmplitude(from < to ? right[from..<to] : [], hz: hz)
+      }
       windows[window.name] = tones
+      leftWindows[window.name] = lefts
+      rightWindows[window.name] = rights
     }
-    entry["audio"] = ["samples": mix.count, "windows": windows]
+    entry["audio"] = ["samples": mix.count, "windows": windows, "left": leftWindows, "right": rightWindows]
   }
   renders.append(entry)
 }

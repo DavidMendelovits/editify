@@ -53,7 +53,14 @@ interface Render {
   instructions?: number;
   durationSeconds?: number;
   frames?: Frame[];
-  audio?: { windows: Record<string, Record<string, number>> };
+  sequentialCodes?: number[];
+  audioEdits?: Array<{ end: number; edits: number; scaled: number; carrier: boolean }>;
+  audio?: {
+    samples: number;
+    windows: Record<string, Record<string, number>>;
+    left: Record<string, Record<string, number>>;
+    right: Record<string, Record<string, number>>;
+  };
 }
 interface Report {
   media: Record<string, Record<string, unknown>>;
@@ -138,11 +145,14 @@ describe.skipIf(!swiftAvailable)('render goldens (EditifyCompositor on macOS)', 
     }
   });
 
-  it('builds one instruction per plan segment and lasts exactly the plan', () => {
+  const planFile = (name: string): string => {
+    const harnessOnly = join(goldens, 'plans', `${name}.json`);
+    return readdirSync(join(goldens, 'plans')).includes(`${name}.json`) ? harnessOnly : join(root, 'packages/shared/fixtures/render-plans', `${name}.json`);
+  };
+
+  it('builds one instruction per plan segment and lasts exactly the plan, picture and sound', () => {
     for (const item of report.renders) {
-      const fixture = item.name.startsWith('mixed-color')
-        ? join(goldens, 'plans', `${item.name}.json`)
-        : join(root, 'packages/shared/fixtures/render-plans', `${item.name}.json`);
+      const fixture = planFile(item.name);
       const { plan } = JSON.parse(readFileSync(fixture, 'utf8')) as { plan: { duration: number; video: { segments: unknown[] } } };
       if (plan.duration === 0) {
         expect(item.emptyPlanRefused, item.name).toBe(true);
@@ -150,7 +160,72 @@ describe.skipIf(!swiftAvailable)('render goldens (EditifyCompositor on macOS)', 
       }
       expect(item.instructions, item.name).toBe(plan.video.segments.length);
       expect(item.durationSeconds, item.name).toBeCloseTo(plan.duration, 6);
+      // Audio tracks (with the silent carrier) end at the plan's end, so the mix is exactly as long.
+      if (item.audioEdits && item.audioEdits.length > 0) {
+        expect(Math.max(...item.audioEdits.map((edit) => edit.end)), item.name).toBeCloseTo(plan.duration, 6);
+      }
+      if (item.audio) expect(item.audio.samples, item.name).toBe(Math.round(plan.duration * 48000));
     }
+    expect(render('trailing-carrier').audio!.samples).toBe(144000);
+    expect(render('mixed-color-hlg').audio!.samples).toBe(96000);
+  });
+
+  it('time-scales audio only for speed != 1, and back-to-back entries do not split each other', () => {
+    for (const item of report.renders) {
+      const scaled = (item.audioEdits ?? []).reduce((sum, edit) => sum + edit.scaled, 0);
+      expect(scaled, item.name).toBe(item.name === 'speed-2x' ? 1 : 0);
+    }
+    // a (0-1 s) and b (1-2 s) share one track as two whole edits ending at 2 s; the carrier fills 2-3 s.
+    const edits = render('trailing-carrier').audioEdits!;
+    expect(edits.find((edit) => !edit.carrier)).toMatchObject({ edits: 2, end: 2 });
+    expect(edits.find((edit) => edit.carrier)).toMatchObject({ edits: 1, end: 3 });
+    expect(tone('trailing-carrier', 'a', 220)).toBeCloseTo(0.25, 2);
+    expect(tone('trailing-carrier', 'a', 440)).toBeLessThan(0.005);
+    expect(tone('trailing-carrier', 'b', 440)).toBeCloseTo(0.25, 2);
+    expect(tone('trailing-carrier', 'b', 220)).toBeLessThan(0.005);
+    expect(Math.max(tone('trailing-carrier', 'tail', 220), tone('trailing-carrier', 'tail', 440))).toBeLessThan(0.001);
+  });
+
+  it('reads every frame in order with the right source frame (sequential pass)', () => {
+    expect(render('speed-2x').sequentialCodes).toEqual(Array.from({ length: 60 }, (_, k) => 30 + 2 * k));
+    // crossfade-hold: a plays to 2.2 s, then holds frame 65 under b, which fades in over 2.0-2.6 s.
+    // The code strip reads whichever layer weighs more; frames within 0.05 of an even blend are skipped.
+    const codes = render('crossfade-hold').sequentialCodes!;
+    expect(codes).toHaveLength(120);
+    codes.forEach((code, k) => {
+      const t = k / 30;
+      const bAlpha = t < 2 ? 0 : t < 2.2 ? ((t - 2) / 0.2) / 3 : t < 2.6 ? 1 / 3 + ((t - 2.2) / 0.4) * (2 / 3) : 1;
+      if (Math.abs(bAlpha - 0.5) < 0.05) return;
+      const expected = bAlpha > 0.5 ? k - 60 : Math.min(k, 65);
+      expect(code, `crossfade-hold frame ${k}`).toBe(expected);
+    });
+    // VFR holds: frame 10 at its exact PTS; 50 us before frame 20's PTS shows frame 19 for the whole segment.
+    expect(render('hold-vfr').sequentialCodes).toEqual([...Array(30).fill(10), ...Array(30).fill(19)]);
+  });
+
+  it('downmixes 5.1 to stereo per BS.775 through the default mix output', () => {
+    const side = (channel: 'left' | 'right', hz: number): number => render('surround').audio![channel].all![String(hz)]!;
+    expect(side('left', 200)).toBeCloseTo(0.25, 2); // L
+    expect(side('left', 400)).toBeCloseTo(0.25 * Math.SQRT1_2, 2); // C at 0.7071
+    expect(side('left', 500)).toBeCloseTo(0.25 * Math.SQRT1_2, 2); // Ls at 0.7071
+    expect(side('right', 300)).toBeCloseTo(0.25, 2);
+    expect(side('right', 400)).toBeCloseTo(0.25 * Math.SQRT1_2, 2);
+    expect(side('right', 600)).toBeCloseTo(0.25 * Math.SQRT1_2, 2);
+    for (const hz of [300, 600, 50]) expect(side('left', hz), `left ${hz}`).toBeLessThan(0.005);
+    for (const hz of [200, 500, 50]) expect(side('right', hz), `right ${hz}`).toBeLessThan(0.005); // LFE dropped
+  });
+
+  it('rebuilds a parameter-only edit without a new composition, reusing media and decoded images', () => {
+    expect(report.checks.rebuild).toEqual({
+      parameterEditUpdates: true,
+      sameComposition: true,
+      newVideoComposition: true,
+      structuralEditRefused: true,
+      assetsReused: true,
+      imagesDecodedOnce: true,
+    });
+    // Stills decode at the size drawn: the 100 x 160 logo asked for 25 px fits in 25 x 40, upright.
+    expect(report.media['asset-logo']).toMatchObject({ downsampled: [25, 40] });
   });
 
   it('samples the latest source frame at s + 1e-6: speed, crossfade sources, holds, track stacking', () => {
@@ -324,6 +399,9 @@ describe.skipIf(!swiftAvailable)('render goldens (EditifyCompositor on macOS)', 
       segmentGap: 'invalid',
       badColour: 'invalid',
       unknownFace: 'invalid',
+      overlaysFixture: 'ok',
+      zeroCalloutCard: 'invalid',
+      zeroCalloutGlyph: 'invalid',
     });
   });
 });

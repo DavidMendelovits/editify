@@ -418,7 +418,15 @@ extension RenderPlan {
       if let callout = item.callout {
         try text(callout.label.text, "callout label")
         try check(callout.label.sizePx.isFinite && callout.label.sizePx > 0, "callout label size must be positive")
-        try finite(callout.card.x, callout.card.y, callout.card.w, callout.card.h, callout.card.radiusPx, callout.label.x, callout.label.y, what: "callout")
+        try finite(callout.card.x, callout.card.y, callout.label.x, callout.label.y, what: "callout")
+        try check(callout.card.w.isFinite && callout.card.w > 0 && callout.card.h.isFinite && callout.card.h > 0, "callout card size must be positive")
+        try check(callout.card.radiusPx.isFinite && callout.card.radiusPx >= 0, "callout radius must be >= 0")
+        try check(callout.label.width.isFinite && callout.label.width >= 0, "callout label width must be >= 0")
+        if let glyph = callout.glyph {
+          try finite(glyph.x, glyph.y, what: "callout glyph")
+          try check(glyph.w.isFinite && glyph.w > 0 && glyph.h.isFinite && glyph.h > 0, "callout glyph size must be positive")
+          try check(glyph.strokePx.isFinite && glyph.strokePx > 0, "callout glyph stroke must be positive")
+        }
         let want: Callout.Glyph.Shape? = callout.variant == .check ? .check : callout.variant == .x ? .cross : nil
         try check(callout.glyph?.shape == want, "a \(callout.variant.rawValue) callout's glyph does not match its variant")
       }
@@ -436,6 +444,14 @@ extension RenderPlan {
       try check(item.lane >= 0, "caption lane must be >= 0")
       try check(item.sizePx.isFinite && item.sizePx > 0, "caption size must be positive")
       try check(item.strokePx.isFinite && item.strokePx >= 0, "caption stroke must be >= 0")
+      if let shadow = item.shadow {
+        try check(shadow.offsetPx.isFinite && shadow.offsetPx >= 0 && shadow.opacity.isFinite && (0...1).contains(shadow.opacity), "caption shadow is out of range")
+      }
+      if let box = item.box {
+        try check(box.padPx.isFinite && box.padPx >= 0 && box.radiusPx.isFinite && box.radiusPx >= 0 && box.opacity.isFinite && (0...1).contains(box.opacity),
+                  "caption box is out of range")
+      }
+      try check(item.fitted.scale.isFinite && item.fitted.scale > 0 && item.fitted.scale <= 1, "caption fitted scale is out of range")
       try check(!item.lines.isEmpty, "a caption has at least one line")
       try limit(item.lines.count <= PlanLimits.linesPerCaption, "caption \(item.id) has more than \(PlanLimits.linesPerCaption) lines")
       let karaoke = item.lines.filter { $0.words != nil }.count

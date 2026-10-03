@@ -62,13 +62,18 @@ jobs:
   # none of the engine paths reports success without spinning up macOS.
   engine:
     needs: changes
-    runs-on: ${{ needs.changes.outputs.engine == 'true' && 'macos-latest' || 'ubuntu-latest' }}
+    # Pinned image and Xcode: a runner image bump must not move the goldens
+    # (blessed with Xcode 26.6). Bump both deliberately and re-bless.
+    runs-on: ${{ needs.changes.outputs.engine == 'true' && 'macos-26' || 'ubuntu-latest' }}
     steps:
       - name: No engine change
         if: needs.changes.outputs.engine != 'true'
         run: echo "No engine, render-plan or caption change; macOS checks skipped."
       - uses: actions/checkout@v4
         if: needs.changes.outputs.engine == 'true'
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: needs.changes.outputs.engine == 'true'
+        with: { xcode-version: '26.6' }
       - uses: actions/setup-node@v4
         if: needs.changes.outputs.engine == 'true'
         with: { node-version: 20, cache: npm }

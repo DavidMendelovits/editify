@@ -15,8 +15,15 @@ final class PlanFonts: @unchecked Sendable {
     var errorDescription: String? { "Font \(face) is not available: \(reason)" }
   }
 
-  /// `hhea` ascender and descender (descender as a positive distance) in em.
-  struct VerticalMetrics: Equatable { let ascender: CGFloat; let descender: CGFloat }
+  /// In em: the `hhea` ascender and descender (descender as a positive
+  /// distance), and the OS/2 winAscent / winDescent cell, which is how far
+  /// glyphs actually reach (Montserrat's accents go to 1.109 em, above hhea's 0.968).
+  struct VerticalMetrics: Equatable {
+    let ascender: CGFloat
+    let descender: CGFloat
+    let winAscent: CGFloat
+    let winDescent: CGFloat
+  }
 
   private let locate: (PlanFontFace) -> URL?
   private var descriptors: [PlanFontFace: CTFontDescriptor] = [:]
@@ -70,7 +77,12 @@ final class PlanFonts: @unchecked Sendable {
     }
     let unitsPerEm = CGFloat(CTFontGetUnitsPerEm(probe))
     let int16 = { (offset: Int) in CGFloat(Int16(bitPattern: UInt16(hhea[offset]) << 8 | UInt16(hhea[offset + 1]))) }
-    metrics[face] = VerticalMetrics(ascender: int16(4) / unitsPerEm, descender: -int16(6) / unitsPerEm)
+    guard let os2 = CTFontCopyTable(probe, CTFontTableTag(kCTFontTableOS2), []) as Data?, os2.count >= 78 else {
+      throw Missing(face: face.rawValue, reason: "no OS/2 table")
+    }
+    let uint16 = { (offset: Int) in CGFloat(UInt16(os2[offset]) << 8 | UInt16(os2[offset + 1])) }
+    metrics[face] = VerticalMetrics(ascender: int16(4) / unitsPerEm, descender: -int16(6) / unitsPerEm,
+                                    winAscent: uint16(74) / unitsPerEm, winDescent: uint16(76) / unitsPerEm)
     descriptors[face] = descriptor
     return descriptor
   }
@@ -202,6 +214,8 @@ final class CaptionRenderer: @unchecked Sendable {
   /// A finished caption bitmap and where its top-left sits in output pixels (at scale).
   struct Bitmap {
     let image: CGImage
+    /// Made once per cache entry and reused every frame the state shows.
+    let ciImage: CIImage
     let originX: CGFloat
     let originY: CGFloat
   }
@@ -243,12 +257,29 @@ final class CaptionRenderer: @unchecked Sendable {
     let pad = CGFloat(caption.box?.padPx ?? 0)
     let stroke = CGFloat(caption.strokePx)
     let shadow = CGFloat(caption.shadow?.offsetPx ?? 0)
-    // Generous margin: stroke, shadow, box padding, and glyph ink past the advance box.
-    let margin = stroke + shadow + pad + size * 0.5 + 2
+    // The bitmap covers each line's ink: vertically the font's win cell (plus
+    // 0.1 em for fallback emoji, whose descent is deeper), horizontally the
+    // advance plus 0.25 em of overhang; then stroke, shadow and box padding.
+    let reach = max(metrics.winAscent, metrics.ascender) * size + size * 0.1
+    let drop = max(metrics.winDescent, metrics.descender) * size + size * 0.1
+    let margin = stroke + shadow + pad + 2
+    // Horizontally: the plan's extent or the text's own advance, whichever
+    // reaches further (a plan laid out with other widths must not clip ink).
+    let measureFont = try fonts.font(caption.font, size: size)
+    let advance = { (text: String) in CGFloat(CTLineGetTypographicBounds(TextPainter.line(text, font: measureFont), nil, nil, nil)) }
     var bounds = CGRect.null
     for line in caption.lines {
-      bounds = bounds.union(CGRect(x: line.x - margin, y: line.y - ascender - margin,
-                                   width: line.width + 2 * margin, height: ascender + descender + 2 * margin))
+      var left = CGFloat(line.x), right = CGFloat(line.x + line.width)
+      if let words = line.words {
+        for word in words {
+          left = min(left, CGFloat(word.x))
+          right = max(right, CGFloat(word.x) + advance(word.w))
+        }
+      } else {
+        right = max(right, CGFloat(line.x) + advance(line.text))
+      }
+      bounds = bounds.union(CGRect(x: left - margin - size * 0.25, y: CGFloat(line.y) - reach - margin,
+                                   width: right - left + 2 * margin + size * 0.5, height: reach + drop + 2 * margin))
     }
     let originX = (bounds.minX * scale).rounded(.down)
     let originY = (bounds.minY * scale).rounded(.down)
@@ -339,7 +370,7 @@ final class CaptionRenderer: @unchecked Sendable {
     TextPainter.drawRuns(all.bitmapRuns, in: context)
 
     guard let image = context.makeImage() else { return nil }
-    return Bitmap(image: image, originX: originX, originY: originY)
+    return Bitmap(image: image, ciImage: CIImage(cgImage: image), originX: originX, originY: originY)
   }
 
   private static func strokeAndFill(_ path: CGPath, stroke: CGFloat, color: CGColor, fill: CGColor, in context: CGContext) {
