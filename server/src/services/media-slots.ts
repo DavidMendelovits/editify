@@ -10,8 +10,16 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  */
 export type SlotLane = 'foreground' | 'background';
 
+/**
+ * Any object a caller keeps to name its own queued job to `promote` or
+ * `cancel`. Labels can repeat (a replaced run and its successor share one),
+ * a ticket cannot.
+ */
+export type SlotTicket = object;
+
 export interface SlotOptions {
   lane?: SlotLane;
+  ticket?: SlotTicket;
 }
 
 interface Grant {
@@ -21,6 +29,9 @@ interface Grant {
 
 interface Waiter {
   grant: Grant;
+  ticket: SlotTicket | undefined;
+  /** A background job someone is now waiting on; see `promote`. */
+  promoted?: boolean;
   start: () => void;
   cancel: (error: Error) => void;
 }
@@ -39,9 +50,10 @@ const FOREGROUND_TURNS = 2;
  * of each path guessing at its own. The lanes only reorder who waits; they
  * never let more than `capacity` jobs run.
  *
- * Background jobs never hold more than `capacity - 1` slots at once (at least
- * one), so a preview or render that arrives waits on at most one Whisper run,
- * never on a slot pool full of them.
+ * Background jobs hold at most `capacity - 1` slots at once (at least one),
+ * so a preview or render that arrives waits on at most one Whisper run, never
+ * on a slot pool full of them. The one exception is a promoted job taking a
+ * slot no foreground job was waiting for (see `promote`).
  *
  * Rule: a single async chain never holds two slots. Nesting acquires would
  * deadlock as soon as every slot is held by a job waiting for a second one.
@@ -75,14 +87,18 @@ export class MediaSlots {
     return this.running.map((grant) => grant.label);
   }
 
-  /** Labels of the jobs waiting for a slot: foreground first, then background. */
+  /**
+   * Labels of the jobs waiting for a slot: the foreground queue, then the
+   * background one (promoted jobs at its head). Grant order interleaves them;
+   * see `nextWaiter`.
+   */
   queued(): readonly string[] {
     return [...this.waiting, ...this.background].map((waiter) => waiter.grant.label);
   }
 
   async run<T>(label: string, job: () => Promise<T>, options: SlotOptions = {}): Promise<T> {
     if (this.held()) return await job();
-    const grant = await this.acquire({ label, lane: options.lane ?? 'foreground' });
+    const grant = await this.acquire({ label, lane: options.lane ?? 'foreground' }, options.ticket);
     try {
       return await this.holding.run(label, job);
     } finally {
@@ -99,32 +115,40 @@ export class MediaSlots {
   }
 
   /**
-   * Moves a background waiter to the back of the foreground queue: someone is
-   * now waiting on it, so it no longer counts against the background cap.
-   * Returns false when it already started or never queued.
+   * Someone is now waiting on a queued background job (`target` is its ticket
+   * or label). It moves to the head of the background queue, behind earlier
+   * promotions, and from there goes before every foreground waiter whenever
+   * the background cap allows, or whenever no foreground job wants the slot.
+   * It still counts against the cap otherwise, so a burst of promotions
+   * cannot fill the pool with Whisper runs while previews wait. Returns false
+   * when it already started, was already promoted, or never queued.
    */
-  promote(label: string): boolean {
-    const waiter = this.takeBackground(label);
-    if (!waiter) return false;
-    waiter.grant.lane = 'foreground';
-    this.waiting.push(waiter);
+  promote(target: string | SlotTicket): boolean {
+    const index = this.findBackground(target, (waiter) => !waiter.promoted);
+    if (index < 0) return false;
+    const [waiter] = this.background.splice(index, 1) as [Waiter];
+    waiter.promoted = true;
+    const firstUnpromoted = this.background.findIndex((other) => !other.promoted);
+    this.background.splice(firstUnpromoted < 0 ? this.background.length : firstUnpromoted, 0, waiter);
     this.grantFreeSlots();
     return true;
   }
 
   /**
-   * Drops a background waiter before it starts; its `run` rejects with
-   * `error`. A promoted job is foreground (someone wants it) and is kept.
+   * Drops a queued background job before it starts; its `run` rejects with
+   * `error`. A promoted job (someone wants it) is kept.
    */
-  cancel(label: string, error: Error): boolean {
-    const waiter = this.takeBackground(label);
-    waiter?.cancel(error);
-    return waiter !== undefined;
+  cancel(target: string | SlotTicket, error: Error): boolean {
+    const index = this.findBackground(target, (waiter) => !waiter.promoted);
+    if (index < 0) return false;
+    const [waiter] = this.background.splice(index, 1) as [Waiter];
+    waiter.cancel(error);
+    return true;
   }
 
-  private takeBackground(label: string): Waiter | undefined {
-    const index = this.background.findIndex((waiter) => waiter.grant.label === label);
-    return index < 0 ? undefined : this.background.splice(index, 1)[0];
+  private findBackground(target: string | SlotTicket, eligible: (waiter: Waiter) => boolean): number {
+    return this.background.findIndex((waiter) => eligible(waiter)
+      && (typeof target === 'string' ? waiter.grant.label === target : waiter.ticket === target));
   }
 
   private canStart(lane: SlotLane): boolean {
@@ -133,7 +157,7 @@ export class MediaSlots {
     return this.running.filter((grant) => grant.lane === 'background').length < this.backgroundLimit;
   }
 
-  private async acquire(grant: Grant): Promise<Grant> {
+  private async acquire(grant: Grant, ticket?: SlotTicket): Promise<Grant> {
     // Waiters that could start were started on the last release, so a free
     // slot here means nobody eligible is ahead of this job.
     if (this.canStart(grant.lane)) {
@@ -141,7 +165,7 @@ export class MediaSlots {
       return grant;
     }
     await new Promise<void>((start, cancel) => {
-      (grant.lane === 'background' ? this.background : this.waiting).push({ grant, start, cancel });
+      (grant.lane === 'background' ? this.background : this.waiting).push({ grant, ticket, start, cancel });
     });
     return grant;
   }
@@ -162,13 +186,21 @@ export class MediaSlots {
   }
 
   private nextWaiter(): Waiter | undefined {
-    const backgroundReady = this.background.length > 0 && this.canStart('background');
+    const head = this.background[0];
+    const backgroundReady = head !== undefined && this.canStart('background');
+    // A promoted job may also take a slot the cap would leave idle.
+    if (head?.promoted && (backgroundReady || this.waiting.length === 0)) {
+      this.foregroundStreak = 0;
+      return this.background.shift();
+    }
     if (backgroundReady && (this.waiting.length === 0 || this.foregroundStreak >= FOREGROUND_TURNS)) {
       this.foregroundStreak = 0;
       return this.background.shift();
     }
     const next = this.waiting.shift();
-    if (next && this.background.length > 0) this.foregroundStreak += 1;
+    // Only a grant a background job could have had counts toward its turn;
+    // while the cap holds it back, previews are not "jumping" it.
+    if (next && backgroundReady) this.foregroundStreak += 1;
     return next;
   }
 }

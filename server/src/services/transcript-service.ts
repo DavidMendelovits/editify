@@ -120,14 +120,13 @@ export class TranscriptService {
   dropQueued(assetId: string, reason: string): boolean {
     const current = this.inFlight.get(assetId);
     if (!current || current.started) return false;
-    return this.slots.cancel(current.label, new Error(reason));
+    return this.slots.cancel(current, new Error(reason));
   }
 
   private promoteQueued(assetId: string): void {
     const current = this.inFlight.get(assetId);
     if (!current || current.started || current.lane === 'foreground') return;
-    current.lane = 'foreground';
-    this.slots.promote(current.label);
+    if (this.slots.promote(current)) current.lane = 'foreground';
   }
 
   /**
@@ -168,7 +167,7 @@ export class TranscriptService {
       if (run.replacedBy) return undefined;
       run.started = true;
       return await this.run(asset, run.lane, performance.now() - queuedAt);
-    }, { lane })
+    }, { lane, ticket: run })
       .then((result) => result ?? (run.replacedBy as InFlightRun).promise)
       .finally(() => {
         if (this.inFlight.get(asset.id) === run) this.inFlight.delete(asset.id);

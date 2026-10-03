@@ -251,6 +251,29 @@ describe('import scheduling', () => {
   });
 });
 
+describe('import scheduling, promoted then failed', () => {
+  it('keeps a transcription someone already asked for when the encode then fails', async () => {
+    timeline.proxyFails.add('wanted');
+    const runner = whisper(5);
+    const transcripts = service(runner);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    // One slot taken: the proxy gets the other, the transcription queues.
+    const blocker = mediaSlots.run('render 0', () => held);
+    const imported = startImport(transcripts, 'wanted');
+    expect(mediaSlots.queued()).toEqual(['transcribe wanted']);
+    // A timeline read promotes it before the encode fails.
+    expect(transcripts.getForTimeline('wanted')).toBeUndefined();
+    await imported.done;
+    expect(assets.get('wanted')?.status).toBe('error');
+    expect(transcripts.get('wanted')?.assetId).toBe('wanted');
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(runner.mock.calls[0]?.[1]).toEqual({ lane: 'foreground' });
+    release();
+    await blocker;
+  });
+});
+
 describe('media job log lines', () => {
   it('logs one line per finished job with its wall time, its wait for a slot and whether it worked', async () => {
     const lines: Array<{ fields: Record<string, unknown>; msg: string }> = [];
