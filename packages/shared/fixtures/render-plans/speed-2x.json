@@ -1,0 +1,85 @@
+{
+  "description": "A clip at 2x speed: source 1 s to 5 s plays over timeline 0 s to 2 s, picture and pitch-preserved audio both.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 7,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 2,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 2,
+          "layers": [
+            {
+              "clipId": "fast",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 1,
+              "speed": 2,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": [
+      {
+        "id": "fast",
+        "clipId": "fast",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 1,
+        "out": 5,
+        "speed": 2,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}
