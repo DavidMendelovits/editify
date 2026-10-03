@@ -68,6 +68,23 @@ enum AssetSource {
     }
   }
 
+  /// MediaGeometry for a ref (file:// URI or PHAsset id), never downloading: an image file
+  /// by its header, a Photos still by its PHAsset size (already upright, so rotation 0), a
+  /// video by its track. nil when there is no picture or the source can't be read.
+  static func geometry(_ ref: String) async -> [String: Any]? {
+    if ref.hasPrefix("file://") {
+      guard let url = URL(string: ref) else { return nil }
+      if let image = MediaGeometry.ofImage(url) { return image }
+      return try? await MediaGeometry.of(AVURLAsset(url: url))
+    }
+    guard hasPhotosAccess(), let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { return nil }
+    if asset.mediaType == .image {
+      return asset.pixelWidth > 0 && asset.pixelHeight > 0 ? ["width": asset.pixelWidth, "height": asset.pixelHeight, "rotation": 0] : nil
+    }
+    guard let loaded = try? await load(ref, allowNetwork: false) else { return nil }
+    return try? await MediaGeometry.of(loaded)
+  }
+
   /// Photos library access as the registry names it, read without prompting:
   /// 'all' | 'limited' | 'denied' | 'undetermined'. Only 'all' can load an arbitrary
   /// picked PHAsset later; the app never asks (the system picker needs no permission).

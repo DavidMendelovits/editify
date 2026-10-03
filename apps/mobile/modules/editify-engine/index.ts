@@ -52,7 +52,12 @@ export interface NativeFingerprint {
   bytes: number;
   audio: string | null;
   color: 'hlg' | 'pq' | 'log' | 'sdr' | null;
+  /** The video track's stored size and clockwise display rotation; null without video. */
+  geometry?: NativeGeometry | null;
 }
+
+/** Stored pixel size and the clockwise rotation (0, 90, 180, 270) that shows it upright. */
+export interface NativeGeometry { width: number; height: number; rotation: number }
 
 export type PhotosAccess = 'all' | 'limited' | 'denied' | 'undetermined';
 
@@ -124,9 +129,10 @@ export interface NativeExportStats {
   peakMemMB: number;
   /** The mix before gain (null: silent, or loudness off). */
   lufsIn: number | null;
-  /** What reached the AAC encoder, after gain and limiter. */
+  /** Measured on what reached the AAC encoder (after gain and limiter), not on the encoded file. */
   lufsOut: number | null;
-  truePeak: number | null;
+  /** True peak before AAC encoding: the encoded file can read a few tenths of a dB higher. */
+  truePeakPreEncode: number | null;
   gainDb: number;
   limiterOn: boolean;
   limiterMaxReductionDb: number;
@@ -217,6 +223,8 @@ interface EditifyEngineNative {
   removeMedia(path: string): void;
   /** Deletes an asset's preview proxy. */
   removeProxy(assetId: string): void;
+  /** Geometry of a PHAsset id or file:// URI (video track or still), never downloading; null when unreadable. */
+  mediaGeometry(ref: string): Promise<NativeGeometry | null>;
   /** A PHAsset id (loaded as `.original`) or file:// URI: fingerprinted when on the device, never downloaded. */
   probeMedia(ref: string): Promise<NativeProbe>;
   /** `probeMedia`, downloading an iCloud original first; `progress` events carry `requestId`. Rejects when cancelled. */

@@ -24,7 +24,10 @@ struct ExportManifest: Decodable {
     let plan: String
     /// Seconds of the clap in the plan's timeline (A/V sync check).
     let clapAt: Double?
+    /// Linear colour at plan points of decoded frames (5 x 5 average).
+    let probes: [Probe]?
   }
+  struct Probe: Decodable { let k: Int; let name: String; let x: Double; let y: Double }
   let media: [String: Manifest.Media]
   let exports: [Export]
 }
@@ -264,7 +267,7 @@ func decodeFrame(_ asset: AVAsset, track: AVAssetTrack, at k: Int, fps: Int) thr
 }
 
 // swiftlint:disable:next function_body_length
-func inspect(_ url: URL, plan: RenderPlan, name: String, clapAt: Double?) async throws -> [String: Any] {
+func inspect(_ url: URL, plan: RenderPlan, name: String, clapAt: Double?, probes: [ExportManifest.Probe] = []) async throws -> [String: Any] {
   var result: [String: Any] = [:]
   let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
   result["duration"] = try await asset.load(.duration).seconds
@@ -356,6 +359,19 @@ func inspect(_ url: URL, plan: RenderPlan, name: String, clapAt: Double?) async 
     result["goldenFrames"] = compares
   }
 
+  var probed: [String: Any] = [:]
+  for probe in probes {
+    let linear = pixels(try decodeFrame(asset, track: video, at: probe.k, fps: plan.fps), space: workingSpace)
+    let scale = Double(linear.width) / Double(plan.size.w)
+    var sum: [Double] = [0, 0, 0]
+    for dy in -2...2 { for dx in -2...2 {
+      let p = linear.at(Int((probe.x * scale).rounded()) + dx, Int((probe.y * scale).rounded()) + dy)
+      for c in 0..<3 { sum[c] += Double(p[c]) / 25 }
+    } }
+    probed[probe.name] = sum
+  }
+  if !probed.isEmpty { result["probes"] = probed }
+
   if let clapAt {
     // The white frame: the first decoded frame whose centre is brighter than 0.5 linear.
     let reader = try AVAssetReader(asset: asset)
@@ -411,7 +427,9 @@ for item in exportManifest.exports {
     let stats = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(fonts: fonts), progress: { log.record($0, $1) })
     entry["stats"] = stats.dictionary
     entry["progress"] = log.summary
-    entry["file"] = try await inspect(url, plan: plan, name: item.name, clapAt: item.clapAt)
+    entry["file"] = try await inspect(url, plan: plan, name: item.name, clapAt: item.clapAt, probes: item.probes ?? [])
+    entry["measured"] = plan.loudness.targetLufs != nil
+    entry["targetLufs"] = orNull(plan.loudness.targetLufs)
   } catch {
     entry["error"] = String(describing: error)
   }
@@ -482,6 +500,21 @@ do {
   failures["thermal"] = ["outcome": outcome, "fileRemoved": !FileManager.default.fileExists(atPath: url.path)]
 }
 report["failures"] = failures
+// The event throttle: 3 states, 1800 frames of progress reported every 2 ms (a 60 fps
+// export rendering fast), as ExportCenter.send applies it.
+do {
+  var sent = 0, lastState: String?, lastProgress = -1.0, lastAt = -1.0, time = 0.0
+  for state in ["resolving", "measuring", "writing"] {
+    for frame in 0...1800 {
+      let progress = Double(frame) / 1800
+      if ExportThrottle.shouldSend(state: state, progress: progress, lastState: lastState, lastProgress: lastProgress, sinceLast: time - lastAt) {
+        sent += 1; lastState = state; lastProgress = progress; lastAt = time
+      }
+      time += 0.002
+    }
+  }
+  report["throttle"] = ["sent": sent, "seconds": time]
+}
 report["defaults"] = [
   "bitrate1080pSdr": PlanExporter.defaultBitrate(try RenderPlan.decode(try planJSON("packages/shared/fixtures/render-plans/caption-karaoke.json"))),
 ]

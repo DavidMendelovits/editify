@@ -271,6 +271,15 @@ do {
   let sdr = try await MediaFingerprint.compute(AVURLAsset(url: clips.appendingPathComponent("sdr-big.mp4")))
   check("fingerprint: color of an HLG clip", hdr["color"] as? String == "hlg")
   check("fingerprint: color of an SDR clip", sdr["color"] as? String == "sdr")
+  // Geometry (the plan builder's width/height/rotation): stored size plus the display rotation.
+  let plain = sdr["geometry"] as? [String: Any]
+  check("geometry: a landscape clip is unrotated (\(String(describing: plain)))",
+        plain?["width"] as? Int == 2560 && plain?["height"] as? Int == 1440 && plain?["rotation"] as? Int == 0)
+  let rotated = try await MediaGeometry.of(AVURLAsset(url: clips.appendingPathComponent("rotated.mov")))
+  // ffmpeg's -display_rotation 90 is counter-clockwise: 270 clockwise to show it upright.
+  check("geometry: a rotated clip keeps its stored size and reports its rotation (\(String(describing: rotated)))",
+        rotated?["width"] as? Int == 2560 && rotated?["height"] as? Int == 1440 && rotated?["rotation"] as? Int == 270)
+  check("geometry: audio has none", once["geometry"] is NSNull)
 } catch {
   failures.append("fingerprint threw: \(error)")
 }

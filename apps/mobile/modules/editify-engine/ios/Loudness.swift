@@ -26,16 +26,31 @@ enum LoudnessRules {
   static func limiterOn(_ loudness: RenderPlan.Loudness) -> Bool { loudness.targetLufs != nil }
 }
 
-/// 4x oversampling interpolator for true peak (BS.1770-4 Annex 2 asks for at least 4x).
-/// Windowed sinc (Kaiser, beta 8), `taps` input samples per phase. Phase f (f = 1, 2, 3)
-/// gives the signal at n + f/4 from x[n - taps/2 + 1 ... n + taps/2]; as a correlation
-/// kernel (vDSP_conv with a positive filter stride) output i is the value at
-/// i + taps/2 - 1 + f/4 in input coordinates.
-enum TruePeakFilter {
-  static let taps = 16
-  static let phases: [[Float]] = (1...3).map { kernel(fraction: Double($0) / 4) }
+/// Oversampling interpolator for true peak. Windowed sinc (Kaiser, beta 8), `taps` input
+/// samples per phase. Phase f (f = 1 ..< factor) gives the signal at n + f/factor from
+/// x[n - taps/2 + 1 ... n + taps/2]; as a correlation kernel (vDSP_conv with a positive
+/// filter stride) output i is the value at i + taps/2 - 1 + f/factor in input coordinates.
+///
+/// Two of them: `meter` is BS.1770-4 Annex 2's 4x (16 taps per phase), so the meter reads
+/// like ffmpeg's ebur128; `limiter` is 8x with 32 taps per phase, because the limiter must
+/// catch what a 4x detector misses between its points on dense, hot, broadband material
+/// (a reviewer's stress test: noise driven 12 dB over full scale read -1.5 dBTP at 4x
+/// but +0.4 at 32x).
+struct TruePeakFilter {
+  let factor: Int
+  let taps: Int
+  let phases: [[Float]]
 
-  static func kernel(fraction: Double) -> [Float] {
+  static let meter = TruePeakFilter(factor: 4, taps: 16)
+  static let limiter = TruePeakFilter(factor: 8, taps: 32)
+
+  init(factor: Int, taps: Int) {
+    self.factor = factor
+    self.taps = taps
+    phases = (1..<factor).map { TruePeakFilter.kernel(fraction: Double($0) / Double(factor), taps: taps) }
+  }
+
+  static func kernel(fraction: Double, taps: Int) -> [Float] {
     let half = Double(taps / 2)
     let beta = 8.0
     let norm = besselI0(beta)
@@ -62,9 +77,9 @@ enum TruePeakFilter {
     return sum
   }
 
-  /// Interval peaks: out[i] = max |x(m + f/4)| over f = 1, 2, 3, for the interval m → m + 1
-  /// with m = i + taps/2 - 1 in `samples` coordinates. `samples.count - taps + 1` values.
-  static func intervalPeaks(_ samples: [Float]) -> [Float] {
+  /// Interval peaks: out[i] = max |x(m + f/factor)| over the phases, for the interval
+  /// m → m + 1 with m = i + taps/2 - 1 in `samples` coordinates. `samples.count - taps + 1` values.
+  func intervalPeaks(_ samples: [Float]) -> [Float] {
     let count = samples.count - taps + 1
     guard count > 0 else { return [] }
     var peak = [Float](repeating: 0, count: count)
@@ -114,7 +129,7 @@ final class LoudnessMeter {
     biquad = vDSP_biquad_CreateSetupD(coefficients, 2)!
     delays = Array(repeating: [Double](repeating: 0, count: 6), count: channels)
     currentSum = [Double](repeating: 0, count: channels)
-    history = Array(repeating: [Float](repeating: 0, count: TruePeakFilter.taps - 1), count: channels)
+    history = Array(repeating: [Float](repeating: 0, count: TruePeakFilter.meter.taps - 1), count: channels)
   }
 
   deinit { vDSP_biquad_DestroySetupD(biquad) }
@@ -154,8 +169,8 @@ final class LoudnessMeter {
       samplePeak = max(samplePeak, maximum)
       truePeak = max(truePeak, maximum)
       let joined = history[c] + channel
-      if let top = TruePeakFilter.intervalPeaks(joined).max() { truePeak = max(truePeak, top) }
-      history[c] = Array(joined.suffix(TruePeakFilter.taps - 1))
+      if let top = TruePeakFilter.meter.intervalPeaks(joined).max() { truePeak = max(truePeak, top) }
+      history[c] = Array(joined.suffix(TruePeakFilter.meter.taps - 1))
       // K-weighting in double precision (the RLB pole sits 0.01 from the unit circle).
       vDSP_vspdp(channel, 1, &doubles, 1, vDSP_Length(count))
       delays[c].withUnsafeMutableBufferPointer { delay in
@@ -211,7 +226,7 @@ final class LoudnessMeter {
 
 /// Look-ahead true-peak limiter on interleaved stereo.
 ///
-///   tp[m]  = max over channels of |x[m]| and the 4x interpolated peaks of the
+///   tp[m]  = max over channels of |x[m]| and the 8x interpolated peaks of the
 ///            intervals m-1 → m and m → m+1 (TruePeakFilter)
 ///   r[m]   = min(1, ceiling / tp[m])                 gain the sample may have at most
 ///   mm[j]  = min r over [j - L + 1, j]               trailing minimum, L = lookAhead
@@ -231,6 +246,7 @@ final class TruePeakLimiter {
   let ceiling: Float
   let lookAhead: Int
   let latency: Int
+  private let filter = TruePeakFilter.limiter
   private let releaseCoefficient: Float
   private let channels = 2
   /// Input samples per channel not yet output; pending[c][0] is absolute frame `pendingStart`.
@@ -260,10 +276,10 @@ final class TruePeakLimiter {
   init(ceilingDb: Double, rate: Double = 48_000, lookAheadSeconds: Double = 0.005, releaseSeconds: Double = 0.05) {
     ceiling = Float(pow(10, ceilingDb / 20))
     lookAhead = max(1, Int((lookAheadSeconds * rate).rounded()))
-    latency = lookAhead - 1 + TruePeakFilter.taps / 2
+    latency = lookAhead - 1 + filter.taps / 2
     releaseCoefficient = Float(1 - exp(-1 / (releaseSeconds * rate)))
-    history = Array(repeating: [Float](repeating: 0, count: TruePeakFilter.taps - 1), count: 2)
-    nextM = -TruePeakFilter.taps / 2
+    history = Array(repeating: [Float](repeating: 0, count: filter.taps - 1), count: 2)
+    nextM = -filter.taps / 2
     box = [Float](repeating: 1, count: lookAhead)
     boxSum = Float(lookAhead)
   }
@@ -284,8 +300,8 @@ final class TruePeakLimiter {
     var intervals: [[Float]] = []
     for c in 0..<channels {
       let joined = history[c] + split[c]
-      intervals.append(TruePeakFilter.intervalPeaks(joined))
-      history[c] = Array(joined.suffix(TruePeakFilter.taps - 1))
+      intervals.append(filter.intervalPeaks(joined))
+      history[c] = Array(joined.suffix(filter.taps - 1))
       pending[c].append(contentsOf: split[c])
     }
     var output: [Float] = []

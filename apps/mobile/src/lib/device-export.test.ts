@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AssetMetadata, Project, RenderPlan } from '@editify/shared';
 import type { ExportProjectOptions, ExportStateEvent } from '../../modules/editify-engine';
 import {
-  assetInfoOf, buildExportPlan, exportOnDevice, exportReducer, exportStateLabel, isTerminal, missingClipsLine, planAssetRefs, routeExport,
-  STARTING, type DeviceExportView, type ExportNative,
+  assetInfoOf, buildExportPlan, DEVICE_EXPORT_RESOLUTIONS, exportOnDevice, exportReducer, exportStateLabel, isTerminal, missingClipsLine,
+  planAssetRefs, routeExport, serverRouteLine, STARTING, type DeviceExportView, type ExportNative, type GeometryMap,
 } from './device-export';
-import { createLocalMediaStore, isLeased, migrate, type MediaDeps, type MediaFingerprint, type MediaNative, type MediaProbe } from './local-media';
+import {
+  createLocalMediaStore, isLeased, migrate, type MediaDeps, type MediaFingerprint, type MediaGeometry, type MediaNative, type MediaProbe,
+} from './local-media';
 import { memoryDb } from './test-sqlite';
 
 const ROOT = 'file:///container/Library/Application%20Support/Editify/';
@@ -21,7 +23,7 @@ const open: Array<{ close(): void }> = [];
 afterEach(() => { for (const db of open.splice(0)) db.close(); });
 
 /** A registry where `files` exist under the media root and `probes` answer PHAsset ids. */
-async function registry(probes: Record<string, MediaProbe> = {}, files: string[] = []): Promise<MediaDeps> {
+async function registry(probes: Record<string, MediaProbe> = {}, files: string[] = [], geometries: Record<string, MediaGeometry> = {}, geometryCalls: string[] = []): Promise<MediaDeps> {
   const db = memoryDb();
   open.push(db);
   await migrate(db);
@@ -40,6 +42,7 @@ async function registry(probes: Record<string, MediaProbe> = {}, files: string[]
     fileExists: (uri) => existing.has(uri),
     fileSize: () => 1000,
     removeFile: () => undefined,
+    geometry: async (ref) => { geometryCalls.push(ref); return geometries[ref] ?? null; },
     ensureProxy: async () => undefined,
     touchProxy: () => false,
     removeProxy: () => undefined,
@@ -92,6 +95,23 @@ describe('the export plan', () => {
     expect(hdr.buildSeq).toBeGreaterThan(sdr.buildSeq);
   });
 
+  it('lays a rotated phone clip out upright from the device geometry, not the server record', () => {
+    // The server keeps the coded size (1920 x 1080) and no rotation; the phone knows it is turned 90 degrees.
+    const landscape = asset({ id: 'asset-broll', width: 1920, height: 1080 });
+    expect(assetInfoOf(landscape, { width: 1920, height: 1080, rotation: 90 })).toMatchObject({ width: 1920, height: 1080, rotation: 90 });
+    expect(assetInfoOf(landscape, { width: 1920, height: 1080, rotation: 0 })).not.toHaveProperty('rotation');
+    const withBroll: Project = {
+      ...project,
+      tracks: [...project.tracks, { id: 'o', kind: 'overlay', clips: [{ id: 'b', assetId: 'asset-broll', start: 0, in: 0, out: 2, overlay: { x: 0.5, y: 0.5, width: 0.5, rotation: 0 } }] }],
+    };
+    const choices = { resolution: '1080p', hdr: 'sdr', loudness: 'normalize' } as const;
+    const box = (geometry: GeometryMap) => buildExportPlan(withBroll, [asset({}), landscape], choices, geometry)!.overlays.find((item) => item.kind === 'broll')!.box;
+    const sideways = box({});
+    const upright = box({ 'asset-broll': { width: 1920, height: 1080, rotation: 90 } });
+    expect(sideways.h / sideways.w).toBeCloseTo(1080 / 1920, 2);
+    expect(upright.h / upright.w).toBeCloseTo(1920 / 1080, 2);
+  });
+
   it('answers null (the server path) when the project cannot become a plan', () => {
     expect(buildExportPlan(project, [], { resolution: '1080p', hdr: 'sdr', loudness: 'normalize' })).toBeNull();
   });
@@ -100,7 +120,7 @@ describe('the export plan', () => {
 describe('routing', () => {
   it('renders on the device when every clip resolves locally', async () => {
     const route = await routeExport(fixture('crossfade'), await bothLocal(), nameOf);
-    expect(route).toEqual({ kind: 'device', media: { 'asset-a': `${ROOT}media/a.mov`, 'asset-b': 'PH-b' } });
+    expect(route).toEqual({ kind: 'device', media: { 'asset-a': `${ROOT}media/a.mov`, 'asset-b': 'PH-b' }, geometry: {} });
   });
 
   it('goes to the server naming every clip that is not on this iPhone', async () => {
@@ -121,6 +141,30 @@ describe('routing', () => {
     const route = await routeExport(fixture('crossfade'), deps, nameOf);
     expect(route).toMatchObject({ kind: 'server', missing: [{ assetId: 'asset-b', reason: 'changed in Photos' }] });
     expect(missingClipsLine(route)).toBe("Renders on the server: Interview isn't on this iPhone.");
+  });
+
+  it('reads each local picture asset\'s geometry once and keeps it in the registry', async () => {
+    const calls: string[] = [];
+    const deps = await registry({ 'PH-b': { status: 'ok', fingerprint: { ...PRINT, geometry: { width: 1920, height: 1080, rotation: 90 } } } },
+      ['media/a.mov'], { [`${ROOT}media/a.mov`]: { width: 1080, height: 1920, rotation: 0 } }, calls);
+    await deps.store.record({ assetId: 'asset-a', fileUri: 'media/a.mov' });
+    await deps.store.record({ assetId: 'asset-b', phLocalId: 'PH-b', fingerprint: PRINT });
+    const route = await routeExport(fixture('crossfade'), deps, nameOf);
+    expect(route).toMatchObject({ kind: 'device', geometry: { 'asset-a': { width: 1080, height: 1920, rotation: 0 }, 'asset-b': { width: 1920, height: 1080, rotation: 90 } } });
+    // The app copy was read by the engine, the Photos original came with its probe; both are cached now.
+    expect(calls).toEqual([`${ROOT}media/a.mov`]);
+    expect((await deps.store.lookup('asset-b'))?.geometry).toEqual({ width: 1920, height: 1080, rotation: 90 });
+    await routeExport(fixture('crossfade'), deps, nameOf);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('sends 4K to the server for now, with its own line', async () => {
+    expect(DEVICE_EXPORT_RESOLUTIONS.has('4k')).toBe(false);
+    expect(DEVICE_EXPORT_RESOLUTIONS.has('1080p')).toBe(true);
+    const route = await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '4k');
+    expect(route).toEqual({ kind: 'server', why: 'resolution', missing: [] });
+    expect(serverRouteLine(route)).toBe('4K exports render on the server for now.');
+    expect((await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '720p')).kind).toBe('device');
   });
 
   it('goes to the server without the engine or without a plan, with no clip line', async () => {
@@ -212,7 +256,7 @@ describe('exportOnDevice', () => {
     }, { earlyEvents: true });
     engine.attach(deps);
     const updates: DeviceExportView[] = [];
-    const outcome = await exportOnDevice({ plan: fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: (view) => updates.push(view) });
+    const outcome = await exportOnDevice({ build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: (view) => updates.push(view) });
     expect(outcome).toMatchObject({ kind: 'device', view: { id: 'exp-1', state: 'done', fileUri: 'file:///tmp/out.mp4', savedToPhotos: true } });
     expect(engine.calls).toHaveLength(1);
     expect(engine.calls[0]!.options).toEqual({ media: { 'asset-a': `${ROOT}media/a.mov`, 'asset-b': 'PH-b' }, destination: 'photos' });
@@ -224,10 +268,36 @@ describe('exportOnDevice', () => {
     expect(engine.listeners.size).toBe(0);
   });
 
+  it('rebuilds the plan with the geometry it found before exporting', async () => {
+    const deps = await registry({ 'PH-b': { status: 'ok', fingerprint: { ...PRINT, geometry: { width: 1920, height: 1080, rotation: 90 } } } }, ['media/a.mov']);
+    await deps.store.record({ assetId: 'asset-a', fileUri: 'media/a.mov' });
+    await deps.store.record({ assetId: 'asset-b', phLocalId: 'PH-b', fingerprint: PRINT });
+    const engine = fakeEngine((id, emit) => emit({ id, state: 'done', progress: 1 }));
+    const seen: GeometryMap[] = [];
+    const rebuilt = { ...fixture('crossfade'), buildSeq: 99 };
+    await exportOnDevice({
+      build: (geometry) => { seen.push(geometry); return Object.keys(geometry).length > 0 ? rebuilt : fixture('crossfade'); },
+      deps, native: engine.native, nameOf, onUpdate: () => undefined,
+    });
+    expect(seen).toEqual([{}, { 'asset-b': { width: 1920, height: 1080, rotation: 90 } }]);
+    expect(JSON.parse(engine.calls[0]!.planJson).buildSeq).toBe(99);
+  });
+
+  it('never leases or starts for 4K or a project that cannot become a plan', async () => {
+    const deps = await bothLocal();
+    const engine = fakeEngine(() => undefined);
+    const fourK = await exportOnDevice({ build: () => fixture('crossfade'), resolution: '4k', deps, native: engine.native, nameOf, onUpdate: () => undefined });
+    expect(fourK).toEqual({ kind: 'server', route: { kind: 'server', why: 'resolution', missing: [] } });
+    const none = await exportOnDevice({ build: () => null, deps, native: engine.native, nameOf, onUpdate: () => undefined });
+    expect(none).toEqual({ kind: 'server', route: { kind: 'server', why: 'plan', missing: [] } });
+    expect(engine.calls).toHaveLength(0);
+    expect(isLeased(deps, 'asset-a')).toBe(false);
+  });
+
   it('releases the lease when the export fails', async () => {
     const deps = await bothLocal();
     const engine = fakeEngine((id, emit) => emit({ id, state: 'failed', progress: 0, error: 'Not enough space' }));
-    const outcome = await exportOnDevice({ plan: fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined });
+    const outcome = await exportOnDevice({ build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined });
     expect(outcome).toMatchObject({ kind: 'device', view: { state: 'failed', error: 'Not enough space' } });
     expect(isLeased(deps, 'asset-a')).toBe(false);
   });
@@ -235,7 +305,7 @@ describe('exportOnDevice', () => {
   it('releases the lease when the engine refuses to start', async () => {
     const deps = await bothLocal();
     const engine = fakeEngine(() => undefined, { reject: 'Another export is running' });
-    const outcome = await exportOnDevice({ plan: fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined });
+    const outcome = await exportOnDevice({ build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined });
     expect(outcome).toMatchObject({ kind: 'device', view: { state: 'failed', error: 'Another export is running' } });
     expect(isLeased(deps, 'asset-a')).toBe(false);
     expect(engine.listeners.size).toBe(0);
@@ -249,7 +319,7 @@ describe('exportOnDevice', () => {
       controller.abort();
     });
     engine.attach(deps);
-    const outcome = await exportOnDevice({ plan: fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined, signal: controller.signal });
+    const outcome = await exportOnDevice({ build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined, signal: controller.signal });
     expect(engine.cancelled).toEqual(['exp-1']);
     expect(outcome).toMatchObject({ kind: 'device', view: { state: 'cancelled' } });
     expect(isLeased(deps, 'asset-b')).toBe(false);
@@ -260,7 +330,7 @@ describe('exportOnDevice', () => {
     const controller = new AbortController();
     controller.abort();
     const engine = fakeEngine(() => undefined);
-    const outcome = await exportOnDevice({ plan: fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined, signal: controller.signal });
+    const outcome = await exportOnDevice({ build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined, signal: controller.signal });
     expect(engine.cancelled).toEqual(['exp-1']);
     expect(outcome).toMatchObject({ kind: 'device', view: { state: 'cancelled' } });
   });
@@ -269,7 +339,7 @@ describe('exportOnDevice', () => {
     const deps = await registry({}, ['media/a.mov']);
     await deps.store.record({ assetId: 'asset-a', fileUri: 'media/a.mov' });
     const engine = fakeEngine(() => undefined);
-    const outcome = await exportOnDevice({ plan: fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined });
+    const outcome = await exportOnDevice({ build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined });
     expect(outcome).toEqual({ kind: 'server', route: { kind: 'server', why: 'missing', missing: [{ assetId: 'asset-b', name: 'Interview', reason: 'not on this iPhone' }] } });
     expect(engine.calls).toHaveLength(0);
     expect(isLeased(deps, 'asset-a')).toBe(false);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Image, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Alert, Image, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Brand } from '../../../src/components/Brand';
 import { Button } from '../../../src/components/Button';
@@ -8,7 +8,7 @@ import { Screen } from '../../../src/components/Screen';
 import { EditifyEngine } from '../../../modules/editify-engine';
 import { api, IS_LOCAL_API, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
 import {
-  buildExportPlan, exportOnDevice, exportStateLabel, isTerminal, missingClipsLine, routeExport,
+  buildExportPlan, exportOnDevice, exportStateLabel, isTerminal, routeExport, serverRouteLine, STARTING,
   type DeviceExportView, type ExportChoices, type ExportRoute,
 } from '../../../src/lib/device-export';
 import { useEngineActivity } from '../../../src/lib/engine-activity';
@@ -55,8 +55,9 @@ export default function ExportScreen() {
   });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
 
-  // On-device export (plan P4): when every clip of the plan is on this iPhone it renders
-  // here; otherwise the server path above runs as before, with a line naming the clips.
+  // On-device export (plan P4): at 720p and 1080p, when every clip of the plan is on this
+  // iPhone, it renders here; otherwise the server path above runs as before, with a line
+  // saying why (the clips that aren't here, or 4K).
   // TODO(T8): send the server a snapshot of this plan and check it has every original first.
   const engine = EditifyEngine;
   const choices: ExportChoices = { resolution, hdr, loudness };
@@ -66,45 +67,75 @@ export default function ExportScreen() {
     return asset ? `"${asset.label ?? asset.originalName}"` : 'a clip';
   };
   const route = useQuery({
-    queryKey: ['export-route', id, project.data?.version, assets.dataUpdatedAt],
+    queryKey: ['export-route', id, project.data?.version, assets.dataUpdatedAt, resolution],
     enabled: Boolean(engine && project.data && assets.data),
     queryFn: async (): Promise<ExportRoute> => {
       const plan = buildExportPlan(project.data!, assets.data!, choices);
-      return await routeExport(plan, await localMedia(), nameOf);
+      return await routeExport(plan, await localMedia(), nameOf, resolution);
     },
   });
   const [device, setDevice] = useState<DeviceExportView>();
   const [serverNote, setServerNote] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
+  /** Set synchronously on the first tap: a second tap before React re-renders does nothing. */
+  const busy = useRef(false);
   const deviceBusy = Boolean(device && !isTerminal(device.state));
   // The phone does the work: proxies and analyzers get out of the way for the whole run.
   useEngineActivity('export', deviceBusy);
   useEffect(() => () => abort.current?.abort(), []);
 
+  // A foreground export can't outlive this screen: leaving asks, and stopping cancels cleanly.
+  const navigation = useNavigation();
+  useEffect(() => navigation.addListener('beforeRemove', (event) => {
+    if (!busy.current || !abort.current) return;
+    event.preventDefault();
+    Alert.alert('Leaving stops the export', 'Editify renders on this iPhone while this screen is open.', [
+      { text: 'Keep exporting', style: 'cancel' },
+      { text: 'Stop and leave', style: 'destructive', onPress: () => { abort.current?.abort(); navigation.dispatch(event.data.action); } },
+    ]);
+  }), [navigation]);
+
+  const renderOnServer = (note: string | null): void => {
+    setServerNote(note);
+    start.mutate(undefined, { onSettled: () => { busy.current = false; } });
+  };
   const exportHere = async (): Promise<void> => {
     const deps = await localMedia();
-    const plan = project.data && assets.data ? buildExportPlan(project.data, assets.data, choices) : null;
-    if (!engine || !deps || !plan) { start.mutate(); return; }
+    const current = project.data;
+    const list = assets.data;
+    if (!engine || !deps || !current || !list) { renderOnServer(null); return; }
     const controller = new AbortController();
     abort.current = controller;
     track('device_export_started', resolution);
-    const outcome = await exportOnDevice({ plan, deps, native: engine, nameOf, onUpdate: setDevice, signal: controller.signal });
-    if (outcome.kind === 'server') {
-      // A clip went missing since the screen opened: the server renders it.
-      setDevice(undefined);
-      setServerNote(missingClipsLine(outcome.route));
-      start.mutate();
-      return;
+    try {
+      const outcome = await exportOnDevice({
+        build: (geometry) => buildExportPlan(current, list, choices, geometry),
+        resolution, deps, native: engine, nameOf, onUpdate: setDevice, signal: controller.signal,
+      });
+      if (outcome.kind === 'server') {
+        // Something changed since the screen opened (a clip went missing): the server renders it.
+        setDevice(undefined);
+        renderOnServer(serverRouteLine(outcome.route));
+        return;
+      }
+      track(`device_export_${outcome.view.state}`, outcome.view.stats ? `${outcome.view.stats.xRealtime}x` : undefined);
+    } finally {
+      if (abort.current === controller) abort.current = null;
     }
-    track(`device_export_${outcome.view.state}`, outcome.view.stats ? `${outcome.view.stats.xRealtime}x` : undefined);
+    busy.current = false;
   };
   const onRender = (): void => {
-    if (route.data?.kind === 'device') { void exportHere(); return; }
-    setServerNote(route.data ? missingClipsLine(route.data) : null);
-    start.mutate();
+    if (busy.current) return;
+    busy.current = true;
+    if (route.data?.kind === 'device') {
+      setDevice(STARTING);
+      void exportHere().catch(() => { busy.current = false; setDevice(undefined); });
+      return;
+    }
+    renderOnServer(route.data ? serverRouteLine(route.data) : null);
   };
   const locked = Boolean(renderId) || deviceBusy;
-  const routeLine = route.data?.kind === 'device' ? 'Exports on this iPhone.' : route.data ? missingClipsLine(route.data) : null;
+  const routeLine = route.data?.kind === 'device' ? 'Exports on this iPhone. Keep Editify open until it finishes.' : route.data ? serverRouteLine(route.data) : null;
 
   useEffect(() => {
     if (status === 'done' || status === 'error') track(`render_${status}`);
@@ -166,11 +197,11 @@ function DeviceExportCard({ view, onCancel, onRetry }: { view: DeviceExportView;
     <View testID="device-export" style={[styles.statusCard, view.state === 'done' && styles.doneCard, view.state === 'failed' && styles.errorCard]}>
       <View style={styles.statusTop}><Text style={styles.statusValue}>{exportStateLabel(view).toUpperCase()}</Text></View>
       {running && <View style={styles.progress}><View style={[styles.progressFill, { width: `${Math.round(Math.max(0.03, view.progress) * 100)}%` }]} /></View>}
-      {running && view.notice && <Text style={styles.qaDetail}>{view.notice}</Text>}
+      {running && <Text style={styles.qaDetail}>{view.notice ?? 'Keep Editify open until the export finishes.'} Leaving this screen stops it.</Text>}
       {running && <Button secondary style={styles.downloadButton} onPress={onCancel}>cancel</Button>}
       {view.state === 'done' && view.fileUri && <Button style={styles.downloadButton} onPress={() => void Share.share({ url: view.fileUri as string }).catch(() => undefined)}>share video</Button>}
       {view.state === 'done' && stats && (
-        <Text style={styles.qaLine}>{`${stats.lufsOut === null ? 'SILENT' : `${stats.lufsOut.toFixed(1)} LUFS`}${stats.truePeak === null ? '' : ` · PEAK ${stats.truePeak.toFixed(1)} dBTP`} · ${stats.xRealtime.toFixed(1)}x REALTIME`}</Text>
+        <Text style={styles.qaLine}>{`${stats.lufsOut === null ? 'SILENT' : `${stats.lufsOut.toFixed(1)} LUFS`}${stats.truePeakPreEncode === null ? '' : ` · PEAK ${stats.truePeakPreEncode.toFixed(1)} dBTP PRE-ENCODE`} · ${stats.xRealtime.toFixed(1)}x REALTIME`}</Text>
       )}
       {view.state === 'failed' && <Text style={styles.error}>{view.error}</Text>}
       {(view.state === 'failed' || view.state === 'cancelled') && <Button secondary style={styles.downloadButton} onPress={onRetry}>try again</Button>}

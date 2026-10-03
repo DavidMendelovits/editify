@@ -215,6 +215,14 @@ public class EditifyEngineModule: Module {
       try await AssetSource.probe(ref, allowNetwork: false)
     }
 
+    /// Stored size and clockwise display rotation {width, height, rotation} of a PHAsset id or
+    /// file:// URI (a video's track, a still's EXIF), never downloading; null when unreadable.
+    AsyncFunction("mediaGeometry") { (ref: String) async -> [String: Any]? in
+      guard !ref.isEmpty, ref.count <= 2048 else { return nil }
+      if ref.hasPrefix("file://"), ExportCenter.containedFileURL(ref) == nil { return nil }
+      return await AssetSource.geometry(ref)
+    }
+
     /// `probeMedia` that downloads an iCloud original first. Progress arrives as `progress`
     /// events {part: 'download', ref, requestId, fraction, phase: 'download'};
     /// `cancelDownload(requestId)` cancels the Photos request and rejects this call.

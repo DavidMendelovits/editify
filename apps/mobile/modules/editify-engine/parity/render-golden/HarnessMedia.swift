@@ -39,10 +39,18 @@ struct Manifest: Decodable {
     /// Video: a clap at this second. The frame shown then is all white, and the
     /// sound gets a click (a 4 ms Hann-windowed 1 kHz burst at 0.9) starting exactly then.
     let clapAt: Double?
+    /// Video: the clockwise display rotation (90 or 270) of a phone clip. `w`/`h` are the
+    /// UPRIGHT size; the frames are stored turned the other way, with the track's
+    /// preferredTransform rotating them back (as an iPhone writes a portrait clip).
+    let rotation: Int?
     /// Audio: 3 ms Hann-windowed 1 kHz bursts at `burstAmplitude`, every `burstEvery`
     /// seconds from 0.25 s, over the tone (a hot, peaky mix).
     let burstEvery: Double?
     let burstAmplitude: Double?
+    /// Audio: a named generated signal instead of tones. "dense": a music-like stereo mix
+    /// (kick, snare, hats, a bass line and a bright saw chord over pink noise) with peaks
+    /// near full scale and a high crest factor, for the limiter's true-peak check.
+    let signal: String?
   }
   struct GifFrame: Decodable { let rgb: [Double]; let delayCs: Int }
   struct Probe: Decodable { let name: String; let x: Double; let y: Double; let r: Int? }
@@ -171,7 +179,9 @@ func audioSampleBuffer(_ samples: [Float], start: Int, rate: Double, channels: I
 
 /// Writes one synthetic video (and its tone) with AVAssetWriter. Returns the codec actually used.
 func writeVideo(_ media: Manifest.Media, to url: URL) throws -> String {
-  let width = media.w ?? 360, height = media.h ?? 640, fps = media.fps ?? 30
+  let uprightWidth = media.w ?? 360, uprightHeight = media.h ?? 640, fps = media.fps ?? 30
+  let turned = media.rotation == 90 || media.rotation == 270
+  let width = turned ? uprightHeight : uprightWidth, height = turned ? uprightWidth : uprightHeight
   let frames = Int((media.seconds ?? 8) * Double(fps))
   let transfer = media.transfer ?? "sdr"
   let hdr = transfer != "sdr"
@@ -209,6 +219,11 @@ func writeVideo(_ media: Manifest.Media, to url: URL) throws -> String {
     if !compression.isEmpty { settings[AVVideoCompressionPropertiesKey] = compression }
     let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
     input.expectsMediaDataInRealTime = false
+    if media.rotation == 90 {
+      input.transform = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: CGFloat(height), ty: 0)
+    } else if media.rotation == 270 {
+      input.transform = CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: CGFloat(width))
+    }
     let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
       kCVPixelBufferPixelFormatTypeKey as String: pixelFormat, kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height,
       kCVPixelBufferIOSurfacePropertiesKey as String: [:],
@@ -240,9 +255,14 @@ func writeVideo(_ media: Manifest.Media, to url: URL) throws -> String {
         CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey, colour[AVVideoTransferFunctionKey]! as CFString, .shouldPropagate)
         CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey, colour[AVVideoYCbCrMatrixKey]! as CFString, .shouldPropagate)
         let clapFrame = media.clapAt.map { Int(($0 * Double(fps)).rounded()) }
-        let picture = clapFrame == frame
+        var picture = clapFrame == frame
           ? CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1, colorSpace: workingSpace)!).cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
-          : Pattern.frame(frame, width: width, height: height, base: media.base ?? [0.1, 0.1, 0.1])
+          : Pattern.frame(frame, width: uprightWidth, height: uprightHeight, base: media.base ?? [0.1, 0.1, 0.1])
+        if turned {
+          // Stored turned back by the inverse of the display rotation.
+          let stored = picture.oriented(media.rotation == 90 ? .left : .right)
+          picture = stored.transformed(by: CGAffineTransform(translationX: -stored.extent.minX, y: -stored.extent.minY))
+        }
         ciContext.render(picture, to: buffer,
                          bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: space)
         let pts: CMTime
@@ -318,15 +338,21 @@ func writeAudio(_ media: Manifest.Media, to url: URL) throws {
     var at = 0.25
     while at < media.seconds ?? 8 { bursts.append((at: at, length: 0.003, amplitude: media.burstAmplitude ?? 0.9)); at += every }
   }
+  let dense = media.signal == "dense" ? denseMix(seconds: media.seconds ?? 8, rate: 48_000) : nil
   // Stereo with a set amplitude or bursts: one tone in both channels.
   let shaped = tones.count == 2 && media.channelTones == nil && (media.amplitude != nil || !bursts.isEmpty)
   var cursor = 0
   while cursor < total {
     while !input.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.001) }
     let count = min(1024, total - cursor)
-    let samples = shaped
-      ? toneSamples(hz: tones[0], from: cursor, count: count, rate: 48_000, amplitude: media.amplitude ?? 0.25, clicks: bursts)
-      : channelToneSamples(tones, from: cursor, count: count, rate: 48_000)
+    let samples: [Float]
+    if let dense {
+      samples = Array(dense[(cursor * 2)..<((cursor + count) * 2)])
+    } else if shaped {
+      samples = toneSamples(hz: tones[0], from: cursor, count: count, rate: 48_000, amplitude: media.amplitude ?? 0.25, clicks: bursts)
+    } else {
+      samples = channelToneSamples(tones, from: cursor, count: count, rate: 48_000)
+    }
     input.append(try audioSampleBuffer(samples, start: cursor, rate: 48_000, channels: tones.count))
     cursor += count
   }
@@ -335,6 +361,44 @@ func writeAudio(_ media: Manifest.Media, to url: URL) throws {
   writer.finishWriting { done.signal() }
   done.wait()
   guard writer.status == .completed else { throw HarnessError("audio writer: \(writer.error?.localizedDescription ?? "?")") }
+}
+
+/// Deterministic music-like stereo (see Manifest.Media.signal), peaks scaled to 0.98.
+func denseMix(seconds: Double, rate: Double) -> [Float] {
+  let count = Int(seconds * rate)
+  var out = [Double](repeating: 0, count: count * 2)
+  var state: UInt64 = 0x2545_F491_4F6C_DD1D
+  func noise() -> Double {
+    state ^= state << 13; state ^= state >> 7; state ^= state << 17
+    return Double(state % 2_000_001) / 1_000_000 - 1
+  }
+  var pink = [Double](repeating: 0, count: 3)
+  let beat = 0.5
+  let chord = [220.0, 277.18, 329.63, 440.0]
+  for i in 0..<count {
+    let t = Double(i) / rate
+    let inBeat = t.truncatingRemainder(dividingBy: beat)
+    let inBar = t.truncatingRemainder(dividingBy: beat * 2)
+    let white = noise()
+    pink[0] = 0.997 * pink[0] + 0.029591 * white
+    pink[1] = 0.985 * pink[1] + 0.032534 * white
+    pink[2] = 0.950 * pink[2] + 0.048056 * white
+    let bed = (pink[0] + pink[1] + pink[2] + 0.1848 * white) * 0.25
+    let kick = sin(2 * .pi * (50 + 120 * exp(-inBeat * 30)) * inBeat) * exp(-inBeat * 9)
+    let snareTime = inBar - beat
+    let snare = snareTime >= 0 ? white * exp(-snareTime * 18) : 0
+    let hatTime = t.truncatingRemainder(dividingBy: beat / 2)
+    let hat = (white - pink[2] * 4) * exp(-hatTime * 90) * 0.5
+    let bass = sin(2 * .pi * (t.truncatingRemainder(dividingBy: 2) < 1 ? 55 : 73.42) * t) * 0.6
+    var saw = 0.0
+    for root in chord { for harmonic in 1...12 { saw += sin(2 * .pi * root * Double(harmonic) * t) / Double(harmonic) } }
+    let left = kick + 0.8 * snare + hat * 0.7 + bass + 0.05 * saw + bed
+    let right = kick + 0.7 * snare + hat + bass + 0.06 * saw + bed * 0.9
+    out[i * 2] = left
+    out[i * 2 + 1] = right
+  }
+  let peak = out.map(abs).max() ?? 1
+  return out.map { Float($0 / peak * 0.98) }
 }
 
 func cgImage(_ image: CIImage, width: Int, height: Int) -> CGImage {

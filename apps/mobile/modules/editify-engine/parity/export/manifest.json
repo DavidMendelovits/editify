@@ -55,6 +55,25 @@
     0.12
    ],
    "toneHz": 220
+  },
+  "asset-dense": {
+   "kind": "audio",
+   "seconds": 6,
+   "signal": "dense"
+  },
+  "asset-portrait": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "rotation": 90,
+   "fps": 30,
+   "seconds": 4,
+   "base": [
+    0.1,
+    0.15,
+    0.1
+   ]
   }
  },
  "exports": [
@@ -106,6 +125,56 @@
   {
    "name": "speed-1080p",
    "plan": "apps/mobile/modules/editify-engine/parity/export/plans/speed-1080p.json"
+  },
+  {
+   "name": "loud-dense",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-dense.json"
+  },
+  {
+   "name": "loud-dense-hot",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-dense-hot.json"
+  },
+  {
+   "name": "rotated-broll",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/rotated-broll.json",
+   "probes": [
+    {
+     "k": 0,
+     "name": "mainWhite",
+     "x": 70,
+     "y": 130
+    },
+    {
+     "k": 0,
+     "name": "mainGrey",
+     "x": 190,
+     "y": 130
+    },
+    {
+     "k": 89,
+     "name": "zoomedWhite",
+     "x": 105,
+     "y": 195
+    },
+    {
+     "k": 89,
+     "name": "zoomedBase",
+     "x": 105,
+     "y": 90
+    },
+    {
+     "k": 45,
+     "name": "pipWhite",
+     "x": 215,
+     "y": 385
+    },
+    {
+     "k": 45,
+     "name": "pipGrey",
+     "x": 263,
+     "y": 385
+    }
+   ]
   }
  ]
 }

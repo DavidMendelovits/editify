@@ -22,9 +22,10 @@ struct PlanExportStats: Sendable {
   var peakMemMB = 0.0
   /// Pass 1: the mix's integrated loudness (nil: silent, or loudness off).
   var lufsIn: Double?
-  /// The processed PCM handed to the AAC encoder (after gain and limiter).
+  /// Measured on the processed PCM handed to the AAC encoder (after gain and limiter),
+  /// not on the encoded file: AAC can add a few tenths of a dB of true peak.
   var lufsOut: Double?
-  var truePeak: Double?
+  var truePeakPreEncode: Double?
   var gainDb = 0.0
   var limiterOn = false
   var limiterMaxReductionDb = 0.0
@@ -46,7 +47,7 @@ struct PlanExportStats: Sendable {
     ]
     out["lufsIn"] = lufsIn.map(round2) ?? NSNull()
     out["lufsOut"] = lufsOut.map(round2) ?? NSNull()
-    out["truePeak"] = truePeak.map(round2) ?? NSNull()
+    out["truePeakPreEncode"] = truePeakPreEncode.map(round2) ?? NSNull()
     return out
   }
 
@@ -142,10 +143,11 @@ enum PlanExporter {
   }
 
   /// Bytes the export needs free: the file (video + audio bitrate over the duration, +5%)
-  /// twice over, since moving the moov to the front rewrites the file, plus 50 MB.
-  static func spaceNeeded(_ plan: RenderPlan, videoBitrate: Int) -> Int64 {
+  /// twice over, since moving the moov to the front rewrites the file, plus `extraCopies`
+  /// more (1 when it is saved to Photos, which copies it), plus 50 MB.
+  static func spaceNeeded(_ plan: RenderPlan, videoBitrate: Int, extraCopies: Int = 0) -> Int64 {
     let file = Double(videoBitrate + PlanExportOptions.audioBitrate) / 8 * plan.duration * 1.05
-    return Int64(file * 2) + 50 << 20
+    return Int64(file * Double(2 + max(0, extraCopies))) + 50 << 20
   }
 
   static func availableBytes(at directory: URL) -> Int64? {
@@ -199,6 +201,7 @@ enum PlanExporter {
     options: PlanExportOptions = PlanExportOptions(),
     build: PlanBuildOptions = PlanBuildOptions(),
     control: PlanExportControl = PlanExportControl(),
+    extraCopies: Int = 0,
     available: (URL) -> Int64? = PlanExporter.availableBytes(at:),
     thermalCritical: @escaping @Sendable () -> Bool = { ProcessInfo.processInfo.thermalState == .critical },
     progress: @escaping @Sendable (PlanExportPhase, Double) -> Void = { _, _ in }
@@ -214,7 +217,7 @@ enum PlanExporter {
 
     // Space first: nothing is decoded for an export that cannot fit.
     let directory = output.deletingLastPathComponent()
-    let needed = spaceNeeded(plan, videoBitrate: bitrate)
+    let needed = spaceNeeded(plan, videoBitrate: bitrate, extraCopies: extraCopies)
     if let free = available(directory), free < needed { throw PlanExportError.notEnoughSpace(needed: needed, available: free) }
     if control.isCancelled { throw PlanExportError.cancelled }
 
@@ -246,6 +249,7 @@ enum PlanExporter {
       let written = try await write(built, to: output, bitrate: bitrate, keyframeInterval: options.keyframeInterval, end: end, chain: chain,
                                     control: control, memory: memory, thermalCritical: thermalCritical) { progress(.writing, $0) }
       stats.frames = written
+      if control.isCancelled { throw PlanExportError.cancelled }
     } catch {
       try? FileManager.default.removeItem(at: output)
       throw control.isCancelled ? PlanExportError.cancelled : error
@@ -256,7 +260,7 @@ enum PlanExporter {
     stats.limiterLatencyFrames = chain.limiter?.latency ?? 0
     stats.audioFrames = chain.emittedFrames
     stats.lufsOut = chain.meter.integrated
-    stats.truePeak = chain.meter.truePeakDb
+    stats.truePeakPreEncode = chain.meter.truePeakDb
     stats.bytes = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
     stats.seconds = seconds(since: started)
     stats.xRealtime = stats.seconds > 0 ? plan.duration / stats.seconds : 0
@@ -297,6 +301,8 @@ enum PlanExporter {
     reader.timeRange = CMTimeRange(start: .zero, end: end)
     guard reader.startReading() else { throw PlanExportError.read(reader.error?.localizedDescription ?? "the mix did not start") }
     defer { reader.cancelReading() }
+    // A cancel (or the BG task's expiry) stops the read at once, from any thread.
+    control.whenCancelled { reader.cancelReading() }
     let meter = LoudnessMeter()
     let total = end.seconds
     while let raw = output.copyNextSampleBuffer() {
@@ -306,6 +312,7 @@ enum PlanExporter {
       let at = (CMSampleBufferGetPresentationTimeStamp(sample) + CMSampleBufferGetDuration(sample)).seconds
       if at.isFinite, total > 0 { progress(min(1, at / total)) }
     }
+    if control.isCancelled { throw PlanExportError.cancelled }
     if reader.status == .failed { throw PlanExportError.read(reader.error?.localizedDescription ?? "the mix failed") }
     return meter
   }
@@ -469,6 +476,16 @@ final class MasterChain {
   }
 }
 
+/// How often export progress reaches JS and the system's progress UI: every state change,
+/// and within a state at most once per 1% of progress and per 100 ms (10 Hz). The writer
+/// reports every frame, which at 60 fps would flood the bridge.
+enum ExportThrottle {
+  static func shouldSend(state: String, progress: Double, lastState: String?, lastProgress: Double, sinceLast: TimeInterval) -> Bool {
+    if state != lastState { return true }
+    return progress - lastProgress >= 0.01 && sinceLast >= 0.1
+  }
+}
+
 /// Resident memory high-water mark (phys_footprint, what jetsam counts).
 final class PeakMemory: @unchecked Sendable {
   private let lock = NSLock()
@@ -527,7 +544,11 @@ private final class ExportWriterJob: @unchecked Sendable {
     }
   }
 
+  /// From any thread. The reader is cancelled right here, not on the writer queue: a pump
+  /// blocked in copyNextSampleBuffer (a frame rendering) returns at once, so an expiring BG
+  /// task gets its cleanup done in time.
   private func cancel() {
+    reader.cancelReading()
     queue.async { [self] in
       if continuation != nil, !finishing { end(.failure(PlanExportError.cancelled)) }
     }
@@ -540,6 +561,8 @@ private final class ExportWriterJob: @unchecked Sendable {
       case .more:
         continue
       case .done:
+        // A cancelled reader ends its outputs early: that is a cancel, never a short file.
+        if control.isCancelled || reader.status == .cancelled { return end(.failure(PlanExportError.cancelled)) }
         if reader.status == .failed { return end(.failure(PlanExportError.read(reader.error?.localizedDescription ?? "reading failed"))) }
         feed.input.markAsFinished()
         remaining -= 1

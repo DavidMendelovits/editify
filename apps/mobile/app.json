@@ -31,9 +31,6 @@
         "BGTaskSchedulerPermittedIdentifiers": [
           "com.editify.app.export.*"
         ]
-      },
-      "entitlements": {
-        "com.apple.developer.background-tasks.continued-processing.gpu": true
       }
     },
     "android": {

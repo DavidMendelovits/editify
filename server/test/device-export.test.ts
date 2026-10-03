@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { planFrameCount, renderPlanSchema } from '@editify/shared';
+import { buildRotatedPlan, PORTRAIT_CLIP, ROTATED_PLAN_FILE } from './helpers/rotated-plan.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /*
@@ -70,6 +71,7 @@ interface FileReport {
   truePeak: Nullable;
   goldenFrames?: Array<{ k: number; golden: string; compare: { meanAbs?: number[]; blurredMax?: number; missingGolden?: boolean; sizeMismatch?: boolean } }>;
   clap?: { expected: number; video: Nullable; audio: Nullable };
+  probes?: Record<string, [number, number, number]>;
 }
 interface Stats {
   seconds: number;
@@ -77,7 +79,8 @@ interface Stats {
   peakMemMB: number;
   lufsIn: Nullable;
   lufsOut: Nullable;
-  truePeak: Nullable;
+  /** Measured before AAC encoding. */
+  truePeakPreEncode: Nullable;
   gainDb: number;
   limiterOn: boolean;
   limiterMaxReductionDb: number;
@@ -92,6 +95,9 @@ interface ExportReport {
   planFrames: number;
   planDuration: number;
   color: 'sdr' | 'hlg';
+  /** The plan normalizes (so it has a measuring pass and a limiter). */
+  measured?: boolean;
+  targetLufs?: number | null;
   error?: string;
   stats?: Stats;
   progress?: { phases: string[]; backwards: number; final: Record<string, number> };
@@ -108,6 +114,7 @@ interface Report {
     thermal: { outcome: string; fileRemoved: boolean };
   };
   defaults: { bitrate1080pSdr: number };
+  throttle: { sent: number; seconds: number };
 }
 
 let dir: string | undefined;
@@ -167,7 +174,7 @@ describe('device export: harness availability', () => {
 
 describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => {
   it('writes every plan: exact frames and duration, A/V lengths matched, moov first, no fragments', () => {
-    expect(report.exports.length).toBeGreaterThanOrEqual(12);
+    expect(report.exports.length).toBeGreaterThanOrEqual(15);
     for (const item of report.exports) {
       const { file, stats } = exported(item.name);
       const plan = { duration: item.planDuration, fps: 30 };
@@ -184,8 +191,8 @@ describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => 
       expect(file.boxes.indexOf('moov'), item.name).toBeGreaterThanOrEqual(0);
       expect(file.boxes.indexOf('moov'), item.name).toBeLessThan(file.boxes.indexOf('mdat'));
       expect(file.boxes, item.name).not.toContain('moof');
-      // Progress: resolving, measuring (the plan normalizes), writing; never backwards; ends at 1.
-      expect(item.progress?.phases, item.name).toEqual(['resolving', 'measuring', 'writing']);
+      // Progress: resolving, measuring (only when the plan normalizes), writing; never backwards; ends at 1.
+      expect(item.progress?.phases, item.name).toEqual(item.measured ? ['resolving', 'measuring', 'writing'] : ['resolving', 'writing']);
       expect(item.progress?.backwards, item.name).toBe(0);
       expect(item.progress?.final.writing, item.name).toBeCloseTo(1, 6);
     }
@@ -221,8 +228,8 @@ describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => 
       expect(file.audioFormat, item.name).toBe('aac ');
       expect(file.audioChannels, item.name).toBe(2);
       expect(file.audioRate, item.name).toBe(48000);
-      // AAC at 192 kbit/s is a ceiling: pure test tones take far less.
-      expect(file.audioBitrate, item.name).toBeGreaterThan(0);
+      // AAC at 192 kbit/s is a ceiling: pure test tones take far less, silence almost nothing.
+      expect(file.audioBitrate, item.name).toBeGreaterThanOrEqual(0);
       expect(file.audioBitrate, item.name).toBeLessThanOrEqual(200_000);
     }
   });
@@ -281,21 +288,62 @@ describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => 
   it('lands the finished file on target with its true peak under the limit', () => {
     for (const item of report.exports) {
       const { file, stats } = exported(item.name);
+      if (!item.measured) continue;
       if (file.truePeak !== null) expect(file.truePeak, `${item.name} true peak`).toBeLessThanOrEqual(LOUDNESS.truePeakLimitDb);
       // Where the limiter barely touched it, one gain lands the file within 0.5 LU of target
       // (heavy limiting, like the clap's, takes loudness off by design: the gain is measured once).
       if (stats.lufsIn !== null && stats.lufsIn > LOUDNESS.silentBelowLufs && stats.limiterMaxReductionDb < 2) {
-        expect(Math.abs(file.lufs! - LOUDNESS.targetLufs), `${item.name} final LUFS ${file.lufs}`).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(file.lufs! - item.targetLufs!), `${item.name} final LUFS ${file.lufs}`).toBeLessThanOrEqual(0.5);
       }
     }
   });
 
+  it('holds a dense, hot, broadband mix under the true-peak limit after AAC (8x limiter detector)', () => {
+    const dense = exported('loud-dense-hot');
+    expect(dense.stats.gainDb).toBeGreaterThan(4);
+    expect(dense.stats.limiterMaxReductionDb).toBeGreaterThan(4);
+    expect(dense.file.truePeak!).toBeLessThanOrEqual(LOUDNESS.truePeakLimitDb);
+    expect(exported('loud-dense').file.truePeak!).toBeLessThanOrEqual(LOUDNESS.truePeakLimitDb);
+  });
+
+  it('lays a rotated phone clip out upright: the plan from its geometry, the pixels from its transform', () => {
+    // The committed plan is what the builder makes from the phone's geometry (stored 640 x 360, rotated 90).
+    const { plan } = JSON.parse(readFileSync(ROTATED_PLAN_FILE, 'utf8')) as { plan: unknown };
+    expect(plan).toEqual(buildRotatedPlan());
+    const rotated = buildRotatedPlan();
+    const box = rotated.overlays.find((item) => item.kind === 'broll')!.box;
+    expect(box.h / box.w).toBeCloseTo(640 / 360, 1);
+    // Upright and frame-shaped, the punch-in is exactly two keys.
+    expect(rotated.video.segments[0]!.layers[0]!.cropKeys).toHaveLength(2);
+    // The server's record alone (no rotation) lays it out sideways: a landscape box, other zoom keys.
+    const sideways = buildRotatedPlan({ ...PORTRAIT_CLIP, rotation: 0 });
+    const flat = sideways.overlays.find((item) => item.kind === 'broll')!.box;
+    expect(flat.h / flat.w).toBeCloseTo(360 / 640, 1); // boxes round to whole pixels
+    expect(sideways.video.segments[0]!.layers[0]!.cropKeys).not.toEqual(rotated.video.segments[0]!.layers[0]!.cropKeys);
+    // Decoded from the exported file: the clip's white and grey patches where an upright clip puts them,
+    // full frame at the start, zoomed 1.5x into the top-left corner at the end, and inside the b-roll box.
+    const probes = exported('rotated-broll').file.probes!;
+    const grey = (value: number): [number, number, number] => [value, value, value];
+    const close = (name: string, expected: [number, number, number], tolerance: number): void => {
+      probes[name]!.forEach((value, index) => expect(Math.abs(value - expected[index]!), `${name}[${index}] ${value}`).toBeLessThanOrEqual(tolerance));
+    };
+    close('mainWhite', grey(1), 0.05);
+    close('mainGrey', grey(0.18), 0.02);
+    close('zoomedWhite', grey(1), 0.05);
+    close('zoomedBase', [0.1, 0.15, 0.1], 0.02);
+    close('pipWhite', grey(1), 0.05);
+    close('pipGrey', grey(0.18), 0.02);
+  });
+
   it.runIf(ffmpegAvailable)('holds the finished files to ffmpeg too', async () => {
-    for (const name of ['audio-duck-loudness', 'loud-quiet', 'loud-hot']) {
+    for (const name of ['audio-duck-loudness', 'loud-quiet', 'loud-hot', 'loud-dense']) {
       const measured = await ffmpegLoudness(join(dir!, 'out', `${name}.mp4`));
       expect(Math.abs(measured.integrated! - LOUDNESS.targetLufs), `${name} ffmpeg I ${measured.integrated}`).toBeLessThanOrEqual(0.5);
       expect(measured.truePeak!, `${name} ffmpeg true peak`).toBeLessThanOrEqual(LOUDNESS.truePeakLimitDb);
     }
+    // The hot dense mix: limited hard, the decoded AAC still reads under the limit by ffmpeg's 4x meter.
+    const hot = await ffmpegLoudness(join(dir!, 'out', 'loud-dense-hot.mp4'));
+    expect(hot.truePeak!, `loud-dense-hot ffmpeg true peak ${hot.truePeak}`).toBeLessThanOrEqual(LOUDNESS.truePeakLimitDb);
   });
 
   it.runIf(ffmpegAvailable || required)('meters like ffmpeg ebur128 (BS.1770-4)', async () => {
@@ -321,6 +369,12 @@ describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => 
     expect(report.failures.noSpace.needed).toBeGreaterThan(50 << 20);
     expect(report.failures.empty).toBe('emptyPlan');
     expect(report.failures.thermal).toMatchObject({ outcome: 'tooHot', fileRemoved: true });
+  });
+
+  it('throttles progress events to state changes, 1% steps and 10 Hz', () => {
+    // 3 states x 1801 frame reports in 10.8 s: at most 10 a second plus the state changes.
+    expect(report.throttle.sent).toBeGreaterThanOrEqual(3);
+    expect(report.throttle.sent).toBeLessThanOrEqual(Math.ceil(report.throttle.seconds * 10) + 3);
   });
 
   it('reports speed and memory for every export', () => {

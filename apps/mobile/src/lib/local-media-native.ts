@@ -9,7 +9,7 @@ import { Platform } from 'react-native';
 import { EditifyEngine } from '../../modules/editify-engine';
 import { api } from './api';
 import {
-  applyProxyEvent, createLocalMediaStore, maintainMedia, migrate, releaseProjectMedia,
+  applyProxyEvent, asGeometry, createLocalMediaStore, maintainMedia, migrate, releaseProjectMedia,
   type MediaDeps, type MediaNative, type MediaProbe, type ProxyStatusEvent, type SqlDb,
 } from './local-media';
 
@@ -56,6 +56,7 @@ async function open(): Promise<MediaDeps | null> {
     fileSize: (uri) => {
       try { return new File(uri).size ?? 0; } catch { return 0; }
     },
+    geometry: async (ref) => asGeometry(await engine.mediaGeometry(ref)),
     removeFile: (uri) => {
       const file = new File(uri);
       if (file.exists) file.delete();

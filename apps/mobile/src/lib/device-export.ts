@@ -4,9 +4,12 @@
  *
  *   project + assets ─▶ buildRenderPlan (target export: size from the resolution, colour from
  *                       the HDR choice, loudness from its toggle)
- *   press export ─▶ lease every plan asset ─▶ resolveMedia(purpose export) for each
- *        ├─ all 'local' / 'file' ─▶ native exportProject(plan, media refs) ─▶ exportState
- *        │     events ─▶ exportReducer ─▶ done / failed / cancelled ─▶ lease released
+ *   press export ─▶ 4K? ─▶ server ("4K exports render on the server for now", until P7)
+ *     ─▶ lease every plan asset ─▶ resolveMedia(purpose export) for each
+ *        ├─ all 'local' / 'file' ─▶ their geometry (stored size + rotation, from the device:
+ *        │     the server's records have no rotation) ─▶ plan rebuilt with it ─▶ native
+ *        │     exportProject(plan, media refs) ─▶ exportState events ─▶ exportReducer
+ *        │     ─▶ done / failed / cancelled ─▶ lease released
  *        └─ any other state ─▶ lease released ─▶ server render, naming the clips that
  *              aren't on this iPhone
  *
@@ -22,21 +25,35 @@ import {
   type AssetMetadata, type PlanAssetInfo, type PlanAssetRef, type PlanResolution, type Project, type RenderPlan,
 } from '@editify/shared';
 import type { ExportProjectOptions, ExportStateEvent, ExportStateName, NativeExportStats } from '../../modules/editify-engine';
-import { leaseMedia, mediaKindOf, resolveMedia, type MediaDeps, type ResolvedMedia } from './local-media';
+import { leaseMedia, mediaGeometry, mediaKindOf, resolveMedia, type MediaDeps, type MediaGeometry, type ResolvedMedia } from './local-media';
+
+/**
+ * Resolutions the phone exports itself. 4K goes to the server until its memory is
+ * measured on a phone (plan P7); add '4k' here to flip it.
+ */
+export const DEVICE_EXPORT_RESOLUTIONS: ReadonlySet<PlanResolution> = new Set<PlanResolution>(['720p', '1080p']);
+
+/** Asset id → its geometry on this phone. */
+export type GeometryMap = Readonly<Record<string, MediaGeometry>>;
 
 // ─── The plan ───
 
-/** What the builder needs about one asset, from the server's asset record. */
-export function assetInfoOf(asset: AssetMetadata): PlanAssetInfo {
+/**
+ * What the builder needs about one asset: the server's record, with the stored size and
+ * rotation from this phone when known (the server keeps the coded size and no rotation,
+ * so a portrait phone clip would otherwise be laid out landscape).
+ */
+export function assetInfoOf(asset: AssetMetadata, geometry?: MediaGeometry): PlanAssetInfo {
   const kind = mediaKindOf(asset.mimeType, asset.originalName);
   const info: PlanAssetInfo = {
     kind,
-    width: asset.width,
-    height: asset.height,
+    width: geometry?.width ?? asset.width,
+    height: geometry?.height ?? asset.height,
     duration: kind === 'image' ? 0 : asset.duration,
     hasAudio: asset.hasAudio,
     animated: asset.mimeType === 'image/gif' || /\.gif$/i.test(asset.originalName),
   };
+  if (geometry && geometry.rotation !== 0) info.rotation = geometry.rotation;
   if (asset.fps > 0) info.fps = asset.fps;
   return info;
 }
@@ -53,8 +70,8 @@ let buildSeq = 0;
  * The export plan for the current project, or null when the project can't become one
  * (an asset the server doesn't list, a fractional frame rate): those go to the server.
  */
-export function buildExportPlan(project: Project, assets: readonly AssetMetadata[], choices: ExportChoices): RenderPlan | null {
-  const info = new Map(assets.map((asset) => [asset.id, assetInfoOf(asset)]));
+export function buildExportPlan(project: Project, assets: readonly AssetMetadata[], choices: ExportChoices, geometry: GeometryMap = {}): RenderPlan | null {
+  const info = new Map(assets.map((asset) => [asset.id, assetInfoOf(asset, geometry[asset.id])]));
   buildSeq += 1;
   try {
     return buildRenderPlan(project, {
@@ -83,9 +100,12 @@ export function planAssetRefs(plan: RenderPlan): PlanAssetRef[] {
 export interface MissingClip { assetId: string; name: string; reason: string }
 
 export type ExportRoute =
-  | { kind: 'device'; media: Record<string, string> }
-  /** `no-engine`: web, Android, a build without the engine. `plan`: the project couldn't become a plan. */
-  | { kind: 'server'; why: 'no-engine' | 'plan' | 'missing'; missing: MissingClip[] };
+  | { kind: 'device'; media: Record<string, string>; geometry: GeometryMap }
+  /**
+   * `no-engine`: web, Android, a build without the engine. `plan`: the project couldn't
+   * become a plan. `resolution`: not a DEVICE_EXPORT_RESOLUTIONS one. `missing`: clips aren't here.
+   */
+  | { kind: 'server'; why: 'no-engine' | 'plan' | 'resolution' | 'missing'; missing: MissingClip[] };
 
 function missingReason(media: Exclude<ResolvedMedia, { state: 'local' | 'file' }>): string {
   switch (media.state) {
@@ -102,18 +122,38 @@ function missingReason(media: Exclude<ResolvedMedia, { state: 'local' | 'file' }
   }
 }
 
-/** Where this plan can render: here when every asset resolves to a local original or app copy. */
-export async function routeExport(plan: RenderPlan | null, deps: MediaDeps | null, nameOf: (assetId: string) => string): Promise<ExportRoute> {
+/**
+ * Where this plan can render: here when the resolution is one the phone exports and every
+ * asset resolves to a local original or app copy (with its geometry read on the way).
+ */
+export async function routeExport(
+  plan: RenderPlan | null, deps: MediaDeps | null, nameOf: (assetId: string) => string, resolution?: PlanResolution,
+): Promise<ExportRoute> {
   if (!deps) return { kind: 'server', why: 'no-engine', missing: [] };
+  if (resolution && !DEVICE_EXPORT_RESOLUTIONS.has(resolution)) return { kind: 'server', why: 'resolution', missing: [] };
   if (!plan) return { kind: 'server', why: 'plan', missing: [] };
   const media: Record<string, string> = {};
+  const geometry: Record<string, MediaGeometry> = {};
   const missing: MissingClip[] = [];
   for (const ref of planAssetRefs(plan)) {
     const resolved = await resolveMedia(ref, deps, { purpose: 'export' });
-    if (resolved.state === 'local' || resolved.state === 'file') media[ref.id] = resolved.ref;
-    else missing.push({ assetId: ref.id, name: nameOf(ref.id), reason: missingReason(resolved) });
+    if (resolved.state === 'local' || resolved.state === 'file') {
+      media[ref.id] = resolved.ref;
+      if (ref.kind !== 'audio') {
+        const found = await mediaGeometry(resolved, deps);
+        if (found) geometry[ref.id] = found;
+      }
+    } else {
+      missing.push({ assetId: ref.id, name: nameOf(ref.id), reason: missingReason(resolved) });
+    }
   }
-  return missing.length > 0 ? { kind: 'server', why: 'missing', missing } : { kind: 'device', media };
+  return missing.length > 0 ? { kind: 'server', why: 'missing', missing } : { kind: 'device', media, geometry };
+}
+
+/** One short line saying why a render goes to the server; null when there is nothing to say. */
+export function serverRouteLine(route: ExportRoute): string | null {
+  if (route.kind === 'server' && route.why === 'resolution') return '4K exports render on the server for now.';
+  return missingClipsLine(route);
 }
 
 /** One short line for a server render caused by missing clips; null otherwise. */
@@ -205,7 +245,9 @@ export type DeviceExportOutcome =
   | { kind: 'server'; route: Extract<ExportRoute, { kind: 'server' }> };
 
 export interface ExportOnDeviceArgs {
-  plan: RenderPlan;
+  /** Builds the plan with the device geometry found so far (empty for the draft that names the assets). */
+  build: (geometry: GeometryMap) => RenderPlan | null;
+  resolution?: PlanResolution;
   deps: MediaDeps;
   native: ExportNative;
   nameOf: (assetId: string) => string;
@@ -216,22 +258,26 @@ export interface ExportOnDeviceArgs {
 }
 
 /**
- * Leases the plan's media, resolves it, and either runs the export here (resolving to its
- * terminal view) or answers the server route when a clip isn't on this phone. The lease
- * is released on every path.
+ * Leases the plan's media, resolves it, rebuilds the plan with the device's geometry, and
+ * either runs the export here (resolving to its terminal view) or answers the server route
+ * (a clip isn't on this phone, 4K, no plan). The lease is released on every path.
  */
 export async function exportOnDevice(args: ExportOnDeviceArgs): Promise<DeviceExportOutcome> {
-  const lease = leaseMedia(args.deps, planAssetRefs(args.plan).map((ref) => ref.id));
+  const draft = args.build({});
+  if (!draft) return { kind: 'server', route: { kind: 'server', why: 'plan', missing: [] } };
+  const lease = leaseMedia(args.deps, planAssetRefs(draft).map((ref) => ref.id));
   try {
-    const route = await routeExport(args.plan, args.deps, args.nameOf);
+    const route = await routeExport(draft, args.deps, args.nameOf, args.resolution);
     if (route.kind === 'server') return { kind: 'server', route };
-    return { kind: 'device', view: await runNativeExport(args, route.media) };
+    // Same assets, now laid out with each one's real stored size and rotation.
+    const plan = Object.keys(route.geometry).length > 0 ? args.build(route.geometry) ?? draft : draft;
+    return { kind: 'device', view: await runNativeExport(args, plan, route.media) };
   } finally {
     lease.release();
   }
 }
 
-async function runNativeExport(args: ExportOnDeviceArgs, media: Record<string, string>): Promise<DeviceExportView> {
+async function runNativeExport(args: ExportOnDeviceArgs, plan: RenderPlan, media: Record<string, string>): Promise<DeviceExportView> {
   let view: DeviceExportView = STARTING;
   args.onUpdate(view);
   let id: string | undefined;
@@ -254,7 +300,7 @@ async function runNativeExport(args: ExportOnDeviceArgs, media: Record<string, s
   const abort = (): void => { if (id !== undefined) args.native.cancelExport(id); };
   args.signal?.addEventListener('abort', abort, { once: true });
   try {
-    id = await args.native.exportProject(JSON.stringify(args.plan), { media, destination: args.destination ?? 'photos' });
+    id = await args.native.exportProject(JSON.stringify(plan), { media, destination: args.destination ?? 'photos' });
     view = { ...view, id };
     for (const event of early.splice(0)) apply(event);
     if (args.signal?.aborted) args.native.cancelExport(id);

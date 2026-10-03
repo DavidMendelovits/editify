@@ -11,11 +11,14 @@ import UniformTypeIdentifiers
 ///     ─┬─ .gpu supported, task registered and submitted (strategy .queue, requires .gpu)
 ///      │     ├─ launch handler runs ─▶ resolving ─▶ measuring ─▶ writing ─▶ saving ─▶ done
 ///      │     ├─ not started after 1 s ─▶ queued ("waiting to start", cancellable)
-///      │     ├─ not started after 10 s in the foreground ─▶ request withdrawn, foreground-only
+///      │     ├─ not started after 10 s while Editify is in front (checked again whenever it
+///      │     │   becomes active) ─▶ request withdrawn, foreground-only
 ///      │     └─ expiration ─▶ cancel ─▶ failed("iOS stopped the export")
-///      └─ no .gpu / not permitted / submit refused ─▶ foreground-only: runs now, notice
-///            "Keep Editify open until it finishes"; leaving the app gets the usual
-///            background grace, and its expiry fails the export.
+///      └─ no .gpu / not permitted / submit refused ─▶ foreground-only: runs now with the
+///            notice "Keep Editify open until the export finishes". Going to the background
+///            stops it at once (iOS refuses Metal work from a backgrounded app) with
+///            failed("Export stopped: Editify went to the background. ..."); the usual
+///            background grace only covers the cleanup.
 ///
 /// Why .gpu: EditifyCompositor renders with Core Image on Metal, and iOS refuses GPU work
 /// from a backgrounded app unless the continued-processing task asked for the GPU
@@ -24,14 +27,36 @@ import UniformTypeIdentifiers
 /// No UIBackgroundModes entry is needed for continued-processing tasks; the identifier
 /// must match BGTaskSchedulerPermittedIdentifiers (`<bundle id>.export.*`, app.json).
 ///
+/// BACKGROUND GPU ACCESS IS NOT ENABLED YET. The entitlement is a profile-gated App ID
+/// capability (BACKGROUND_GPU_ACCESS) that EAS does not sync, so shipping the key in
+/// app.json would fail signing on every preview and production build. Without it a submit
+/// that asks for .gpu is rejected and every export runs in the foreground, which is the
+/// path that works today. To turn background exports on:
+///   1. In the Apple Developer portal, enable "Background GPU Access" on the App ID
+///      com.editify.app (AK8836263L, team F9R8TK7W79).
+///   2. Regenerate the ad hoc and App Store provisioning profiles (eas credentials, or the
+///      portal), so both carry the capability.
+///   3. Add `"entitlements": {"com.apple.developer.background-tasks.continued-processing.gpu": true}`
+///      under expo.ios in apps/mobile/app.json.
+///   4. Prove it with a manual `eas build --profile preview` before merging, since a main
+///      merge starts a preview build; then check a background export on a phone that
+///      reports .gpu.
+///
 /// Events (`exportState`): {id, state, progress, error?, notice?, mode?, fileUri?,
 /// savedToPhotos?, stats?}. `progress` is the current state's own 0...1 (writing:
-/// presented video time / duration). Temp files are removed on cancel and failure; a
-/// finished file stays for the share sheet until the next launch's sweep.
+/// presented video time / duration). Sent on every state change and otherwise at most
+/// every 1% of progress and 10 times a second. Temp files are removed on cancel and
+/// failure; a finished file stays for the share sheet until the next export starts or
+/// the next launch's sweep.
 final class ExportCenter: @unchecked Sendable {
   static let shared = ExportCenter()
   static let filePrefix = TempFiles.exportPrefix
   typealias Emit = @Sendable ([String: Any]) -> Void
+
+  static let backgroundedMessage = "Export stopped: Editify went to the background. Keep it open while exporting."
+  static let expiredMessage = "iOS stopped the export"
+  /// How long a queued background request may wait while Editify is in front.
+  static let queueFallbackSeconds = 10.0
 
   enum Destination: String { case photos, file }
 
@@ -56,12 +81,19 @@ final class ExportCenter: @unchecked Sendable {
     let lock = NSLock()
     var started = false
     var finished = false
-    var expired = false
+    /// Why the run was stopped from outside (expiry, the app went to the background).
+    var stopReason: String?
     var task: BGContinuedProcessingTask?
     var taskIdentifier: String?
     var mode = "foreground"
     var notice: String?
+    var queuedAt: Date?
     var backgroundGrace: UIBackgroundTaskIdentifier = .invalid
+    var observers: [NSObjectProtocol] = []
+    /// Throttle state for `send`.
+    var lastState: String?
+    var lastProgress = -1.0
+    var lastSent = Date.distantPast
 
     init(id: String, request: Request, emit: @escaping Emit) {
       self.id = id
@@ -72,6 +104,12 @@ final class ExportCenter: @unchecked Sendable {
     /// True once: the caller won the right to start the run.
     func claimStart() -> Bool { lock.withLock { if started { return false }; started = true; return true } }
     var isStarted: Bool { lock.withLock { started } }
+    var isFinished: Bool { lock.withLock { finished } }
+
+    func stop(_ reason: String) {
+      lock.withLock { if stopReason == nil { stopReason = reason } }
+      control.cancel()
+    }
   }
 
   private let lock = NSLock()
@@ -109,8 +147,11 @@ final class ExportCenter: @unchecked Sendable {
 
     var exportOptions = PlanExportOptions()
     if let bitrate = options["videoBitrate"] {
+      // Range-checked as a Double first: Int(1e19) would trap.
       guard let value = (bitrate as? NSNumber)?.doubleValue, value.isFinite,
-            PlanExportOptions.bitrateRange.contains(Int(value)) else { throw Rejected(message: "videoBitrate must be 0.5 to 200 Mbit/s") }
+            value >= Double(PlanExportOptions.bitrateRange.lowerBound), value <= Double(PlanExportOptions.bitrateRange.upperBound) else {
+        throw Rejected(message: "videoBitrate must be 0.5 to 200 Mbit/s")
+      }
       exportOptions.videoBitrate = Int(value)
     }
     if let interval = options["keyframeInterval"] {
@@ -128,6 +169,8 @@ final class ExportCenter: @unchecked Sendable {
       if let current, !current.finished { throw Rejected(message: "Another export is running") }
       current = job
     }
+    // The previous export's file (kept for its share sheet) and its still copies go now.
+    Self.removeExportFiles()
     // Photos asks now, while the app is in front: a background task cannot show the prompt.
     if destination == .photos, PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
       _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
@@ -153,6 +196,15 @@ final class ExportCenter: @unchecked Sendable {
     if let job { cancel(job.id) }
   }
 
+  /// Every file an export left in tmp (finished videos, still copies). Only called when no
+  /// export runs.
+  static func removeExportFiles() {
+    let directory = FileManager.default.temporaryDirectory
+    for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [] where name.hasPrefix(filePrefix) {
+      try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+    }
+  }
+
   // MARK: Admission (OV5)
 
   @MainActor
@@ -160,7 +212,7 @@ final class ExportCenter: @unchecked Sendable {
     let bundle = Bundle.main.bundleIdentifier ?? "com.editify.app"
     let identifier = "\(bundle).export.\(job.id)"
     guard BGTaskScheduler.supportedResources.contains(.gpu) else {
-      return runInForeground(job, notice: "This iPhone can't export in the background. Keep Editify open until it finishes.")
+      return runInForeground(job, notice: "Keep Editify open until the export finishes.")
     }
     // Each identifier is registered once (iOS kills an app that registers one twice); export
     // ids are unique per run, so this only guards against a repeated admit.
@@ -178,35 +230,56 @@ final class ExportCenter: @unchecked Sendable {
     let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Exporting video", subtitle: "Starting")
     request.strategy = .queue
     request.requiredResources = .gpu
+    // Set before submitting: the launch handler can run before submit returns.
+    job.lock.withLock {
+      job.taskIdentifier = identifier
+      job.mode = "background"
+      job.queuedAt = Date()
+    }
     do {
       try BGTaskScheduler.shared.submit(request)
     } catch {
+      // Includes "not permitted" while the GPU entitlement is off (see the type's comment).
+      job.lock.withLock { job.taskIdentifier = nil; job.mode = "foreground"; job.queuedAt = nil }
       return runInForeground(job, notice: "Keep Editify open until the export finishes.")
     }
-    job.taskIdentifier = identifier
-    job.mode = "background"
+    // Back in front after a while away: the 10 s timer may have found the app inactive.
+    job.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+      MainActor.assumeIsolated { self?.fallBackIfQueuedTooLong(job, identifier: identifier) }
+    })
     // Started at once in the usual case; say "queued" only when it really waits.
     Task { @MainActor [weak self] in
       try? await Task.sleep(for: .seconds(1))
       guard let self, !job.isStarted, !job.control.isCancelled else { return }
       self.send(job, state: "queued", progress: 0)
-      try? await Task.sleep(for: .seconds(9))
-      guard !job.isStarted, !job.control.isCancelled, UIApplication.shared.applicationState == .active else { return }
-      BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
-      self.runInForeground(job, notice: "iOS is busy, so this export runs while Editify stays open.")
+      try? await Task.sleep(for: .seconds(Self.queueFallbackSeconds - 1))
+      self.fallBackIfQueuedTooLong(job, identifier: identifier)
     }
+  }
+
+  @MainActor
+  private func fallBackIfQueuedTooLong(_ job: Job, identifier: String) {
+    guard !job.isStarted, !job.control.isCancelled, UIApplication.shared.applicationState == .active,
+          let queuedAt = job.lock.withLock({ job.queuedAt }), Date().timeIntervalSince(queuedAt) >= Self.queueFallbackSeconds - 0.05 else { return }
+    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+    runInForeground(job, notice: "iOS is busy, so this export runs while Editify stays open.")
   }
 
   @MainActor
   private func runInForeground(_ job: Job, notice: String) {
     guard job.claimStart() else { return }
-    job.mode = "foreground"
-    job.notice = notice
-    job.taskIdentifier = nil
-    // Leaving the app: the usual background grace, then the export stops cleanly.
+    job.lock.withLock {
+      job.mode = "foreground"
+      job.notice = notice
+      job.taskIdentifier = nil
+    }
+    // Metal work is refused once the app is in the background: stop at once, with a reason.
+    job.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+      job.stop(Self.backgroundedMessage)
+    })
+    // The background grace only gives the cancel time to clean up.
     job.backgroundGrace = UIApplication.shared.beginBackgroundTask(withName: "editify-export") { [weak self] in
-      job.expired = true
-      job.control.cancel()
+      job.stop(Self.backgroundedMessage)
       MainActor.assumeIsolated { self?.endGrace(job) }
     }
     Task.detached { [weak self] in await self?.run(job) }
@@ -214,6 +287,8 @@ final class ExportCenter: @unchecked Sendable {
 
   @MainActor
   private func endGrace(_ job: Job) {
+    for observer in job.observers { NotificationCenter.default.removeObserver(observer) }
+    job.observers = []
     if job.backgroundGrace != .invalid {
       UIApplication.shared.endBackgroundTask(job.backgroundGrace)
       job.backgroundGrace = .invalid
@@ -226,12 +301,9 @@ final class ExportCenter: @unchecked Sendable {
       task.setTaskCompleted(success: false)
       return
     }
-    job.task = task
+    job.lock.withLock { job.task = task }
     task.progress.totalUnitCount = 1000
-    task.expirationHandler = {
-      job.expired = true
-      job.control.cancel()
-    }
+    task.expirationHandler = { job.stop(Self.expiredMessage) }
     Task.detached { [weak self] in await self?.run(job) }
   }
 
@@ -246,7 +318,9 @@ final class ExportCenter: @unchecked Sendable {
       imageFile: { ref in try await Self.imageFile(media[ref.id], id: ref.id) })
     send(job, state: "resolving", progress: 0)
     do {
+      // Saving to Photos copies the file: room for one more of it.
       let stats = try await PlanExporter.export(request.plan, resolver: resolver, to: output, options: request.options, control: job.control,
+                                                 extraCopies: request.destination == .photos ? 1 : 0,
                                                  progress: { [weak self] phase, value in self?.send(job, state: phase.rawValue, progress: value) })
       var saved = false
       if request.destination == .photos {
@@ -257,8 +331,12 @@ final class ExportCenter: @unchecked Sendable {
       finish(job, state: "done", extra: ["fileUri": output.absoluteString, "savedToPhotos": saved, "stats": stats.dictionary])
     } catch {
       try? FileManager.default.removeItem(at: output)
-      if job.expired {
-        finish(job, state: "failed", extra: ["error": "iOS stopped the export"])
+      // A foreground render the GPU refused because the app just left: the same plain reason,
+      // even if the error beat the didEnterBackground notification here.
+      let inBackground = await MainActor.run { UIApplication.shared.applicationState == .background }
+      if inBackground, job.lock.withLock({ job.task == nil }) { job.lock.withLock { if job.stopReason == nil { job.stopReason = Self.backgroundedMessage } } }
+      if let reason = job.lock.withLock({ job.stopReason }) {
+        finish(job, state: "failed", extra: ["error": reason])
       } else if job.control.isCancelled || (error as? PlanExportError) == .cancelled || error is CancellationError {
         finish(job, state: "cancelled", extra: [:])
       } else {
@@ -291,16 +369,26 @@ final class ExportCenter: @unchecked Sendable {
   }
 
   private func send(_ job: Job, state: String, progress: Double) {
-    guard !job.lock.withLock({ job.finished }) else { return }
-    var body: [String: Any] = ["id": job.id, "state": state, "progress": min(1, max(0, progress)), "mode": job.mode]
-    if let notice = job.notice { body["notice"] = notice }
+    let clamped = min(1, max(0, progress))
+    let now = Date()
+    let (go, mode, notice, task) = job.lock.withLock { () -> (Bool, String, String?, BGContinuedProcessingTask?) in
+      guard !job.finished, ExportThrottle.shouldSend(state: state, progress: clamped, lastState: job.lastState, lastProgress: job.lastProgress,
+                                           sinceLast: now.timeIntervalSince(job.lastSent)) else { return (false, job.mode, nil, nil) }
+      job.lastState = state
+      job.lastProgress = clamped
+      job.lastSent = now
+      return (true, job.mode, job.notice, job.task)
+    }
+    guard go else { return }
+    var body: [String: Any] = ["id": job.id, "state": state, "progress": clamped, "mode": mode]
+    if let notice { body["notice"] = notice }
     job.emit(body)
-    if let task = job.task {
-      task.progress.completedUnitCount = Int64(Self.overall(state, progress) * 1000)
+    if let task {
+      task.progress.completedUnitCount = Int64(Self.overall(state, clamped) * 1000)
       let subtitle = switch state {
       case "resolving": "Preparing clips"
       case "measuring": "Measuring loudness"
-      case "writing": "Rendering \(Int((progress * 100).rounded()))%"
+      case "writing": "Rendering \(Int((clamped * 100).rounded()))%"
       case "saving": "Saving to Photos"
       default: ""
       }
@@ -319,7 +407,7 @@ final class ExportCenter: @unchecked Sendable {
     if let notice = job.notice { body["notice"] = notice }
     for (key, value) in extra { body[key] = value }
     job.emit(body)
-    if let task = job.task {
+    if let task = job.lock.withLock({ job.task }) {
       if state == "done" { task.progress.completedUnitCount = 1000 }
       task.setTaskCompleted(success: state == "done")
     }

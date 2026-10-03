@@ -1,0 +1,88 @@
+{
+  "description": "Export harness: a portrait phone clip stored 640 x 360 with a 90 degree display rotation, as the main layer with a punch-in to its top-left corner and as a picture-in-picture b-roll box, built from the geometry the phone reports.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 1,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 3,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": null,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 3,
+          "layers": [
+            {
+              "clipId": "main",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-portrait",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "t": 3,
+                  "scale": 1.5,
+                  "x": -1,
+                  "y": -1
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [
+      {
+        "id": "pip",
+        "z": 0,
+        "start": 0,
+        "end": 3,
+        "kind": "broll",
+        "box": {
+          "x": 259,
+          "y": 461,
+          "w": 144,
+          "h": 256,
+          "rotationDeg": 0
+        },
+        "media": {
+          "assetRef": {
+            "id": "asset-portrait",
+            "kind": "video"
+          },
+          "srcStart": 0,
+          "speed": 1,
+          "loop": false
+        }
+      }
+    ],
+    "captions": [],
+    "audio": []
+  }
+}
