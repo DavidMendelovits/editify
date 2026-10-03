@@ -17,7 +17,7 @@ import {
 } from '@editify/shared';
 import { measureLoudness } from '../../services/render-qa.js';
 import { locateAssFont } from '../ass.js';
-import { rasterizeEmoji } from '../emoji.js';
+import { rasterizePlanEmoji } from '../emoji.js';
 import { runProcess, UnsupportedMediaError } from '../process.js';
 import type { SourceColor } from '../color.js';
 import { planAss, spanFrames, type AssItem } from './ass.js';
@@ -76,9 +76,10 @@ import { gifTiming, orientationFilter, probePlanMedia, uprightSize, type GifTimi
  * - Callout cards are drawn from the plan's primitives (rounded card, vector
  *   glyph, Montserrat label) with libass on every platform; legacy drew a
  *   system-font PNG on macOS only and an ASS box elsewhere.
- * - Emoji stickers: rasterized with Apple Color Emoji where the host can
- *   (macOS, as legacy), else the plan's `raster` asset, else skipped with a
- *   QA note (legacy fell back to monochrome libass glyphs).
+ * - Emoji stickers: drawn in colour on every host: Apple Color Emoji on
+ *   macOS (as legacy), Noto Color Emoji at the plan's geometry elsewhere
+ *   (emoji.ts; legacy drew monochrome libass glyphs on Linux), else the
+ *   plan's `raster` asset, else in monochrome with a QA note.
  * - Loudness: the limiter is always on when targetLufs is set, so a hot mix
  *   inside the deadband is limited too (legacy limited only when it applied
  *   gain); gain and limiter run on the PCM master before the one AAC encode,
@@ -88,6 +89,9 @@ import { gifTiming, orientationFilter, probePlanMedia, uprightSize, type GifTimi
  *   refused nothing; this executor refuses an empty plan.
  */
 
+/** Draws an emoji sticker's payload as a PNG to stretch over its box (emoji.ts), or null when the host cannot. */
+export type EmojiRasterizer = (emoji: PlanEmoji, box: { w: number; h: number }) => Promise<string | null>;
+
 /** Resolves a plan asset to a file the requesting user may read, or undefined (see renderPlan's SECURITY note). */
 export type PlanAssetResolver = (ref: PlanAssetRef) => string | undefined | Promise<string | undefined>;
 
@@ -95,8 +99,8 @@ export interface RenderPlanOutput {
   outputPath: string;
   /** Scratch space for graphs, masks and the audio master. */
   workDir: string;
-  /** Emoji rasterizer (Apple Color Emoji); null where the host has none. Defaults to emoji.ts. */
-  rasterizeEmoji?: (text: string) => Promise<string | null>;
+  /** Emoji sticker rasterizer (a PNG for the overlay box); null where the host has none. Defaults to emoji.ts. */
+  rasterizeEmoji?: EmojiRasterizer;
   /** Keep `workDir` afterwards (tests read the audio master); removed by default. */
   keepWorkDir?: boolean;
 }
@@ -138,7 +142,7 @@ export class PlanRenderUnavailableError extends Error {
 
 /** Filters the plan render uses; a build without one cannot render plans. */
 export const PLAN_RENDER_FILTERS = [
-  'zscale', 'lut1d', 'maskedmerge', 'blend', 'subtitles', 'perspective', 'alimiter', 'premultiply', 'unpremultiply',
+  'zscale', 'lut1d', 'maskedmerge', 'blend', 'subtitles', 'geq', 'fillborders', 'alimiter', 'premultiply', 'unpremultiply',
   'negate', 'extractplanes', 'mergeplanes', 'rotate', 'tpad', 'concat', 'aeval', 'afade', 'atempo', 'amix', 'adelay', 'pan',
 ] as const;
 
@@ -172,19 +176,43 @@ export async function planRenderCapabilities(): Promise<Capabilities> {
 
 /**
  * Peak resident memory of a plan render, MB, from the stress measurements
- * (ffmpeg 9, 1080 x 1920, 10 s): the windowed float pipeline with no graphics
- * peaks at about 1.75 GB (final pass ~1.3 GB, window ~0.45 GB), each sticker
- * on a canvas adds about 30 MB (its canvas overlay keeps writable frame
- * copies), and each other graphic (an ASS run, a b-roll, a sticker canvas)
- * about 100 MB of float frames in flight. Everything scales with the frame's
- * pixel count. Deliberately rough: it routes a plan to the legacy renderer
- * before it can exhaust the server, it does not size a machine.
+ * (1080 x 1920, 10 s, image stickers and a callout; ffmpeg 9.0 on a 14-core
+ * Mac, the worst case: Debian's 5.1 on 4 cores, production's, measured 10-30%
+ * lower). With the encoder's threads and lookahead capped (./color.ts):
+ * - no graphics: 0.86 GB SDR (the final pass 0.42, a window 0.45), 1.45 GB
+ *   HLG (x265 holds far more frames than x264);
+ * - each graphic the final pass blends (an ASS run of callouts, emoji or
+ *   captions; a canvas of consecutive stickers; a b-roll): 0.33-0.38 GB of
+ *   full-frame float colour and mask frames in flight;
+ * - each sticker on a canvas: 12 MB more (its overlay's frame copies);
+ * - an animated crop (cropStage): 0.21 GB for a 1.15x punch-in, 0.56 GB for
+ *   1x to 3x with a pan, in the window drawing it. A window holds at most one
+ *   zooming segment (windows), so it is the most in any one segment that
+ *   counts.
+ * The constants round those up. Everything scales with the frame's pixel
+ * count. Deliberately rough: it routes a plan to the legacy renderer before
+ * it can exhaust the server, it does not size a machine.
  */
-export function planRenderMemoryMb(plan: Pick<RenderPlan, 'size' | 'overlays' | 'captions'>): number {
+export function planRenderMemoryMb(plan: Pick<RenderPlan, 'size' | 'overlays' | 'captions'> & Partial<Pick<RenderPlan, 'color' | 'video'>>): number {
   const scale = (plan.size.w * plan.size.h) / (1080 * 1920);
-  const stickers = plan.overlays.filter((item) => item.kind === 'image' || item.kind === 'gif' || item.kind === 'emoji').length;
-  const others = plan.overlays.length - stickers + (plan.captions.length > 0 ? 1 : 0);
-  return scale * (1750 + 30 * stickers + 100 * others);
+  const { graphics, stickers } = planGraphics(plan);
+  const zooms = Math.max(0, ...(plan.video?.segments ?? []).map(animatedCrops));
+  return scale * ((plan.color === 'hlg' ? 1550 : 950) + 400 * graphics + 15 * stickers + 650 * zooms);
+}
+
+/** How many graphics the final pass blends (grouped as renderPlan groups them) and how many stickers they hold. */
+export function planGraphics(plan: Pick<RenderPlan, 'overlays' | 'captions'>): { graphics: number; stickers: number } {
+  let graphics = plan.captions.length > 0 ? 1 : 0;
+  let stickers = 0;
+  let previous: 'ass' | 'canvas' | undefined;
+  for (const overlay of [...plan.overlays].sort((left, right) => left.z - right.z)) {
+    // Emoji count as stickers (a colour raster); one that falls back to libass joins an ASS run instead.
+    const kind = overlay.kind === 'callout' ? 'ass' : overlay.kind === 'broll' ? undefined : 'canvas';
+    if (kind === 'canvas') stickers += 1;
+    if (!kind || kind !== previous) graphics += 1;
+    previous = kind;
+  }
+  return { graphics, stickers };
 }
 
 /** PLAN_RENDER_MEMORY_MB, default 3072 (the 4 GB server, with room for the API process and a legacy fallback). */
@@ -226,7 +254,7 @@ interface Context {
   media: Map<string, PlanMediaProbe>;
   workDir: string;
   notes: string[];
-  rasterize: (text: string) => Promise<string | null>;
+  rasterize: EmojiRasterizer;
   rasterPaths: Map<string, string>;
   files: number;
 }
@@ -310,19 +338,45 @@ function sampledInput(graph: Graph, path: string, from: number, speed: number, f
 
 /**
  * The crop/zoom for one layer, on the decoded picture (before colour
- * conversion). One key: render.ts's static chain with the schema's numbers
- * (scale to the zoomed cover size, crop W x H at the panned offset; within
- * half a pixel). Several keys: the source is stretched to the frame's aspect
- * and `perspective` (eval=frame) pulls the keyed rectangle to the full frame,
- * so every frame gets its own sub-pixel crop; the stretch is undone by the
- * perspective itself, and the image is first oversampled up to 2x so the
- * perspective only ever enlarges.
+ * conversion), as filtergraph lines from `head` (a chain that yields the
+ * source frames on the segment's output grid); returns the cropped stream's
+ * label. One key: render.ts's static chain with the schema's numbers (scale
+ * to the zoomed cover size, crop W x H at the panned offset; within half a
+ * pixel).
+ *
+ * Several keys (an animated zoom or pan) stay at 16 bits all the way, so a
+ * 10-bit HLG or PQ source reaches linearization with every code value it had
+ * (`perspective`, which this used to use, works in 8 bits and banded smooth
+ * HDR gradients). Per frame, at the pose (S, X, Y) the keys give for it:
+ *   1. the source, padded by E smeared pixels a side (so the window below
+ *      always has room past the visible rect), is cropped in its own pixel
+ *      format to a fixed-size window around the visible rect (even origin, so
+ *      4:2:0 chroma stays aligned);
+ *   2. the window is scaled (eval=frame) by the pose's c = cover * S to 16-bit
+ *      4:4:4 (yuv444p16le, or gbrp16le for stills): the visible rect is now
+ *      W x H output pixels at a fractional offset o;
+ *   3. (W + 1) x (H + 1) is cropped at floor(o), and the fraction is applied
+ *      as a bilinear interpolation: maskedmerge of the picture with itself
+ *      shifted by one pixel, across then down, with per-frame weights from a
+ *      1 x 1 geq frame (16-bit, exact to 1/65536).
+ * So every frame is placed sub-pixel, as the native compositor (Core Image)
+ * and the schema's continuous convention place it. Only crop and scale in
+ * this chain see the per-frame size: a filter between them (format, split)
+ * would pass its configured size on and break the crop's clamp.
+ * The window is sized for the chunk's widest view, so the scaled picture is at
+ * most ZOOM_CHUNK_RATIO^2 frames' worth of pixels: a zoom spanning a larger
+ * ratio is cut into chunks of frames, each with its own window (split + trim,
+ * every frame used by one chunk only, so nothing queues).
  */
-function cropFilters(keys: readonly PlanCropKey[], segment: PlanVideoSegment, source: { width: number; height: number }, context: Context): string {
+function cropStage(graph: Graph, head: string, keys: readonly PlanCropKey[], segment: PlanVideoSegment, frames: number, source: { width: number; height: number }, context: Context, rgb: boolean): string {
   const { W, H, fps } = context;
   const sw = source.width;
   const sh = source.height;
-  if (!(sw > 0 && sh > 0)) return `scale=${W}:${H}`;
+  const out = graph.label('crop');
+  if (!(sw > 0 && sh > 0)) {
+    graph.add(`${head},scale=${W}:${H}[${out}]`);
+    return out;
+  }
   const cover = Math.max(W / sw, H / sh);
   if (keys.length === 1) {
     const key = keys[0]!;
@@ -332,30 +386,103 @@ function cropFilters(keys: readonly PlanCropKey[], segment: PlanVideoSegment, so
     const ox = Math.min(SW - W, Math.max(0, Math.round(((SW - W) / 2) * (1 + key.x))));
     const oy = Math.min(SH - H, Math.max(0, Math.round(((SH - H) / 2) * (1 + key.y))));
     const scale = SW === sw && SH === sh ? '' : `scale=${SW}:${SH}:flags=bicubic,`;
-    return `${scale}crop=${W}:${H}:${ox}:${oy}:exact=1`;
+    graph.add(`${head},${scale}crop=${W}:${H}:${ox}:${oy}:exact=1[${out}]`);
+    return out;
   }
-  // Oversampling: the source's useful detail per output pixel (capped at its native resolution), so neither
-  // stretched axis is downsampled before the perspective; at most 2x (render.ts zoompan's cap) for memory.
-  const density = Math.min(1, cover * Math.max(...keys.map((key) => key.scale)));
-  const m = Math.min(2, Math.max(1, (density * sw) / W, (density * sh) / H));
-  const A = Math.max(2, Math.round((m * W) / 2) * 2);
-  const B = Math.max(2, Math.round((m * H) / 2) * 2);
-  const fx = A / sw;
-  const fy = B / sh;
-  const frame = (t: number): number => (t - segment.start) * fps;
-  const curve = (pick: (key: PlanCropKey) => number): string => piecewiseLinear(keys.map((key) => ({ t: frame(key.t), v: pick(key) })), 'on');
-  const S = curve((key) => key.scale);
-  const X = curve((key) => key.x);
-  const Y = curve((key) => key.y);
-  // Visible source rect at pose (S, X, Y): size (W / c, H / c), origin ((sw - W / c) / 2 (1 + X), ...), c = cover * S.
-  const vw = `(${f(W / cover)}/(${S}))`;
-  const vh = `(${f(H / cover)}/(${S}))`;
-  const left = `(${f(fx)}*(${f(sw)}-${vw})/2*(1+(${X})))`;
-  const top = `(${f(fy)}*(${f(sh)}-${vh})/2*(1+(${Y})))`;
-  const right = `(${left}+${f(fx)}*${vw})`;
-  const bottom = `(${top}+${f(fy)}*${vh})`;
-  const corners = `x0='${left}':y0='${top}':x1='${right}':y1='${top}':x2='${left}':y2='${bottom}':x3='${right}':y3='${bottom}'`;
-  return `scale=${A}:${B}:flags=bicubic,perspective=${corners}:interpolation=linear:sense=source:eval=frame${A !== W || B !== H ? `,scale=${W}:${H}:flags=bicubic` : ''}`;
+  // Keys in frames of the segment, read at frame k = t * fps (the output grid).
+  const points = (pick: (key: PlanCropKey) => number): Array<{ t: number; v: number }> => keys.map((key) => ({ t: (key.t - segment.start) * fps, v: pick(key) }));
+  const scales = points((key) => Math.max(1, key.scale));
+  const xs = points((key) => key.x);
+  const ys = points((key) => key.y);
+  /** The pose into ld(0..2) (S, X, Y) for frame `k` (an expression), stored in ld(4). */
+  const pose = (k: string): string => `st(4,${k});st(0,max(1,${piecewiseLinear(scales, 'ld(4)')}));` +
+    `st(1,${piecewiseLinear(xs, 'ld(4)')});st(2,${piecewiseLinear(ys, 'ld(4)')});`;
+  const smallest = Math.min(...zoomChunks(scales, frames).map((chunk) => chunk.smallest));
+  // Padding: at least one output pixel's worth of source past any visible edge (step 3 crops one extra pixel).
+  const pad = 2 * Math.ceil((1 / (cover * smallest) + 1) / 2);
+  const format = rgb ? 'gbrp16le' : 'yuv444p16le';
+  const planes = rgb ? ['r', 'g', 'b'] : ['lum', 'cb', 'cr'];
+  const axis = (size: number, frame: number, window: number, pan: 1 | 2): { origin: string; scaled: string; offset: string } => {
+    // Visible extent v = frame / (cover * S) source pixels from (size - v) / 2 * (1 + pan), here in padded coordinates.
+    const visible = `(${f(frame / cover)}/ld(0))`;
+    const start = `((${f(size)}-${visible})/2*(1+ld(${pan}))+${pad})`;
+    const origin = `max(0,min(${size + 2 * pad - window},2*floor((${start}+${visible}/2-${f(window / 2)})/2)))`;
+    const scaled = `round(${f(window * cover)}*ld(0))`;
+    return { origin, scaled, offset: `st(3,${origin});st(5,${scaled});(${start}-ld(3))*ld(5)/${window}` };
+  };
+  const windowFor = (least: number): { w: number; h: number } => {
+    // The chunk's widest view plus 4 + 2 / c source pixels (the even origin, rounding, the extra pixel), with
+    // padded size - window even so the even origin can reach the far edge.
+    const c = cover * least;
+    const fit = (size: number, frame: number): number => {
+      const padded = size + 2 * pad;
+      const want = Math.min(padded, Math.ceil(frame / c + 4 + 2 / c) + 2);
+      return padded - 2 * Math.floor((padded - want) / 2);
+    };
+    return { w: fit(sw, W), h: fit(sh, H) };
+  };
+  const chunkLines = (input: string, chunk: { first: number; end: number; smallest: number }, output: string): void => {
+    const window = windowFor(chunk.smallest);
+    const x = axis(sw, W, window.w, 1);
+    const y = axis(sh, H, window.h, 2);
+    // Crop and scale also evaluate while configuring (t unset or 0, by version): the chunk's first frame stands in.
+    const k = `if(isnan(t),${chunk.first},max(${chunk.first},t*${fps}))`;
+    const id = graph.label('sub');
+    graph.add(`[${input}]crop=w=${window.w}:h=${window.h}:x='${pose(k)}${x.origin}':y='${pose(k)}${y.origin}':exact=1,` +
+      `scale=w='${pose(k)}${x.scaled}':h='${pose(k)}${y.scaled}':eval=frame:flags=bicubic+accurate_rnd+full_chroma_int+full_chroma_inp,` +
+      `crop=w=${W + 1}:h=${H + 1}:x='${pose(k)}floor(${x.offset})':y='${pose(k)}floor(${y.offset})':exact=1,format=${format},` +
+      `split=3[${id}a][${id}b][${id}m]`);
+    // The fractions as 16-bit weights on a 1 x 1 frame (geq's clock is T), stretched to the planes they weigh.
+    const weight = (offset: string): string => planes.map((plane) => `${plane}='${pose(`T*${fps}`)}st(6,${offset});65535*(ld(6)-floor(ld(6)))'`).join(':');
+    graph.add(`[${id}m]crop=1:1:0:0,split=2[${id}m1][${id}m2]`);
+    graph.add(`[${id}m1]geq=${weight(x.offset)},zscale=w=${W}:h=${H + 1}:filter=point[${id}wx]`);
+    graph.add(`[${id}m2]geq=${weight(y.offset)},zscale=w=${W}:h=${H}:filter=point[${id}wy]`);
+    graph.add(`[${id}a]crop=${W}:${H + 1}:0:0[${id}l]`);
+    graph.add(`[${id}b]crop=${W}:${H + 1}:1:0[${id}r]`);
+    graph.add(`[${id}l][${id}r][${id}wx]maskedmerge,split=2[${id}t][${id}u]`);
+    graph.add(`[${id}t]crop=${W}:${H}:0:0[${id}tt]`);
+    graph.add(`[${id}u]crop=${W}:${H}:0:1[${id}bb]`);
+    graph.add(`[${id}tt][${id}bb][${id}wy]maskedmerge[${output}]`);
+  };
+  const id = graph.label('zoom');
+  graph.add(`${head},${onGrid(fps)},pad=w=iw+${2 * pad}:h=ih+${2 * pad}:x=${pad}:y=${pad},` +
+    `fillborders=left=${pad}:right=${pad}:top=${pad}:bottom=${pad}:mode=smear[${id}p]`);
+  const chunks = zoomChunks(scales, frames);
+  if (chunks.length === 1) {
+    chunkLines(`${id}p`, chunks[0]!, out);
+    return out;
+  }
+  graph.add(`[${id}p]split=${chunks.length}${chunks.map((_, index) => `[${id}s${index}]`).join('')}`);
+  chunks.forEach((chunk, index) => {
+    graph.add(`[${id}s${index}]trim=start_frame=${chunk.first}:end_frame=${chunk.end}[${id}t${index}]`);
+    chunkLines(`${id}t${index}`, chunk, `${id}c${index}`);
+  });
+  graph.add(`${chunks.map((_, index) => `[${id}c${index}]`).join('')}concat=n=${chunks.length}:v=1:a=0[${out}]`);
+  return out;
+}
+
+/** Largest zoom ratio one crop window serves (cropStage): the scaled picture stays under 2.25 frames of pixels. */
+export const ZOOM_CHUNK_RATIO = 1.5;
+
+/** Frames [first, end) of a segment grouped so that within each the zoom spans at most ZOOM_CHUNK_RATIO. */
+export function zoomChunks(scales: ReadonlyArray<{ t: number; v: number }>, frames: number): Array<{ first: number; end: number; smallest: number }> {
+  const out: Array<{ first: number; end: number; smallest: number }> = [];
+  let first = 0;
+  let low = Infinity;
+  let high = -Infinity;
+  for (let k = 0; k < frames; k += 1) {
+    const s = Math.max(1, keyValueAt(scales, k));
+    if (k > first && Math.max(high, s) / Math.min(low, s) > ZOOM_CHUNK_RATIO) {
+      out.push({ first, end: k, smallest: low });
+      first = k;
+      low = Infinity;
+      high = -Infinity;
+    }
+    low = Math.min(low, s);
+    high = Math.max(high, s);
+  }
+  out.push({ first, end: Math.max(first + 1, frames), smallest: Number.isFinite(low) ? low : 1 });
+  return out;
 }
 
 /** Stills are sRGB whatever their (usually empty) tags say. */
@@ -368,8 +495,12 @@ async function layerStream(graph: Graph, layer: PlanVideoLayer, segment: PlanVid
   if (layer.assetRef.kind === 'image') {
     const input = graph.input(['-noautorotate', '-i', probe.path]);
     const orient = orientationFilter(probe.orientation);
-    graph.add(`[${input}:v]${orient ? `${orient},` : ''}format=gbrp,${cropFilters(layer.cropKeys, segment, uprightSize(probe), context)},` +
-      `${toWorkingSpace(SRGB, context.plan, context.luts, { rgb: true })},loop=loop=${frames - 1}:size=1,${onGrid(context.fps)}[${label}]`);
+    // A still under an animated crop is repeated before the crop (each frame takes its own pose), else after it.
+    const animated = layer.cropKeys.length > 1;
+    const repeat = `loop=loop=${frames - 1}:size=1`;
+    const head = `[${input}:v]${orient ? `${orient},` : ''}format=gbrp${animated ? `,${repeat}` : ''}`;
+    const cropped = cropStage(graph, head, layer.cropKeys, segment, frames, uprightSize(probe), context, true);
+    graph.add(`[${cropped}]${toWorkingSpace(SRGB, context.plan, context.luts, { rgb: true })}${animated ? '' : `,${repeat}`},${onGrid(context.fps)}[${label}]`);
     return await dimmed(graph, layer, segment, frames, context, label);
   }
   // A hold samples one frame at frameAt and repeats it.
@@ -377,8 +508,8 @@ async function layerStream(graph: Graph, layer: PlanVideoLayer, segment: PlanVid
     ? sampledInput(graph, probe.path, layer.hold.frameAt, 1, 1, context.fps)
     : sampledInput(graph, probe.path, layer.srcStart, layer.speed, frames, context.fps);
   const repeat = layer.hold ? `,tpad=stop_mode=clone:stop=${frames - 1}` : '';
-  graph.add(`${sampling}${repeat},${cropFilters(layer.cropKeys, segment, uprightSize(probe), context)},` +
-    `${toWorkingSpace(probe.color, context.plan, context.luts)},${onGrid(context.fps)}[${label}]`);
+  const cropped = cropStage(graph, `${sampling}${repeat}`, layer.cropKeys, segment, frames, uprightSize(probe), context, false);
+  graph.add(`[${cropped}]${toWorkingSpace(probe.color, context.plan, context.luts)},${onGrid(context.fps)}[${label}]`);
   return await dimmed(graph, layer, segment, frames, context, label);
 }
 
@@ -439,7 +570,18 @@ async function segmentStream(graph: Graph, segment: PlanVideoSegment, context: C
   return current;
 }
 
-/** Consecutive segments grouped so one ffmpeg opens at most a handful of sources. */
+/** Layers of a segment drawn with an animated crop (cropStage's 16-bit chain, the heaviest part of a window). */
+export function animatedCrops(segment: PlanVideoSegment): number {
+  return visibleLayers(segment).filter((layer) => layer.cropKeys.length > 1).length;
+}
+
+/**
+ * Consecutive segments grouped so one ffmpeg opens at most a handful of
+ * sources, and never two segments with animated crops: their chains' frame
+ * pools all stay allocated for the window's life (three 3x zooms in one
+ * window peaked at 2.26 GB, one at 1.48 GB), so each zooming segment starts
+ * a window of its own.
+ */
 function windows(segments: readonly PlanVideoSegment[], fps: number): PlanVideoSegment[][] {
   const MAX_INPUTS = 8;
   const MAX_FRAMES = 60 * fps;
@@ -447,18 +589,22 @@ function windows(segments: readonly PlanVideoSegment[], fps: number): PlanVideoS
   let current: PlanVideoSegment[] = [];
   let inputs = 0;
   let frames = 0;
+  let zooming = false;
   for (const segment of segments) {
     const need = segmentInputs(segment);
     const length = Math.round((segment.end - segment.start) * fps);
-    if (current.length > 0 && (inputs + need > MAX_INPUTS || frames + length > MAX_FRAMES)) {
+    const zooms = animatedCrops(segment) > 0;
+    if (current.length > 0 && (inputs + need > MAX_INPUTS || frames + length > MAX_FRAMES || (zooms && zooming))) {
       out.push(current);
       current = [];
       inputs = 0;
       frames = 0;
+      zooming = false;
     }
     current.push(segment);
     inputs += need;
     frames += length;
+    zooming ||= zooms;
   }
   if (current.length > 0) out.push(current);
   return out;
@@ -602,9 +748,9 @@ async function spanToTimeline(graph: Graph, span: string, out: string, first: nu
 /** A sticker (image, GIF, emoji raster) as a rect-sized straight-alpha gbrap picture, for a sticker canvas. */
 interface Sticker { picture: string; at: [number, number]; frames: [number, number]; still: boolean }
 
-/** The emoji sticker's colour picture: the host's Apple Color Emoji rasterizer, else the plan's uploaded raster. */
+/** The emoji sticker's colour picture: the host's colour emoji rasterizer, else the plan's uploaded raster. */
 async function emojiRaster(overlay: PlanOverlay, context: Context): Promise<string | undefined> {
-  return (await context.rasterize(overlay.emoji!.text)) ?? (overlay.raster ? context.rasterPaths.get(overlay.raster.id) : undefined);
+  return (await context.rasterize(overlay.emoji!, overlay.box)) ?? (overlay.raster ? context.rasterPaths.get(overlay.raster.id) : undefined);
 }
 
 async function sticker(graph: Graph, overlay: PlanOverlay, context: Context): Promise<Sticker | undefined> {
@@ -911,7 +1057,7 @@ async function renderInWorkDir(input: unknown, resolveAsset: PlanAssetResolver, 
   const context: Context = {
     plan, W: plan.size.w, H: plan.size.h, fps: plan.fps, total,
     luts: await lutFiles(), media, workDir: out.workDir, notes: [],
-    rasterize: out.rasterizeEmoji ?? rasterizeEmoji, rasterPaths, files: 0,
+    rasterize: out.rasterizeEmoji ?? rasterizePlanEmoji, rasterPaths, files: 0,
   };
 
   // Audio first: the master is measured before the final pass applies gain and the limiter.
@@ -970,7 +1116,7 @@ async function renderInWorkDir(input: unknown, resolveAsset: PlanAssetResolver, 
     } else {
       if (run.length > 0) await flush();
       if (overlay.kind === 'emoji' && !(await emojiRaster(overlay, context))) {
-        // No colour emoji on this host and no raster: libass draws it in monochrome, as legacy did.
+        // No colour emoji font on this host and no raster: libass draws it in monochrome, as legacy did.
         context.notes.push(`Emoji sticker ${overlay.id} was drawn in monochrome: this server has no colour emoji font and the render has no raster for it.`);
         console.warn('[render-plan] emoji drawn in monochrome', { overlay: overlay.id });
         if (stickers.length > 0) await flush();

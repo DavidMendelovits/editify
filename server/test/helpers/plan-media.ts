@@ -24,6 +24,8 @@ import { BT2020_TO_BT709, multiply3, sdrEncode } from '../../src/media/plan/colo
  *   chunk; or a solid colour.
  * - GIF: solid frames with the manifest's delays (0, 5, 10, 1 cs), written by
  *   ffmpeg and then given those exact delays in their Graphic Control blocks.
+ * - A `ramp` video (server-only, for the banding probe): a smooth grey ramp
+ *   instead of the pattern.
  */
 
 export interface MediaSpec {
@@ -39,6 +41,8 @@ export interface MediaSpec {
   frames?: Array<{ rgb: number[]; delayCs: number }>;
   channelTones?: number[];
   solid?: number[];
+  /** Video: instead of the pattern, a grey ramp of linear values from ramp[0] (left) to ramp[1] (right), the same every frame. */
+  ramp?: [number, number];
 }
 
 function run(args: string[], input?: Buffer): void {
@@ -125,8 +129,12 @@ export async function writeVideo(spec: MediaSpec, path: string): Promise<void> {
   const map = transfer === 'sdr' ? sdrPixel : (pixel: [number, number, number]): [number, number, number] => pixel;
   // Frames differ only in the code strip (the top 40 rows at 360 wide): convert the pattern once, patch the strip.
   patternFrame(0, width, height, spec.base ?? [0.1, 0.1, 0.1], rgb);
+  if (spec.ramp) {
+    const [from, to] = spec.ramp;
+    for (let at = 0; at < width * height; at += 1) rgb.fill(from + ((to - from) * (at % width)) / (width - 1), at * 3, at * 3 + 3);
+  }
   const frame = planar(rgb, map);
-  const stripRows = Math.min(height, Math.round(40 * (width / 360)));
+  const stripRows = spec.ramp ? 0 : Math.min(height, Math.round(40 * (width / 360)));
   const count = width * height;
   const on = map([1, 1, 1]);
   const off = map([0, 0, 0]);

@@ -27,16 +27,18 @@ import { synthesizeMedia, type MediaSpec } from './helpers/plan-media.js';
  *   filter, and the native compositor samples with Core Image.
  * - frames with only pictures on screen: the 5 x 5 box-blurred worst-channel
  *   difference <= 0.15 (the native suite's local check is 0.1 against its own
- *   renders). Measured up to 0.13: sub-pixel placement (ffmpeg crop is
- *   integer, perspective is about a quarter pixel off) on the harness's 2 px
- *   grid lines and code strip edges.
+ *   renders). Measured up to 0.13: sub-pixel placement (a static crop is
+ *   whole-pixel; animated crops interpolate bilinearly where Core Image
+ *   samples its own way) on the harness's 2 px grid lines and code strip
+ *   edges.
  * - frames with text or graphics on screen: the blurred maximum is reported,
  *   not bounded. libass and Core Text antialias glyph edges differently (and
  *   libass applies ligatures; an accepted difference in the schema), so text
  *   is checked by position instead: karaoke words and caption lanes are found
  *   in the plan's rectangles, lit or not, as the native suite checks them.
- * An emoji sticker the host cannot draw (no Apple Color Emoji, no raster) is
- * left out with a QA note; its box is then excluded from the comparison.
+ * An emoji sticker the host cannot draw in colour (no Apple Color Emoji or
+ * Noto Color Emoji, no raster) is drawn in monochrome with a QA note; its box
+ * is then excluded from the comparison.
  *
  * Needs ffmpeg with zscale, lut1d, libass and the other PLAN_RENDER_FILTERS.
  * Where they are missing the suite skips, except in CI (CI set), where the
@@ -49,13 +51,22 @@ const manifest = JSON.parse(readFileSync(join(goldens, 'manifest.json'), 'utf8')
   renders: Array<{ name: string; plan: string; downscale?: number; frames: Array<{ k: number; golden?: boolean; probes?: Array<{ name: string; x: number; y: number; r?: number }>; rects?: Array<{ name: string; x: number; y: number; w: number; h: number }> }> }>;
 };
 
-const NEEDED_FILTERS = ['zscale', 'lut1d', 'maskedmerge', 'blend', 'subtitles', 'perspective', 'alimiter', 'premultiply', 'unpremultiply',
+const NEEDED_FILTERS = ['zscale', 'lut1d', 'maskedmerge', 'blend', 'subtitles', 'geq', 'fillborders', 'alimiter', 'premultiply', 'unpremultiply',
   'negate', 'extractplanes', 'mergeplanes', 'rotate', 'tpad', 'aeval', 'afade', 'atempo', 'amix', 'adelay', 'pan'];
 const filterList = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' });
 const available = new Set((filterList.stdout ?? '').split('\n').map((line) => line.trim().split(/\s+/)[1]));
 const missing = filterList.status === 0 ? NEEDED_FILTERS.filter((name) => !available.has(name)) : ['ffmpeg'];
 const usable = missing.length === 0;
 const inCi = Boolean(process.env.CI);
+
+/**
+ * Media only the server suites draw: a 10-bit HLG grey ramp, shallow enough
+ * (about one 10-bit code every eight pixels) that an 8-bit stage anywhere
+ * before linearization shows, as steps of four codes or as dither noise.
+ */
+const SERVER_MEDIA: Record<string, MediaSpec> = {
+  'asset-hlg-ramp': { kind: 'video', transfer: 'hlg', w: 360, h: 640, fps: 30, seconds: 4, ramp: [0.2, 0.26] },
+};
 
 const MEAN_ABS_MAX = 0.012;
 const PICTURE_BLURRED_MAX = 0.15;
@@ -92,6 +103,7 @@ beforeAll(async () => {
     for (const entry of plan.audio) ids.add(entry.assetRef.id);
   }
   const media = await synthesizeMedia(manifest.media, scratch, ids);
+  for (const [id, path] of await synthesizeMedia(SERVER_MEDIA, scratch)) media.set(id, path);
   mediaPaths = media;
   for (const { name, plan } of plans) {
     const path = join(scratch, `${name}.mp4`);
@@ -203,6 +215,34 @@ function brightest(name: string, k: number, rect: string): Vec {
   return best;
 }
 
+/**
+ * The fill colour of the text in a rect: the per-channel median of its bright
+ * pixels (luma within 10% of the brightest). Not the single brightest pixel:
+ * on a yellow word that is a near-tie between fill pixels and glyph-edge
+ * pixels whose 4:2:0 chroma carries the dark stroke's blue (luma 0.816 at
+ * blue 0.37 against the fill's 0.808 at 0.13), and which one wins moved with
+ * the CPU's SIMD paths (Ubuntu's ffmpeg 6.1 on some x86-64 runners).
+ */
+function fillColour(name: string, k: number, rect: string): Vec {
+  const spec = manifest.renders.find((item) => item.name === name)!.frames.find((frame) => frame.k === k)!.rects!.find((item) => item.name === rect)!;
+  const picture = render(name).frames.get(k)!;
+  const pixels: Array<{ luma: number; pixel: Vec }> = [];
+  for (let y = Math.floor(spec.y); y < spec.y + spec.h; y += 1) {
+    for (let x = Math.floor(spec.x); x < spec.x + spec.w; x += 1) {
+      const at3 = (y * picture.width + x) * 3;
+      const pixel: Vec = [picture.rgb[at3]!, picture.rgb[at3 + 1]!, picture.rgb[at3 + 2]!];
+      pixels.push({ luma: 0.2627 * pixel[0] + 0.678 * pixel[1] + 0.0593 * pixel[2], pixel });
+    }
+  }
+  const top = Math.max(...pixels.map((item) => item.luma));
+  const bright = pixels.filter((item) => item.luma >= 0.9 * top);
+  const median = (channel: number): number => {
+    const values = bright.map((item) => item.pixel[channel]!).sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)]!;
+  };
+  return [median(0), median(1), median(2)];
+}
+
 /** Amplitude of a pure tone in a Hann-windowed stretch (Goertzel), as the native harness measures it. */
 function tone(samples: Float32Array, from: number, to: number, hz: number): number {
   const start = Math.max(0, Math.floor(from * 48000));
@@ -312,6 +352,79 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     close(probeOf('zoom', 89, 'white').linear, grey(1), 0.03);
   });
 
+  it('keeps an HLG zoom at 16 bits: a smooth ramp has every code and no 8-bit steps or dither', async () => {
+    const { renderPlan } = await import('../src/media/plan/render.js');
+    const zoom = render('zoom').plan;
+    const plan: RenderPlan = {
+      ...zoom,
+      color: 'hlg',
+      video: { segments: zoom.video.segments.map((segment) => ({ ...segment, layers: segment.layers.map((layer) => ({ ...layer, assetRef: { id: 'asset-hlg-ramp', kind: 'video' as const } })) })) },
+    };
+    expect(plan.video.segments[0]!.layers[0]!.cropKeys.length).toBeGreaterThan(1);
+    const path = join(scratch, 'zoom-hlg.mp4');
+    await renderPlan(plan, (ref) => mediaPaths.get(ref.id), { outputPath: path, workDir: join(scratch, 'zoom-hlg') });
+    for (const k of [0, 45, 89]) {
+      // Y' codes of the 10-bit output, rows 200..439 (the ramp is grey, so luma carries it).
+      const raw = spawnSync('ffmpeg', ['-v', 'error', '-i', path, '-vf', `select='eq(n\\,${k})'`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'yuv420p10le', 'pipe:1'], { maxBuffer: 1 << 28 }).stdout;
+      const code = (x: number, y: number): number => raw.readUInt16LE((y * plan.size.w + x) * 2);
+      const codes = new Set<number>();
+      let neighbours = 0;
+      let pairs = 0;
+      const columns: number[] = [];
+      for (let x = 0; x < plan.size.w; x += 1) {
+        let sum = 0;
+        for (let y = 200; y < 440; y += 1) {
+          codes.add(code(x, y));
+          sum += code(x, y);
+          if (x > 0) {
+            neighbours += Math.abs(code(x, y) - code(x - 1, y));
+            pairs += 1;
+          }
+        }
+        columns.push(sum / 240);
+      }
+      const low = Math.min(...codes);
+      const high = Math.max(...codes);
+      const slope = (columns.at(-1)! - columns[0]!) / (plan.size.w - 1);
+      const steepest = Math.max(...columns.slice(1).map((value, index) => Math.abs(value - columns[index]!)));
+      // Measured (ffmpeg 9.0): 42-46 codes over 42-46 values, neighbours 0.11-0.13 apart (the ramp's own slope,
+      // 0.12), column steps of 1 code. Through the 8-bit perspective path it was neighbours 0.59-1.91 apart
+      // (dither) and column steps of up to 3.97 (an 8-bit step is 4 codes).
+      expect(high - low, `frame ${k} ramp range`).toBeGreaterThan(30);
+      expect(codes.size, `frame ${k} codes present`).toBeGreaterThanOrEqual(0.9 * (high - low + 1));
+      expect(neighbours / pairs, `frame ${k} mean neighbour step`).toBeLessThanOrEqual(Math.abs(slope) + 0.1);
+      expect(steepest, `frame ${k} steepest column step`).toBeLessThanOrEqual(1.5);
+    }
+  });
+
+  it('zooms past one crop window in chunks, every frame where the static chain puts that pose', async () => {
+    const { renderPlan } = await import('../src/media/plan/render.js');
+    const zoom = render('zoom').plan;
+    const segment = zoom.video.segments[0]!;
+    const withKeys = (cropKeys: RenderPlan['video']['segments'][number]['layers'][number]['cropKeys']): RenderPlan => ({
+      ...zoom,
+      video: { segments: [{ ...segment, layers: segment.layers.map((layer) => ({ ...layer, cropKeys })) }] },
+    });
+    // 1x to 3x across the segment: three crop windows (ratio 1.5 each), with a pan.
+    const end = segment.end;
+    const animated = withKeys([{ t: 0, scale: 1, x: 0, y: 0 }, { t: end, scale: 3, x: 0.6, y: -0.5 }]);
+    const path = join(scratch, 'zoom-3x.mp4');
+    await renderPlan(animated, (ref) => mediaPaths.get(ref.id), { outputPath: path, workDir: join(scratch, 'zoom-3x') });
+    // Frames on both sides of each chunk boundary (chunks start at frames 23 and 58) and the last, each
+    // against the static chain (one key) at that frame's pose: the convention cross-checked frame by frame.
+    for (const k of [10, 22, 23, 57, 58, 89]) {
+      const p = (k / zoom.fps) / end;
+      const still = withKeys([{ t: 0, scale: 1 + 2 * p, x: 0.6 * p, y: -0.5 * p }]);
+      const stillPath = join(scratch, `zoom-3x-${k}.mp4`);
+      await renderPlan(still, (ref) => mediaPaths.get(ref.id), { outputPath: stillPath, workDir: join(scratch, `zoom-3x-${k}`) });
+      const comparison = compare(decodeFrame(path, k, zoom.size, false), decodeFrame(stillPath, k, zoom.size, false));
+      // The still is the static chain, whole-pixel placed; the zoom is sub-pixel, so they differ by up to half a
+      // pixel. Measured (9.0): mean 0.001-0.007, blurred max 0.08-0.165. A wrong window or chunk is far off (0.1+).
+      for (const value of comparison.meanAbs) expect(value, `frame ${k} mean abs`).toBeLessThanOrEqual(0.009);
+      expect(comparison.blurredMax, `frame ${k} blurred max`).toBeLessThanOrEqual(0.2);
+    }
+  }, 120000);
+
   it('draws overlays: EXIF-upright stills, GIF delays clamped, z order', () => {
     close(probeOf('overlays', 0, 'logoWhite').linear, grey(1), 0.03);
     const top = probeOf('overlays', 0, 'logoTop').encoded;
@@ -328,10 +441,80 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     expect([15, 17, 18, 20, 23, 26].map(colour)).toEqual(['r', 'r', 'g', 'b', 'rg', 'r']);
   });
 
+  /** The overlays plan without its emoji sticker (frame 40's background for the emoji checks), rendered once. */
+  let withoutEmoji: Promise<string> | undefined;
+  const overlaysWithoutEmoji = (): Promise<string> => {
+    withoutEmoji ??= (async () => {
+      const { renderPlan } = await import('../src/media/plan/render.js');
+      const plan = render('overlays').plan;
+      const path = join(scratch, 'overlays-no-emoji.mp4');
+      await renderPlan({ ...plan, overlays: plan.overlays.filter((item) => item.kind !== 'emoji') }, (ref) => mediaPaths.get(ref.id),
+        { outputPath: path, workDir: join(scratch, 'overlays-no-emoji') });
+      return path;
+    })();
+    return withoutEmoji;
+  };
+  /** Frame 40 (1.33 s, before the b-roll covers it), the region around the emoji's box. */
+  const EMOJI_REGION = { x0: 100, y0: 210, x1: 260, y1: 390 };
+
+  it('draws the emoji sticker in colour on this host, in the cell Apple Color Emoji draws it in on the phone', async () => {
+    const { rasterizePlanEmoji } = await import('../src/media/emoji.js');
+    const overlay = render('overlays').plan.overlays.find((item) => item.kind === 'emoji')!;
+    const colour = await rasterizePlanEmoji(overlay.emoji!, overlay.box);
+    if (!colour) {
+      // Only a Linux host without Noto Color Emoji or Pillow (CI and the runtime image install both).
+      expect(process.platform).not.toBe('darwin');
+      expect(inCi).toBe(false);
+      return;
+    }
+    expect(render('overlays').notes).toEqual([]);
+    const plan = render('overlays').plan;
+    const background = decodeFrame(await overlaysWithoutEmoji(), 40, plan.size, false);
+    const mine = render('overlays').frames.get(40)!;
+    const theirs = readPng(join(goldens, 'overlays-040.png'));
+    // Ink: pixels the sticker changed (against the render without it). Same box, same size, same place.
+    const ink = (picture: Picture): Set<number> => {
+      const out = new Set<number>();
+      for (let y = EMOJI_REGION.y0; y < EMOJI_REGION.y1; y += 1) {
+        for (let x = EMOJI_REGION.x0; x < EMOJI_REGION.x1; x += 1) {
+          const at3 = (y * plan.size.w + x) * 3;
+          if (Math.max(...[0, 1, 2].map((c) => Math.abs(picture.rgb[at3 + c]! - background.rgb[at3 + c]!))) > 0.1) out.add(y * plan.size.w + x);
+        }
+      }
+      return out;
+    };
+    const a = ink(mine);
+    const b = ink(theirs);
+    const both = [...a].filter((index) => b.has(index)).length;
+    const iou = both / (a.size + b.size - both);
+    const centre = (set: Set<number>): [number, number] => {
+      let sx = 0;
+      let sy = 0;
+      for (const index of set) {
+        sx += index % plan.size.w;
+        sy += Math.floor(index / plan.size.w);
+      }
+      return [sx / set.size, sy / set.size];
+    };
+    const [ax, ay] = centre(a);
+    const [bx, by] = centre(b);
+    // Saturated warm colour where the sticker is (a monochrome glyph has none).
+    let warm = 0;
+    for (const index of a) {
+      const [r, g, bl] = [0, 1, 2].map((c) => mine.rgb[index * 3 + c]!) as Vec;
+      if (r > 0.7 && r - bl > 0.4) warm += 1;
+    }
+    console.log(`emoji sticker vs the native golden (frame 40): ink ${a.size} px vs ${b.size} px, IoU ${iou.toFixed(3)}, centres ${Math.hypot(ax - bx, ay - by).toFixed(2)} px apart, ${warm} warm px`);
+    // Measured: Apple Color Emoji (macOS, ffmpeg 9.0) IoU 0.96, centres 0.6 px apart, ink 0.99x; Noto Color Emoji
+    // (Debian 12, ffmpeg 5.1: a different fire design in the same cell) IoU 0.86, centres 1.4 px apart, ink 1.04x.
+    expect(iou).toBeGreaterThan(0.75);
+    expect(Math.hypot(ax - bx, ay - by)).toBeLessThan(3);
+    expect(a.size / b.size).toBeGreaterThan(0.8);
+    expect(a.size / b.size).toBeLessThan(1.25);
+    expect(warm).toBeGreaterThan(0.3 * a.size);
+  });
+
   it('draws an emoji sticker the host cannot colour in monochrome, with a note, never dropping it', async () => {
-    const notes = render('overlays').notes;
-    if (process.platform === 'darwin') expect(notes).toEqual([]);
-    else expect(notes.some((note) => note.includes('emoji-fire') && note.includes('monochrome'))).toBe(true);
     // The fallback path on every host: no rasterizer, no raster.
     const { renderPlan } = await import('../src/media/plan/render.js');
     const plan = render('overlays').plan;
@@ -339,7 +522,7 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     const result = await renderPlan(plan, (ref) => mediaPaths.get(ref.id),
       { outputPath: path, workDir: join(scratch, 'overlays-mono'), rasterizeEmoji: async () => null });
     expect(result.notes).toEqual([expect.stringContaining('Emoji sticker emoji-fire was drawn in monochrome')]);
-    // Frame 40 (1.33 s, before the b-roll covers it): white glyph pixels inside the emoji's box, none there without it.
+    // White glyph pixels inside the emoji's box, none there without it.
     const whiteIn = (file: string): number => {
       const picture = decodeFrame(file, 40, plan.size, false);
       let count = 0;
@@ -351,10 +534,7 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
       }
       return count;
     };
-    const withoutEmoji = join(scratch, 'overlays-no-emoji.mp4');
-    await renderPlan({ ...plan, overlays: plan.overlays.filter((item) => item.kind !== 'emoji') }, (ref) => mediaPaths.get(ref.id),
-      { outputPath: withoutEmoji, workDir: join(scratch, 'overlays-no-emoji') });
-    expect(whiteIn(path)).toBeGreaterThan(whiteIn(withoutEmoji) + 50);
+    expect(whiteIn(path)).toBeGreaterThan(whiteIn(await overlaysWithoutEmoji()) + 50);
   });
 
   it('keeps one colour pipeline across SDR, HLG and PQ sources (HLG out: reference white at 75% HLG)', () => {
@@ -398,17 +578,17 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     const yellow = (v: Vec): boolean => v[0] > 0.9 && v[1] > 0.65 && v[2] < 0.3;
     const white = (v: Vec): boolean => Math.min(...v) > 0.95;
     expect(Math.max(...sdrToLinear(brightest('caption-karaoke', 10, 'how')))).toBeLessThan(0.7); // before 0.5 s: no caption
-    expect(yellow(brightest('caption-karaoke', 20, 'how'))).toBe(true);
-    expect(white(brightest('caption-karaoke', 20, 'are'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 40, 'are'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 40, 'you'))).toBe(true);
-    expect(white(brightest('caption-karaoke', 40, 'doing'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 75, 'doing'))).toBe(true);
-    expect(yellow(brightest('caption-karaoke', 75, 'today'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 20, 'how'))).toBe(true);
+    expect(white(fillColour('caption-karaoke', 20, 'are'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 40, 'are'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 40, 'you'))).toBe(true);
+    expect(white(fillColour('caption-karaoke', 40, 'doing'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 75, 'doing'))).toBe(true);
+    expect(yellow(fillColour('caption-karaoke', 75, 'today'))).toBe(true);
   });
 
   it('shows caption lanes together and each caption only in its span', () => {
-    const present = (k: number, lane: string): boolean => Math.min(...brightest('captions-multi-lane', k, lane)) > 0.95;
+    const present = (k: number, lane: string): boolean => Math.min(...fillColour('captions-multi-lane', k, lane)) > 0.95;
     expect([10, 30, 50, 80].map((k) => present(k, 'top'))).toEqual([false, true, true, false]);
     expect([10, 30, 50, 80].map((k) => present(k, 'bottom'))).toEqual([true, true, true, true]);
   });
