@@ -14,4 +14,6 @@ Pod::Spec.new do |s|
   s.dependency 'ExpoModulesCore'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'SWIFT_COMPILATION_MODE' => 'wholemodule' }
   s.source_files = '**/*.{h,m,swift}'
+  # OV7: the caption faces, byte-identical to server/fonts (server/test/render-golden.test.ts checks).
+  s.resource_bundles = { 'EditifyEngineFonts' => ['Fonts/*.ttf'] }
 end
