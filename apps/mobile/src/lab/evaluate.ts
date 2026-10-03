@@ -10,7 +10,7 @@
  * fails is "borderline", so thermal or battery noise can't hide behind one good run.
  */
 
-export type SpikeId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10';
+export type SpikeId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S11';
 export type Thermal = 'nominal' | 'fair' | 'serious' | 'critical';
 export type MetricValue = number | boolean | Thermal;
 
@@ -36,7 +36,8 @@ export interface LabRow {
 
 type Op = '<' | '<=' | '>=' | '==';
 interface Check { metric: string; op: Op; value: MetricValue }
-interface Rule { variant: string; checks: Check[] }
+/** `also`: further arms of the same spike that get their own verdict. */
+interface Rule { variant: string; checks: Check[]; also?: Array<{ variant: string; checks: Check[] }> }
 
 const THERMAL_RANK: Record<Thermal, number> = { nominal: 0, fair: 1, serious: 2, critical: 3 };
 const MEM_CEILING_MB = 1200;
@@ -88,6 +89,30 @@ export const THRESHOLDS: Record<SpikeId, Rule> = {
   ] },
   S10: { variant: 'proxy540', checks: [
     { metric: 'realtimeFactor', op: '>=', value: 10 },
+  ] },
+  // P2 analyzers end to end (decode, sync, words, laughter, energy, faces). The M4 Max
+  // ran a 295 s set in about 8 s (37x); a phone at 5x still has a 5-minute set ready in
+  // a minute. Every analyzer must come back ready (the words model installed) and faces
+  // must find a face (a detector failing every frame reads as "no faces"). Sync must
+  // fine-lock and land within 2 ms of a fine-locked reference for a real memo pair
+  // (stand-up pair: 59.424); a self-check (no memo) aligns sample-identical audio, so it
+  // can't pass. Known divergence to investigate, not to absorb here: on the stand-up pair
+  // the same Swift code fine-locks on the simulator (score 4.17) but not on macOS
+  // (3.44, under the 4.0 lock score), where it falls back to the 10 ms coarse cell.
+  S11: { variant: 'pipeline', checks: [
+    { metric: 'readyRealtimeFactor', op: '>=', value: 5 },
+    { metric: 'wordsReady', op: '==', value: true },
+    { metric: 'laughterReady', op: '==', value: true },
+    { metric: 'facesReady', op: '==', value: true },
+    { metric: 'facesFound', op: '==', value: true },
+    { metric: 'syncSelfCheck', op: '==', value: false },
+    { metric: 'syncFineLocked', op: '==', value: true },
+    { metric: 'syncParity', op: '==', value: true },
+    { metric: 'memPeakMB', op: '<', value: MEM_CEILING_MB },
+    { metric: 'thermalEnd', op: '<=', value: 'fair' },
+  ], also: [
+    // 8A: playback holds the heavy lane (within one step of the running part).
+    { variant: 'scheduler', checks: [{ metric: 'pauseHeld', op: '==', value: true }, { metric: 'partsFailed', op: '==', value: 0 }] },
   ] },
 };
 
@@ -153,7 +178,8 @@ export function evaluate(rows: LabRow[]): GroupResult[] {
   const results: GroupResult[] = [];
   for (const groupRows of groups.values()) {
     const { device, spike, variant } = groupRows[0]!;
-    const rule = THRESHOLDS[spike];
+    const spikeRule = THRESHOLDS[spike];
+    const rule = [spikeRule, ...(spikeRule.also ?? [])].find((arm) => arm.variant === variant) ?? spikeRule;
     const ok = groupRows.filter((row) => row.status === 'ok');
     const problems = groupRows
       .filter((row) => row.config !== 'Release')

@@ -2,15 +2,28 @@ import AVFoundation
 import CoreImage
 import Metal
 
+/// A clip's static crop, with the shared `transform` semantics render.ts
+/// implements: `scale` ≥ 1 zooms in, `x`/`y` in -1…1 pan the crop window
+/// (-1 = left/top edge, 0 = centred, 1 = right/bottom edge).
+struct LayerCrop {
+  var scale: CGFloat = 1
+  var x: CGFloat = 0
+  var y: CGFloat = 0
+}
+
 /// One visible layer in a compositor instruction: which composition track to
 /// draw, its pose at the instruction's start and end (linear in between, like
 /// `transform → transformEnd` in the shared schema), and an opacity ramp for dissolves.
+/// `orientation` is the source track's preferredTransform: composition source
+/// frames arrive as stored, so a portrait phone clip is sideways until it is applied.
 struct LabLayer {
   let trackID: CMPersistentTrackID
   let scaleFrom: CGFloat
   let scaleTo: CGFloat
   let opacityFrom: CGFloat
   let opacityTo: CGFloat
+  var crop = LayerCrop()
+  var orientation = CGAffineTransform.identity
 }
 
 final class LabInstruction: NSObject, AVVideoCompositionInstructionProtocol {
@@ -72,14 +85,13 @@ final class LabCompositor: NSObject, AVVideoCompositing {
       var image = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size))
       for layer in instruction.layers {
         guard let source = request.sourceFrame(byTrackID: layer.trackID) else { continue }
-        let frame = CIImage(cvPixelBuffer: source)
-        // Scale-to-cover around the centre, then the animated punch-in on top.
-        let cover = max(size.width / frame.extent.width, size.height / frame.extent.height)
-        let scale = cover * (layer.scaleFrom + (layer.scaleTo - layer.scaleFrom) * t)
-        let scaled = frame.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let placed = scaled.transformed(by: CGAffineTransform(
-          translationX: (size.width - scaled.extent.width) / 2 - scaled.extent.minX,
-          y: (size.height - scaled.extent.height) / 2 - scaled.extent.minY))
+        // Upright first (extent back at the origin), then cover-scale, the
+        // static crop and the animated punch-in on top, placed like render.ts.
+        let oriented = CIImage(cvPixelBuffer: source).oriented(AnalysisMath.orientation(of: layer.orientation))
+        let frame = oriented.transformed(by: CGAffineTransform(translationX: -oriented.extent.minX, y: -oriented.extent.minY))
+        let punch = layer.scaleFrom + (layer.scaleTo - layer.scaleFrom) * t
+        let placed = frame.transformed(by: AnalysisMath.cropPlacement(
+          source: frame.extent.size, render: size, scale: max(1, layer.crop.scale) * punch, x: layer.crop.x, y: layer.crop.y))
         let opacity = layer.opacityFrom + (layer.opacityTo - layer.opacityFrom) * t
         let layerImage = opacity >= 1 ? placed : placed.applyingFilter("CIColorMatrix", parameters: [
           "inputAVector": CIVector(x: 0, y: 0, z: 0, w: opacity),

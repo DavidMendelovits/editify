@@ -24,7 +24,8 @@
       "appleTeamId": "F9R8TK7W79",
       "supportsTablet": true,
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSSpeechRecognitionUsageDescription": "Editify transcribes your clips on this iPhone to make captions and find cuts."
       }
     },
     "android": {
@@ -77,6 +78,14 @@
         "posthog-react-native/expo",
         {
           "uploadNativeSymbols": true
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "26.0"
+          }
         }
       ]
     ],
