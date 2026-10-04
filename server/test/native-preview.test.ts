@@ -121,7 +121,9 @@ beforeAll(async () => {
   if (!swiftAvailable) return;
   dir = mkdtempSync(join(tmpdir(), 'editify-native-preview-'));
   const binary = join(dir, 'preview-harness');
-  const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath', 'PlanPlayer', 'PreviewFiles']
+  // As render-golden.test.ts, plus the player and its preview files.
+  const sources = ['Core/RenderPlan', 'Engine/PlanBuilder', 'Engine/EditifyCompositor', 'Core/CaptionRenderer', 'Core/OverlayGraphics', 'Core/AnalysisMath',
+    'Engine/PlanPlayer', 'Core/PreviewFiles', 'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/Adapters/ConfigurationVideoComposition']
     .map((name) => join(engine, 'ios', `${name}.swift`));
   const harness = ['render-golden/HarnessMedia.swift', 'preview/MediaServer.swift', 'preview/main.swift'].map((name) => join(engine, 'parity', name));
   await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });

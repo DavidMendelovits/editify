@@ -1,7 +1,7 @@
 // Smoke checks for AnalysisMath.swift (plan 7A: the macOS job runs the analyzer
 // smoke tests next to sync parity). Not part of the app. Built and run by
 // server/test/analyzer-math.test.ts:
-//   swiftc ../../ios/AnalysisMath.swift main.swift
+//   swiftc ../../ios/Core/AnalysisMath.swift main.swift
 // Prints "ok" and exits 0, or lists every failed check and exits 1.
 import CoreGraphics
 import Foundation

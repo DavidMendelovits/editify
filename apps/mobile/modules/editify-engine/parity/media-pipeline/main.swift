@@ -2,7 +2,7 @@
 // fingerprint (MediaFingerprint.swift) on macOS (plan P1: 10B + OV9, 3A + OV2). Not part
 // of the app. Built and run by server/test/media-pipeline.test.ts, which makes the clips
 // with ffmpeg first:
-//   swiftc -target <arch>-apple-macos15.0 ../../ios/{AnalysisMath,AudioDecode,AudioSync,MediaFingerprint,MediaStore,ProxyPipeline}.swift main.swift
+//   swiftc -target <arch>-apple-macos15.0 ../../ios/Core/{AnalysisMath,AnalysisSupport,AudioSync,MediaStore}.swift ../../ios/Engine/{AudioDecode,MediaFingerprint,ProxyPipeline}.swift main.swift
 //   usage: media-pipeline <clip dir> <scratch dir>
 //     hdr.mov        3840x2160 HEVC Main10, HLG / BT.2020 tags, 50 fps, PCM audio
 //     sdr-big.mp4    2560x1440 H.264 BT.709, 25 fps, AAC audio

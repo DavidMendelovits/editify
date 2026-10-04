@@ -15,49 +15,11 @@ import Vision
 ///                                 │                                     └─ words (SpeechAnalyzer, its preferred format)
 ///                                 └─ AVAssetImageGenerator 2 fps ─▶ Vision ─▶ faces
 ///
-/// The shared pieces (PCMChunks, the gate and progress types, AnalysisQueue) live in AudioDecode.swift.
+/// The shared pieces: PCMChunks in AudioDecode.swift; the gate and progress types, AnalysisQueue,
+/// AnalyzerVersion, PartResult and the pure analyzers (sync, energy) in Core.
 
-/// Bumped whenever an analyzer's output can change, so a stored part from an
-/// older analyzer reads as stale (decision 6A).
-enum AnalyzerVersion {
-  // -2: PCMChunks reads the first *enabled* audio track (it read the first track), which
-  // can change the input of every audio analyzer on files with a disabled first track.
-  static let decode = "avassetreader-8k-2"
-  static let sync = "audiosync-vdsp-2"
-  static let words = "speechanalyzer-ios26-2"
-  static let laughter = "soundanalysis-v1-2"
-  static let energy = "energy-rms-50ms-2"
-  static let faces = "vision-facerect-1"
-  /// Not an analyzer: the 1080p preview proxy (ProxyPipeline), versioned the same way.
-  static let proxy = "writer-1080-1"
-
-  static let all: [String: String] = [
-    "decode": decode, "sync": sync, "words": words, "laughter": laughter, "energy": energy, "faces": faces, "proxy": proxy,
-  ]
-}
-
-struct PartResult {
-  let status: String
-  let analyzerVersion: String
-  var data: [String: Any]?
-  var error: String?
-
-  static func ready(_ version: String, _ data: [String: Any]) -> PartResult { PartResult(status: "ready", analyzerVersion: version, data: data) }
-  static func failed(_ version: String, _ error: Error) -> PartResult { PartResult(status: "failed", analyzerVersion: version, error: error.localizedDescription) }
-  static func failed(_ version: String, _ message: String) -> PartResult { PartResult(status: "failed", analyzerVersion: version, error: message) }
-  static func unavailable(_ version: String, _ reason: String) -> PartResult { PartResult(status: "unavailable", analyzerVersion: version, error: reason) }
-
-  var dictionary: [String: Any] {
-    var out: [String: Any] = ["status": status, "analyzerVersion": analyzerVersion]
-    if let data { out["data"] = data }
-    if let error { out["error"] = error }
-    return out
-  }
-}
-
-
-enum Analyzers {
-  // MARK: - Decode, sync, energy
+extension Analyzers {
+  // MARK: - Decode
 
   /// Whole recording as mono Float32 at `rate` (8 kHz for sync and energy).
   static func decodeMono(_ asset: AVAsset, rate: Double = Double(AudioSync.sampleRate), progress: AnalyzerProgress? = nil) async throws -> [Float] {
@@ -80,34 +42,6 @@ enum Analyzers {
     } onCancel: {
       stop.set()
     }
-  }
-
-  /// One pair's sync (OV6: a property of the pair). Both sides decoded at 8 kHz.
-  static func sync(video: [Float], memo: [Float]) -> PartResult {
-    do {
-      let m = try AudioSync.measure(video: video, memo: memo)
-      var measurement: [String: Any] = [
-        "lag": m.lag, "anchor": m.anchor, "rate": m.rate,
-        // Infinity (no runner-up peak) has no JSON form; the parity runner uses the same stand-in.
-        "coarseRatio": m.coarseRatio.isFinite ? m.coarseRatio : 1e308,
-        "fineScore": m.fineScore, "confident": m.confident, "overlapSec": m.overlapSec, "fineLocked": m.fineLocked,
-        "windows": m.windows.map { ["at": $0.at, "lag": $0.lag, "score": $0.score] },
-      ]
-      if let drift = m.driftSec { measurement["driftSec"] = drift }
-      return .ready(AnalyzerVersion.sync, measurement)
-    } catch {
-      return .failed(AnalyzerVersion.sync, error)
-    }
-  }
-
-  /// energyAnalysisSchema data plus the onset peaks cut_to_beats lands on.
-  static func energy(samples: [Float], rate: Int = AudioSync.sampleRate) -> PartResult {
-    let rmsDb = AnalysisMath.energy(samples, sampleRate: rate)
-    return .ready(AnalyzerVersion.energy, [
-      "cellSeconds": AnalysisMath.energyCellSeconds,
-      "rmsDb": rmsDb,
-      "onsetPeaks": AnalysisMath.onsetPeaks(rmsDb, cellSeconds: AnalysisMath.energyCellSeconds),
-    ])
   }
 
   // MARK: - Laughter (SoundAnalysis)
@@ -450,29 +384,5 @@ final class LaughterObserver: NSObject, SNResultsObserving, @unchecked Sendable 
 
   func request(_ request: SNRequest, didFailWithError error: Error) {
     lock.withLock { self.error = error.localizedDescription }
-  }
-}
-
-/// Temp files the analyzers hand to JS (decoded PCM, Gemini proxies). They live until
-/// JS deletes them or the next launch sweeps them (`sweep()` from the module's OnCreate).
-enum TempFiles {
-  static let pcmPrefix = "pcm-"
-  static let proxyPrefix = "gemini-proxy-"
-  /// On-device exports (ExportCenter): a finished file stays for the share sheet until next launch.
-  static let exportPrefix = "editify-export-"
-  /// The native preview's stills (Photos originals, server copies): swept on next launch.
-  static let previewPrefix = "editify-preview-"
-
-  static func url(prefix: String, extension ext: String) -> URL {
-    FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)\(UUID().uuidString).\(ext)")
-  }
-
-  static func sweep() {
-    let directory = FileManager.default.temporaryDirectory
-    let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-    for name in names where name.hasPrefix(pcmPrefix) || name.hasPrefix(proxyPrefix) || name.hasPrefix(exportPrefix)
-      || name.hasPrefix(previewPrefix) {
-      try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
-    }
   }
 }

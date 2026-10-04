@@ -93,7 +93,10 @@ beforeAll(async () => {
   if (!swiftAvailable) return;
   dir = mkdtempSync(join(tmpdir(), 'editify-render-golden-'));
   const binary = join(dir, 'render-golden');
-  const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath']
+  // Core and Engine sources compiled as one module (no `import EditifyCore`): the renderer plus
+  // the VideoComposition port and its adapter, which PlanBuilder builds through.
+  const sources = ['Core/RenderPlan', 'Engine/PlanBuilder', 'Engine/EditifyCompositor', 'Core/CaptionRenderer', 'Core/OverlayGraphics', 'Core/AnalysisMath',
+    'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/Adapters/ConfigurationVideoComposition']
     .map((name) => join(engine, 'ios', `${name}.swift`));
   const harness = ['HarnessMedia.swift', 'main.swift'].map((name) => join(engine, 'parity/render-golden', name));
   await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
@@ -140,7 +143,7 @@ describe('render goldens: harness availability', () => {
   });
 
   it('bundles the same caption font file as the server (OV7)', () => {
-    expect(readFileSync(join(engine, 'ios/Fonts/Montserrat-Bold.ttf')).equals(readFileSync(join(root, 'server/fonts/Montserrat-Bold.ttf')))).toBe(true);
+    expect(readFileSync(join(engine, 'ios/Core/Fonts/Montserrat-Bold.ttf')).equals(readFileSync(join(root, 'server/fonts/Montserrat-Bold.ttf')))).toBe(true);
   });
 
   it('harness-only plans are valid RenderPlans', () => {

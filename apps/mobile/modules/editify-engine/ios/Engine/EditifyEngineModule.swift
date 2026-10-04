@@ -11,7 +11,10 @@ import ExpoModulesCore
 ///     (ExportCenter, PlanExporter) and reports through `exportState` events.
 ///   - native preview (plan P5): the EditifyPlayerView view (PlanPlayer), driven
 ///     through its ref.
+///
+/// Analyzer calls reach media through EngineAdapters.current (the composition root).
 public class EditifyEngineModule: Module {
+  private let adapters = EngineAdapters.current
   /// This instance's JS context (see EngineContext): set before any JS call can arrive.
   private var contextEpoch = 0
   /// 0 means OnCreate hasn't run: send no epoch rather than one older than every context.
@@ -73,8 +76,8 @@ public class EditifyEngineModule: Module {
     /// a temp file (swept on next launch); JS gets the file and its length.
     AsyncFunction("decodeMono") { (ref: String, sampleRate: Double?) async throws -> [String: Any] in
       let rate = try AnalyzerLimits.sampleRate(sampleRate ?? Double(AudioSync.sampleRate))
-      let asset = try await AssetSource.load(ref, onDownload: self.progress(part: "decode", ref: ref, phase: "download"))
-      let samples = try await Analyzers.decodeMono(asset, rate: rate, progress: self.progress(part: "decode", ref: ref))
+      let asset = try await self.adapters.mediaSource.load(ref, allowNetwork: true, onDownload: self.progress(part: "decode", ref: ref, phase: "download"))
+      let samples = try await self.adapters.audioDecoder.decodeMono(asset, rate: rate, progress: self.progress(part: "decode", ref: ref))
       let url = TempFiles.url(prefix: TempFiles.pcmPrefix, extension: "f32")
       try samples.withUnsafeBufferPointer { try Data(buffer: $0).write(to: url) }
       return ["uri": url.absoluteString, "sampleRate": rate, "sampleCount": samples.count, "seconds": Double(samples.count) / rate]
@@ -88,14 +91,15 @@ public class EditifyEngineModule: Module {
     AsyncFunction("words") { (ref: String, locale: String?, allowModelDownload: Bool?) async -> [String: Any] in
       let progress = self.progress(part: "words", ref: ref)
       return await self.part(ref, "words", AnalyzerVersion.words) { asset in
-        await Analyzers.words(asset, locale: locale.map(Locale.init(identifier:)) ?? .current, allowModelDownload: allowModelDownload ?? true, progress: progress)
+        await self.adapters.transcriber.words(asset, locale: locale.map(Locale.init(identifier:)) ?? .current,
+                                              allowModelDownload: allowModelDownload ?? true, progress: progress, gate: nil)
       }
     }
 
     AsyncFunction("laughter") { (ref: String, minConfidence: Double?) async -> [String: Any] in
       let progress = self.progress(part: "laughter", ref: ref)
       return await self.part(ref, "laughter", AnalyzerVersion.laughter) { asset in
-        await Analyzers.laughter(asset, minConfidence: minConfidence ?? 0.5, progress: progress)
+        await self.adapters.soundClassifier.laughter(asset, minConfidence: minConfidence ?? 0.5, progress: progress)
       }
     }
 
@@ -104,7 +108,7 @@ public class EditifyEngineModule: Module {
       let progress = self.progress(part: "energy", ref: ref)
       return await self.part(ref, "energy", AnalyzerVersion.energy) { asset in
         do {
-          return Analyzers.energy(samples: try await Analyzers.decodeMono(asset, progress: progress))
+          return Analyzers.energy(samples: try await self.adapters.audioDecoder.decodeMono(asset, rate: Double(AudioSync.sampleRate), progress: progress))
         } catch is NoAudio {
           return .unavailable(AnalyzerVersion.energy, NoAudio().localizedDescription)
         } catch {
@@ -121,7 +125,7 @@ public class EditifyEngineModule: Module {
     AsyncFunction("faces") { (ref: String, fps: Double?) async -> [String: Any] in
       let progress = self.progress(part: "faces", ref: ref)
       return await self.part(ref, "faces", AnalyzerVersion.faces) { asset in
-        await Analyzers.faces(asset, fps: fps ?? 2, progress: progress)
+        await self.adapters.faceDetector.faces(asset, fps: fps ?? 2, progress: progress, gate: nil)
       }
     }
 
@@ -129,7 +133,7 @@ public class EditifyEngineModule: Module {
     /// style analysis: {uri, width, height, seconds, bytes, exportMs}, the size as written.
     /// Uploading it is the caller's job; the file is swept on next launch.
     AsyncFunction("makeProxy") { (ref: String, maxHeight: Double?) async throws -> [String: Any] in
-      let asset = try await AssetSource.load(ref, onDownload: self.progress(part: "proxy", ref: ref, phase: "download"))
+      let asset = try await self.adapters.mediaSource.load(ref, allowNetwork: true, onDownload: self.progress(part: "proxy", ref: ref, phase: "download"))
       return try await Analyzers.makeProxy(asset, maxHeight: maxHeight ?? 360)
     }
 
@@ -362,9 +366,9 @@ public class EditifyEngineModule: Module {
   /// unreachable source to `unavailable`, then runs `body`.
   private func part(_ ref: String, _ part: String, _ version: String, _ body: (AVAsset) async -> PartResult) async -> [String: Any] {
     do {
-      let asset = try await AssetSource.load(ref, onDownload: progress(part: part, ref: ref, phase: "download"))
+      let asset = try await adapters.mediaSource.load(ref, allowNetwork: true, onDownload: progress(part: part, ref: ref, phase: "download"))
       return await body(asset).dictionary
-    } catch where AssetSource.isUnavailable(error) {
+    } catch where adapters.mediaSource.isUnavailable(error) {
       return PartResult.unavailable(version, error.localizedDescription).dictionary
     } catch {
       return PartResult.failed(version, error).dictionary

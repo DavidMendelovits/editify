@@ -6,17 +6,19 @@ import Foundation
 /// Temp stills the preview wrote (Photos originals, server copies), deleted once no plan uses
 /// them. `removeAll` (teardown) is final: a still that arrives after it (a download still
 /// running at teardown) is deleted at once instead of being kept by no one.
-final class PreviewTempFiles: @unchecked Sendable {
-  struct Closed: Error, LocalizedError {
-    var errorDescription: String? { "the preview was closed" }
+public final class PreviewTempFiles: @unchecked Sendable {
+  public struct Closed: Error, LocalizedError {
+    public var errorDescription: String? { "the preview was closed" }
   }
 
   private let lock = NSLock()
   private var files = Set<URL>()
   private var closed = false
 
+  public init() {}
+
   /// Takes ownership of a temp file. After `removeAll` the file is deleted and this throws.
-  func add(_ url: URL) throws {
+  public func add(_ url: URL) throws {
     let kept = lock.withLock { () -> Bool in
       guard !closed else { return false }
       files.insert(url.standardizedFileURL)
@@ -29,7 +31,7 @@ final class PreviewTempFiles: @unchecked Sendable {
   }
 
   /// Deletes every file not in `keep`.
-  func retain(only keep: Set<URL>) {
+  public func retain(only keep: Set<URL>) {
     let kept = Set(keep.map(\.standardizedFileURL))
     let gone = lock.withLock { () -> Set<URL> in
       let gone = files.subtracting(kept)
@@ -40,22 +42,22 @@ final class PreviewTempFiles: @unchecked Sendable {
   }
 
   /// Deletes every file, and every file added from now on.
-  func removeAll() {
+  public func removeAll() {
     lock.withLock { closed = true }
     retain(only: [])
   }
 
-  var count: Int { lock.withLock { files.count } }
+  public var count: Int { lock.withLock { files.count } }
 }
 
 /// One download on its own ephemeral session: refused when the server announces more than
 /// `cap` bytes or sends more, and bounded by `timeout` for the whole transfer. The start,
 /// a cancellation and every delegate callback run on the session's serial queue, so a
 /// cancellation that lands before the start never creates a task on an invalidated session.
-final class CappedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-  struct Refused: Error, LocalizedError {
-    let message: String
-    var errorDescription: String? { message }
+public final class CappedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+  public struct Refused: Error, LocalizedError {
+    public let message: String
+    public var errorDescription: String? { message }
   }
 
   private let cap: Int64
@@ -72,7 +74,7 @@ final class CappedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendabl
     self.target = target
   }
 
-  static func run(_ url: URL, to target: URL, cap: Int64, timeout: TimeInterval) async throws {
+  public static func run(_ url: URL, to target: URL, cap: Int64, timeout: TimeInterval) async throws {
     try Task.checkCancellation()
     let configuration = URLSessionConfiguration.ephemeral
     configuration.timeoutIntervalForRequest = timeout
@@ -102,7 +104,7 @@ final class CappedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendabl
     }
   }
 
-  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+  public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                   completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
     guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
       failure = Refused(message: "the server copy of a still is unavailable")
@@ -120,7 +122,7 @@ final class CappedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendabl
     completionHandler(.allow)
   }
 
-  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+  public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
     written += Int64(data.count)
     guard written <= cap else {
       failure = Refused(message: "a still is over \(cap >> 20) MB")
@@ -133,7 +135,7 @@ final class CappedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendabl
     }
   }
 
-  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+  public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
     try? handle?.close()
     handle = nil
     let continuation = self.continuation

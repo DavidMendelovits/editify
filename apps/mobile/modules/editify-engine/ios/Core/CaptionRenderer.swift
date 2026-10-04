@@ -8,21 +8,21 @@ import Foundation
 /// server/fonts so libass and Core Text read the same tables). Each face is
 /// created straight from its file data, never looked up by name, so a missing
 /// file fails instead of silently drawing a system font.
-final class PlanFonts: @unchecked Sendable {
-  struct Missing: Error, LocalizedError {
-    let face: String
-    let reason: String
-    var errorDescription: String? { "Font \(face) is not available: \(reason)" }
+public final class PlanFonts: @unchecked Sendable {
+  public struct Missing: Error, LocalizedError {
+    public let face: String
+    public let reason: String
+    public var errorDescription: String? { "Font \(face) is not available: \(reason)" }
   }
 
   /// In em: the `hhea` ascender and descender (descender as a positive
   /// distance), and the OS/2 winAscent / winDescent cell, which is how far
   /// glyphs actually reach (Montserrat's accents go to 1.109 em, above hhea's 0.968).
-  struct VerticalMetrics: Equatable {
-    let ascender: CGFloat
-    let descender: CGFloat
-    let winAscent: CGFloat
-    let winDescent: CGFloat
+  public struct VerticalMetrics: Equatable {
+    public let ascender: CGFloat
+    public let descender: CGFloat
+    public let winAscent: CGFloat
+    public let winDescent: CGFloat
   }
 
   private let locate: (PlanFontFace) -> URL?
@@ -31,15 +31,15 @@ final class PlanFonts: @unchecked Sendable {
   private let lock = NSLock()
 
   /// `locate` maps a face to its font file; the default looks in the pod's resource bundle.
-  init(locate: @escaping (PlanFontFace) -> URL? = PlanFonts.bundledFile) {
+  public init(locate: @escaping (PlanFontFace) -> URL? = PlanFonts.bundledFile) {
     self.locate = locate
   }
 
-  static let shared = PlanFonts()
+  public static let shared = PlanFonts()
 
   /// `<face>.ttf` in the EditifyEngineFonts resource bundle (CocoaPods copies it
   /// next to the app's main bundle for a static framework), or in a bundle root.
-  static func bundledFile(_ face: PlanFontFace) -> URL? {
+  public static func bundledFile(_ face: PlanFontFace) -> URL? {
     let candidates = [Bundle.main, Bundle(for: PlanFonts.self)]
     for bundle in candidates {
       if let fonts = bundle.url(forResource: "EditifyEngineFonts", withExtension: "bundle"),
@@ -51,11 +51,11 @@ final class PlanFonts: @unchecked Sendable {
     return nil
   }
 
-  func font(_ face: PlanFontFace, size: CGFloat) throws -> CTFont {
+  public func font(_ face: PlanFontFace, size: CGFloat) throws -> CTFont {
     CTFontCreateWithFontDescriptor(try descriptor(face), size, nil)
   }
 
-  func verticalMetrics(_ face: PlanFontFace) throws -> VerticalMetrics {
+  public func verticalMetrics(_ face: PlanFontFace) throws -> VerticalMetrics {
     _ = try descriptor(face)
     lock.lock(); defer { lock.unlock() }
     return metrics[face]!
@@ -92,23 +92,23 @@ final class PlanFonts: @unchecked Sendable {
 /// bundled face) become one CGPath so fill, round-joined stroke and shadow
 /// share geometry; glyphs Core Text falls back to (colour emoji, which have no
 /// outlines) are drawn as runs.
-enum TextPainter {
+public enum TextPainter {
   /// One positioned piece of text, in bitmap coordinates (y up, origin bottom-left).
-  struct Piece {
-    let line: CTLine
-    let pen: CGPoint
+  public struct Piece {
+    public let line: CTLine
+    public let pen: CGPoint
   }
 
   /// Attributes for plan text: the given font, kerning on (Core Text's default),
   /// ligatures off (kCTLigatureAttributeName 0 keeps only required ones).
-  static func line(_ text: String, font: CTFont, ligatures: Bool = false) -> CTLine {
+  public static func line(_ text: String, font: CTFont, ligatures: Bool = false) -> CTLine {
     var attributes: [NSAttributedString.Key: Any] = [kCTFontAttributeName as NSAttributedString.Key: font]
     if !ligatures { attributes[kCTLigatureAttributeName as NSAttributedString.Key] = 0 }
     return CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
   }
 
   /// The outline path of every glyph whose font has outlines, and the runs that do not.
-  static func outline(_ pieces: [Piece]) -> (path: CGPath, bitmapRuns: [(CTRun, CGPoint)]) {
+  public static func outline(_ pieces: [Piece]) -> (path: CGPath, bitmapRuns: [(CTRun, CGPoint)]) {
     let path = CGMutablePath()
     var bitmapRuns: [(CTRun, CGPoint)] = []
     for piece in pieces {
@@ -135,7 +135,7 @@ enum TextPainter {
     return (path, bitmapRuns)
   }
 
-  static func drawRuns(_ runs: [(CTRun, CGPoint)], in context: CGContext) {
+  public static func drawRuns(_ runs: [(CTRun, CGPoint)], in context: CGContext) {
     for (run, pen) in runs {
       context.textPosition = pen
       CTRunDraw(run, context, CFRange(location: 0, length: 0))
@@ -144,7 +144,7 @@ enum TextPainter {
 
   /// An sRGB, premultiplied RGBA8 canvas (graphics are sRGB-encoded; the
   /// compositor converts them to linear BT.2020 at reference white).
-  static func canvas(width: Int, height: Int) -> CGContext? {
+  public static func canvas(width: Int, height: Int) -> CGContext? {
     guard width > 0, height > 0 else { return nil }
     let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -158,18 +158,18 @@ enum TextPainter {
 }
 
 /// A byte-budgeted LRU (caption bitmaps, overlay bitmaps).
-final class ByteLRU<Key: Hashable, Value>: @unchecked Sendable {
+public final class ByteLRU<Key: Hashable, Value>: @unchecked Sendable {
   private var entries: [Key: (value: Value, bytes: Int, tick: UInt64)] = [:]
   private var tick: UInt64 = 0
-  private(set) var bytes = 0
-  let budget: Int
+  public private(set) var bytes = 0
+  public let budget: Int
   private let lock = NSLock()
 
-  init(budget: Int) { self.budget = budget }
+  public init(budget: Int) { self.budget = budget }
 
-  var count: Int { lock.lock(); defer { lock.unlock() }; return entries.count }
+  public var count: Int { lock.lock(); defer { lock.unlock() }; return entries.count }
 
-  func value(for key: Key) -> Value? {
+  public func value(for key: Key) -> Value? {
     lock.lock(); defer { lock.unlock() }
     guard let entry = entries[key] else { return nil }
     tick += 1
@@ -177,7 +177,7 @@ final class ByteLRU<Key: Hashable, Value>: @unchecked Sendable {
     return entry.value
   }
 
-  func insert(_ value: Value, bytes cost: Int, for key: Key) {
+  public func insert(_ value: Value, bytes cost: Int, for key: Key) {
     lock.lock(); defer { lock.unlock() }
     if let old = entries[key] { bytes -= old.bytes }
     tick += 1
@@ -191,7 +191,7 @@ final class ByteLRU<Key: Hashable, Value>: @unchecked Sendable {
     }
   }
 
-  func removeAll(where shouldRemove: (Key) -> Bool) {
+  public func removeAll(where shouldRemove: (Key) -> Bool) {
     lock.lock(); defer { lock.unlock() }
     for (key, entry) in entries where shouldRemove(key) {
       bytes -= entry.bytes
@@ -199,7 +199,7 @@ final class ByteLRU<Key: Hashable, Value>: @unchecked Sendable {
     }
   }
 
-    func removeAll() {
+    public func removeAll() {
     lock.lock(); defer { lock.unlock() }
     entries.removeAll()
     bytes = 0
@@ -210,36 +210,36 @@ final class ByteLRU<Key: Hashable, Value>: @unchecked Sendable {
 /// the frame. Draws each plan line at its pen x and baseline y, never
 /// re-wrapping or re-centring; karaoke words switch to the emphasis colour at
 /// their absolute start time (an instant switch, as ASS `\k`).
-final class CaptionRenderer: @unchecked Sendable {
-  struct Key: Hashable {
-    let id: String
-    let rev: String
-    let sung: Int
+public final class CaptionRenderer: @unchecked Sendable {
+  public struct Key: Hashable {
+    public let id: String
+    public let rev: String
+    public let sung: Int
     /// Render scale in thousandths (preview draws at view size).
-    let scale: Int
+    public let scale: Int
   }
 
   /// A finished caption bitmap and where its top-left sits in output pixels (at scale).
-  struct Bitmap {
-    let image: CGImage
+  public struct Bitmap {
+    public let image: CGImage
     /// Made once per cache entry and reused every frame the state shows.
-    let ciImage: CIImage
-    let originX: CGFloat
-    let originY: CGFloat
+    public let ciImage: CIImage
+    public let originX: CGFloat
+    public let originY: CGFloat
   }
 
-  let fonts: PlanFonts
-  let cache: ByteLRU<Key, Bitmap>
+  public let fonts: PlanFonts
+  public let cache: ByteLRU<Key, Bitmap>
 
   /// 64 MB holds a few hundred 1080p karaoke states; a 190-word caption at 4K
   /// evicts its oldest states rather than growing without bound.
-  init(fonts: PlanFonts = .shared, budgetBytes: Int = 64 << 20) {
+  public init(fonts: PlanFonts = .shared, budgetBytes: Int = 64 << 20) {
     self.fonts = fonts
     self.cache = ByteLRU(budget: budgetBytes)
   }
 
   /// Words sung by time t: every word whose start is at or before t (across all lines).
-  static func sungCount(_ caption: RenderPlan.Caption, at t: Double) -> Int {
+  public static func sungCount(_ caption: RenderPlan.Caption, at t: Double) -> Int {
     var count = 0
     for line in caption.lines {
       for word in line.words ?? [] where word.s <= t + RenderPlan.epsilon { count += 1 }
@@ -248,7 +248,7 @@ final class CaptionRenderer: @unchecked Sendable {
   }
 
   /// The caption as drawn at timeline t, placed in output pixels (top-left origin) at `scale`.
-  func bitmap(_ caption: RenderPlan.Caption, at t: Double, scale: CGFloat) throws -> Bitmap? {
+  public func bitmap(_ caption: RenderPlan.Caption, at t: Double, scale: CGFloat) throws -> Bitmap? {
     let key = Key(id: caption.id, rev: caption.rev, sung: Self.sungCount(caption, at: t), scale: Int((scale * 1000).rounded()))
     if let cached = cache.value(for: key) { return cached }
     guard let drawn = try draw(caption, sung: key.sung, scale: scale) else { return nil }
@@ -257,7 +257,7 @@ final class CaptionRenderer: @unchecked Sendable {
   }
 
   // swiftlint:disable:next function_body_length
-  func draw(_ caption: RenderPlan.Caption, sung: Int, scale: CGFloat) throws -> Bitmap? {
+  public func draw(_ caption: RenderPlan.Caption, sung: Int, scale: CGFloat) throws -> Bitmap? {
     let metrics = try fonts.verticalMetrics(caption.font)
     let size = CGFloat(caption.sizePx)
     let pad = CGFloat(caption.box?.padPx ?? 0)

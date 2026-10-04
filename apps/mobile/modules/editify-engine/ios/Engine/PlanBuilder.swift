@@ -45,6 +45,8 @@ struct PlanBuildOptions {
   var captionCacheBytes = 64 << 20
   /// A player's emoji and callout bitmaps, reused across updates (nil: drawn for this build).
   var graphics: OverlayBitmapCache?
+  /// The VideoComposition port's adapter (EngineAdapters hands it to export and playback).
+  var videoComposition: PlanVideoComposition = ConfigurationVideoComposition()
 }
 
 /// Sources a plan uses, loaded once. `PlanBuilder.prepare(_:resolver:reusing:)`
@@ -509,14 +511,10 @@ enum PlanBuilder {
     }
 
     let tags = PlanColorPipeline.tags(plan.color)
-    let videoComposition = AVVideoComposition(configuration: AVVideoComposition.Configuration(
-      colorPrimaries: tags.primaries,
-      colorTransferFunction: tags.transfer,
-      colorYCbCrMatrix: tags.matrix,
-      customVideoCompositorClass: EditifyCompositor.self,
-      frameDuration: CMTime(value: 1, timescale: fps),
-      instructions: instructions,
-      renderSize: renderSize))
+    let videoComposition = options.videoComposition.make(
+      renderSize: renderSize, frameDuration: CMTime(value: 1, timescale: fps),
+      colorPrimaries: tags.primaries, colorTransferFunction: tags.transfer, colorYCbCrMatrix: tags.matrix,
+      instructions: instructions)
 
     // One input per audio track: the ramps of every entry on it.
     var inputs: [CMPersistentTrackID: AVMutableAudioMixInputParameters] = [:]

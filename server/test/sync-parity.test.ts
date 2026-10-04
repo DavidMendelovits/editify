@@ -25,7 +25,7 @@ beforeAll(() => {
   if (!hasSwift) return;
   dir = mkdtempSync(join(tmpdir(), 'editify-parity-'));
   binary = join(dir, 'sync-parity');
-  execFileSync('xcrun', ['swiftc', '-O', join(engine, 'ios/AudioSync.swift'), join(engine, 'parity/main.swift'), '-o', binary]);
+  execFileSync('xcrun', ['swiftc', '-O', join(engine, 'ios/Core/AudioSync.swift'), join(engine, 'parity/main.swift'), '-o', binary]);
 }, 120000);
 
 afterAll(() => {

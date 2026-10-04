@@ -2,17 +2,17 @@ import Foundation
 
 /// Documents/lab/results.jsonl (one row per run, the evaluator's input) plus the
 /// inflight.json start marker that lets a killed run be detected on next launch.
-enum LabStore {
-  static let directory: URL = {
+public enum LabStore {
+  public static let directory: URL = {
     let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("lab", isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
   }()
-  static let resultsURL = directory.appendingPathComponent("results.jsonl")
+  public static let resultsURL = directory.appendingPathComponent("results.jsonl")
   private static let inflightURL = directory.appendingPathComponent("inflight.json")
   private static let lock = NSLock()
 
-  static func append(_ row: [String: Any]) {
+  public static func append(_ row: [String: Any]) {
     guard var data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) else { return }
     data.append(0x0A)
     lock.lock()
@@ -27,28 +27,28 @@ enum LabStore {
   }
 
   /// The row to record if this run never finishes: already shaped as `killed`.
-  static func writeInflight(_ row: [String: Any]) {
+  public static func writeInflight(_ row: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: row) else { return }
     try? data.write(to: inflightURL, options: .atomic)
   }
 
-  static func clearInflight() {
+  public static func clearInflight() {
     try? FileManager.default.removeItem(at: inflightURL)
   }
 
   /// Called once at module start: a marker left behind means the previous run was terminated.
-  static func recoverKilledRun() {
+  public static func recoverKilledRun() {
     guard let data = try? Data(contentsOf: inflightURL),
           let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
     append(row)
     clearInflight()
   }
 
-  static func readAll() -> String {
+  public static func readAll() -> String {
     (try? String(contentsOf: resultsURL, encoding: .utf8)) ?? ""
   }
 
-  static func clear() {
+  public static func clear() {
     try? FileManager.default.removeItem(at: resultsURL)
   }
 }

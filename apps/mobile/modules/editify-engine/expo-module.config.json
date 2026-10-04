@@ -1,6 +1,7 @@
 {
   "platforms": ["apple"],
   "apple": {
+    "podspecPath": ["ios/EditifyCore.podspec", "ios/EditifyEngine.podspec"],
     "modules": ["EditifyEngineModule"]
   }
 }
