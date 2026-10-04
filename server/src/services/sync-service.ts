@@ -6,6 +6,7 @@ import {
   type SyncAudioResult,
 } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
+import { timeMediaJob } from './media-jobs.js';
 import { SyncError, measureSyncFiles, type SyncMeasurement } from '../media/sync.js';
 
 /** Measurements kept in memory: a measure-then-apply round trip must not decode twice. */
@@ -49,7 +50,7 @@ export class SyncService {
     if (!video || !memo) return { ok: false, error: 'That clip has no media' };
     let measurement: SyncMeasurement;
     try {
-      measurement = await this.cachedMeasure(video.id, video.originalPath, memo.id, memo.originalPath);
+      measurement = await this.cachedMeasure(video.id, video.originalPath, memo.id, memo.originalPath, project.id);
     } catch (error) {
       if (error instanceof SyncError) return { ok: false, error: error.message };
       throw error;
@@ -57,13 +58,18 @@ export class SyncService {
     return planSyncOps(project, resolved.pair, measurement);
   }
 
-  private async cachedMeasure(videoId: string, videoPath: string, memoId: string, memoPath: string): Promise<SyncMeasurement> {
+  private async cachedMeasure(
+    videoId: string, videoPath: string, memoId: string, memoPath: string, projectId: string,
+  ): Promise<SyncMeasurement> {
     const key = `${videoId}\u0000${memoId}`;
     const cached = this.measurements.get(key);
     if (cached) return await cached;
     if (this.waiting >= MAX_WAITING) throw new SyncError('Sync is busy with other recordings. Try again in a moment.');
     this.waiting += 1;
-    const pending = this.queue.then(() => this.measure(videoPath, memoPath))
+    const queuedAt = performance.now();
+    // Logged as job 'sync' for the memo; `waitMs` is the time behind earlier measurements.
+    const pending = this.queue.then(() => timeMediaJob('sync', { projectId, assetId: memoId }, () =>
+      this.measure(videoPath, memoPath), performance.now() - queuedAt))
       .finally(() => { this.waiting -= 1; });
     this.queue = pending.catch(() => undefined);
     this.measurements.set(key, pending);
