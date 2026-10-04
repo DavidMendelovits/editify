@@ -103,16 +103,23 @@ async function writeContactSheet(path: string, duration: number, project: Projec
   return sheet;
 }
 
+/** What a plan render (RENDER_PLAN) already did: its loudness gain, and what it could not draw. */
+export interface PlannedQa {
+  normalized: RenderQa['normalized'];
+  notes: string[];
+}
+
 export async function runRenderQa(
   outputPath: string,
   project: Project,
   assets: Pick<AssetStore, 'get'>,
   mode: LoudnessMode,
+  planned?: PlannedQa,
 ): Promise<RenderQa> {
   const duration = Math.max(project.duration, 0.1);
-  const warnings: string[] = [];
+  const warnings: string[] = [...(planned?.notes ?? [])];
   let loudness = await measureLoudness(outputPath);
-  let normalized: RenderQa['normalized'] = null;
+  let normalized: RenderQa['normalized'] = planned?.normalized ?? null;
   if (mode === 'normalize' && loudness.integrated !== null && loudness.integrated > SILENT_MASTER_LUFS
     && Math.abs(loudness.integrated - TARGET_LUFS) > 0.5) {
     const gainDb = round1(TARGET_LUFS - loudness.integrated);
