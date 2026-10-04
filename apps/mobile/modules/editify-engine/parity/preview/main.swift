@@ -1108,9 +1108,11 @@ func run() async throws -> [String: Any] {
       try await rig.expect("the repeat seek to frame \(k) landed") { rig.seeksLanded > landed }
       // Past three verify delays: every re-seek the verify would make has landed by then.
       try? await Task.sleep(nanoseconds: UInt64((PlanPlayer.verifyDelay * 3 + 0.8) * 1e9))
-      let time = CMTime(value: CMTimeValue(k), timescale: 30)
-      let shown = rig.output?.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil).map { decodeCode(pixels($0, space: workingSpace)) }
-      return ["reseeks": rig.seeksLanded - landed - 1, "time": rig.player.currentTime, "shown": shown ?? -1]
+      let reseeks = rig.seeksLanded - landed - 1
+      let time = rig.player.currentTime
+      // And the player still draws the right frame there (a fresh exact seek, after the count).
+      let shown = decodeCode(pixels(try await rig.frame(at: k, fps: 30).buffer, space: workingSpace))
+      return ["reseeks": reseeks, "time": time, "shown": shown]
     }
     let decoded = try decode(plan, revision: 1, buildSeq: 1)
     report["pausedSeekVerify"] = [
