@@ -7,6 +7,13 @@ declare module 'fastify' {
   interface FastifyRequest {
     userId?: string;
   }
+  interface FastifyContextConfig {
+    /**
+     * The route checks its own credentials (a signed webhook), so the bearer
+     * check skips it. Set per route: `{ config: { selfAuthenticated: true } }`.
+     */
+    selfAuthenticated?: boolean;
+  }
 }
 
 export interface AuthOptions {
@@ -41,6 +48,7 @@ export function registerAuth(app: FastifyInstance, options?: AuthOptions): void 
 
   app.addHook('onRequest', async (request, reply) => {
     if (request.url === '/health') return;
+    if (request.routeOptions.config?.selfAuthenticated === true) return;
     if (isPublic?.(request)) return;
     const optional = isOptional?.(request) ?? false;
     const query = request.query as { k?: string } | undefined;

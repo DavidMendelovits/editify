@@ -158,6 +158,11 @@ export interface ExportStateEvent {
   /** Shown while it runs, e.g. "Keep Editify open until it finishes." */
   notice?: string;
   error?: string;
+  /**
+   * failed: why, as a stable code. `backgrounded`: a foreground export stopped because Editify
+   * went to the background (the error is ExportCenter's backgroundedMessage); the server can finish it.
+   */
+  reason?: 'backgrounded';
   /** done: the .mp4 (kept until the next launch), for the share sheet. */
   fileUri?: string;
   savedToPhotos?: boolean;
@@ -292,6 +297,8 @@ interface EditifyEngineNative {
   exportCapabilities(): { backgroundGPU: boolean } & Partial<EngineCapabilities>;
   /** The adapters this process runs (decision D5). Absent in binaries before release/1.1's composition root. */
   capabilities?: () => EngineCapabilities;
+  /** The App Store receipt's kind ('sandbox' on TestFlight). Absent in binaries built before the 1.1 test-server banner. */
+  appStoreReceipt?: () => 'sandbox' | 'production' | 'none';
 
   // Speech permission (D21, C15). Absent in binaries before the Transcriber chain.
   /** Read without prompting. */

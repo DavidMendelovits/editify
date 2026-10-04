@@ -51,8 +51,9 @@ import UniformTypeIdentifiers
 /// Ports: the background task goes through BackgroundExecution, the render through
 /// VideoExport, the save through PhotoLibrary, media through MediaSource (EngineAdapters).
 ///
-/// Events (`exportState`): {id, state, progress, error?, notice?, mode?, fileUri?,
-/// savedToPhotos?, stats?}. `progress` is the current state's own 0...1 (writing:
+/// Events (`exportState`): {id, state, progress, error?, reason?, notice?, mode?, fileUri?,
+/// savedToPhotos?, stats?}. `reason: "backgrounded"` marks the failure above (JS offers
+/// "Finish on server" on it). `progress` is the current state's own 0...1 (writing:
 /// presented video time / duration). Sent on every state change and otherwise at most
 /// every 1% of progress and 10 times a second. Temp files are removed on cancel and
 /// failure; a finished file stays for the share sheet until the next export starts or
@@ -352,7 +353,10 @@ final class ExportCenter: @unchecked Sendable {
       let inBackground = await MainActor.run { UIApplication.shared.applicationState == .background }
       if inBackground, job.lock.withLock({ job.task == nil }) { job.lock.withLock { if job.stopReason == nil { job.stopReason = Self.backgroundedMessage } } }
       if let reason = job.lock.withLock({ job.stopReason }) {
-        finish(job, state: "failed", extra: ["error": reason])
+        var extra: [String: Any] = ["error": reason]
+        // A stable code for JS, which offers "Finish on server" on it (D26) without matching the text.
+        if reason == Self.backgroundedMessage { extra["reason"] = "backgrounded" }
+        finish(job, state: "failed", extra: extra)
       } else if job.control.isCancelled || (error as? PlanExportError) == .cancelled || error is CancellationError {
         finish(job, state: "cancelled", extra: [:])
       } else {

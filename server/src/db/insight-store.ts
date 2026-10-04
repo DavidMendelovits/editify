@@ -12,6 +12,8 @@ export class InsightStore {
 
   put(insights: AssetInsights): AssetInsights {
     const parsed = assetInsightsSchema.parse(insights);
+    // Read-only (the cutover freeze): serve it, store nothing.
+    if (this.database.readonly) return parsed;
     this.database.prepare(`
       INSERT INTO insights (asset_id, json, created_at) VALUES (?, ?, ?)
       ON CONFLICT(asset_id) DO UPDATE SET json = excluded.json, created_at = excluded.created_at

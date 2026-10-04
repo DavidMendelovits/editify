@@ -731,7 +731,7 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
       const pools = createPgPools(TEST_URL, env);
       const app = Fastify();
       app.addHook('onRequest', async (request) => { request.userId = ALICE; });
-      registerAgentTurnRoutes(app, new AgentService(async () => provider), { lock: new PgTurnLock(pools.lock as pg.Pool) });
+      registerAgentTurnRoutes(app, new AgentService(async () => provider), { lock: new PgTurnLock(pools.lock as pg.Pool, pools.schema) });
       await app.ready();
       return { app, pools };
     }
@@ -823,11 +823,39 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
       }
     });
 
+    it('keys the lock by line schema, so 1.0 and 1.1 on one Postgres never block each other', async () => {
+      expect(turnLockKey(ALICE, PROJECT)).toBe(turnLockKey(ALICE, PROJECT, 'public'));
+      expect(turnLockKey(ALICE, PROJECT, 'v11')).not.toBe(turnLockKey(ALICE, PROJECT, 'public'));
+      const slow = gated();
+      const v10 = await machine(slow.provider);
+      const v11 = await machine(quick, { DATABASE_SCHEMA: 'v11' });
+      const other10 = await machine(quick);
+      try {
+        expect(v11.pools.schema).toBe('v11');
+        const holding = post(v10.app, turn('proposal-line-1', 'lock-project-line'));
+        await slow.running;
+        expect(await held(turnLockKey(ALICE, 'lock-project-line'))).toBe(true);
+        expect(await held(turnLockKey(ALICE, 'lock-project-line', 'v11'))).toBe(false);
+        // Same user and project id on the other line: its own lock, not busy.
+        expect((await post(v11.app, turn('proposal-line-2', 'lock-project-line'))).statusCode).toBe(200);
+        // Same line: still one turn per project.
+        expect((await post(other10.app, turn('proposal-line-3', 'lock-project-line'))).statusCode).toBe(409);
+        slow.release();
+        expect((await holding).statusCode).toBe(200);
+      } finally {
+        slow.release();
+        for (const each of [v10, v11, other10]) {
+          await each.app.close();
+          await each.pools.end();
+        }
+      }
+    });
+
     it('lets go of a lock held past the maximum turn duration', async () => {
       const pools = createPgPools(TEST_URL, {});
       const key = turnLockKey(ALICE, 'lock-project-hung');
       try {
-        const release = await new PgTurnLock(pools.lock as pg.Pool, 50).tryAcquire(ALICE, 'lock-project-hung');
+        const release = await new PgTurnLock(pools.lock as pg.Pool, 'public', 50).tryAcquire(ALICE, 'lock-project-hung');
         expect(release).toBeDefined();
         expect(await held(key)).toBe(true);
         await new Promise((resolve) => { setTimeout(resolve, 200); });

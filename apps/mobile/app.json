@@ -3,7 +3,7 @@
     "name": "Editify",
     "slug": "editify",
     "owner": "editify",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "default",
     "scheme": "editify",
     "userInterfaceStyle": "dark",
@@ -69,6 +69,14 @@
         "expo-audio",
         {
           "microphonePermission": "Editify records voiceover takes straight onto the timeline."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Editify adds clips from your photo library to the timeline.",
+          "savePhotosPermission": "Editify saves your finished videos and clips to your photo library.",
+          "isAccessMediaLocationEnabled": false
         }
       ],
       [

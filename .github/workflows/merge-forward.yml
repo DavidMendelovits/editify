@@ -1,0 +1,44 @@
+name: merge-forward
+# Plan C2: every push to main merges forward into release/1.1 through the
+# "Merge main into release/1.1" PR (head main). It reuses the open one or opens
+# it, waits up to 40 minutes for that PR's CI, and merges it with a merge
+# commit. On a conflict it comments "conflict, needs a human" and fails; on red
+# or slow CI it comments and leaves the PR open. A hand-made sync PR (same
+# title, a merge branch as head, like #150) is left alone until it merges.
+# Logic: scripts/merge-forward.sh.
+#
+# Why a token: PRs opened and merged with GITHUB_TOKEN start no workflows, so
+# the sync PR's CI would never run and release/1.1's push deploy (editify-v11)
+# would not fire after the merge. The repo also bars Actions from opening PRs.
+# So opening and merging use MERGE_FORWARD_TOKEN, a fine-grained PAT; reads and
+# comments use GITHUB_TOKEN. Without the secret the job only warns.
+#
+# Setup, once: github.com/settings/personal-access-tokens/new
+#   Resource owner DavidMendelovits, Only select repositories: editify
+#   Repository permissions: Contents read and write, Pull requests read and
+#   write, Workflows read and write (a merge that touches .github/workflows
+#   needs it). Metadata read-only is added for you.
+# then: gh secret set MERGE_FORWARD_TOKEN --repo DavidMendelovits/editify
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read # the PR's CI runs, polled through the Actions API
+# A newer main supersedes an older one still waiting on CI.
+concurrency: { group: merge-forward, cancel-in-progress: true }
+jobs:
+  merge-forward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: scripts, persist-credentials: false }
+      - run: scripts/merge-forward.sh
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          MERGE_TOKEN: ${{ secrets.MERGE_FORWARD_TOKEN }}

@@ -157,18 +157,26 @@ export async function synthesizeSound(id: string, path: string): Promise<void> {
   await synthesize(recipe, path);
 }
 
-export async function ensureSoundLibrary(assets: Pick<AssetStore, 'get' | 'getByOriginalName' | 'upsert'>): Promise<LibrarySound[]> {
+/**
+ * `readOnly` (the cutover freeze) lists only sounds that already have both a
+ * file and a row: making a missing one would write to disk and to SQLite.
+ */
+export async function ensureSoundLibrary(assets: Pick<AssetStore, 'get' | 'getByOriginalName' | 'upsert'>, readOnly = false): Promise<LibrarySound[]> {
   generated ??= (async () => {
-    await mkdir(soundsRoot, { recursive: true });
+    if (!readOnly) await mkdir(soundsRoot, { recursive: true });
     const sounds: LibrarySound[] = [];
     for (const recipe of RECIPES) {
       // -v2: the original files were rendered without gain staging; two of
       // them (the whooshes) were inaudible. Bumping the name forces a re-render.
       const fileName = `sfx-${recipe.id}-v2.m4a`;
       const path = join(soundsRoot, fileName);
-      if (!existsSync(path)) await synthesize(recipe, path);
+      if (!existsSync(path)) {
+        if (readOnly) continue;
+        await synthesize(recipe, path);
+      }
       let asset = assets.getByOriginalName(fileName);
       if (!asset) {
+        if (readOnly) continue;
         const probe = await probeMedia(path);
         // upsert, not insert: a pre-v2 row already holds this `sound-<id>`.
         asset = assets.upsert({
