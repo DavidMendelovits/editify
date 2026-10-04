@@ -79,10 +79,10 @@ struct PreviewSpike: Spike {
     let asset = try await AssetSource.load(ref)
     var timeline = LabTimeline()
     timeline.renderSize = renderSize(for: variant, native: try await naturalSize(of: asset))
-    let (composition, video) = try await CompositionBuilder.build(asset: asset, timeline: timeline)
+    let built = try await timeline.build(asset: asset)
 
-    let item = AVPlayerItem(asset: composition)
-    item.videoComposition = video
+    let item = AVPlayerItem(asset: built.composition)
+    item.videoComposition = built.videoComposition
     let meter = FrameMeter()
     item.add(meter.output)
     let player = AVPlayer(playerItem: item)
@@ -138,12 +138,12 @@ struct ScrubSpike: Spike {
     let key = variant == "proxy" ? "proxy" : "asset"
     guard let ref = params[key] as? String else { throw SpikeError(message: "S2 \(variant) needs params.\(key)") }
     let asset = try await AssetSource.load(ref)
-    let (composition, video) = try await CompositionBuilder.build(asset: asset, timeline: LabTimeline())
-    let item = AVPlayerItem(asset: composition)
-    item.videoComposition = video
+    let built = try await LabTimeline().build(asset: asset)
+    let item = AVPlayerItem(asset: built.composition)
+    item.videoComposition = built.videoComposition
     let player = AVPlayer(playerItem: item)
     player.isMuted = true
-    let duration = composition.duration.seconds
+    let duration = built.composition.duration.seconds
 
     // Drag: 3 s of finger movement across the timeline at 60 Hz.
     let scrubber = CoalescingScrubber(player: player)
@@ -247,12 +247,12 @@ struct EditSpike: Spike {
     timeline.clips = Int(variant.filter(\.isNumber)) ?? 50
     timeline.clipSeconds = 2
     timeline.crossfadeSeconds = 0.25
-    let (composition, video) = try await CompositionBuilder.build(asset: asset, timeline: timeline)
+    let built = try await timeline.build(asset: asset)
     let frame = 1000.0 / Double(timeline.frameRate)
 
     let meter = FrameMeter()
-    let item = AVPlayerItem(asset: composition)
-    item.videoComposition = video
+    let item = AVPlayerItem(asset: built.composition)
+    item.videoComposition = built.videoComposition
     item.add(meter.output)
     let player = AVPlayer(playerItem: item)
     player.isMuted = true
@@ -263,10 +263,11 @@ struct EditSpike: Spike {
     var paramStalls: [Double] = []
     for index in 0..<10 {
       var edited = timeline
-      edited.punchIn = 1 + CGFloat(index % 5) * 0.05
-      let (_, newVideo) = try await CompositionBuilder.build(asset: asset, timeline: edited)
+      edited.punchIn = 1 + Double(index % 5) * 0.05
+      // A parameter-only edit, as PlanPlayer applies one: same composition, new video composition.
+      guard let update = try await edited.update(built, revision: index + 2) else { throw SpikeError(message: "S3: a punch-in edit changed the plan's structure") }
       meter.resetGap()
-      item.videoComposition = newVideo
+      item.videoComposition = update.videoComposition
       try await Task.sleep(for: .milliseconds(500))
       paramStalls.append(max(0, meter.maxGapMs - frame))
       progress(Double(index) / 20)
@@ -277,10 +278,10 @@ struct EditSpike: Spike {
     for index in 0..<5 {
       var edited = timeline
       edited.clips = timeline.clips - 1 - index
-      let (newComposition, newVideo) = try await CompositionBuilder.build(asset: asset, timeline: edited)
+      let rebuilt = try await edited.build(asset: asset)
       let resumeAt = player.currentTime()
-      let newItem = AVPlayerItem(asset: newComposition)
-      newItem.videoComposition = newVideo
+      let newItem = AVPlayerItem(asset: rebuilt.composition)
+      newItem.videoComposition = rebuilt.videoComposition
       meter.resetGap()
       let start = ContinuousClock.now
       let framesBefore = meter.frames
