@@ -182,6 +182,13 @@ describe('READ_ONLY=1', () => {
       ['POST', '/telemetry', { kind: 'feedback' }],
       ['DELETE', '/account', undefined],
       ['POST', '/webhooks/supabase/user-deleted', { type: 'DELETE', record: { id: ALICE } }],
+      // Routes only the 1.1 line has. The gate is global (any non-read method), so they are
+      // refused without opting in; listing them keeps a per-route exemption from slipping in.
+      ['POST', '/sync/projects', { projects: [] }],
+      ['POST', `/sync/projects/${project}/changes`, { baseVersion: 0, changes: [] }],
+      ['DELETE', `/sync/projects/${project}`, undefined],
+      ['POST', '/agent/turn', { projectId: project, message: 'hi' }],
+      ['PUT', `/assets/${asset}/original?projectId=${project}`, 'bytes'],
     ];
     for (const [method, url, payload] of writes) {
       // With and without credentials: the gate runs before auth.
