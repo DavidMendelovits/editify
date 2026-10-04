@@ -38,6 +38,8 @@ import { grant } from './fixtures/grant.js';
  * Supabase's `auth` schema and `anon` / `authenticated` roles.
  */
 const MIGRATION = new URL('../../supabase/migrations/20261002120000_project_sync.sql', import.meta.url);
+/** The 1.1 line's copy of the tables, in the `v11` schema (release/1.1 plan D3). */
+const V11_MIGRATION = new URL('../../supabase/migrations/20261004000000_v11_project_sync.sql', import.meta.url);
 const TEST_URL = process.env.SYNC_TEST_DATABASE_URL ?? 'postgresql://localhost/editify_t9_test';
 const ADMIN_URL = process.env.SYNC_TEST_ADMIN_URL ?? 'postgresql://localhost/postgres';
 const ALICE = '00000000-0000-4000-8000-00000000a11c';
@@ -65,6 +67,7 @@ const SUPABASE_STANDIN = `
 
 async function prepare(): Promise<string | undefined> {
   const migration = readFileSync(MIGRATION, 'utf8');
+  const v11Migration = readFileSync(V11_MIGRATION, 'utf8');
   try {
     if (!process.env.SYNC_TEST_DATABASE_URL) {
       const admin = new pg.Client(ADMIN_URL);
@@ -83,6 +86,9 @@ async function prepare(): Promise<string | undefined> {
       await client.query('DROP TABLE IF EXISTS public.sync_receipts, public.sync_op_log, public.sync_projects CASCADE');
       await client.query(migration);
       await client.query(migration);
+      await client.query('DROP SCHEMA IF EXISTS v11 CASCADE');
+      await client.query(v11Migration);
+      await client.query(v11Migration);
       await client.query('INSERT INTO auth.users (id) VALUES ($1), ($2) ON CONFLICT DO NOTHING', [ALICE, BOB]);
     } finally {
       await client.end();
@@ -238,8 +244,69 @@ describe('postgres connection settings', () => {
     });
   });
 
+  it('reads DATABASE_SCHEMA (default public) and refuses anything that is not a plain identifier', async () => {
+    const plain = createPgPools('postgresql://localhost/x', {});
+    expect(plain.schema).toBe('public');
+    await plain.end();
+    const v11 = createPgPools('postgresql://localhost/x', { DATABASE_SCHEMA: 'v11' });
+    expect(v11.schema).toBe('v11');
+    await v11.end();
+    expect(() => createPgPools('postgresql://localhost/x', { DATABASE_SCHEMA: 'v11; drop table x' })).toThrow(/plain lowercase identifier/);
+    expect(() => new PgSyncStore(new pg.Pool(), 'V11"')).toThrow(/Not a schema name/);
+  });
+
   it('fails the boot of an app pointed at a remote database without TLS settled', async () => {
     await expect(buildApp({ database: createDatabase(':memory:'), databaseUrl: REMOTE })).rejects.toThrow(/DATABASE_CA_CERT/);
+  });
+});
+
+describe.skipIf(Boolean(skipReason))('the v11 schema (the 1.1 line)', () => {
+  const pool = new pg.Pool({ connectionString: TEST_URL, max: 4 });
+  const v11 = new PgSyncStore(pool, 'v11');
+  const v10 = new PgSyncStore(pool);
+  afterAll(async () => { await pool.end(); });
+
+  const count = async (table: string, id: string): Promise<number> =>
+    Number((await pool.query(`SELECT count(*) AS n FROM ${table} WHERE project_id = $1`, [id])).rows[0].n);
+
+  it('writes and reads only v11 tables, leaving the 1.0 tables in public untouched', async () => {
+    const project = freshProject();
+    await v11.create(ALICE, project);
+    const { receipt } = await v11.push(ALICE, project.id, push(0, [volume('clip-0', 0.5)]));
+    expect(receipt).toMatchObject({ revision: 1, seq: 2 });
+    expect((await v11.get(ALICE, project.id))?.revision).toBe(1);
+    expect(await count('v11.sync_op_log', project.id)).toBe(2);
+    expect(await count('v11.sync_receipts', project.id)).toBe(1);
+    expect(await count('public.sync_op_log', project.id)).toBe(0);
+    expect(await v10.get(ALICE, project.id)).toBeUndefined();
+    expect((await v10.list(ALICE)).map((row) => row.id)).not.toContain(project.id);
+
+    // The same id is free on the other line: the two lines are separate stores.
+    await v10.create(ALICE, project);
+    expect((await v10.get(ALICE, project.id))?.revision).toBe(0);
+    expect((await v11.get(ALICE, project.id))?.revision).toBe(1);
+  });
+
+  it('migrates with the same RLS and grants as public', async () => {
+    const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean }>(
+      `SELECT c.relname, c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'v11' AND c.relkind = 'r' ORDER BY c.relname`,
+    );
+    expect(rows).toEqual([
+      { relname: 'sync_op_log', relrowsecurity: true },
+      { relname: 'sync_projects', relrowsecurity: true },
+      { relname: 'sync_receipts', relrowsecurity: true },
+    ]);
+    const privileges = await pool.query<{ grantee: string; privilege_type: string }>(
+      `SELECT grantee, privilege_type FROM information_schema.role_table_grants
+       WHERE table_schema = 'v11' AND grantee IN ('anon', 'authenticated') ORDER BY grantee, privilege_type`,
+    );
+    expect(new Set(privileges.rows.map((row) => `${row.grantee}:${row.privilege_type}`))).toEqual(new Set(['authenticated:SELECT']));
+  });
+
+  it('fails loudly, not into public, when the schema is missing', async () => {
+    const missing = new PgSyncStore(pool, 'v99');
+    await expect(missing.list(ALICE)).rejects.toThrow(/v99/);
   });
 });
 
@@ -573,7 +640,7 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
   describe('row level security', () => {
     it('is on for all three tables, with select-only policies on auth.uid() = user_id', async () => {
       const tables = await pool.query<{ relname: string; relrowsecurity: boolean }>(
-        "SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('sync_projects', 'sync_op_log', 'sync_receipts') ORDER BY relname",
+        "SELECT relname, relrowsecurity FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname IN ('sync_projects', 'sync_op_log', 'sync_receipts') ORDER BY relname",
       );
       expect(tables.rows).toEqual([
         { relname: 'sync_op_log', relrowsecurity: true },
@@ -581,7 +648,7 @@ describe.skipIf(Boolean(skipReason))('postgres project sync', () => {
         { relname: 'sync_receipts', relrowsecurity: true },
       ]);
       const policies = await pool.query<{ tablename: string; cmd: string; roles: string; qual: string }>(
-        "SELECT tablename, cmd, roles::text, qual FROM pg_policies WHERE tablename LIKE 'sync\\_%' ORDER BY tablename",
+        "SELECT tablename, cmd, roles::text, qual FROM pg_policies WHERE schemaname = 'public' AND tablename LIKE 'sync\\_%' ORDER BY tablename",
       );
       expect(policies.rows.map((row) => [row.tablename, row.cmd, row.roles])).toEqual([
         ['sync_op_log', 'SELECT', '{authenticated}'],

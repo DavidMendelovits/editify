@@ -57,6 +57,10 @@ ENV NODE_ENV=production \
     PORT=3001 \
     EDITIFY_DATA_DIR=/data \
     EDITIFY_WEB_DIR=/app/apps/mobile/dist
+# The commit /health reports (CI: `fly deploy --build-arg GIT_SHA=$GITHUB_SHA`).
+# Last, so a new sha only rebuilds this layer. Unset, the server falls back to FLY_IMAGE_REF.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
 EXPOSE 3001
 # Straight to node: the npm wrapper and tsx transpiling cost ~600ms of boot,
 # which delayed the port bind past fly-proxy's listening check.

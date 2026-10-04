@@ -1,4 +1,4 @@
-app = "editify-dm"
+app = "editify-v11"
 primary_region = "sjc"
 
 [build]
@@ -7,11 +7,13 @@ primary_region = "sjc"
   PORT = "3001"
   EDITIFY_DATA_DIR = "/data"
   # Must match the deployed hostname: render outputs are minted from it.
-  PUBLIC_BASE_URL = "https://editify-dm.fly.dev"
+  PUBLIC_BASE_URL = "https://editify-v11.fly.dev"
   # Without this the server can't verify Supabase JWTs and signed-in users get 401s.
   SUPABASE_URL = "https://xvstucurpuwpliowadnh.supabase.co"
   # Which server line this is: /health and the startup log report it.
-  LINE = "1.0"
+  LINE = "1.1"
+  # The 1.1 line's sync tables live in the v11 Postgres schema (plan D3).
+  DATABASE_SCHEMA = "v11"
 
 [http_service]
   internal_port = 3001
@@ -30,7 +32,7 @@ primary_region = "sjc"
 
 # SQLite, uploaded originals, proxies, and rendered masters all live here.
 [[mounts]]
-  source = "editify_data"
+  source = "editify_v11_data"
   destination = "/data"
 
 # ponytail: shared CPU is ~8x cheaper and fine until renders visibly drag.

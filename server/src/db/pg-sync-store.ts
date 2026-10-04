@@ -14,11 +14,12 @@ import {
   type SyncPushRequest,
   type SyncReceipt,
 } from '@editify/shared';
-import { IDLE_IN_TRANSACTION_TIMEOUT_MS, STATEMENT_TIMEOUT_MS } from './postgres.js';
+import { IDLE_IN_TRANSACTION_TIMEOUT_MS, SCHEMA_NAME, STATEMENT_TIMEOUT_MS } from './postgres.js';
 
 /*
  * Device-authoritative project sync in Postgres (decision 4A, OV4). The schema
- * is supabase/migrations/20261002120000_project_sync.sql. Every push is one
+ * is supabase/migrations/20261002120000_project_sync.sql (public, the 1.0 line)
+ * and 20261004000000_v11_project_sync.sql (v11, the 1.1 line). Every push is one
  * transaction:
  *
  *   BEGIN
@@ -171,7 +172,17 @@ interface Resolved {
 }
 
 export class PgSyncStore {
-  constructor(private readonly pool: pg.Pool) {}
+  /** Schema-qualified table names: `public` for the 1.0 line, DATABASE_SCHEMA (`v11`) for 1.1. */
+  private readonly projects: string;
+  private readonly opLog: string;
+  private readonly receipts: string;
+
+  constructor(private readonly pool: pg.Pool, schema = 'public') {
+    if (!SCHEMA_NAME.test(schema)) throw new Error(`Not a schema name: ${schema}`);
+    this.projects = `"${schema}".sync_projects`;
+    this.opLog = `"${schema}".sync_op_log`;
+    this.receipts = `"${schema}".sync_receipts`;
+  }
 
   /**
    * Registers a phone's project at its current version. Idempotent by id: a
@@ -182,13 +193,13 @@ export class PgSyncStore {
     const project = { ...applyBatch(projectSchema.parse(input), [], noNewIds), version: input.version };
     return await withTransaction(this.pool, async (client) => {
       const inserted = await client.query(
-        `INSERT INTO sync_projects (id, user_id, title, doc, revision, last_seq)
+        `INSERT INTO ${this.projects} (id, user_id, title, doc, revision, last_seq)
          VALUES ($1, $2, $3, $4::jsonb, $5, 1) ON CONFLICT (id) DO NOTHING RETURNING id`,
         [project.id, userId, project.title, JSON.stringify(project), project.version],
       );
       if (inserted.rowCount === 1) {
         await client.query(
-          `INSERT INTO sync_op_log (project_id, seq, user_id, kind, ops, revision, after_doc)
+          `INSERT INTO ${this.opLog} (project_id, seq, user_id, kind, ops, revision, after_doc)
            VALUES ($1, 1, $2, 'create', '[]'::jsonb, $3, $4::jsonb)`,
           [project.id, userId, project.version, JSON.stringify(project)],
         );
@@ -206,24 +217,24 @@ export class PgSyncStore {
 
   async list(userId: string): Promise<Array<{ id: string; title: string; revision: number; updatedAt: string }>> {
     const { rows } = await this.pool.query<{ id: string; title: string; revision: string; updated_at: Date }>(
-      'SELECT id, title, revision, updated_at FROM sync_projects WHERE user_id = $1 ORDER BY updated_at DESC',
+      `SELECT id, title, revision, updated_at FROM ${this.projects} WHERE user_id = $1 ORDER BY updated_at DESC`,
       [userId],
     );
     return rows.map((row) => ({ id: row.id, title: row.title, revision: Number(row.revision), updatedAt: row.updated_at.toISOString() }));
   }
 
   async delete(userId: string, projectId: string): Promise<boolean> {
-    const result = await this.pool.query('DELETE FROM sync_projects WHERE id = $1 AND user_id = $2', [projectId, userId]);
+    const result = await this.pool.query(`DELETE FROM ${this.projects} WHERE id = $1 AND user_id = $2`, [projectId, userId]);
     return result.rowCount === 1;
   }
 
   /** Log rows after `sinceSeq`, oldest first. Undefined when the project is not this user's. */
   async log(userId: string, projectId: string, sinceSeq: number, limit: number): Promise<SyncLogEntry[] | undefined> {
-    const owner = await this.pool.query('SELECT 1 FROM sync_projects WHERE id = $1 AND user_id = $2', [projectId, userId]);
+    const owner = await this.pool.query(`SELECT 1 FROM ${this.projects} WHERE id = $1 AND user_id = $2`, [projectId, userId]);
     if (!owner.rowCount) return undefined;
     const { rows } = await this.pool.query<LogRow>(
       `SELECT seq, kind, ops, revision, undone, run_id, undo_target_seq, change_id, created_at
-       FROM sync_op_log WHERE project_id = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3`,
+       FROM ${this.opLog} WHERE project_id = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3`,
       [projectId, sinceSeq, limit],
     );
     return rows.map((row) => ({
@@ -247,7 +258,7 @@ export class PgSyncStore {
     }
     return await withTransaction(this.pool, async (client) => {
       const locked = await client.query<ProjectRow>(
-        'SELECT user_id, doc, revision, last_seq FROM sync_projects WHERE id = $1 FOR UPDATE',
+        `SELECT user_id, doc, revision, last_seq FROM ${this.projects} WHERE id = $1 FOR UPDATE`,
         [projectId],
       );
       const row = locked.rows[0];
@@ -256,7 +267,7 @@ export class PgSyncStore {
       const digest = requestDigest(request, operations);
       const seen = await client.query<ReceiptRow>(
         `SELECT project_id, change_id, base_revision, revision, seq, hash, request_digest
-         FROM sync_receipts WHERE project_id = $1 AND change_id = $2`,
+         FROM ${this.receipts} WHERE project_id = $1 AND change_id = $2`,
         [projectId, request.changeId],
       );
       if (seen.rows[0]) {
@@ -284,7 +295,7 @@ export class PgSyncStore {
         for (const statement of resolved.history) await client.query(statement.sql, statement.values);
         const after: Project = { ...resolved.after, version: receipt.revision };
         await client.query(
-          `INSERT INTO sync_op_log
+          `INSERT INTO ${this.opLog}
              (project_id, seq, user_id, kind, ops, revision, after_doc, undone, run_id, undo_target_seq, change_id)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11)`,
           [
@@ -296,13 +307,13 @@ export class PgSyncStore {
           ],
         );
         await client.query(
-          `UPDATE sync_projects SET doc = $2::jsonb, title = $3, revision = $4, last_seq = $5, updated_at = now()
+          `UPDATE ${this.projects} SET doc = $2::jsonb, title = $3, revision = $4, last_seq = $5, updated_at = now()
            WHERE id = $1`,
           [projectId, JSON.stringify(after), after.title, receipt.revision, receipt.seq],
         );
       }
       await client.query(
-        `INSERT INTO sync_receipts (project_id, change_id, user_id, base_revision, revision, seq, hash, request_digest)
+        `INSERT INTO ${this.receipts} (project_id, change_id, user_id, base_revision, revision, seq, hash, request_digest)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [projectId, receipt.changeId, userId, receipt.baseRevision, receipt.revision, receipt.seq, receipt.hash, digest],
       );
@@ -312,7 +323,7 @@ export class PgSyncStore {
 
   private async read(db: Queryable, userId: string, projectId: string): Promise<SyncedProject | undefined> {
     const { rows } = await db.query<ProjectRow>(
-      'SELECT user_id, doc, revision, last_seq FROM sync_projects WHERE id = $1 AND user_id = $2',
+      `SELECT user_id, doc, revision, last_seq FROM ${this.projects} WHERE id = $1 AND user_id = $2`,
       [projectId, userId],
     );
     const row = rows[0];
@@ -323,7 +334,7 @@ export class PgSyncStore {
   /** The document before the change logged at `seq`: its predecessor's after_doc ('create' is seq 1). */
   private async docBefore(client: pg.PoolClient, projectId: string, seq: number): Promise<Project> {
     const { rows } = await client.query<{ after_doc: unknown }>(
-      'SELECT after_doc FROM sync_op_log WHERE project_id = $1 AND seq < $2 ORDER BY seq DESC LIMIT 1',
+      `SELECT after_doc FROM ${this.opLog} WHERE project_id = $1 AND seq < $2 ORDER BY seq DESC LIMIT 1`,
       [projectId, seq],
     );
     if (!rows[0]) throw new OperationError('The history before this change is missing');
@@ -336,7 +347,7 @@ export class PgSyncStore {
       return { kind: 'edit', after: applyBatch(current, operations, noNewIds), undoTargetSeq: null, history: [] };
     }
     const setUndone = (undone: boolean, where: string, value: unknown) => ({
-      sql: `UPDATE sync_op_log SET undone = ${undone ? 'true' : 'false'} WHERE project_id = $1 AND ${where}`,
+      sql: `UPDATE ${this.opLog} SET undone = ${undone ? 'true' : 'false'} WHERE project_id = $1 AND ${where}`,
       values: [projectId, value],
     });
 
@@ -344,7 +355,7 @@ export class PgSyncStore {
       // The newest standing edit or revert. Undo rows retract themselves into
       // a redo target; redo rows are logged undone; the create row is not an edit.
       const { rows } = await client.query<{ seq: string; kind: SyncLogKind; ops: unknown[] }>(
-        `SELECT seq, kind, ops FROM sync_op_log
+        `SELECT seq, kind, ops FROM ${this.opLog}
          WHERE project_id = $1 AND NOT undone AND kind IN ('edit', 'revert_run')
          ORDER BY seq DESC LIMIT 1`,
         [projectId],
@@ -363,7 +374,7 @@ export class PgSyncStore {
 
     if (operation.type === 'redo') {
       const { rows } = await client.query<{ seq: string; undo_target_seq: string }>(
-        `SELECT seq, undo_target_seq FROM sync_op_log
+        `SELECT seq, undo_target_seq FROM ${this.opLog}
          WHERE project_id = $1 AND NOT undone AND kind = 'undo' AND undo_target_seq IS NOT NULL
          ORDER BY seq DESC LIMIT 1`,
         [projectId],
@@ -371,13 +382,13 @@ export class PgSyncStore {
       const undoRow = rows[0];
       // Any standing row newer than the undo means a real edit landed, which clears redo.
       const newer = undoRow ? await client.query(
-        'SELECT 1 FROM sync_op_log WHERE project_id = $1 AND seq > $2 AND NOT undone LIMIT 1',
+        `SELECT 1 FROM ${this.opLog} WHERE project_id = $1 AND seq > $2 AND NOT undone LIMIT 1`,
         [projectId, undoRow.seq],
       ) : undefined;
       if (!undoRow || newer?.rowCount) throw new OperationError('There is nothing to redo');
       const targetSeq = Number(undoRow.undo_target_seq);
       const target = (await client.query<{ kind: SyncLogKind; ops: unknown[]; after_doc: unknown }>(
-        'SELECT kind, ops, after_doc FROM sync_op_log WHERE project_id = $1 AND seq = $2',
+        `SELECT kind, ops, after_doc FROM ${this.opLog} WHERE project_id = $1 AND seq = $2`,
         [projectId, targetSeq],
       )).rows[0];
       if (!target) throw new OperationError('There is nothing to redo');
@@ -395,14 +406,14 @@ export class PgSyncStore {
     const runId = operation.params.runId;
     const span = (await client.query<{ first: string | null; last: string | null }>(
       `SELECT MIN(seq) FILTER (WHERE NOT undone) AS first, MAX(seq) AS last
-       FROM sync_op_log WHERE project_id = $1 AND run_id = $2`,
+       FROM ${this.opLog} WHERE project_id = $1 AND run_id = $2`,
       [projectId, runId],
     )).rows[0];
     if (!span?.first || !span.last) throw new OperationError(`Run ${runId} was already reverted or does not exist`);
     // Anything newer that is not part of this run (and is not an undo, which
     // already retracted itself) would be silently discarded by the revert.
     const foreign = await client.query(
-      `SELECT 1 FROM sync_op_log
+      `SELECT 1 FROM ${this.opLog}
        WHERE project_id = $1 AND seq > $2 AND NOT undone
          AND (run_id IS NULL OR run_id <> $3) AND kind <> 'undo' LIMIT 1`,
       [projectId, span.last, runId],
