@@ -153,6 +153,11 @@ export interface ExportStateEvent {
   /** Shown while it runs, e.g. "Keep Editify open until it finishes." */
   notice?: string;
   error?: string;
+  /**
+   * failed: why, as a stable code. `backgrounded`: a foreground export stopped because Editify
+   * went to the background (the error is ExportCenter's backgroundedMessage); the server can finish it.
+   */
+  reason?: 'backgrounded';
   /** done: the .mp4 (kept until the next launch), for the share sheet. */
   fileUri?: string;
   savedToPhotos?: boolean;
@@ -248,6 +253,8 @@ interface EditifyEngineNative {
   cancelExport(id: string): void;
   /** Whether this phone can keep exporting in the background (BGContinuedProcessingTask with GPU). */
   exportCapabilities(): { backgroundGPU: boolean };
+  /** The App Store receipt's kind ('sandbox' on TestFlight). Absent in binaries built before the 1.1 test-server banner. */
+  appStoreReceipt?: () => 'sandbox' | 'production' | 'none';
 
   /** Present (and true) only in binaries that have EditifyPlayerView. */
   nativePreviewAvailable?: () => boolean;

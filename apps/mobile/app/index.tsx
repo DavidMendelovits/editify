@@ -7,6 +7,7 @@ import { Brand } from '../src/components/Brand';
 import { Button } from '../src/components/Button';
 import { ImportSheet } from '../src/components/ImportSheet';
 import { ReportModal } from '../src/components/ReportModal';
+import { TestBuildBanner } from '../src/components/TestBuildBanner';
 import { Screen } from '../src/components/Screen';
 import { api, assetThumbUrl } from '../src/lib/api';
 import { supabase } from '../src/lib/supabase';
@@ -98,6 +99,7 @@ export default function HomeScreen() {
         </View>
       </View>
     }>
+      <TestBuildBanner />
       <View style={styles.hero}>
         <Text style={styles.kicker}>NEW PROJECT</Text>
       </View>

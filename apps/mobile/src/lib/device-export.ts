@@ -22,12 +22,22 @@
  *     └─ the check failed (offline) ─▶ 'unchecked': the render may still be asked for; the
  *           server checks the snapshot again and names what is missing
  *
+ *   Finish on server (D26) ─▶ a device run failed with reason 'backgrounded' (ExportCenter's
+ *     backgroundedMessage: Editify went to the background mid-export) ─▶ one tap, "finish on server"
+ *     ─▶ finishOnServerOnce (a second tap joins the run in flight; a started render answers again)
+ *     ─▶ the project and assets as they are NOW (an edit since the failed run is what renders)
+ *     ─▶ the server path above: ready / unchecked ─▶ render the current snapshot
+ *        upload ─▶ uploadMissing ─▶ check again ─▶ render │ blocked ─▶ named, no render
+ *        no answer from the server (offline) ─▶ "Can't reach the Editify server..." (tap again later)
+ *     Any other failure (no space, a clip gone, the engine refused) offers only "try again".
+ *
  * The lease pins the local copies for the whole run (the copy budget can't evict one
  * mid-export) and is released however the run ends, including a rejected start.
  */
 import {
-  buildRenderPlan, exportPlanSize, projectAssetIds,
+  buildRenderPlan, exportPlanSize, projectAssetIds, renderSnapshot,
   type AssetAvailability, type AssetMetadata, type PlanAssetInfo, type PlanAssetRef, type PlanResolution, type Project, type RenderPlan,
+  type RenderSnapshot,
 } from '@editify/shared';
 import type { ExportProjectOptions, ExportStateEvent, ExportStateName, NativeExportStats } from '../../modules/editify-engine';
 import {
@@ -400,6 +410,8 @@ export interface DeviceExportView {
   mode?: 'background' | 'foreground';
   notice?: string;
   error?: string;
+  /** failed: the native code for why (`backgrounded`: the server can finish it, D26). */
+  reason?: ExportStateEvent['reason'];
   fileUri?: string;
   savedToPhotos?: boolean;
   stats?: NativeExportStats;
@@ -434,7 +446,10 @@ export function exportReducer(view: DeviceExportView, event: ExportStateEvent): 
     next.savedToPhotos = event.savedToPhotos ?? false;
     if (event.stats) next.stats = event.stats;
   }
-  if (event.state === 'failed') next.error = event.error ?? 'The export failed';
+  if (event.state === 'failed') {
+    next.error = event.error ?? 'The export failed';
+    if (event.reason) next.reason = event.reason;
+  }
   return next;
 }
 
@@ -548,4 +563,99 @@ async function runNativeExport(args: ExportOnDeviceArgs, plan: RenderPlan, media
     subscription.remove();
     args.signal?.removeEventListener('abort', abort);
   }
+}
+
+// ─── Finish on server (D26) ───
+
+/** A device export stopped because Editify went to the background: the server can finish it. */
+export function canFinishOnServer(view: DeviceExportView | undefined): boolean {
+  return view?.state === 'failed' && view.reason === 'backgrounded';
+}
+
+/** No answer from the server at all (offline, DNS, TLS): the run can be tapped again later. */
+export const OFFLINE_LINE = "Can't reach the Editify server. Check your connection, then tap finish on server again.";
+
+export type FinishOnServerResult =
+  | { kind: 'rendering'; renderId: string }
+  /** A clip no server render can have, named plainly (blockedLine). */
+  | { kind: 'blocked'; message: string }
+  | { kind: 'failed'; message: string };
+
+export interface FinishOnServerArgs {
+  /** The project and its assets as they are now, read at tap time: an edit since the failed run is what renders. */
+  current: () => Promise<{ project: Project; assets: readonly AssetMetadata[] }>;
+  deps: MediaDeps | null;
+  check: AvailabilityCheck;
+  nameOf: (assetId: string) => string;
+  upload: UploadOriginal;
+  /** POST /projects/:id/render with the snapshot. An error the server answered carries its HTTP `status`. */
+  render: (snapshot: RenderSnapshot) => Promise<{ id: string }>;
+  onUploadProgress?: (progress: ImportProgress) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * The server route for a project whose device export was stopped: availability check, upload
+ * of only the clips the server is missing, then a render of the current snapshot.
+ */
+export async function finishOnServer(args: FinishOnServerArgs): Promise<FinishOnServerResult> {
+  // Two passes at most: the second checks again after the upload.
+  for (let pass = 0; pass < 2; pass += 1) {
+    const { project, assets } = await args.current();
+    const readiness = await serverReadiness({ refs: projectAssetRefs(project, assets), check: args.check }, args.deps, args.nameOf);
+    if (readiness.state === 'blocked') return { kind: 'blocked', message: blockedLine(readiness.clips) };
+    if (readiness.state === 'upload') {
+      if (pass > 0 || !args.deps) return { kind: 'failed', message: `The server is still missing clips. ${uploadLine(readiness.clips)}` };
+      const result = await uploadMissing({
+        clips: readiness.clips, deps: args.deps, upload: args.upload,
+        ...(args.onUploadProgress ? { onProgress: args.onUploadProgress } : {}),
+        ...(args.signal ? { signal: args.signal } : {}),
+      });
+      if (args.signal?.aborted) return { kind: 'failed', message: 'Upload cancelled.' };
+      const failed = result.failed[0];
+      if (failed) return { kind: 'failed', message: `Couldn't upload ${failed.name}: ${failed.error}` };
+      continue;
+    }
+    // Ready, or the check couldn't run: the render request checks the snapshot again.
+    let snapshot: RenderSnapshot;
+    try {
+      snapshot = renderSnapshot(project);
+    } catch (error) {
+      return { kind: 'failed', message: `This project can't be sent for rendering: ${messageOf(error)}` };
+    }
+    try {
+      const record = await args.render(snapshot);
+      return { kind: 'rendering', renderId: record.id };
+    } catch (error) {
+      return { kind: 'failed', message: hasStatus(error) ? messageOf(error) : OFFLINE_LINE };
+    }
+  }
+  return { kind: 'failed', message: 'The server is still missing clips. Try again.' };
+}
+
+/**
+ * finishOnServer, at most one server render per failed export: a tap while one runs joins it,
+ * and one that started a render answers that render again. A run that ended without one
+ * (offline, blocked) can be tapped again.
+ */
+export function finishOnServerOnce(): (args: FinishOnServerArgs) => Promise<FinishOnServerResult> {
+  let pending: Promise<FinishOnServerResult> | null = null;
+  return (args) => {
+    if (pending) return pending;
+    const run = finishOnServer(args).then(
+      (result) => { if (result.kind !== 'rendering') pending = null; return result; },
+      (error: unknown) => { pending = null; throw error; },
+    );
+    pending = run;
+    return run;
+  };
+}
+
+/** An error the server answered (ApiError and the like carry the HTTP status); a transport failure has none. */
+function hasStatus(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && typeof (error as { status?: unknown }).status === 'number';
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
