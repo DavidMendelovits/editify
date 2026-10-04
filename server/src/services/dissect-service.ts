@@ -34,6 +34,8 @@ export class DissectService {
     }
     const pending = this.inFlight.get(asset.id) ?? this.dissect(asset)
       .then((dissection) => {
+        // Read-only (the cutover freeze): serve it, store nothing.
+        if (this.database.readonly) return dissection;
         this.database.prepare(`
           INSERT INTO dissections (asset_id, dissection_json, created_at) VALUES (?, ?, ?)
           ON CONFLICT(asset_id) DO UPDATE SET dissection_json = excluded.dissection_json, created_at = excluded.created_at
