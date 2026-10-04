@@ -30,7 +30,7 @@
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { lstat, mkdir, readdir, rename, stat } from 'node:fs/promises';
+import { lstat, mkdir, readdir, realpath, rename, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -227,6 +227,9 @@ export async function serve({ root, dbPath, host, port, token, workDir }) {
       if (request.method === 'GET' && url.pathname === '/file') {
         const full = insideRoot(root, url.searchParams.get('path'));
         if (!full) return send(response, 400, { error: 'bad path' });
+        // A symlinked directory on the way would lead out of root; the manifest never lists such files either.
+        const real = await realpath(full).catch(() => undefined);
+        if (!real || insideRoot(await realpath(root), relative(await realpath(root), real)) !== real) return send(response, 404, { error: 'not found' });
         return await streamFile(response, full);
       }
       if (request.method === 'POST' && url.pathname === '/snapshot') {

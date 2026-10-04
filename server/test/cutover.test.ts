@@ -250,14 +250,71 @@ describe('cutover importer', () => {
     await expect(roomy.import({ kind: 'all' })).resolves.toMatchObject({ copied: expect.any(Number) });
   });
 
-  it('warns at import and refuses the delta when 1.0 runs without the journal', async () => {
+  it('refuses the bulk import without the journal, and a rehearsal run --without-journal cannot delta', async () => {
     const { fx, importer } = setup();
     configureMutationJournal(fx.source, false);
     fx.source.exec('DROP TABLE mutations');
     expect(await journalStatus(fx.sourceDb)).toMatchObject({ journal: false, triggers: 0, journalId: 0 });
     await importer.snapshot();
-    expect((await importer.import({ kind: 'all' })).journal).toBe(false);
-    await expect(importer.delta()).rejects.toThrow(/MUTATION_JOURNAL=1/);
+    await expect(importer.import({ kind: 'all' })).rejects.toThrow(/MUTATION_JOURNAL=1/);
+    expect(count('projects')).toBe(0);
+    // A beta copy needs no journal.
+    expect((await importer.import({ kind: 'users', users: [BOB] })).users[0]?.status).toBe('imported');
+
+    expect((await importer.import({ kind: 'all' }, { withoutJournal: true })).journal).toBe(false);
+    // The journal switched on after the bulk snapshot: the write in between is in no journal, so the delta refuses.
+    insertChat(fx.source, 'chat-gap', 'project-a1', 'written before the journal was on');
+    configureMutationJournal(fx.source, true);
+    insertChat(fx.source, 'chat-journaled', 'project-a1', 'journaled');
+    await expect(importer.delta()).rejects.toThrow(/without a complete mutations journal/);
+  });
+
+  it('refuses a snapshot whose journal table survived but whose triggers were dropped', async () => {
+    const { fx, importer } = setup();
+    configureMutationJournal(fx.source, false); // MUTATION_JOURNAL unset: triggers dropped, rows kept
+    expect(await journalStatus(fx.sourceDb)).toMatchObject({ journal: true, triggers: 0 });
+    await importer.snapshot();
+    await expect(importer.import({ kind: 'all' })).rejects.toThrow(/journal is incomplete \(missing mutations_journal_/);
+
+    // On at bulk time, off by the delta: the gap is refused too.
+    configureMutationJournal(fx.source, true);
+    await importer.snapshot();
+    await importer.import({ kind: 'all' });
+    configureMutationJournal(fx.source, false);
+    await expect(importer.delta()).rejects.toThrow(/journal is incomplete/);
+  });
+
+  it('once the delta has started, refuses any import (it would wipe 1.1 writes) and retries its own failures', async () => {
+    const { fx, importer, local } = setup();
+    await importer.snapshot();
+    await importer.import({ kind: 'all' });
+
+    // A proxy regenerated on 1.0 after J, corrupted on the way over: the delta records it and applies nothing.
+    writeMedia(fx.sourceRoot, 'assets/asset-a1/proxy.mp4', 'regenerated proxy');
+    insertChat(fx.source, 'chat-late', 'project-a1', 'after J');
+    const broken = make(new CorruptingSource(local, 'assets/asset-a1/proxy.mp4'));
+    const failed = await broken.delta();
+    expect(failed.failures).toBe(1);
+    expect(failed.applied).toBe(0);
+    expect(importer.failures()[0]?.reason).toMatch(/^delta: /);
+
+    // 1.1 is live: a user chats and renders under an imported project.
+    dest!.prepare("INSERT INTO chat_messages (id, project_id, role, content, ops_json, created_at) VALUES ('chat-11', 'project-a1', 'user', 'on 1.1', NULL, 'x')").run();
+    dest!.prepare("INSERT INTO renders (id, project_id, resolution, status, output_path, error, created_at, updated_at) VALUES ('render-11', 'project-a1', '720p', 'done', ?, NULL, 'x', 'x')")
+      .run(writeMedia(fx.destRoot, 'renders/render-11/output.mp4', 'made on 1.1'));
+    await expect(importer.import({ kind: 'all' })).rejects.toThrow(/delta has started/);
+    await expect(importer.import({ kind: 'all' }, { force: true })).rejects.toThrow(/delta has started/);
+
+    // Re-running the delta clears its own failure, re-copies the file and replays.
+    const retried = await importer.delta();
+    expect(retried.failures).toBe(0);
+    expect(retried.applied).toBeGreaterThan(0);
+    expect(importer.failures()).toEqual([]);
+    expect(count('chat_messages', "id IN ('chat-late', 'chat-11')")).toBe(2);
+    expect(count('renders', "id = 'render-11'")).toBe(1);
+    expect(existsSync(join(fx.destRoot, 'renders/render-11/output.mp4'))).toBe(true);
+    expect(sha(join(fx.destRoot, 'assets/asset-a1/proxy.mp4'))).toBe(sha(join(fx.sourceRoot, 'assets/asset-a1/proxy.mp4')));
+    expect(importer.state().deltaStarted).toBeDefined();
   });
 
   it('backs up 1.1 with the backup API before the volume snapshot (C22)', async () => {
