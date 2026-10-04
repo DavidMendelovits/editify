@@ -10,8 +10,9 @@ import Foundation
 ///     │    installed, or installable now (allowModelDownload) ── no ─▶ next
 ///     │    └─ yes ─ model download fails ─▶ next (TranscriberIneligible; no `unavailable`, no loop)
 ///     │           └─ ok ─▶ FinalResult[] ──────────────────────────────────────────────┐
-///     ├─ SFSpeech on-device: eligible? recognizer for the locale + on-device support ─ no ─▶ next
-///     │    └─ yes ─ speech permission? (SpeechAuthorization; requested only with asksForSpeech)│
+///     ├─ SFSpeech on-device: speech permission first (SpeechAuthorization; requested only with
+///     │    asksForSpeech), then eligible? recognizer for the locale + on-device support ─ no ─▶ next
+///     │    └─ permission:                                                                │
 ///     │           ├─ notDetermined ─▶ unavailable(code speechRecognitionNotAsked): the   │
 ///     │           │                   app's pre-prompt sheet asks, with Editify in front │
 ///     │           │                   (C15), and JS re-queues the part once granted      │
@@ -74,11 +75,9 @@ public final class TranscriberChain<Asset>: @unchecked Sendable {
     var reasons: [String] = []
     let trigger = currentTrigger
     for link in links {
-      if case .ineligible(let reason) = await link.eligibility(locale: locale, allowModelDownload: allowModelDownload) {
-        reasons.append(reason)
-        continue
-      }
       if link.requiresSpeechAuthorization {
+        // Before eligibility: without the permission SFSpeech can't run (and the system may not
+        // fetch its on-device model), and the actionable answer is the Settings link (D21).
         // No prompt by default: a words run can start with Editify in the background, where the
         // system prompt can't be answered. Not asked yet means the pre-prompt sheet asks (C15).
         var status = authorization.status
@@ -91,6 +90,10 @@ public final class TranscriberChain<Asset>: @unchecked Sendable {
           result.trigger = trigger
           return result
         }
+      }
+      if case .ineligible(let reason) = await link.eligibility(locale: locale, allowModelDownload: allowModelDownload) {
+        reasons.append(reason)
+        continue
       }
       var result: PartResult
       do {
