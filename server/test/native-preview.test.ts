@@ -16,8 +16,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
  * at the same time, (revision, buildSeq) ordering, 60 Hz box updates while
  * playing and while paused, audio continuity through an audio tap, a proxy
  * replaced by its original, the lifecycle holds (backgrounded and parked kept
- * apart), server copies through token refreshes and expiry, and the preview's
- * downloads and temp stills.
+ * apart), server copies through token refreshes and expiry (also over HTTP,
+ * from a local server that checks the token's exp on every read), and the
+ * preview's downloads and temp stills.
  *
  * Needs swiftc (macOS). Elsewhere it skips, except where REQUIRE_SWIFT=1 (the
  * macOS CI `engine` job): there a missing toolchain fails. The golden
@@ -69,17 +70,42 @@ interface Report {
     backgroundPark: { accepted: boolean; itemWhileBackgrounded: boolean; appliedWhileBackgrounded: number; item: boolean; timeKept: boolean; appliedAfterResume: number };
     teardown: { applied: number; item: boolean };
   };
-  pausedDrag60: { sent: number; applied: number; refreshedFrames: number; refreshIntervalMs: Stats; stillAtTime: boolean; finalAtLast?: Vec };
+  pausedDrag60: {
+    sent: number; applied: number; refreshedFrames: number; refreshIntervalMs: Stats; stillAtTime: boolean; finalAtLast?: Vec;
+    lastDrawn: boolean; lastDrawnAfterMs: number;
+  };
+  pausedSeekAhead: { rightWithinMs: number; seeksLanded: number; samples: string[] };
+  transientLog: { paused: { sameItem: boolean; reconnects: number; stalls: number }; playing: { sameItem: boolean; reconnects: number; buffered: boolean; playing: boolean } };
+  shortPicture: { pictureEnd: number; soundEnd: number; ended: boolean; reconnects: number; expired: number; errors: number };
   proxySwap: { first: string; second: string; proxyCode: number; reloaded: boolean; othersKept: boolean; originalCompare: Compare };
   renderCap: { scale4k: number; scale4kInView: number };
   serverCopies: {
-    tokenRefresh: { mode: string; sameItem: boolean; sameSource: boolean; stale: string[] };
-    staleRetry: { rebuilt: boolean; reloaded: boolean; stale: string[]; expired: number; errors: number; timeKept: boolean };
+    paused: { mode: string; newItem: boolean; reloaded: boolean; stale: string[]; timeKept: boolean };
+    playing: { mode: string; sameItem: boolean; sameSource: boolean; stale: string[]; playing: boolean };
+    staleRetry: { rebuilt: boolean; reloaded: boolean; stale: string[]; expired: number; errors: number };
+    pauseSwap: { staleWhilePlaying: string[]; rebuilt: boolean; reloaded: boolean; stale: string[] };
     asked: { expired: number; errors: number; sameItem: boolean; applied: number; state: string };
-    retried: { mode: string; reloaded: boolean; state: string; timeKept: boolean };
+    interleave: { mode: string; reloaded: boolean; state: string; expired: number; errors: number };
+    retried: { mode: string; reloaded: boolean; state: string };
     fellBack: { expired: number; errors: number };
     structuralSwap: { staleBefore: string[]; mode: string; reloaded: boolean; staleAfter: string[] };
+    loadFailure: { mode: string; expired: number; errors: number; state: string };
+    loadRetried: { mode: string; state: string; errors: number };
   };
+  http: {
+    expiring: { reported: boolean; reportMs: number; expired: number; errors: number; retryMode: string; code: number; errorsAfter: number; refused: number };
+    staleSwap: { mode: string; staleWhilePlaying: string[]; moved: boolean; expired: number; errors: number; refused: number; code: number };
+  };
+  skew: Record<'withoutOffset' | 'withOffset', { reported: boolean; expired: number; refusedBeforeReport: number }>;
+  silentDrop: {
+    backSoon: {
+      detected: boolean; cutToDetectMs: number; starveToDetectMs: number; buffering: boolean; reconnects: number; failedRequests: number;
+      recovered: boolean; expired: number; errors: number; code: number;
+    };
+    staysDown: { asked: boolean; expired: number; errors: number; reconnects: number; retryMode: string; code: number; errorsAfter: number };
+  };
+  errorLogKinds: string[];
+  stickerAdd: Record<'onFrame' | 'roundedUp' | 'floored', { mode: string; changed: number; timeKept: boolean }> & { errors: string[] };
   previewFiles: { runs: number; ended: number; cancelled: number; keptDeleted: boolean; lateDeleted: boolean; lateThrew: boolean; held: number };
   /** False on a machine with no audio output device (CI VMs): muted players, no tap. */
   audioDevice: boolean;
@@ -99,7 +125,7 @@ beforeAll(async () => {
   const sources = ['Core/RenderPlan', 'Engine/PlanBuilder', 'Engine/EditifyCompositor', 'Core/CaptionRenderer', 'Core/OverlayGraphics', 'Core/AnalysisMath',
     'Engine/PlanPlayer', 'Core/PreviewFiles', 'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/Adapters/ConfigurationVideoComposition']
     .map((name) => join(engine, 'ios', `${name}.swift`));
-  const harness = [join(engine, 'parity/render-golden/HarnessMedia.swift'), join(engine, 'parity/preview/main.swift')];
+  const harness = ['render-golden/HarnessMedia.swift', 'preview/MediaServer.swift', 'preview/main.swift'].map((name) => join(engine, 'parity', name));
   await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
   const args = [join(engine, 'parity/goldens/manifest.json'), root, join(dir, 'work'), join(dir, 'out')];
   // The harness bounds itself (a watchdog exits with the stuck step within 300 s and prints a
@@ -246,20 +272,79 @@ describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
     });
   });
 
-  it('keeps the item and its source through a token-only refresh, and swaps the URL at the next rebuild', () => {
-    const { tokenRefresh, staleRetry, structuralSwap } = report.serverCopies;
-    expect(tokenRefresh).toEqual({ mode: 'update', sameItem: true, sameSource: true, stale: ['asset-talk'] });
-    // The old token expiring under it: rebuilt on the URL already held, with no request for media.
-    expect(staleRetry).toEqual({ rebuilt: true, reloaded: true, stale: [], expired: 0, errors: 0, timeKept: true });
+  it('moves a token-only refresh to the new URL at once when paused, and at the next pause or rebuild when playing', () => {
+    const { paused, playing, staleRetry, pauseSwap, structuralSwap } = report.serverCopies;
+    expect(paused).toEqual({ mode: 'rebuild', newItem: true, reloaded: true, stale: [], timeKept: true });
+    // Playing: no rebuild (no clock freeze); the source is token-stale until a pause or rebuild.
+    expect(playing).toEqual({ mode: 'update', sameItem: true, sameSource: true, stale: ['asset-talk'], playing: true });
+    // The old token failing under it: rebuilt on the URL already held, with no request for media.
+    expect(staleRetry).toEqual({ rebuilt: true, reloaded: true, stale: [], expired: 0, errors: 0 });
+    expect(pauseSwap).toEqual({ staleWhilePlaying: ['asset-talk'], rebuilt: true, reloaded: true, stale: [] });
     expect(structuralSwap).toEqual({ staleBefore: ['asset-talk'], mode: 'rebuild', reloaded: true, staleAfter: [] });
   });
 
-  it('asks for fresh media when server copies fail, retries on them, and reports a failure after that', () => {
-    const { asked, retried, fellBack } = report.serverCopies;
+  it('asks for fresh media when server copies fail, retries only on the tagged plan, and reports a failure after that', () => {
+    const { asked, interleave, retried, fellBack } = report.serverCopies;
     // No retry on the same URLs: one mediaExpired, the failed item left as is.
     expect(asked).toEqual({ expired: 1, errors: 0, sameItem: true, applied: 0, state: 'awaiting' });
-    expect(retried).toEqual({ mode: 'rebuild', reloaded: true, state: 'retried', timeKept: true });
+    // An untagged edit landing meanwhile applies on the old URLs and doesn't spend the retry,
+    // and its item failing too is neither a second request nor an error.
+    expect(interleave).toEqual({ mode: 'rebuild', reloaded: false, state: 'awaiting', expired: 1, errors: 0 });
+    expect(retried).toEqual({ mode: 'rebuild', reloaded: true, state: 'retried' });
     expect(fellBack).toEqual({ expired: 1, errors: 1 });
+  });
+
+  it('treats a server copy that fails to load like a failed item: one request for media, then the retry', () => {
+    const { loadFailure, loadRetried } = report.serverCopies;
+    expect(loadFailure).toEqual({ mode: 'failed', expired: 1, errors: 0, state: 'awaiting' });
+    expect(loadRetried).toEqual({ mode: 'rebuild', state: 'retried', errors: 0 });
+  });
+
+  it('acts before a media token expires mid-play over HTTP, instead of playing on over refused reads', () => {
+    const { expiring, staleSwap } = report.http;
+    // No newer URL held: mediaExpired before the 5 s token runs out, then the fresh URL plays
+    // real frames from the server (the embedded code is the source frame).
+    expect(expiring).toMatchObject({ reported: true, expired: 1, errors: 0, retryMode: 'rebuild', code: 60, errorsAfter: 0, refused: 0 });
+    expect(expiring.reportMs).toBeLessThan(8000);
+    // A refreshed token held while playing: moved to it before the old one expired, no read refused.
+    expect(staleSwap).toEqual({ mode: 'update', staleWhilePlaying: ['asset-talk'], moved: true, expired: 0, errors: 0, refused: 0, code: 75 });
+  });
+
+  it('moves token deadlines to the device clock: a phone 20 s behind gets no read refused', () => {
+    const { withoutOffset, withOffset } = report.skew;
+    // Without the offset the deadline comes 20 s late and the server refuses reads first.
+    expect(withoutOffset.refusedBeforeReport).toBeGreaterThan(0);
+    expect(withOffset).toEqual({ reported: true, expired: 1, refusedBeforeReport: 0 });
+  });
+
+  it('catches a silent drop within a second of starving and reconnects natively, or asks for media if the server stays down', () => {
+    const { backSoon, staysDown } = report.silentDrop;
+    console.info('native preview silent drop:', JSON.stringify({ cutToDetectMs: backSoon.cutToDetectMs, starveToDetectMs: backSoon.starveToDetectMs }));
+    expect(backSoon).toMatchObject({ detected: true, buffering: true, recovered: true, expired: 0, errors: 0, code: 100 });
+    expect(backSoon.starveToDetectMs).toBeGreaterThan(0);
+    expect(backSoon.starveToDetectMs).toBeLessThan(2000);
+    // The buffer ahead (about a second at this rate) plays out first; a CI VM is slower.
+    expect(backSoon.cutToDetectMs).toBeLessThan(8000);
+    expect(staysDown).toMatchObject({ asked: true, expired: 1, errors: 0, reconnects: 3, retryMode: 'rebuild', code: 100, errorsAfter: 0 });
+  });
+
+  it('reads token refusals and transient failures from error-log entries, whatever the code', () => {
+    expect(report.errorLogKinds).toEqual([
+      'tokenRefused', 'tokenRefused', 'tokenRefused', 'tokenRefused', // 401/403 as status, or in a CoreMedia comment
+      'other', 'other', // 404, and a 401 that is really 4013
+      'transient', 'transient', 'transient', 'transient', // 503 in a comment, 500, offline, connection lost
+      'other',
+    ]);
+  });
+
+  it('draws a sticker added while paused at the frame on screen at once', () => {
+    const { onFrame, roundedUp, floored, errors } = report.stickerAdd;
+    expect(onFrame).toMatchObject({ mode: 'update', timeKept: true });
+    expect(onFrame.changed).toBeGreaterThan(500);
+    expect(floored).toEqual(onFrame);
+    // The old stamp (rounded up to the ms) starts on the next frame: [start, end) is right not to draw it.
+    expect(roundedUp).toMatchObject({ mode: 'update', changed: 0, timeKept: true });
+    expect(errors).toEqual([]);
   });
 
   it('never starts a download on an invalidated session, and deletes a still that lands after teardown', () => {
@@ -275,6 +360,27 @@ describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
     expect(paused.applied).toBeGreaterThan(0);
     expect(paused.refreshedFrames).toBeGreaterThan(paused.sent / 6);
     expect(Math.min(...paused.finalAtLast!)).toBeGreaterThan(0.95);
+    // The last coalesced update is drawn with no settling plan (a lenient bound for a slow VM).
+    expect(paused.lastDrawn).toBe(true);
+    expect(paused.lastDrawnAfterMs).toBeLessThan(5000);
+  });
+
+  it('shows the right frame after a paused exact seek into remote bytes still arriving, with no re-seek from outside', () => {
+    const ahead = report.pausedSeekAhead;
+    expect(ahead.rightWithinMs, ahead.samples.join(' | ')).toBeGreaterThan(0);
+    expect(ahead.rightWithinMs).toBeLessThan(10_000);
+  });
+
+  it('takes one transient error-log entry as a reason to watch, not to reload', () => {
+    const { paused, playing } = report.transientLog;
+    expect(paused).toEqual({ sameItem: true, reconnects: 0, stalls: 0 });
+    expect(playing).toEqual({ sameItem: true, reconnects: 0, buffered: true, playing: true });
+  });
+
+  it('plays a remote clip whose picture ends before its sound at a quarter speed without a reconnect', () => {
+    const short = report.shortPicture;
+    expect(short.pictureEnd).toBeLessThan(short.soundEnd);
+    expect(short).toMatchObject({ ended: true, reconnects: 0, expired: 0, errors: 0 });
   });
 
   it('reloads only the asset whose proxy was replaced by its original', () => {
