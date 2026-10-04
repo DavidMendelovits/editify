@@ -14,11 +14,14 @@ export interface ClientConfig {
   minVersion: string;
   latestVersion: string;
   storeUrl: string;
-  minOs?: string;
+  /** Always sent, so no client has to guess the floor. */
+  minOs: string;
 }
 
 export const DEFAULT_MIN_VERSION = '1.0.0';
 export const DEFAULT_STORE_URL = 'https://apps.apple.com/app/id6814607865';
+/** Editify 1.1's iOS floor. MIN_IOS_VERSION overrides it. */
+export const DEFAULT_MIN_OS = '18.0';
 
 const VERSION = /^\d+(\.\d+){0,2}$/;
 
@@ -31,16 +34,26 @@ function version(value: string | undefined, fallback: string, name: string, warn
   return fallback;
 }
 
+/**
+ * The client drops the whole config when `storeUrl` is not http(s), which
+ * would quietly un-gate every phone, so a bad secret falls back here instead.
+ */
+function storeUrl(value: string | undefined, warn: (message: string) => void): string {
+  const trimmed = value?.trim();
+  if (!trimmed) return DEFAULT_STORE_URL;
+  if (/^https?:\/\/\S+$/i.test(trimmed)) return trimmed;
+  warn(`APP_STORE_URL=${JSON.stringify(trimmed)} is not an http(s) URL; using ${DEFAULT_STORE_URL}`);
+  return DEFAULT_STORE_URL;
+}
+
 export function readClientConfig(env: NodeJS.ProcessEnv = process.env, warn: (message: string) => void = console.warn): ClientConfig {
   const minVersion = version(env.MIN_APP_VERSION, DEFAULT_MIN_VERSION, 'MIN_APP_VERSION', warn);
   const latestVersion = version(env.LATEST_APP_VERSION, minVersion, 'LATEST_APP_VERSION', warn);
-  const minOsRaw = env.MIN_IOS_VERSION?.trim();
-  const minOs = minOsRaw ? version(minOsRaw, '', 'MIN_IOS_VERSION', warn) : '';
   return {
     minVersion,
     latestVersion,
-    storeUrl: env.APP_STORE_URL?.trim() || DEFAULT_STORE_URL,
-    ...(minOs ? { minOs } : {}),
+    storeUrl: storeUrl(env.APP_STORE_URL, warn),
+    minOs: version(env.MIN_IOS_VERSION, DEFAULT_MIN_OS, 'MIN_IOS_VERSION', warn),
   };
 }
 

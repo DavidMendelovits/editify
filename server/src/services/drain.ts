@@ -38,3 +38,31 @@ export async function waitForDrain(readJobs: () => Promise<PendingJobs>, options
     await sleep(intervalMs);
   }
 }
+
+export interface HealthReadOptions {
+  /** Per request. A hung server must not hold the drain past its own timeout. Default 5s. */
+  timeoutMs?: number;
+  fetcher?: typeof fetch;
+}
+
+/**
+ * One read of `/health`'s job counts. Aborts after `timeoutMs` and throws, so
+ * `waitForDrain` counts a server that stops answering as busy, never idle.
+ */
+export async function readHealthJobs(url: string, options: HealthReadOptions = {}): Promise<PendingJobs> {
+  const { timeoutMs = 5_000, fetcher = fetch } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetcher(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`${url} answered ${response.status}`);
+    const body = await response.json() as { jobs?: PendingJobs };
+    if (!body.jobs) throw new Error(`${url} reports no job counts; is this server older than the drain support?`);
+    return body.jobs;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`${url} did not answer within ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}

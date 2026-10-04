@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { compareVersions, decideGate, fetchClientConfig, osLabel, parseClientConfig, type ClientConfig } from './client-config';
+import { behindGate, compareVersions, decideGate, fetchClientConfig, osLabel, parseClientConfig, type ClientConfig } from './client-config';
 
 const STORE = 'https://apps.apple.com/app/id6814607865';
 const config = (overrides: Partial<ClientConfig> = {}): ClientConfig => ({
@@ -110,5 +110,12 @@ describe('osLabel', () => {
   it('drops trailing zero parts', () => {
     expect(osLabel('18.0')).toBe('18');
     expect(osLabel('17.4')).toBe('17.4');
+  });
+});
+
+describe('behindGate', () => {
+  it('hides the app from VoiceOver and TalkBack only while the gate blocks', () => {
+    expect(behindGate(true)).toEqual({ accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' });
+    expect(behindGate(false)).toEqual({ accessibilityElementsHidden: false, importantForAccessibility: 'auto' });
   });
 });

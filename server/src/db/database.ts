@@ -177,6 +177,17 @@ function migrate(database: EditifyDatabase): void {
       track_json TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    -- Processed delete-account webhooks (routes/webhooks.ts), one row per event
+    -- id so a redelivery is a no-op. Created here, before the mutations journal
+    -- is configured, so its rows are journaled from the first boot onward.
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      event_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      processed_at TEXT NOT NULL,
+      result_json TEXT NOT NULL
+    );
   `);
 
   const transcriptColumns = database.prepare('PRAGMA table_info(transcripts)').all() as Array<{ name: string }>;

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -31,7 +31,16 @@ let jwks: JWTVerifyGetKey;
 let headers: Record<string, string> = {};
 const ids = { project: '', render: '', queued: '', asset: 'seeded-clip', fresh: 'fresh-clip' };
 
-const sha256 = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
+/**
+ * editify.db and its -wal together: in WAL mode a commit lands in the -wal
+ * file first, so hashing the .db alone would miss a write the freeze let
+ * through until the next checkpoint.
+ */
+const sha256 = (path: string): string => {
+  const hash = createHash('sha256');
+  for (const file of [path, `${path}-wal`]) hash.update(`${file.slice(path.length)}:`).update(existsSync(file) ? readFileSync(file) : 'absent');
+  return hash.digest('hex');
+};
 
 beforeAll(async () => {
   for (const key of ENV_KEYS) {
@@ -61,8 +70,13 @@ beforeAll(async () => {
   copyFileSync(clip, join(media, 'proxy.mp4'));
   writeFileSync(join(media, 'out.mp4'), 'master');
 
-  // Seed through a normal, writable open, then close: this is the file 1.0 freezes.
-  const database = createDatabase(dbPath, { readonly: false, journal: false });
+  // Seed through a normal, writable open: this is the file 1.0 freezes. The
+  // last commits stay in editify.db-wal (no automatic checkpoint, and the
+  // files are copied before the clean close would fold them in), the state a
+  // machine is in when the flip lands before a checkpoint.
+  const seedPath = join(dir, 'seed.db');
+  const database = createDatabase(seedPath, { readonly: false, journal: false });
+  database.pragma('wal_autocheckpoint = 0');
   const projects = new ProjectStore(database);
   ids.project = projects.create({ title: 'Frozen', format: '9:16', fps: 30 }, ALICE).id;
   const assets = new AssetStore(database);
@@ -84,6 +98,7 @@ beforeAll(async () => {
   // Stranded by a restart: a writable boot would re-queue it.
   ids.queued = renders.create(ids.project, '720p').id;
   new ChatStore(database).add(ids.project, 'user', 'cut the intro');
+  for (const suffix of ['', '-wal', '-shm']) copyFileSync(`${seedPath}${suffix}`, `${dbPath}${suffix}`);
   database.close();
 });
 
@@ -100,7 +115,9 @@ async function frozenApp(): Promise<FastifyInstance> {
 }
 
 describe('READ_ONLY=1', () => {
-  it('serves a sweep of reads, refuses every write, and leaves the SQLite file byte-identical', async () => {
+  it('serves a sweep of reads, refuses every write, and leaves editify.db and its -wal byte-identical', async () => {
+    // The freeze has to hold for commits still in the WAL, not just the .db.
+    expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
     const before = sha256(dbPath);
     const app = await frozenApp();
     const { project, render, queued, asset, fresh } = ids;

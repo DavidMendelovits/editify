@@ -14,7 +14,7 @@ export interface ClientConfig {
   minVersion: string;
   latestVersion: string;
   storeUrl: string;
-  /** The iOS floor of `latestVersion`. Absent means the 1.1 floor below. */
+  /** The iOS floor of `latestVersion`. Servers always send it now; absent (an older server) means the 1.1 floor below. */
   minOs?: string;
 }
 
@@ -118,4 +118,18 @@ export async function fetchClientConfig(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Accessibility props for the app behind the gate. The gate is drawn over the
+ * navigator, so without these VoiceOver could still swipe into the screens it
+ * covers (iOS reads `accessibilityElementsHidden`, Android the other).
+ */
+export function behindGate(blocking: boolean): {
+  accessibilityElementsHidden: boolean;
+  importantForAccessibility: 'auto' | 'no-hide-descendants';
+} {
+  return blocking
+    ? { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' }
+    : { accessibilityElementsHidden: false, importantForAccessibility: 'auto' };
 }

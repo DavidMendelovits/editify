@@ -56,7 +56,6 @@ export async function registerWebhookRoutes(app: FastifyInstance, database: Edit
       if (!parsed.success) return await reply.code(400).send({ error: 'Not a user.deleted event' });
       const { event_id: eventId, user_id: userId } = parsed.data;
 
-      ensureEventTable(database);
       if (database.prepare('SELECT 1 FROM webhook_events WHERE event_id = ?').get(eventId)) {
         request.log.info({ audit: 'user-deleted', eventId, userId, duplicate: true }, 'user-deleted event already processed');
         return await reply.code(200).send({ status: 'duplicate', eventId });
@@ -83,22 +82,6 @@ export async function registerWebhookRoutes(app: FastifyInstance, database: Edit
       return await reply.code(200).send({ status: 'purged', eventId, purged });
     });
   });
-}
-
-/**
- * Created on first use rather than at boot: a read-only server opens SQLite
- * read-only, and it never reaches this line (it answers 503 above).
- */
-function ensureEventTable(database: EditifyDatabase): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS webhook_events (
-      event_id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      processed_at TEXT NOT NULL,
-      result_json TEXT NOT NULL
-    )
-  `);
 }
 
 function header(value: string | string[] | undefined): string | undefined {

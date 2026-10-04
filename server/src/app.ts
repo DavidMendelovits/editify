@@ -42,6 +42,7 @@ import { TelemetryService } from './services/telemetry-service.js';
 import { TranscriptService } from './services/transcript-service.js';
 import { mediaSlots } from './services/media-slots.js';
 import { readOnlyFromEnv, registerReadOnlyGate } from './read-only.js';
+import { checkpointAndClose } from './shutdown.js';
 
 export interface AppOptions {
   database?: EditifyDatabase;
@@ -162,7 +163,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return await reply.code(500).send({ error: error instanceof Error ? error.message : 'Internal server error' });
   });
 
-  app.addHook('onClose', async () => { database.close(); });
+  // Every request has finished by now: fold the WAL into editify.db before closing.
+  app.addHook('onClose', async () => { checkpointAndClose(database, (line) => app.log.warn(line)); });
   return app;
 }
 
