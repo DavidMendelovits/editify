@@ -4,7 +4,7 @@ import { renderSnapshot, type AssetAvailability, type AssetMetadata, type PlanAs
 import type { ExportProjectOptions, ExportStateEvent } from '../../modules/editify-engine';
 import {
   assetInfoOf, buildExportPlan, canFinishOnServer, DEVICE_EXPORT_RESOLUTIONS, exportOnDevice, exportReducer, exportStateLabel, finishOnServer,
-  finishOnServerOnce, isTerminal, missingClipsLine, copyFileName, mimeTypeOf, OFFLINE_LINE, planAssetRefs, projectAssetRefs, routeExport,
+  finishOnServerOnce, isTerminal, LOW_TIER_LINE, missingClipsLine, copyFileName, mimeTypeOf, OFFLINE_LINE, planAssetRefs, projectAssetRefs, routeExport,
   serverRenderable, serverRouteLine, STARTING, uploadMissing,
   type DeviceExportView, type ExportNative, type FinishOnServerArgs, type GeometryMap, type OriginalFile, type ServerCheck,
 } from './device-export';
@@ -174,6 +174,23 @@ describe('routing', () => {
     expect((await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '720p')).kind).toBe('device');
   });
 
+  it('sends a low-tier iPhone (D13) to the server with why device, every clip local or not', async () => {
+    const route = await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '1080p', undefined, 'low');
+    expect(route).toEqual({ kind: 'server', why: 'device', missing: [] });
+    expect(serverRouteLine(route)).toBe(LOW_TIER_LINE);
+    expect(LOW_TIER_LINE).toBe('This iPhone exports on the server to stay within its memory.');
+    // Even 720p, and ahead of the 4K reason.
+    expect(await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '720p', undefined, 'low')).toMatchObject({ why: 'device' });
+    expect(await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '4k', undefined, 'low')).toMatchObject({ why: 'device' });
+    // Without the engine there is no tier to speak of.
+    expect(await routeExport(fixture('crossfade'), null, nameOf, '1080p', undefined, 'low')).toMatchObject({ why: 'no-engine' });
+  });
+
+  it.each(['full', 'standard', null, undefined] as const)('exports on the device on a %s tier', async (tier) => {
+    const route = await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '1080p', undefined, tier);
+    expect(route.kind).toBe('device');
+  });
+
   it('goes to the server without the engine or without a plan, with no clip line', async () => {
     const noEngine = await routeExport(fixture('crossfade'), null, nameOf);
     expect(noEngine).toEqual({ kind: 'server', why: 'no-engine', missing: [] });
@@ -309,6 +326,15 @@ describe('exportOnDevice', () => {
     warn.mockRestore();
   });
 
+  it('never leases or starts on a low-tier iPhone', async () => {
+    const deps = await bothLocal();
+    const engine = fakeEngine(() => undefined);
+    const outcome = await exportOnDevice({ build: () => fixture('crossfade'), resolution: '1080p', tier: 'low', deps, native: engine.native, nameOf, onUpdate: () => undefined });
+    expect(outcome).toEqual({ kind: 'server', route: { kind: 'server', why: 'device', missing: [] } });
+    expect(engine.calls).toHaveLength(0);
+    expect(isLeased(deps, 'asset-a')).toBe(false);
+  });
+
   it('never leases or starts for 4K or a project that cannot become a plan', async () => {
     const deps = await bothLocal();
     const engine = fakeEngine(() => undefined);
@@ -440,6 +466,16 @@ describe('the server fallback (OV1)', () => {
     const both = await routeExport(fixture('crossfade'), deps, nameOf, '4k', server({ 'asset-a': 'absent', 'asset-b': 'absent' }));
     expect(both).toMatchObject({ server: { state: 'blocked' } });
     expect(serverRouteLine(both)).toBe("Intro and Interview aren't on the server. Import them again to export.");
+  });
+
+  it('tells a low-tier iPhone why it renders on the server, then what the server still needs', async () => {
+    const ready = await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '1080p', server({ 'asset-a': 'present', 'asset-b': 'present' }), 'low');
+    expect(ready).toMatchObject({ kind: 'server', why: 'device', server: { state: 'ready' } });
+    expect(serverRenderable(ready)).toBe(true);
+    expect(serverRouteLine(ready)).toBe(LOW_TIER_LINE);
+    const upload = await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '1080p', server({ 'asset-a': 'present' }), 'low');
+    expect(upload).toMatchObject({ why: 'device', server: { state: 'upload', clips: [{ assetId: 'asset-b' }] } });
+    expect(serverRouteLine(upload)).toBe(`${LOW_TIER_LINE} Upload Interview to export.`);
   });
 
   it('can still ask for the render when the check itself fails (the server rechecks the snapshot)', async () => {

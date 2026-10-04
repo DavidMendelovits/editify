@@ -47,3 +47,16 @@ describe('GET /health', () => {
     }
   });
 });
+
+describe('server logs', () => {
+  it('carry the line and commit on every line (C12)', async () => {
+    process.env.LINE = '1.1';
+    process.env.GIT_SHA = 'deadbeef';
+    const app = await buildApp({ database: createDatabase(':memory:'), databaseUrl: null, logger: true });
+    try {
+      expect(app.log.bindings()).toMatchObject({ line: '1.1', commit: 'deadbeef' });
+    } finally {
+      await app.close();
+    }
+  });
+});
