@@ -125,7 +125,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   await registerWebClient(app);
 
   // line + commit: which server line (1.0 on editify-dm, 1.1 on editify-v11) and build answered.
-  app.get('/health', async () => ({ ok: true, ...buildInfo(), provider: (await resolveProvider()).name }));
+  // sync: whether this machine has Postgres project sync (DATABASE_URL), so the deploy smoke knows to check /sync.
+  app.get('/health', async () => ({ ok: true, ...buildInfo(), provider: (await resolveProvider()).name, sync: Boolean(pg) }));
   app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   // Built-in SFX/music, synthesized on first request and registered as assets.
   app.get('/sounds', async () => await ensureSoundLibrary(assets));
@@ -136,7 +137,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
-  registerAgentTurnRoutes(app, agent, pg?.lock ? { lock: new PgTurnLock(pg.lock) } : {});
+  registerAgentTurnRoutes(app, agent, pg?.lock ? { lock: new PgTurnLock(pg.lock, pg.schema) } : {});
   registerSyncRoutes(app, pg ? new PgSyncStore(pg.sync, pg.schema) : undefined);
   registerTelemetryRoutes(app, telemetry);
 
