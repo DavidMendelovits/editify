@@ -35,12 +35,21 @@ jobs:
   # native fingerprint against existing EAS builds: JS-only changes go out as an
   # OTA update on the preview channel, and a native change starts a new iOS
   # preview build instead (which only reaches phones once it is installed).
+  #
+  # The API URL: a build takes it from the eas.json profile's env, but `eas
+  # update` does not read build profile env, and the EAS preview environment
+  # does not define it. So a step exports the profile's eas.json env (API URL,
+  # Google client ids) before the update; without it every OTA fell back to
+  # http://localhost:3001 (src/lib/api.ts) and hid Google sign-in.
   preview:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: { group: eas-preview, cancel-in-progress: false }
     permissions: { contents: read, pull-requests: write }
+    env:
+      PROFILE: preview
+      EXPECTED_API_URL: https://editify-dm.fly.dev
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -48,6 +57,39 @@ jobs:
       - run: npm ci
       - uses: expo/expo-github-action@v8
         with: { eas-version: latest, token: "${{ secrets.EXPO_TOKEN }}" }
+      # The release/1.1 line shares this environment, so it must not set the API URL.
+      # A failed listing fails the step (the assignment carries eas's exit status) rather than passing unchecked.
+      - name: The EAS preview environment leaves EXPO_PUBLIC_API_URL to CI
+        working-directory: apps/mobile
+        run: |
+          listing=$(eas env:list --environment preview --format short)
+          if grep -q '^EXPO_PUBLIC_API_URL=' <<<"$listing"; then
+            echo "::error::The EAS preview environment defines EXPO_PUBLIC_API_URL; delete it so each line's updates keep their own server."; exit 1; fi
+      - name: Give the update its build profile's env
+        working-directory: apps/mobile
+        run: |
+          node - <<'JS'
+          const fs = require('fs');
+          const { build } = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+          const env = {};
+          const merge = (name) => {
+            const profile = build[name];
+            if (!profile) throw new Error(`eas.json has no build profile ${name}`);
+            if (profile.extends) merge(profile.extends);
+            Object.assign(env, profile.env);
+          };
+          merge(process.env.PROFILE);
+          if (env.EXPO_PUBLIC_API_URL !== process.env.EXPECTED_API_URL) {
+            console.log(`::error::eas.json profile ${process.env.PROFILE} sets EXPO_PUBLIC_API_URL=${env.EXPO_PUBLIC_API_URL}, not ${process.env.EXPECTED_API_URL}`);
+            process.exit(1);
+          }
+          const lines = Object.entries(env).map(([key, value]) => {
+            if (/[\r\n]/.test(String(value))) throw new Error(`${key} spans lines`);
+            return `${key}=${value}`;
+          });
+          fs.appendFileSync(process.env.GITHUB_ENV, `${lines.join('\n')}\n`);
+          console.log(`Update env from eas.json profile ${process.env.PROFILE}: ${Object.keys(env).join(', ')}`);
+          JS
       - uses: expo/expo-github-action/continuous-deploy-fingerprint@main
         with:
           profile: preview
