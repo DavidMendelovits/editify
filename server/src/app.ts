@@ -4,7 +4,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { registerAuth, type AuthOptions } from './auth.js';
-import { databaseUrl as configuredDatabaseUrl, supabaseUrl } from './config.js';
+import { buildInfo, databaseUrl as configuredDatabaseUrl, supabaseUrl } from './config.js';
 import { EDITING_PRESETS } from '@editify/shared';
 import { ZodError } from 'zod';
 import { createProvider, type ToolProvider } from './agent/providers.js';
@@ -70,6 +70,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const databaseUrl = options.databaseUrl === undefined ? configuredDatabaseUrl : options.databaseUrl ?? undefined;
   // Throws on an unsafe configuration (remote host without TLS settled), so a bad deploy fails at boot.
   const pg = databaseUrl ? createPgPools(databaseUrl) : undefined;
+  if (pg) app.log.info({ schema: pg.schema }, 'project sync on Postgres');
   const projects = new ProjectStore(database);
   const assets = new AssetStore(database);
   const renders = new RenderStore(database);
@@ -123,7 +124,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });
   await registerWebClient(app);
 
-  app.get('/health', async () => ({ ok: true, provider: (await resolveProvider()).name }));
+  // line + commit: which server line (1.0 on editify-dm, 1.1 on editify-v11) and build answered.
+  app.get('/health', async () => ({ ok: true, ...buildInfo(), provider: (await resolveProvider()).name }));
   app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   // Built-in SFX/music, synthesized on first request and registered as assets.
   app.get('/sounds', async () => await ensureSoundLibrary(assets));
@@ -135,7 +137,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
   registerAgentTurnRoutes(app, agent, pg?.lock ? { lock: new PgTurnLock(pg.lock) } : {});
-  registerSyncRoutes(app, pg ? new PgSyncStore(pg.sync) : undefined);
+  registerSyncRoutes(app, pg ? new PgSyncStore(pg.sync, pg.schema) : undefined);
   registerTelemetryRoutes(app, telemetry);
 
   app.setErrorHandler(async (error, _request, reply) => {
