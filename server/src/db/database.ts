@@ -14,18 +14,27 @@ export interface DatabaseOptions {
   journal?: boolean;
 }
 
+/**
+ * How long a statement waits on another connection's write lock before failing with
+ * SQLITE_BUSY (better-sqlite3's default is 5 s). The cutover importer's snapshot import and
+ * delta passes write this same file from another process inside long transactions while the
+ * 1.1 server is live; 15 s matches the importer's own busy_timeout, so a live write waits for
+ * a pass to commit instead of failing.
+ */
+export const SQLITE_BUSY_TIMEOUT_MS = 15_000;
+
 export function createDatabase(path = databasePath, options: DatabaseOptions = {}): EditifyDatabase {
   const readonly = options.readonly ?? readOnlyFromEnv();
   if (readonly) {
     // The read-only flag, not a convention: a writer this mode missed fails
     // loudly instead of quietly diverging from the copy 1.1 imported.
     if (path === ':memory:') throw new Error('A read-only database needs a file to read');
-    const database = new Database(path, { readonly: true, fileMustExist: true });
+    const database = new Database(path, { readonly: true, fileMustExist: true, timeout: SQLITE_BUSY_TIMEOUT_MS });
     database.pragma('foreign_keys = ON');
     return database;
   }
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-  const database = new Database(path);
+  const database = new Database(path, { timeout: SQLITE_BUSY_TIMEOUT_MS });
   database.pragma('foreign_keys = ON');
   if (path !== ':memory:') database.pragma('journal_mode = WAL');
   migrate(database);
