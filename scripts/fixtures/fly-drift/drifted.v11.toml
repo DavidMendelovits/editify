@@ -14,7 +14,7 @@ primary_region = "sjc"
   LINE = "1.1"
   # The 1.1 line's sync tables live in the v11 Postgres schema (plan D3).
   DATABASE_SCHEMA = "v11"
-  RENDER_PLAN = "1"
+  EXTRA_FLAG = "1"
 
 [http_service]
   internal_port = 3001

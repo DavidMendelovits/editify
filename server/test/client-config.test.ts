@@ -93,6 +93,14 @@ describe('GET /client-config', () => {
       expect(readClientConfig(off)).not.toHaveProperty('testServer');
     }
   });
+
+  it('sends nativePreview: false only while NATIVE_PREVIEW=0 (the kill switch), and omits it otherwise', () => {
+    expect(readClientConfig({ NATIVE_PREVIEW: '0' }).nativePreview).toBe(false);
+    expect(readClientConfig({ NATIVE_PREVIEW: ' 0 ' }).nativePreview).toBe(false);
+    for (const on of [{}, { NATIVE_PREVIEW: '1' }, { NATIVE_PREVIEW: '' }, { NATIVE_PREVIEW: 'false' }]) {
+      expect(readClientConfig(on)).not.toHaveProperty('nativePreview');
+    }
+  });
 });
 
 describe('GET /renders', () => {

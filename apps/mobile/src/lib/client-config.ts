@@ -18,6 +18,11 @@ export interface ClientConfig {
   minOs?: string;
   /** True only on a pre-cutover test server (editify-v11 before launch): TestFlight builds show the test banner. */
   testServer?: true;
+  /**
+   * The native preview's remote kill switch: `false` (server NATIVE_PREVIEW=0) turns it off on
+   * builds whose profile turned it on. Absent means the build decides.
+   */
+  nativePreview?: false;
 }
 
 /** Editify 1.1 needs iOS 18; a server that does not say otherwise means that. */
@@ -56,7 +61,7 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 | null {
 /** The response, or null for anything that is not one. */
 export function parseClientConfig(value: unknown): ClientConfig | null {
   if (!value || typeof value !== 'object') return null;
-  const { minVersion, latestVersion, storeUrl, minOs, testServer } = value as Record<string, unknown>;
+  const { minVersion, latestVersion, storeUrl, minOs, testServer, nativePreview } = value as Record<string, unknown>;
   if (typeof minVersion !== 'string' || !parts(minVersion)) return null;
   if (typeof storeUrl !== 'string' || !/^https?:\/\//.test(storeUrl)) return null;
   const latest = typeof latestVersion === 'string' && parts(latestVersion) ? latestVersion : minVersion;
@@ -66,7 +71,39 @@ export function parseClientConfig(value: unknown): ClientConfig | null {
     storeUrl,
     ...(typeof minOs === 'string' && parts(minOs) ? { minOs } : {}),
     ...(testServer === true ? { testServer: true as const } : {}),
+    ...(nativePreview === false ? { nativePreview: false as const } : {}),
   };
+}
+
+/**
+ * Whether this screen may use the native preview: the build's flag (EXPO_PUBLIC_NATIVE_PREVIEW,
+ * on in the preview-1.1 profile only), unless the server's config says `nativePreview: false`.
+ * No config yet, or a failed fetch, leaves the build's flag in charge: only an explicit false
+ * turns it off.
+ */
+export function nativePreviewEnabled(buildFlag: boolean, config: ClientConfig | null | undefined): boolean {
+  return buildFlag && config?.nativePreview !== false;
+}
+
+// The last config the launch/foreground check (use-client-gate) read, for screens that need a
+// server switch without fetching again. A failed fetch keeps the previous answer.
+let latest: ClientConfig | null = null;
+const listeners = new Set<() => void>();
+
+export function rememberClientConfig(config: ClientConfig | null): void {
+  if (!config || config === latest) return;
+  latest = config;
+  for (const listener of listeners) listener();
+}
+
+export function latestClientConfig(): ClientConfig | null {
+  return latest;
+}
+
+/** For useSyncExternalStore. */
+export function subscribeClientConfig(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }
 
 export interface Device {

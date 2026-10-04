@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { behindGate, compareVersions, decideGate, fetchClientConfig, osLabel, parseClientConfig, type ClientConfig } from './client-config';
+import {
+  behindGate, compareVersions, decideGate, fetchClientConfig, latestClientConfig, nativePreviewEnabled, osLabel, parseClientConfig,
+  rememberClientConfig, subscribeClientConfig, type ClientConfig,
+} from './client-config';
 
 const STORE = 'https://apps.apple.com/app/id6814607865';
 const config = (overrides: Partial<ClientConfig> = {}): ClientConfig => ({
@@ -120,5 +123,40 @@ describe('behindGate', () => {
   it('hides the app from VoiceOver and TalkBack only while the gate blocks', () => {
     expect(behindGate(true)).toEqual({ accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' });
     expect(behindGate(false)).toEqual({ accessibilityElementsHidden: false, importantForAccessibility: 'auto' });
+  });
+});
+
+describe('the native preview kill switch', () => {
+  it('parses only an explicit nativePreview: false', () => {
+    expect(parseClientConfig({ minVersion: '1.1.0', storeUrl: STORE, nativePreview: false })?.nativePreview).toBe(false);
+    for (const value of [true, 'false', 0, null, undefined]) {
+      expect(parseClientConfig({ minVersion: '1.1.0', storeUrl: STORE, nativePreview: value })).not.toHaveProperty('nativePreview');
+    }
+  });
+
+  it('follows the build flag unless the server says false', () => {
+    expect(nativePreviewEnabled(true, config())).toBe(true);
+    expect(nativePreviewEnabled(true, null)).toBe(true);
+    expect(nativePreviewEnabled(true, undefined)).toBe(true);
+    expect(nativePreviewEnabled(true, config({ nativePreview: false }))).toBe(false);
+    // The server can only turn it off: a build without the flag stays off.
+    expect(nativePreviewEnabled(false, config())).toBe(false);
+    expect(nativePreviewEnabled(false, null)).toBe(false);
+  });
+
+  it('remembers the last config read, keeps it across a failed fetch, and tells subscribers', () => {
+    const seen: Array<ClientConfig | null> = [];
+    const unsubscribe = subscribeClientConfig(() => seen.push(latestClientConfig()));
+    const killed = config({ nativePreview: false });
+    rememberClientConfig(killed);
+    expect(latestClientConfig()).toBe(killed);
+    rememberClientConfig(null);
+    expect(latestClientConfig()).toBe(killed);
+    const restored = config();
+    rememberClientConfig(restored);
+    unsubscribe();
+    rememberClientConfig(config({ nativePreview: false }));
+    expect(seen).toEqual([killed, restored]);
+    expect(nativePreviewEnabled(true, latestClientConfig())).toBe(false);
   });
 });
