@@ -16,7 +16,7 @@
  *          parameter-only update native swaps in place); project rebuilds wait for release
  *
  *   native onError ─▶ MediaRecovery: 'mediaExpired' re-resolves the media (fresh token) and
- *     sends a forced plan; anything else, or a second failure, falls back to PreviewPlayer
+ *     sends a plan tagged mediaRetry; anything else, or a second failure, falls back to PreviewPlayer
  */
 import {
   buildRenderPlan, planOverlayLayout,
@@ -205,8 +205,8 @@ export interface FeedInput {
 }
 
 export interface PlanFeederOptions {
-  /** Hands a plan to the native view (setPlan). */
-  send: (plan: RenderPlan, media: Record<string, string>) => void;
+  /** Hands a plan to the native view (setPlan). `mediaRetry`: it answers native's 'mediaExpired'. */
+  send: (plan: RenderPlan, media: Record<string, string>, mediaRetry: boolean) => void;
   /** The project couldn't become a plan. */
   onUnbuildable?: () => void;
   /** Coalescing window for project edits, ms (default 50: a stepper burst sends twice, not ten times). */
@@ -231,6 +231,8 @@ export class PlanFeeder {
   private disposed = false;
   /** What the last full build sent (a drag clears it: native then holds a patched plan). */
   private signature: string | undefined;
+  /** The next full build answers native's request for media: sent whatever native holds, and tagged. */
+  private retryNext = false;
   private readonly options: Required<Omit<PlanFeederOptions, 'onUnbuildable'>> & Pick<PlanFeederOptions, 'onUnbuildable'>;
 
   constructor(options: PlanFeederOptions) {
@@ -249,14 +251,17 @@ export class PlanFeeder {
   get isDragging(): boolean { return this.dragging !== undefined; }
 
   /**
-   * The project, its assets, the size or the media changed. `force`: send this input's plan even
-   * when it matches what native already has (media resolved again after native asked for it:
-   * native retries on that plan, whatever its URLs).
+   * The project, its assets, the size or the media changed. `mediaRetry`: this media was resolved
+   * again after native's 'mediaExpired'; the next full build is sent even when it matches what
+   * native already has, tagged so native takes it (and only it) as its retry.
    */
-  update(input: FeedInput, force = false): void {
+  update(input: FeedInput, mediaRetry = false): void {
     if (this.disposed) return;
     this.input = input;
-    if (force) this.signature = undefined;
+    if (mediaRetry) {
+      this.signature = undefined;
+      this.retryNext = true;
+    }
     if (this.dragging !== undefined || this.timer !== undefined) {
       this.dirty = true;
       return;
@@ -281,7 +286,7 @@ export class PlanFeeder {
     // Native now holds a position the project may never get (a cancelled drag): the project's
     // plan goes again when the drag ends.
     this.dirty = true;
-    this.options.send(patched, this.input.media);
+    this.options.send(patched, this.input.media, false);
     return patched;
   }
 
@@ -332,7 +337,9 @@ export class PlanFeeder {
     this.signature = signature;
     this.seq += 1;
     this.current = plan;
-    this.options.send(plan, input.media);
+    const retry = this.retryNext;
+    this.retryNext = false;
+    this.options.send(plan, input.media, retry);
   }
 
   /** The coalescing window: changes inside it send once, when it closes. */
@@ -369,13 +376,23 @@ export interface MediaRecoveryOptions {
  * plain error if that fails too. Anything else, an expiry while a recovery is under way or
  * soon after one, or a recovery whose plan never lands: fall back to PreviewPlayer.
  *
- *   onError(mediaExpired) ─▶ reresolve() ─▶ onPlan(update | rebuild) ─▶ done
- *                                       └─▶ no plan within timeoutMs ─▶ fallback
+ *   onError(mediaExpired) ─▶ reresolve() ─▶ retrySent(buildSeq of the tagged plan)
+ *     ─▶ onPlan(that buildSeq or newer, update | rebuild) ─▶ done
+ *     └─▶ no such plan within timeoutMs of foreground time ─▶ fallback
  *   onError(anything else) ─▶ fallback
+ *
+ * Only the tagged plan ends a recovery: an edit landing meanwhile (another device's, refetched
+ * on foreground) is not the retry, natively or here. The timer stops while the app is in the
+ * background (setActive(false)) and starts over when it returns: JS can't resolve anything
+ * while suspended.
  */
 export class MediaRecovery {
   private recovering = false;
   private startedAt: number | undefined;
+  /** The buildSeq of the plan sent as the retry (undefined until it goes). */
+  private retrySeq: number | undefined;
+  private active = true;
+  private reason = '';
   private timer: unknown;
   private disposed = false;
   private readonly options: Required<MediaRecoveryOptions>;
@@ -401,12 +418,9 @@ export class MediaRecovery {
     if (event.code === 'mediaExpired' && hasRemote && !this.recovering && !recent) {
       this.recovering = true;
       this.startedAt = now;
-      this.timer = this.options.setTimer(() => {
-        this.timer = undefined;
-        if (this.disposed || !this.recovering) return;
-        this.recovering = false;
-        this.options.fallback(`native: media expired, and no plan with new media landed (${event.message})`);
-      }, this.options.timeoutMs);
+      this.retrySeq = undefined;
+      this.reason = event.message;
+      this.arm();
       this.options.reresolve();
       return;
     }
@@ -414,9 +428,26 @@ export class MediaRecovery {
     this.options.fallback(`native: ${event.message}`);
   }
 
-  /** A native onPlan: a plan applied after a re-resolve ends the recovery (native retries on it). */
-  onPlan(mode: string): void {
-    if (this.recovering && mode !== 'failed') this.stop();
+  /** The re-resolved media went to native as this buildSeq, tagged `mediaRetry`. */
+  retrySent(buildSeq: number): void {
+    if (this.recovering && this.retrySeq === undefined) this.retrySeq = buildSeq;
+  }
+
+  /**
+   * A native onPlan. The tagged plan (or a newer one native coalesced it into) applied: native is
+   * playing the fresh media, the recovery is over. Any other plan is not the retry.
+   */
+  onPlan(applied: { buildSeq: number; mode: string }): void {
+    if (this.recovering && this.retrySeq !== undefined && applied.buildSeq >= this.retrySeq && applied.mode !== 'failed') this.stop();
+  }
+
+  /** AppState: the timeout counts only foreground time (restarted in full on return). */
+  setActive(active: boolean): void {
+    if (active === this.active) return;
+    this.active = active;
+    if (!this.recovering) return;
+    if (active) this.arm();
+    else this.clearTimer();
   }
 
   dispose(): void {
@@ -424,10 +455,26 @@ export class MediaRecovery {
     this.stop();
   }
 
-  private stop(): void {
-    this.recovering = false;
+  private arm(): void {
+    this.clearTimer();
+    if (!this.active) return;
+    this.timer = this.options.setTimer(() => {
+      this.timer = undefined;
+      if (this.disposed || !this.recovering) return;
+      this.recovering = false;
+      this.options.fallback(`native: media expired, and no plan with new media landed (${this.reason})`);
+    }, this.options.timeoutMs);
+  }
+
+  private clearTimer(): void {
     if (this.timer !== undefined) this.options.clearTimer(this.timer);
     this.timer = undefined;
+  }
+
+  private stop(): void {
+    this.recovering = false;
+    this.retrySeq = undefined;
+    this.clearTimer();
   }
 }
 

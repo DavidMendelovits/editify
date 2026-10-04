@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { createClient, type Session } from '@supabase/supabase-js';
 import { setAccessToken } from './api';
+import { noteAuthEvent } from './token-clock';
 
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? 'https://xvstucurpuwpliowadnh.supabase.co';
 const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_KEY ?? 'sb_publishable_ueit6kPTSj1tJsUohEzSZQ_IEMwTBZx';
@@ -31,14 +32,20 @@ function publishSession(session: Session | null): void {
 void supabase.auth.getSession().then(({ data }) => publishSession(data.session));
 
 // One auth observer owns API token changes; screens subscribe to its snapshots.
-supabase.auth.onAuthStateChange((_event, session) => publishSession(session));
+supabase.auth.onAuthStateChange((event, session) => {
+  noteAuthEvent(event, session?.access_token);
+  publishSession(session);
+});
 
 /**
- * The current session, refreshed first when its access token has expired (the refresh then
- * reaches setAccessToken through onAuthStateChange). For a media URL that just failed.
+ * A new session, whatever the old one's expiry, so media URLs minted after it carry a new token
+ * (it reaches setAccessToken through onAuthStateChange). For media the native preview gave up on:
+ * a retry must never reuse the URL that just failed. Offline, it fails, and the retry goes on
+ * with the URLs held.
  */
 export async function freshSession(): Promise<void> {
-  await supabase.auth.getSession();
+  const { error } = await supabase.auth.refreshSession();
+  if (error) throw error;
 }
 
 export function onAuthStateChange(listener: AuthStateListener): () => void {
