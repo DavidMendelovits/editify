@@ -23,7 +23,7 @@ import { useClientGate } from '../src/lib/use-client-gate';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { syncPurchaseUser } from '../src/lib/purchases';
 import { posthog } from '../src/lib/posthog';
-import { startDeviceRuntime } from '../src/lib/device-runtime';
+import { registerSuperProperties, startDeviceRuntime } from '../src/lib/device-runtime';
 import { SpeechPrompt } from '../src/components/SpeechPrompt';
 import { colors } from '../src/lib/theme';
 
@@ -68,19 +68,25 @@ export default function RootLayout() {
     };
   }, []);
 
+  // The engine's capabilities (line, OS, tier, transcriber, background export) tag every
+  // PostHog event (C12), and the words flow listens for analysis and permission changes (C15).
+  // Before the screen effect below, so the first $screen carries the tags too.
+  useEffect(() => { startDeviceRuntime(); }, []);
+
   useEffect(() => {
     if (session === undefined) return;
-    if (session) posthog?.identify(session.user.id);
-    else posthog?.reset();
+    if (session) {
+      posthog?.identify(session.user.id);
+    } else {
+      // reset() clears the registered super-properties too: tag the next events again.
+      posthog?.reset();
+      registerSuperProperties();
+    }
   }, [session]);
 
   useEffect(() => {
     void posthog?.screen(pathname);
   }, [pathname]);
-
-  // The engine's capabilities (line, OS, tier, transcriber, background export) tag every
-  // PostHog event (C12), and the words flow listens for analysis and permission changes (C15).
-  useEffect(() => { startDeviceRuntime(); }, []);
 
   useEffect(() => {
     if (session === undefined) return;
