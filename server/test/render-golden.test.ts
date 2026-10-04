@@ -197,13 +197,29 @@ describe.skipIf(!swiftAvailable)('render goldens: both adapter sets (D22, D24)',
     // What doesn't depend on GPU timing is identical: colour tags, decoded frame codes, the
     // instruction count, durations, the mix. Not how many samples the reader handed back past
     // the end or fell short of it (its buffer sizes and the time-pitch tail vary run to run;
-    // the tone windows hold the mix).
+    // the tone windows hold the mix). Where time-pitch runs (a sped-up entry) the tail it falls
+    // short by is padded with silence, so its tone windows move with that tail (by up to 2048 of
+    // the mix's samples): held to 0.005 there, exactly everywhere else.
+    const sped = (item: Render) => (item.audio?.shortfall ?? 0) > 0 || (legacyReport.renders.find((other) => other.name === item.name)?.audio?.shortfall ?? 0) > 0;
+    const exactAudio = (item: Render) => item.audio && !sped(item)
+      ? { ...item.audio, overshootDropped: undefined, shortfall: undefined }
+      : item.audio && { samples: item.audio.samples };
     const structure = (value: Report) => value.renders.map((item) => ({
       name: item.name, emptyPlanRefused: item.emptyPlanRefused, instructions: item.instructions, durationSeconds: item.durationSeconds,
       frames: (item.frames ?? []).map((f) => ({ k: f.k, code: f.code, tags: f.tags })), sequentialCodes: item.sequentialCodes,
-      audioEdits: item.audioEdits, audio: item.audio && { ...item.audio, overshootDropped: undefined, shortfall: undefined },
+      audioEdits: item.audioEdits, audio: exactAudio(item),
     }));
     expect(structure(legacyReport)).toEqual(structure(report));
+    for (const item of report.renders.filter((candidate) => candidate.audio && sped(candidate))) {
+      const other = legacyReport.renders.find((candidate) => candidate.name === item.name)!.audio!;
+      for (const part of ['windows', 'left', 'right'] as const) {
+        for (const [window, tones] of Object.entries(item.audio![part])) {
+          for (const [hz, amplitude] of Object.entries(tones)) {
+            expect(Math.abs(other[part][window]![hz]! - amplitude), `${item.name} ${part} ${window} ${hz} Hz`).toBeLessThanOrEqual(0.005);
+          }
+        }
+      }
+    }
   });
 });
 
