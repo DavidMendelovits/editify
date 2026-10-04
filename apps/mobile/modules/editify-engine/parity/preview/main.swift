@@ -300,6 +300,8 @@ final class Rig {
   var expired: [String] = []
   /// The player's reconnect count at each `.mediaExpired` (it can go on reconnecting after).
   var reconnectsAtExpired: [Int] = []
+  /// When each `.mediaExpired` came (CFAbsoluteTime).
+  var expiredAt: [Double] = []
   var readies = 0
   let tap = TapLog()
 
@@ -328,6 +330,7 @@ final class Rig {
       case .mediaExpired(let message):
         self.expired.append(message)
         self.reconnectsAtExpired.append(self.player.reconnectCount)
+        self.expiredAt.append(CFAbsoluteTimeGetCurrent())
       case .ready: self.readies += 1
       }
     }
@@ -1229,21 +1232,24 @@ func run() async throws -> [String: Any] {
       refs["asset-talk"] = "http://127.0.0.1:\(port)\(path)?k=\(token)"
       return refs
     }
-    /// Plays a token that dies 2.5 s from now (by the server's clock) for up to 4 s. Refusals are
-    /// counted from the start of playback: on a loaded runner, loading and the first frame can
-    /// take most of the token's life, and a read refused then says nothing about the deadline.
+    /// Plays a token that dies 2.5 s from now (by the server's clock) for up to 4 s, and counts
+    /// the reads refused before the player reported the expiry. Counted from the start of
+    /// playback (on a loaded runner loading and the first frame can take most of the token's
+    /// life) up to the report itself (a report during setup leaves the item to play on its dead
+    /// token, as the policy says; those later refusals say nothing about the deadline).
     func play(offset: Double?) async throws -> [String: Any] {
       let rig = Rig()
       rig.player.expiryLead = 1
       try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)), tokenClockOffset: offset)
       _ = try await rig.frame(at: 0, fps: 30)
-      let refusedBefore = server.refused
+      let playing = CFAbsoluteTimeGetCurrent()
       rig.player.play()
       let reported = await rig.until(4) { !rig.expired.isEmpty || !rig.errors.isEmpty }
       // A refusal still in flight is counted once its request lands.
       try? await Task.sleep(nanoseconds: 300_000_000)
       defer { rig.player.teardown() }
-      return ["reported": reported, "expired": rig.expired.count, "refusedBeforeReport": server.refused - refusedBefore]
+      let reportedAt = rig.expiredAt.first ?? CFAbsoluteTimeGetCurrent()
+      return ["reported": reported, "expired": rig.expired.count, "refusedBeforeReport": server.refused(from: playing, to: reportedAt)]
     }
     // Without the offset the deadline is 20 s late: reads are refused first (the silent-drop
     // watch then catches them). With it (JS measured the device 20 s behind) none is.
