@@ -156,6 +156,13 @@ const srgbLinear = (byte: number): number => {
   return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 };
 const tone = (name: string, window: string, hz: number): number => render(name).audio!.windows[window]![String(hz)]!;
+/** Whether a plan time-scales any audio entry (speed != 1): its mix runs through time-pitch. */
+function planHasSpedAudio(name: string): boolean {
+  const harnessOnly = join(goldens, 'plans', `${name}.json`);
+  const file = readdirSync(join(goldens, 'plans')).includes(`${name}.json`) ? harnessOnly : join(root, 'packages/shared/fixtures/render-plans', `${name}.json`);
+  const { plan } = JSON.parse(readFileSync(file, 'utf8')) as { plan: { audio?: Array<{ speed: number }> } };
+  return (plan.audio ?? []).some((entry) => entry.speed !== 1);
+}
 
 describe('render goldens: harness availability', () => {
   it.runIf(required)('has swiftc where REQUIRE_SWIFT=1', () => {
@@ -197,10 +204,11 @@ describe.skipIf(!swiftAvailable)('render goldens: both adapter sets (D22, D24)',
     // What doesn't depend on GPU timing is identical: colour tags, decoded frame codes, the
     // instruction count, durations, the mix. Not how many samples the reader handed back past
     // the end or fell short of it (its buffer sizes and the time-pitch tail vary run to run;
-    // the tone windows hold the mix). Where time-pitch runs (a sped-up entry) the tail it falls
-    // short by is padded with silence, so its tone windows move with that tail (by up to 2048 of
-    // the mix's samples): held to 0.005 there, exactly everywhere else.
-    const sped = (item: Render) => (item.audio?.shortfall ?? 0) > 0 || (legacyReport.renders.find((other) => other.name === item.name)?.audio?.shortfall ?? 0) > 0;
+    // the tone windows hold the mix). Where time-pitch runs (a sped-up entry) its tail varies run
+    // to run (trimmed past the end, or padded with silence where it falls short, by up to 2048 of
+    // the mix's samples), and the tone windows move with it: held to 0.005 there, exactly
+    // everywhere else.
+    const sped = (item: Render) => planHasSpedAudio(item.name);
     const exactAudio = (item: Render) => item.audio && !sped(item)
       ? { ...item.audio, overshootDropped: undefined, shortfall: undefined }
       : item.audio && { samples: item.audio.samples };
