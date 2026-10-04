@@ -1,0 +1,91 @@
+{
+  "description": "Harness-only: holds on a variable-frame-rate source (frame durations 1/30, 1/60, 1/20 s cycling). 0-1 s holds frame 10 at its exact PTS; 1-2 s holds 50 us before frame 20's PTS, which must show frame 19 for the whole segment.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 1,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 2,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 1,
+          "layers": [
+            {
+              "clipId": "v",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-vfr",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": [],
+              "hold": {
+                "frameAt": 0.333333
+              }
+            }
+          ]
+        },
+        {
+          "start": 1,
+          "end": 2,
+          "layers": [
+            {
+              "clipId": "v",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-vfr",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 1,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": [],
+              "hold": {
+                "frameAt": 0.64995
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": []
+  }
+}
