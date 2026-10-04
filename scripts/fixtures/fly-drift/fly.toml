@@ -1,0 +1,40 @@
+app = "editify-dm"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  PORT = "3001"
+  EDITIFY_DATA_DIR = "/data"
+  # Must match the deployed hostname: render outputs are minted from it.
+  PUBLIC_BASE_URL = "https://editify-dm.fly.dev"
+  # Without this the server can't verify Supabase JWTs and signed-in users get 401s.
+  SUPABASE_URL = "https://xvstucurpuwpliowadnh.supabase.co"
+  # Which server line this is: /health and the startup log report it.
+  LINE = "1.0"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  # ponytail: renders keep running after the HTTP request returns, and a
+  # suspended machine would abandon them mid-encode. Scale-to-zero once render
+  # jobs move off the web machine.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  path = "/health"
+  interval = "30s"
+  timeout = "5s"
+
+# SQLite, uploaded originals, proxies, and rendered masters all live here.
+[[mounts]]
+  source = "editify_data"
+  destination = "/data"
+
+# ponytail: shared CPU is ~8x cheaper and fine until renders visibly drag.
+# `fly scale vm performance-2x` when they do.
+[[vm]]
+  size = "shared-cpu-4x"
+  memory = "4gb"
