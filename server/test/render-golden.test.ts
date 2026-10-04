@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPlanSchema } from '@editify/shared';
+import { ADAPTER_FLAGS, ADAPTER_RUNS, ADAPTER_SOURCES, type AdapterReport } from './helpers/engine-adapters.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /*
@@ -75,13 +76,19 @@ interface Render {
   };
 }
 interface Report {
+  adapters: AdapterReport;
   media: Record<string, Record<string, unknown>>;
   checks: Record<string, Record<string, unknown>>;
   renders: Render[];
 }
 
 let dir: string | undefined;
+/** The default (modern) set's run: every assertion below reads it. */
 let report: Report;
+/** The legacy (iOS 18) set's run (EDITIFY_ADAPTERS=legacy): held byte-identical to `report`. */
+let legacyReport: Report;
+/** Where each run wrote its PNGs. */
+let outDirs: Record<AdapterReport['set'], string>;
 /** Kept after the run when set (CI uploads it on failure). */
 const keepOut = process.env.GOLDEN_OUT_DIR;
 
@@ -94,14 +101,24 @@ beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'editify-render-golden-'));
   const binary = join(dir, 'render-golden');
   // Core and Engine sources compiled as one module (no `import EditifyCore`): the renderer plus
-  // the VideoComposition port and its adapter, which PlanBuilder builds through.
+  // the VideoComposition port, both adapters and the composition root's selection (D24).
   const sources = ['Core/RenderPlan', 'Engine/PlanBuilder', 'Engine/EditifyCompositor', 'Core/CaptionRenderer', 'Core/OverlayGraphics', 'Core/AnalysisMath',
-    'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/Adapters/ConfigurationVideoComposition']
+    ...ADAPTER_SOURCES]
     .map((name) => join(engine, 'ios', `${name}.swift`));
   const harness = ['HarnessMedia.swift', 'main.swift'].map((name) => join(engine, 'parity/render-golden', name));
-  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
-  const args = [join(goldens, 'manifest.json'), root, join(dir, 'work'), keepOut ?? join(dir, 'out'), ...(bless ? ['--bless'] : [])];
-  report = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20 })).stdout) as Report;
+  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...ADAPTER_FLAGS, ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
+  const defaultOut = keepOut ?? join(dir, 'out');
+  outDirs = { modern: defaultOut, legacy: join(keepOut ?? dir, 'legacy') };
+  // One after the other, the legacy run compared with the default run's frames (not the
+  // goldens): its `compare` is then the exact Mutable-vs-Configuration difference per frame.
+  const reports: Report[] = [];
+  for (const { set, env } of ADAPTER_RUNS) {
+    // Only the default run may bless.
+    const args = [join(goldens, 'manifest.json'), root, join(dir, `work-${set}`), outDirs[set], ...(bless && set === 'modern' ? ['--bless'] : [])];
+    const compareWith = set === 'legacy' ? { GOLDEN_COMPARE_DIR: outDirs.modern } : {};
+    reports.push(JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...env, ...compareWith } })).stdout) as Report);
+  }
+  [report, legacyReport] = reports as [Report, Report];
 }, 600000);
 
 afterAll(() => {
@@ -151,6 +168,45 @@ describe('render goldens: harness availability', () => {
       const { plan } = JSON.parse(readFileSync(join(goldens, 'plans', file), 'utf8')) as { plan: unknown };
       expect(() => renderPlanSchema.parse(plan), file).not.toThrow();
     }
+  });
+});
+
+describe.skipIf(!swiftAvailable)('render goldens: both adapter sets (D22, D24)', () => {
+  it('built with the test flag, runs the modern set by default and the legacy set under EDITIFY_ADAPTERS=legacy', () => {
+    expect(report.adapters).toEqual(ADAPTER_RUNS[0]!.expected);
+    expect(legacyReport.adapters).toEqual(ADAPTER_RUNS[1]!.expected);
+  });
+
+  it('renders the same frames through the Mutable (iOS 18) and Configuration (iOS 26) compositions', () => {
+    const pngs = readdirSync(outDirs.modern).filter((name) => name.endsWith('.png')).sort();
+    expect(pngs.length).toBeGreaterThan(20);
+    expect(readdirSync(outDirs.legacy).filter((name) => name.endsWith('.png')).sort()).toEqual(pngs);
+    const differing = pngs.filter((name) => !readFileSync(join(outDirs.modern, name)).equals(readFileSync(join(outDirs.legacy, name))));
+    // Byte-identical in a quiet run (both compositions hand EditifyCompositor the same
+    // instructions, size, frame duration and colour tags). Under load the compositor's frames
+    // can move by a few codes between any two runs, the same set included, so a differing frame
+    // is held to the golden tolerance against the default run's frame and its numbers logged.
+    const diffs = legacyReport.renders.flatMap((item) => (item.frames ?? []).filter((f) => f.golden && differing.includes(f.golden))
+      .map((f) => ({ frame: `${item.name}#${f.k}`, meanAbs: f.compare?.meanAbs, blurredMax: f.compare?.blurredMax })));
+    console.info(`mutable vs configuration: ${pngs.length - differing.length}/${pngs.length} frames byte-identical`, diffs.length ? JSON.stringify(diffs) : '');
+    for (const item of legacyReport.renders) {
+      for (const f of item.frames ?? []) {
+        if (!f.golden) continue;
+        const label = `${item.name}#${f.k} (${f.golden}) mutable vs configuration`;
+        expect(f.compare?.missingGolden, label).toBeUndefined();
+        expect(f.compare?.sizeMismatch, label).toBeUndefined();
+        for (const value of f.compare!.meanAbs!) expect(value, `${label} mean abs`).toBeLessThanOrEqual(MEAN_ABS_MAX);
+        expect(f.compare!.blurredMax!, `${label} blurred max`).toBeLessThanOrEqual(BLURRED_MAX);
+      }
+    }
+    // What doesn't depend on GPU timing is identical: colour tags, decoded frame codes, the
+    // instruction count, durations, the mix.
+    const structure = (value: Report) => value.renders.map((item) => ({
+      name: item.name, emptyPlanRefused: item.emptyPlanRefused, instructions: item.instructions, durationSeconds: item.durationSeconds,
+      frames: (item.frames ?? []).map((f) => ({ k: f.k, code: f.code, tags: f.tags })), sequentialCodes: item.sequentialCodes,
+      audioEdits: item.audioEdits, audio: item.audio,
+    }));
+    expect(structure(legacyReport)).toEqual(structure(report));
   });
 });
 

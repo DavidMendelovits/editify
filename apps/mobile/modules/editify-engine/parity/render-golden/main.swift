@@ -2,6 +2,7 @@
 // phone's PlanBuilder + EditifyCompositor on macOS and reports pixels.
 //
 //   render-golden <manifest.json> <repo root> <work dir> <out dir> [--bless]
+//   GOLDEN_COMPARE_DIR=<dir>: compare with the frames in <dir> instead of the goldens
 //
 // 1. Synthesizes the manifest's media deterministically in <work dir>: test
 //    videos (an SDR H.264 clip, HLG and PQ 10-bit HEVC clips) with known
@@ -37,7 +38,10 @@ let work = URL(fileURLWithPath: arguments[3])
 let outDir = URL(fileURLWithPath: arguments[4])
 let bless = arguments.contains("--bless")
 let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
-let goldens = repo.appendingPathComponent(manifest.goldens)
+// GOLDEN_COMPARE_DIR: compare with another run's frames instead of the committed goldens (the
+// legacy adapter set's run against the default set's, D22). Never blessed.
+let goldens = ProcessInfo.processInfo.environment["GOLDEN_COMPARE_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+  ?? repo.appendingPathComponent(manifest.goldens)
 try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
@@ -179,7 +183,7 @@ func sequentialCodes(_ built: BuiltPlan) throws -> [Int] {
   return codes
 }
 
-var report: [String: Any] = ["media": mediaReport]
+var report: [String: Any] = ["media": mediaReport, "adapters": adapterReport()]
 
 // MARK: Executor checks (no media): the Swift parse, the audio ramps, the caption cache.
 
@@ -282,7 +286,7 @@ func fixturePlan(_ name: String, _ mutate: (inout [String: Any]) -> Void = { _ i
   return try RenderPlan.decode(JSONSerialization.data(withJSONObject: plan))
 }
 let sharedMedia = PlanMediaCache()
-let sharedOptions = PlanBuildOptions(fonts: fonts, captions: CaptionRenderer(fonts: fonts), media: sharedMedia)
+let sharedOptions = PlanBuildOptions(videoComposition: harnessComposition, fonts: fonts, captions: CaptionRenderer(fonts: fonts), media: sharedMedia)
 let basePlan = try fixturePlan("overlays")
 let firstMedia = try await PlanBuilder.prepare(basePlan, resolver: resolver)
 let first = try PlanBuilder.assemble(basePlan, media: firstMedia, options: sharedOptions)
@@ -349,7 +353,7 @@ let manyStills = try fixturePlan("overlays") { plan in
 }
 let smallCache = PlanMediaCache(budgetBytes: 2 << 20)
 let manyBuilt = try PlanBuilder.assemble(manyStills, media: try await PlanBuilder.prepare(manyStills, resolver: resolver),
-                                         options: PlanBuildOptions(fonts: fonts, media: smallCache))
+                                         options: PlanBuildOptions(videoComposition: harnessComposition, fonts: fonts, media: smallCache))
 let cachedBeforeDraw = smallCache.cachedImages
 _ = try readFrame(manyBuilt, frame: 0)
 checks["stillBudget"] = ["cachedBeforeDraw": cachedBeforeDraw, "bytes": smallCache.cachedBytes, "budget": smallCache.budgetBytes,
@@ -364,7 +368,7 @@ for render in manifest.renders {
   let plan = try RenderPlan.decode(planData)
   let built: BuiltPlan
   do {
-    built = try await PlanBuilder.build(plan, resolver: resolver, options: PlanBuildOptions(fonts: fonts))
+    built = try await PlanBuilder.build(plan, resolver: resolver, options: PlanBuildOptions(videoComposition: harnessComposition, fonts: fonts))
   } catch PlanBuildError.emptyPlan {
     entry["emptyPlanRefused"] = true
     renders.append(entry)

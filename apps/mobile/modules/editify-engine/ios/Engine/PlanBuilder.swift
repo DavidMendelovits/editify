@@ -35,6 +35,10 @@ struct PlanAssetResolver {
 }
 
 struct PlanBuildOptions {
+  /// The VideoComposition port's adapter. No default: the app passes EngineAdapters.current's
+  /// (export and playback get it from the composition root), a harness the one AdapterSelection
+  /// picked for it.
+  var videoComposition: PlanVideoComposition
   /// Output pixels per plan pixel: 1 for export, view.w / plan.w for a preview drawn at view size.
   var renderScale: CGFloat = 1
   var fonts: PlanFonts = .shared
@@ -45,8 +49,17 @@ struct PlanBuildOptions {
   var captionCacheBytes = 64 << 20
   /// A player's emoji and callout bitmaps, reused across updates (nil: drawn for this build).
   var graphics: OverlayBitmapCache?
-  /// The VideoComposition port's adapter (EngineAdapters hands it to export and playback).
-  var videoComposition: PlanVideoComposition = ConfigurationVideoComposition()
+
+  init(videoComposition: PlanVideoComposition, renderScale: CGFloat = 1, fonts: PlanFonts = .shared, captions: CaptionRenderer? = nil,
+       media: PlanMediaCache = PlanMediaCache(), captionCacheBytes: Int = 64 << 20, graphics: OverlayBitmapCache? = nil) {
+    self.videoComposition = videoComposition
+    self.renderScale = renderScale
+    self.fonts = fonts
+    self.captions = captions
+    self.media = media
+    self.captionCacheBytes = captionCacheBytes
+    self.graphics = graphics
+  }
 }
 
 /// Sources a plan uses, loaded once. `PlanBuilder.prepare(_:resolver:reusing:)`
@@ -238,7 +251,7 @@ enum PlanBuilder {
   }
 
   /// Load and assemble in one go (export).
-  static func build(_ plan: RenderPlan, resolver: PlanAssetResolver, options: PlanBuildOptions = PlanBuildOptions()) async throws -> BuiltPlan {
+  static func build(_ plan: RenderPlan, resolver: PlanAssetResolver, options: PlanBuildOptions) async throws -> BuiltPlan {
     try assemble(plan, media: try await prepare(plan, resolver: resolver), options: options)
   }
 
@@ -293,7 +306,7 @@ enum PlanBuilder {
   // MARK: Composition
 
   // swiftlint:disable:next function_body_length cyclomatic_complexity
-  static func assemble(_ plan: RenderPlan, media: PreparedMedia, options: PlanBuildOptions = PlanBuildOptions()) throws -> BuiltPlan {
+  static func assemble(_ plan: RenderPlan, media: PreparedMedia, options: PlanBuildOptions) throws -> BuiltPlan {
     guard plan.duration > 0, plan.frameCount > 0, let lastSegment = plan.video.segments.last else { throw PlanBuildError.emptyPlan }
     let fps = Int32(plan.fps)
     let frameTime = { (frame: Int64) in CMTime(value: frame, timescale: fps) }

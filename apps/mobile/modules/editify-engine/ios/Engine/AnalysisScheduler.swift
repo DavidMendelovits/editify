@@ -79,7 +79,7 @@ actor AnalysisScheduler {
   private var epoch = 0
   private var emitterEpoch = 0
   private var emit: Emit?
-  private var thermalObserver: NSObjectProtocol?
+  private var thermalObserver: AnyObject?
   private let adapters: EngineAdapters
 
   init(adapters: EngineAdapters = .current) {
@@ -92,7 +92,7 @@ actor AnalysisScheduler {
     emitterEpoch = caller
     self.emit = emit
     if thermalObserver == nil {
-      thermalObserver = NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { _ in
+      thermalObserver = adapters.deviceProfile.observeThermalState {
         Task { await AnalysisScheduler.shared.emitState() }
       }
     }
@@ -408,13 +408,13 @@ actor AnalysisScheduler {
     let asset: AVAsset
     do {
       asset = try await adapters.mediaSource.load(job.ref, allowNetwork: false, onDownload: nil)
-    } catch is AssetSource.InCloud {
+    } catch where adapters.mediaSource.isInCloud(error) {
       if let existing, existing.key?.hasPrefix("\(AnalyzerVersion.proxy)|") == true {
         return .ready(AnalyzerVersion.proxy, ["path": path, "bytes": existing.bytes, "reused": true, "keyChecked": false])
       }
       asset = try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download)
     }
-    let key = Self.proxyKey(try await MediaFingerprint.compute(asset))
+    let key = Self.proxyKey(try await adapters.mediaSource.fingerprint(asset))
     if let existing, existing.key == key {
       return .ready(AnalyzerVersion.proxy, ["path": path, "bytes": existing.bytes, "reused": true])
     }

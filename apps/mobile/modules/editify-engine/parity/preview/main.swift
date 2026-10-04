@@ -320,7 +320,7 @@ final class Rig {
   let tap = TapLog()
 
   init() {
-    player = PlanPlayer(fonts: fonts, resolver: resolver)
+    player = PlanPlayer(fonts: fonts, resolver: resolver, videoComposition: harnessComposition)
     player.player.volume = 0
     // No output device: muted, so playback runs on the host clock with no audio rendering.
     if !audioDevice { player.setMuted(true) }
@@ -451,7 +451,7 @@ func serverCode(_ rig: Rig, at k: Int) async throws -> Int {
 
 @MainActor
 func run() async throws -> [String: Any] {
-  var report: [String: Any] = ["media": mediaReport]
+  var report: [String: Any] = ["media": mediaReport, "adapters": adapterReport()]
   var buildSeq = 0
   func next() -> Int { buildSeq += 1; return buildSeq }
 

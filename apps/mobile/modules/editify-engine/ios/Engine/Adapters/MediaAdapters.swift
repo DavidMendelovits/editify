@@ -2,7 +2,8 @@ import AVFoundation
 
 // The analysis adapters: one per port, each today's code behind its port.
 
-/// MediaSource adapter: PhotoKit originals and file:// URIs (AssetSource).
+/// MediaSource adapter: PhotoKit originals and file:// URIs (AssetSource), fingerprinted by
+/// MediaFingerprint.
 struct PhotoKitMediaSource: MediaSource {
   var name: String { "photokit" }
 
@@ -11,6 +12,23 @@ struct PhotoKitMediaSource: MediaSource {
   }
 
   func isUnavailable(_ error: Error) -> Bool { AssetSource.isUnavailable(error) }
+  func isInCloud(_ error: Error) -> Bool { error is AssetSource.InCloud }
+  func fingerprint(_ asset: AVAsset) async throws -> [String: Any] { try await MediaFingerprint.compute(asset) }
+
+  func probe(_ ref: String, allowNetwork: Bool, onDownload: (@Sendable (Double) -> Void)?) async throws -> [String: Any] {
+    try await AssetSource.probe(ref, allowNetwork: allowNetwork, onDownload: onDownload)
+  }
+
+  func geometry(_ ref: String) async -> [String: Any]? { await AssetSource.geometry(ref) }
+
+  func originalImageData(_ ref: String) async throws -> (data: Data, type: String?) {
+    let (data, type) = try await AssetSource.originalImageData(ref)
+    return (data, type)
+  }
+
+  func exportOriginal(_ ref: String) async throws -> (url: URL, bytes: Int64, name: String) { try await AssetSource.exportOriginal(ref) }
+  var photosAccess: String { AssetSource.photosAccess() }
+  func requestPhotosAccess() async -> String { await AssetSource.requestPhotosAccess() }
 }
 
 /// AudioDecoder adapter: AVAssetReader through PCMChunks.
@@ -23,11 +41,22 @@ struct AssetReaderAudioDecoder: AudioDecoder {
 }
 
 /// Transcriber adapter: SpeechAnalyzer + SpeechTranscriber (iOS 26).
+@available(iOS 26.0, *)
 struct SpeechAnalyzerTranscriber: Transcriber {
   var name: String { "speech-analyzer" }
 
   func words(_ asset: AVAsset, locale: Locale, allowModelDownload: Bool, progress: AnalyzerProgress?, gate: AnalyzerGate?) async -> PartResult {
     await Analyzers.words(asset, locale: locale, allowModelDownload: allowModelDownload, progress: progress, gate: gate)
+  }
+}
+
+/// The legacy set's Transcriber until the SFSpeech adapter lands (T6 second half): every words
+/// part is `unavailable` with a reason.
+struct UnavailableTranscriber: Transcriber {
+  var name: String { "unavailable" }
+
+  func words(_ asset: AVAsset, locale: Locale, allowModelDownload: Bool, progress: AnalyzerProgress?, gate: AnalyzerGate?) async -> PartResult {
+    .unavailable(AnalyzerVersion.words, "Speech transcription needs iOS 26 on this build")
   }
 }
 
@@ -55,5 +84,9 @@ struct WriterProxy: Proxy {
 
   func make(_ asset: AVAsset, to output: URL, progress: AnalyzerProgress?) async throws -> [String: Any] {
     try await ProxyPipeline.make(asset, to: output, progress: progress)
+  }
+
+  func makeStyleProxy(_ asset: AVAsset, maxHeight: Double) async throws -> [String: Any] {
+    try await Analyzers.makeProxy(asset, maxHeight: maxHeight)
   }
 }

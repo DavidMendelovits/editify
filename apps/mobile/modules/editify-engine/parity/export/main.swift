@@ -99,7 +99,7 @@ let resolver = PlanAssetResolver(
     return url
   })
 
-var report: [String: Any] = [:]
+var report: [String: Any] = ["adapters": adapterReport()]
 
 func orNull(_ value: Double?) -> Any { value.map { $0 as Any } ?? NSNull() }
 
@@ -424,7 +424,7 @@ for item in exportManifest.exports {
   let log = PhaseLog()
   var entry: [String: Any] = ["name": item.name, "planFrames": plan.frameCount, "planDuration": plan.duration, "color": plan.color.rawValue]
   do {
-    let stats = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(fonts: fonts), progress: { log.record($0, $1) })
+    let stats = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(videoComposition: harnessComposition, fonts: fonts), progress: { log.record($0, $1) })
     entry["stats"] = stats.dictionary
     entry["progress"] = log.summary
     entry["file"] = try await inspect(url, plan: plan, name: item.name, clapAt: item.clapAt, probes: item.probes ?? [])
@@ -447,7 +447,7 @@ do {
   var outcome = "finished"
   let sawWriting = PhaseLog()
   do {
-    _ = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(fonts: fonts), control: control, progress: { phase, value in
+    _ = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(videoComposition: harnessComposition, fonts: fonts), control: control, progress: { phase, value in
       sawWriting.record(phase, value)
       if phase == .writing, value > 0.3 { control.cancel() }
     })
@@ -464,7 +464,7 @@ do {
   var outcome = "finished"
   var needed: Int64 = 0
   do {
-    _ = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(fonts: fonts), available: { _ in 1_000_000 })
+    _ = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(videoComposition: harnessComposition, fonts: fonts), available: { _ in 1_000_000 })
   } catch PlanExportError.notEnoughSpace(let need, _) {
     outcome = "notEnoughSpace"
     needed = need
@@ -478,7 +478,7 @@ do {
   let plan = try RenderPlan.decode(try planJSON("packages/shared/fixtures/render-plans/empty-project.json"))
   var outcome = "finished"
   do {
-    _ = try await PlanExporter.export(plan, resolver: resolver, to: outDir.appendingPathComponent("empty.mp4"))
+    _ = try await PlanExporter.export(plan, resolver: resolver, to: outDir.appendingPathComponent("empty.mp4"), build: PlanBuildOptions(videoComposition: harnessComposition))
   } catch PlanExportError.emptyPlan {
     outcome = "emptyPlan"
   } catch {
@@ -491,7 +491,7 @@ do {
   let url = outDir.appendingPathComponent("hot.mp4")
   var outcome = "finished"
   do {
-    _ = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(fonts: fonts), thermalCritical: { true })
+    _ = try await PlanExporter.export(plan, resolver: resolver, to: url, build: PlanBuildOptions(videoComposition: harnessComposition, fonts: fonts), thermalCritical: { true })
   } catch PlanExportError.tooHot {
     outcome = "tooHot"
   } catch {

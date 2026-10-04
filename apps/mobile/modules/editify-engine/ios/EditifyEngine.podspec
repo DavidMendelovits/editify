@@ -6,14 +6,19 @@ Pod::Spec.new do |s|
   s.license        = 'UNLICENSED'
   s.author         = 'Editify'
   s.homepage       = 'https://editify.app'
-  # Decision 2A: iOS 26 floor (SpeechAnalyzer, BGContinuedProcessingTask), no @available forks yet.
-  s.platforms      = { :ios => '26.0' }
+  # release/1.1 runs on iOS 18 and up (the iOS 26 APIs sit behind #available in Engine adapters).
+  s.platforms      = { :ios => '18.0' }
   s.swift_version  = '5.9'
   s.source         = { git: '' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
   s.dependency 'EditifyCore'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'SWIFT_COMPILATION_MODE' => 'wholemodule' }
+  # Debug builds compile the EDITIFY_ADAPTERS=legacy override (AdapterSelection); Release never does.
+  s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
+    'SWIFT_COMPILATION_MODE' => 'wholemodule',
+    'SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Debug]' => '$(inherited) EDITIFY_TEST_ADAPTERS',
+  }
   # Disjoint from EditifyCore's Core/**.
   s.source_files = 'Engine/**/*.swift'
 end

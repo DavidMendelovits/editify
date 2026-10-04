@@ -98,6 +98,7 @@ extension Analyzers {
   /// re-queues it (`analyze` with `force`) once the phone is back online. When the
   /// gate stops it (the part was cancelled) the result is `failed` with a
   /// cancellation, never a partial `ready`.
+  @available(iOS 26.0, macOS 26.0, *)
   static func words(_ asset: AVAsset, locale requested: Locale = .current, allowModelDownload: Bool = true, progress: AnalyzerProgress? = nil, gate: AnalyzerGate? = nil) async -> PartResult {
     let version = AnalyzerVersion.words
     guard SpeechTranscriber.isAvailable else { return .unavailable(version, "Speech transcription is not available on this device") }

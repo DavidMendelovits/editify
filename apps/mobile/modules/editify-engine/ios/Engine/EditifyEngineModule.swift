@@ -134,7 +134,7 @@ public class EditifyEngineModule: Module {
     /// Uploading it is the caller's job; the file is swept on next launch.
     AsyncFunction("makeProxy") { (ref: String, maxHeight: Double?) async throws -> [String: Any] in
       let asset = try await self.adapters.mediaSource.load(ref, allowNetwork: true, onDownload: self.progress(part: "proxy", ref: ref, phase: "download"))
-      return try await Analyzers.makeProxy(asset, maxHeight: maxHeight ?? 360)
+      return try await self.adapters.proxy.makeStyleProxy(asset, maxHeight: maxHeight ?? 360)
     }
 
     // MARK: Scheduler (decision 8A)
@@ -192,15 +192,22 @@ public class EditifyEngineModule: Module {
       ExportCenter.shared.cancel(id)
     }
 
-    /// {backgroundGPU}: whether this phone can keep exporting with Editify in the background.
+    /// The adapters this process runs (EngineAdapters.capabilities): {os, adapterSet, transcriber,
+    /// backgroundExport, backgroundGPU, composition, tier}. `backgroundGPU`: whether this phone
+    /// can keep exporting with Editify in the background.
     Function("exportCapabilities") { () -> [String: Any] in
       ExportCenter.capabilities()
+    }
+
+    /// The same object as exportCapabilities: the composition root's choice (D5).
+    Function("capabilities") { () -> [String: Any] in
+      self.adapters.capabilities()
     }
 
     // MARK: Local media registry (decision 3A) and preview proxies (10B)
 
     /// 'all' | 'limited' | 'denied' | 'undetermined', read without prompting.
-    Function("photosAccess") { AssetSource.photosAccess() }
+    Function("photosAccess") { self.adapters.mediaSource.photosAccess }
 
     /// Application Support/Editify/ as a file:// URL: registry paths are relative to it.
     Function("mediaRoot") { () -> String in
@@ -220,13 +227,13 @@ public class EditifyEngineModule: Module {
     /// for an upload the server is missing (plan OV1). The caller removes the file.
     AsyncFunction("exportOriginal") { (ref: String) async throws -> [String: Any] in
       guard !ref.isEmpty, ref.count <= 2048, !ref.hasPrefix("file://") else { throw InvalidArgument(message: "exportOriginal needs a PHAsset id") }
-      let written = try await AssetSource.exportOriginal(ref)
+      let written = try await self.adapters.mediaSource.exportOriginal(ref)
       return ["uri": written.url.absoluteString, "bytes": written.bytes, "name": written.name]
     }
 
     /// Fingerprint and availability of a PHAsset id or file:// URI, without downloading from iCloud.
     AsyncFunction("probeMedia") { (ref: String) async throws -> [String: Any] in
-      try await AssetSource.probe(ref, allowNetwork: false)
+      try await self.adapters.mediaSource.probe(ref, allowNetwork: false, onDownload: nil)
     }
 
     /// Stored size and clockwise display rotation {width, height, rotation} of a PHAsset id or
@@ -234,7 +241,7 @@ public class EditifyEngineModule: Module {
     AsyncFunction("mediaGeometry") { (ref: String) async -> [String: Any]? in
       guard !ref.isEmpty, ref.count <= 2048 else { return nil }
       if ref.hasPrefix("file://"), ExportCenter.containedFileURL(ref) == nil { return nil }
-      return await AssetSource.geometry(ref)
+      return await self.adapters.mediaSource.geometry(ref)
     }
 
     /// `probeMedia` that downloads an iCloud original first. Progress arrives as `progress`
@@ -242,7 +249,7 @@ public class EditifyEngineModule: Module {
     /// `cancelDownload(requestId)` cancels the Photos request and rejects this call.
     AsyncFunction("downloadMedia") { (ref: String, requestId: String) async throws -> [String: Any] in
       let task = Task { () -> [String: Any] in
-        try await AssetSource.probe(ref, allowNetwork: true) { [weak self] fraction in
+        try await self.adapters.mediaSource.probe(ref, allowNetwork: true) { [weak self] fraction in
           self?.sendEvent("progress", ["part": "download", "ref": ref, "requestId": requestId, "fraction": fraction, "phase": "download"])
         }
       }
@@ -279,7 +286,7 @@ public class EditifyEngineModule: Module {
 
     /// Shows the system Photos prompt if it was never shown; answers the access after it.
     AsyncFunction("requestPhotosAccess") { () async -> String in
-      await AssetSource.requestPhotosAccess()
+      await self.adapters.mediaSource.requestPhotosAccess()
     }
 
     /// Bytes iOS would make available for something the user asked for (0 when unknown).

@@ -245,9 +245,11 @@ final class PlanPlayer {
   private var timeObserver: Any?
   private var readyItem: ObjectIdentifier?
 
-  /// `videoComposition`: the VideoComposition port's adapter every build uses (the Playback adapter passes EngineAdapters').
+  /// `videoComposition`: the VideoComposition port's adapter every build uses (the Playback adapter
+  /// passes EngineAdapters'; no default, so nothing builds with an adapter the composition root
+  /// didn't pick).
   init(fonts: PlanFonts = .shared, resolver: @escaping ([String: String]) -> PlanAssetResolver,
-       videoComposition: PlanVideoComposition = ConfigurationVideoComposition()) {
+       videoComposition: PlanVideoComposition) {
     self.fonts = fonts
     self.resolver = resolver
     self.videoComposition = videoComposition
@@ -405,9 +407,8 @@ final class PlanPlayer {
       || built.map { PlanBuilder.structureKey(plan) != $0.layout.structureKey } ?? true
     if rebuilding { changed.formUnion(stale) }
     if mediaRetry || reconnecting { changed.formUnion(refs.filter { Self.isRemote($0.value) }.map(\.key)) }
-    var options = PlanBuildOptions(renderScale: renderScale(for: plan), fonts: fonts, captions: captions, media: cache)
-    options.graphics = graphics
-    options.videoComposition = videoComposition
+    let options = PlanBuildOptions(videoComposition: videoComposition, renderScale: renderScale(for: plan), fonts: fonts, captions: captions,
+                                   media: cache, graphics: graphics)
     let elapsed = { Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6 }
     do {
       let media = try await PlanBuilder.prepare(plan, resolver: resolver(refs), reusing: built?.media, invalidating: changed, cache: cache)
