@@ -43,7 +43,11 @@ function insertAsset(id: string): StoredAsset {
   });
 }
 
-/** Mirrors `queueAssetWork`: encode inside a slot, then transcribe without letting go of it. */
+/**
+ * A slot holder that transcribes inline, without letting go of its slot. Imports
+ * no longer do this (`queueAssetWork` queues the transcription as its own job,
+ * see import-scheduling.test.ts), but any caller inside a slot still may.
+ */
 function importWork(transcripts: TranscriptService, asset: StoredAsset, encodeMs = 20): Promise<unknown> {
   return withMediaSlot(`import ${asset.id}`, async () => {
     peak.sample(mediaSlots.active().length);
@@ -135,6 +139,172 @@ describe('media slot pool', () => {
     expect(askedFirst).toBe(importedFirst);
     expect(runner).toHaveBeenCalledTimes(2);
     expect(mediaSlots.active()).toEqual([]);
+  });
+
+  it('prefers waiting foreground jobs over waiting background ones', async () => {
+    const slots = new MediaSlots(1);
+    const order: string[] = [];
+    const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
+      order.push(label);
+      await delay(5);
+    }, { lane });
+    await Promise.all([
+      job('running', 'foreground'),
+      job('transcribe early', 'background'),
+      job('proxy', 'foreground'),
+      job('transcribe late', 'background'),
+      job('render', 'foreground'),
+    ]);
+    expect(order).toEqual(['running', 'proxy', 'render', 'transcribe early', 'transcribe late']);
+  });
+
+  it('gives waiting background work every third grant, so a run of foreground jobs cannot starve it', async () => {
+    const slots = new MediaSlots(1);
+    const order: string[] = [];
+    const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
+      order.push(label);
+      await delay(2);
+    }, { lane });
+    await Promise.all([
+      job('running', 'foreground'),
+      job('transcribe', 'background'),
+      ...['p1', 'p2', 'p3', 'p4'].map((label) => job(label, 'foreground')),
+    ]);
+    expect(order).toEqual(['running', 'p1', 'p2', 'transcribe', 'p3', 'p4']);
+  });
+
+  it('keeps one slot out of background hands, so a new preview never waits behind two Whispers', async () => {
+    const slots = new MediaSlots(2);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const whispers = [slots.run('transcribe a', () => held, { lane: 'background' }), slots.run('transcribe b', () => held, { lane: 'background' })];
+    expect(slots.active()).toEqual(['transcribe a']);
+    expect(slots.queued()).toEqual(['transcribe b']);
+
+    let previewRan = false;
+    await slots.run('import c', async () => { previewRan = true; });
+    expect(previewRan).toBe(true);
+    release();
+    await Promise.all(whispers);
+    expect(slots.active()).toEqual([]);
+  });
+
+  it('cancels a queued background job, but not one someone promoted', async () => {
+    const slots = new MediaSlots(1);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const running = slots.run('render', () => held);
+    const dropped = slots.run('transcribe bad', async () => 'ran', { lane: 'background' });
+    const wanted = slots.run('transcribe wanted', async () => 'ran', { lane: 'background' });
+    expect(slots.promote('transcribe wanted')).toBe(true);
+    expect(slots.cancel('transcribe wanted', new Error('nope'))).toBe(false);
+    expect(slots.cancel('transcribe bad', new Error('undecodable'))).toBe(true);
+    await expect(dropped).rejects.toThrow('undecodable');
+    expect(slots.queued()).toEqual(['transcribe wanted']);
+    release();
+    await expect(wanted).resolves.toBe('ran');
+    await running;
+    expect(slots.active()).toEqual([]);
+  });
+
+  it('sends a promoted background job ahead of every queued preview, however many there are', async () => {
+    const slots = new MediaSlots(1);
+    const order: string[] = [];
+    const job = (label: string, lane: 'foreground' | 'background', options: { ticket?: object } = {}) =>
+      slots.run(label, async () => {
+        order.push(label);
+        await delay(2);
+      }, { lane, ...options });
+    const ticket = {};
+    // More previews than one background turn's worth (FOREGROUND_TURNS + 1).
+    const all = [
+      job('running', 'foreground'),
+      ...['p1', 'p2', 'p3', 'p4', 'p5'].map((label) => job(label, 'foreground')),
+      job('transcribe early', 'background'),
+      job('transcribe wanted', 'background', { ticket }),
+    ];
+    expect(slots.promote(ticket)).toBe(true);
+    expect(slots.promote(ticket)).toBe(false);
+    expect(slots.promote('running')).toBe(false);
+    expect(slots.queued()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'transcribe wanted', 'transcribe early']);
+    const later = job('render', 'foreground');
+    await Promise.all([...all, later]);
+    // Unpromoted, it would have come after p1, p2 and 'transcribe early'.
+    expect(order).toEqual(['running', 'transcribe wanted', 'p1', 'p2', 'transcribe early', 'p3', 'p4', 'p5', 'render']);
+  });
+
+  it('keeps promotions in the order they were made, and respects the background cap while previews wait', async () => {
+    const slots = new MediaSlots(2);
+    const order: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const whisper = slots.run('transcribe running', () => held, { lane: 'background' });
+    const preview = slots.run('import busy', () => held);
+    const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
+      order.push(label);
+      await delay(2);
+    }, { lane });
+    const all = [
+      ...['p1', 'p2', 'p3', 'p4'].map((label) => job(label, 'foreground')),
+      ...['t1', 't2', 't3'].map((label) => job(label, 'background')),
+    ];
+    expect(slots.promote('t3')).toBe(true);
+    expect(slots.promote('t2')).toBe(true);
+    expect(slots.queued()).toEqual(['p1', 'p2', 'p3', 'p4', 't3', 't2', 't1']);
+    release();
+    await Promise.all([whisper, preview, ...all]);
+    // One Whisper at a time while previews wait: each promoted run goes first
+    // as soon as the previous Whisper frees the background slot.
+    expect(order.filter((label) => label.startsWith('t'))).toEqual(['t3', 't2', 't1']);
+    expect(order.indexOf('t3')).toBeLessThan(order.indexOf('p2'));
+  });
+
+  it('lets a promoted job take a slot the background cap would leave idle', async () => {
+    const slots = new MediaSlots(2);
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const whisper = slots.run('transcribe other', () => held, { lane: 'background' });
+    let ran = false;
+    const wanted = slots.run('transcribe wanted', async () => { ran = true; }, { lane: 'background' });
+    expect(slots.queued()).toEqual(['transcribe wanted']);
+    slots.promote('transcribe wanted');
+    await wanted;
+    expect(ran).toBe(true);
+    release();
+    await whisper;
+  });
+
+  it('counts a preview against the background turn only when a background job could have started', async () => {
+    const slots = new MediaSlots(2);
+    const order: string[] = [];
+    let releaseWhisper!: () => void;
+    const whisperHeld = new Promise<void>((done) => { releaseWhisper = done; });
+    const whisper = slots.run('transcribe running', () => whisperHeld, { lane: 'background' });
+    const job = (label: string, lane: 'foreground' | 'background') => slots.run(label, async () => {
+      order.push(label);
+      await delay(2);
+    }, { lane });
+    // The cap holds 't' back while p1..p3 take the free slot one after another.
+    const early = [job('p1', 'foreground'), job('t', 'background'), job('p2', 'foreground'), job('p3', 'foreground')];
+    await Promise.all([early[0], early[2], early[3]]);
+    const late = [job('p4', 'foreground'), job('p5', 'foreground'), job('p6', 'foreground')];
+    releaseWhisper();
+    await Promise.all([whisper, ...early, ...late]);
+    // p2 and p3 went while the cap held 't' back, so they did not use up its
+    // turn: once the Whisper frees, p5 and p6 earn it, then 't' goes. (Counting
+    // them would have sent 't' straight after p4.)
+    expect(order).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 't']);
+  });
+
+  it('queues work started through `detached` on its own instead of riding the caller\'s slot', async () => {
+    const slots = new MediaSlots(1);
+    let inner: Promise<void> | undefined;
+    await slots.run('parent', async () => {
+      inner = slots.detached(() => slots.run('child', async () => undefined));
+      expect(slots.queued()).toEqual(['child']);
+    });
+    await inner;
+    expect(slots.active()).toEqual([]);
   });
 
   it('releases the slot when a job throws', async () => {

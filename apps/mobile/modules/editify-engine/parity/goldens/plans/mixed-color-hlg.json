@@ -1,0 +1,141 @@
+{
+  "description": "Harness-only colour plan (HLG out): an SDR layer with an HLG and a PQ b-roll box side by side, each source carrying the same linear patches (reference white, 18% grey, a colour, a 2x highlight), then an empty segment with the background and a white caption box.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 1,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 2,
+    "color": "hlg",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 1.5,
+          "layers": [
+            {
+              "clipId": "sdr",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        },
+        {
+          "start": 1.5,
+          "end": 2,
+          "layers": []
+        }
+      ]
+    },
+    "overlays": [
+      {
+        "id": "broll-hlg",
+        "kind": "broll",
+        "z": 0,
+        "start": 0,
+        "end": 1.5,
+        "box": {
+          "x": 90,
+          "y": 470,
+          "w": 180,
+          "h": 320,
+          "rotationDeg": 0
+        },
+        "media": {
+          "assetRef": {
+            "id": "asset-hlg",
+            "kind": "video"
+          },
+          "srcStart": 0,
+          "speed": 1
+        }
+      },
+      {
+        "id": "broll-pq",
+        "kind": "broll",
+        "z": 1,
+        "start": 0,
+        "end": 1.5,
+        "box": {
+          "x": 270,
+          "y": 470,
+          "w": 180,
+          "h": 320,
+          "rotationDeg": 0
+        },
+        "media": {
+          "assetRef": {
+            "id": "asset-pq",
+            "kind": "video"
+          },
+          "srcStart": 0,
+          "speed": 1
+        }
+      }
+    ],
+    "captions": [
+      {
+        "id": "cap-ref",
+        "rev": "r-cap-ref-1",
+        "start": 1.5,
+        "end": 2,
+        "lane": 0,
+        "font": "Montserrat-Bold",
+        "sizePx": 64,
+        "color": "#0B0B0F",
+        "strokeColor": "#000000",
+        "strokePx": 0,
+        "emphasisColor": "#FACC15",
+        "box": {
+          "color": "#FFFFFF",
+          "opacity": 1,
+          "padPx": 12,
+          "radiusPx": 0
+        },
+        "align": "left",
+        "lines": [
+          {
+            "text": "REF",
+            "x": 120,
+            "y": 200,
+            "width": 132
+          }
+        ],
+        "fitted": {
+          "shrunk": false,
+          "scale": 1
+        }
+      }
+    ],
+    "audio": []
+  }
+}

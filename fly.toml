@@ -10,6 +10,8 @@ primary_region = "sjc"
   PUBLIC_BASE_URL = "https://editify-dm.fly.dev"
   # Without this the server can't verify Supabase JWTs and signed-in users get 401s.
   SUPABASE_URL = "https://xvstucurpuwpliowadnh.supabase.co"
+  # Which server line this is: /health and the startup log report it.
+  LINE = "1.0"
 
 [http_service]
   internal_port = 3001

@@ -4,7 +4,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { registerAuth, type AuthOptions } from './auth.js';
-import { supabaseUrl } from './config.js';
+import { buildInfo, databaseUrl as configuredDatabaseUrl, supabaseUrl } from './config.js';
 import { EDITING_PRESETS } from '@editify/shared';
 import { ZodError } from 'zod';
 import { createProvider, type ToolProvider } from './agent/providers.js';
@@ -13,6 +13,9 @@ import { AssetStore } from './db/asset-store.js';
 import { ChatStore } from './db/chat-store.js';
 import { createDatabase, type EditifyDatabase } from './db/database.js';
 import { InsightStore } from './db/insight-store.js';
+import { PgSyncStore } from './db/pg-sync-store.js';
+import { createPgPools } from './db/postgres.js';
+import { PgTurnLock } from './db/pg-turn-lock.js';
 import { AssetAccessError, ProjectStore, VersionConflictError } from './db/project-store.js';
 import { RenderStore } from './db/render-store.js';
 import { ReportStore } from './db/report-store.js';
@@ -20,6 +23,7 @@ import { SettingsStore } from './db/settings-store.js';
 import { TranscriptStore } from './db/transcript-store.js';
 import { OperationError } from './operations/apply.js';
 import { registerAccountRoutes } from './routes/account.js';
+import { registerAgentTurnRoutes } from './routes/agent-turn.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { isClientConfigRoute, registerClientConfigRoutes } from './routes/client-config.js';
@@ -27,10 +31,12 @@ import { isLegalRoute, registerLegalRoutes } from './routes/legal.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerRenderRoutes } from './routes/renders.js';
 import { registerStyleRoutes } from './routes/style.js';
+import { registerSyncRoutes } from './routes/sync.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { ensureSoundLibrary } from './media/sound-library.js';
 import { RenderQueue } from './services/render-queue.js';
+import { UnsupportedMediaError } from './media/process.js';
 import { DissectService } from './services/dissect-service.js';
 import { SyncService } from './services/sync-service.js';
 import { FaceService } from './services/face-service.js';
@@ -39,6 +45,7 @@ import { StyleService } from './services/style-service.js';
 import { StyleAnalyzerRegistry } from './style/registry.js';
 import { ReproService } from './services/repro-service.js';
 import { TelemetryService } from './services/telemetry-service.js';
+import { clearMediaJobLogger, setMediaJobLogger } from './services/media-jobs.js';
 import { TranscriptService } from './services/transcript-service.js';
 import { mediaSlots } from './services/media-slots.js';
 import { readOnlyFromEnv, registerReadOnlyGate } from './read-only.js';
@@ -49,12 +56,17 @@ export interface AppOptions {
   logger?: boolean;
   /** Tests sign their own JWTs: a Supabase URL for the issuer and a local key set. */
   auth?: Pick<AuthOptions, 'supabaseUrl' | 'jwks'>;
+  /** Postgres for project sync; defaults to DATABASE_URL, and null turns it off. */
+  databaseUrl?: string | null;
   /** The cutover freeze (see `read-only.ts`). Default: READ_ONLY=1. */
   readOnly?: boolean;
 }
 
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 20 * 1024 * 1024 });
+  // Background jobs (renders, Whisper, encodes) run without a request: they log through this.
+  setMediaJobLogger(app.log);
+  app.addHook('onClose', async () => clearMediaJobLogger(app.log));
   // The client sends `Content-Type: application/json` on every request, body or
   // not, and fastify's default parser 500s on an empty one. Bodyless POST/DELETE
   // (select, duplicate, delete) are ordinary calls — read them as `{}`.
@@ -64,6 +76,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const readOnly = options.readOnly ?? readOnlyFromEnv();
   const database = options.database ?? createDatabase(undefined, { readonly: readOnly });
   if (readOnly && !database.readonly) throw new Error('READ_ONLY=1 needs the database opened read-only');
+  const databaseUrl = options.databaseUrl === undefined ? configuredDatabaseUrl : options.databaseUrl ?? undefined;
+  // Throws on an unsafe configuration (remote host without TLS settled), so a bad deploy fails at boot.
+  const pg = databaseUrl ? createPgPools(databaseUrl) : undefined;
+  if (pg) app.log.info({ schema: pg.schema }, 'project sync on Postgres');
   const projects = new ProjectStore(database);
   const assets = new AssetStore(database);
   const renders = new RenderStore(database);
@@ -125,8 +141,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });
   await registerWebClient(app);
 
+  // line + commit: which server line (1.0 on editify-dm, 1.1 on editify-v11) and build answered.
   app.get('/health', async () => ({
     ok: true,
+    ...buildInfo(),
     provider: (await resolveProvider()).name,
     readOnly,
     // What `src/drain.ts` waits on before the operator sets READ_ONLY=1.
@@ -144,6 +162,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
+  registerAgentTurnRoutes(app, agent, pg?.lock ? { lock: new PgTurnLock(pg.lock) } : {});
+  registerSyncRoutes(app, pg ? new PgSyncStore(pg.sync, pg.schema) : undefined);
   registerTelemetryRoutes(app, telemetry);
 
   app.setErrorHandler(async (error, _request, reply) => {
@@ -159,12 +179,23 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (error instanceof OperationError) {
       return await reply.code(400).send({ error: error.message });
     }
+    if (error instanceof UnsupportedMediaError) {
+      return await reply.code(415).send({ error: error.message });
+    }
+    // Fastify's own refusals (413 body too large, 415, malformed JSON) keep their status.
+    const status = (error as { statusCode?: unknown }).statusCode;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      return await reply.code(status).send({ error: error instanceof Error ? error.message : 'Bad request' });
+    }
     app.log.error(error);
     return await reply.code(500).send({ error: error instanceof Error ? error.message : 'Internal server error' });
   });
 
   // Every request has finished by now: fold the WAL into editify.db before closing.
-  app.addHook('onClose', async () => { checkpointAndClose(database, (line) => app.log.warn(line)); });
+  app.addHook('onClose', async () => {
+    checkpointAndClose(database, (line) => app.log.warn(line));
+    await pg?.end();
+  });
   return app;
 }
 

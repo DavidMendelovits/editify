@@ -1,0 +1,1160 @@
+{
+ "goldens": "apps/mobile/modules/editify-engine/parity/goldens",
+ "fonts": "apps/mobile/modules/editify-engine/ios/Core/Fonts",
+ "media": {
+  "asset-talk": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 8,
+   "base": [
+    0.05,
+    0.08,
+    0.12
+   ],
+   "toneHz": 220
+  },
+  "asset-a": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 8,
+   "base": [
+    0.3,
+    0.1,
+    0.05
+   ],
+   "toneHz": 262
+  },
+  "asset-b": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 8,
+   "base": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "toneHz": 392
+  },
+  "asset-cutaway": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 8,
+   "base": [
+    0.25,
+    0.05,
+    0.25
+   ],
+   "toneHz": 523
+  },
+  "asset-city": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 8,
+   "base": [
+    0.1,
+    0.2,
+    0.3
+   ]
+  },
+  "asset-hlg": {
+   "kind": "video",
+   "transfer": "hlg",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 8,
+   "base": [
+    0.04,
+    0.06,
+    0.1
+   ],
+   "toneHz": 300
+  },
+  "asset-pq": {
+   "kind": "video",
+   "transfer": "pq",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 8,
+   "base": [
+    0.08,
+    0.05,
+    0.04
+   ]
+  },
+  "asset-music": {
+   "kind": "audio",
+   "seconds": 8,
+   "toneHz": 330
+  },
+  "asset-voice": {
+   "kind": "audio",
+   "seconds": 8,
+   "toneHz": 440
+  },
+  "asset-logo": {
+   "kind": "png",
+   "orientation": 6
+  },
+  "asset-gif": {
+   "kind": "gif",
+   "w": 120,
+   "h": 90,
+   "frames": [
+    {
+     "rgb": [
+      1,
+      0,
+      0
+     ],
+     "delayCs": 0
+    },
+    {
+     "rgb": [
+      0,
+      1,
+      0
+     ],
+     "delayCs": 5
+    },
+    {
+     "rgb": [
+      0,
+      0,
+      1
+     ],
+     "delayCs": 10
+    },
+    {
+     "rgb": [
+      1,
+      1,
+      0
+     ],
+     "delayCs": 1
+    }
+   ]
+  },
+  "asset-vfr": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 4,
+   "base": [
+    0.1,
+    0.1,
+    0.1
+   ],
+   "frameDurations600": [
+    20,
+    10,
+    30
+   ]
+  },
+  "asset-surround": {
+   "kind": "audio",
+   "seconds": 4,
+   "channelTones": [
+    200,
+    300,
+    400,
+    50,
+    500,
+    600
+   ]
+  },
+  "asset-a-short": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 2.2,
+   "base": [
+    0.3,
+    0.1,
+    0.05
+   ],
+   "toneHz": 262
+  },
+  "asset-logo-2": {
+   "kind": "png",
+   "w": 60,
+   "h": 60,
+   "solid": [
+    0,
+    1,
+    0
+   ]
+  },
+  "asset-big": {
+   "kind": "png",
+   "w": 1000,
+   "h": 1000,
+   "solid": [
+    0.9,
+    0.5,
+    0.1
+   ]
+  },
+  "asset-edit": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 5,
+   "base": [
+    0.1,
+    0.1,
+    0.1
+   ],
+   "editStart": 1.0083333333
+  }
+ },
+ "renders": [
+  {
+   "name": "crossfade",
+   "plan": "packages/shared/fixtures/render-plans/crossfade.json",
+   "frames": [
+    {
+     "k": 30,
+     "golden": true,
+     "code": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 67,
+     "golden": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 80,
+     "golden": true,
+     "code": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    }
+   ],
+   "audio": {
+    "windows": [
+     {
+      "name": "before",
+      "from": 0.5,
+      "to": 1.5
+     },
+     {
+      "name": "mid",
+      "from": 2.2,
+      "to": 2.3
+     },
+     {
+      "name": "after",
+      "from": 3.0,
+      "to": 3.8
+     }
+    ],
+    "tones": [
+     262,
+     392
+    ]
+   }
+  },
+  {
+   "name": "crossfade-hold",
+   "plan": "packages/shared/fixtures/render-plans/crossfade-hold.json",
+   "frames": [
+    {
+     "k": 30,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 66,
+     "golden": true,
+     "code": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 67,
+     "code": true
+    },
+    {
+     "k": 70,
+     "golden": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 100,
+     "code": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    }
+   ],
+   "sequential": true
+  },
+  {
+   "name": "dip",
+   "plan": "packages/shared/fixtures/render-plans/dip.json",
+   "frames": [
+    {
+     "k": 30,
+     "code": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 55,
+     "golden": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 60,
+     "golden": true,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 65,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    },
+    {
+     "k": 100,
+     "probes": [
+      {
+       "name": "base",
+       "x": 205,
+       "y": 530,
+       "r": 3
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "speed-2x",
+   "plan": "packages/shared/fixtures/render-plans/speed-2x.json",
+   "frames": [
+    {
+     "k": 0,
+     "code": true
+    },
+    {
+     "k": 15,
+     "golden": true,
+     "code": true
+    },
+    {
+     "k": 59,
+     "code": true
+    }
+   ],
+   "audio": {
+    "windows": [
+     {
+      "name": "all",
+      "from": 0.2,
+      "to": 1.8
+     }
+    ],
+    "tones": [
+     220,
+     440
+    ]
+   },
+   "sequential": true
+  },
+  {
+   "name": "zoom",
+   "plan": "packages/shared/fixtures/render-plans/zoom.json",
+   "frames": [
+    {
+     "k": 0,
+     "golden": true
+    },
+    {
+     "k": 45,
+     "golden": true
+    },
+    {
+     "k": 89,
+     "golden": true,
+     "probes": [
+      {
+       "name": "white",
+       "x": 53.7,
+       "y": 111.2,
+       "r": 1
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "overlapping-video-tracks",
+   "plan": "packages/shared/fixtures/render-plans/overlapping-video-tracks.json",
+   "frames": [
+    {
+     "k": 15,
+     "code": true
+    },
+    {
+     "k": 45,
+     "golden": true,
+     "code": true
+    },
+    {
+     "k": 75,
+     "code": true
+    }
+   ],
+   "audio": {
+    "windows": [
+     {
+      "name": "before",
+      "from": 0.2,
+      "to": 0.8
+     },
+     {
+      "name": "during",
+      "from": 1.2,
+      "to": 1.8
+     }
+    ],
+    "tones": [
+     220,
+     523
+    ]
+   }
+  },
+  {
+   "name": "overlays",
+   "plan": "packages/shared/fixtures/render-plans/overlays.json",
+   "frames": [
+    {
+     "k": 0,
+     "golden": true,
+     "code": true,
+     "probes": [
+      {
+       "name": "logoWhite",
+       "x": 55,
+       "y": 80
+      },
+      {
+       "name": "logoTop",
+       "x": 100,
+       "y": 105
+      },
+      {
+       "name": "logoBottom",
+       "x": 90,
+       "y": 150
+      }
+     ]
+    },
+    {
+     "k": 15,
+     "probes": [
+      {
+       "name": "gif",
+       "x": 270,
+       "y": 140
+      }
+     ]
+    },
+    {
+     "k": 17,
+     "probes": [
+      {
+       "name": "gif",
+       "x": 270,
+       "y": 140
+      }
+     ]
+    },
+    {
+     "k": 18,
+     "probes": [
+      {
+       "name": "gif",
+       "x": 270,
+       "y": 140
+      }
+     ]
+    },
+    {
+     "k": 20,
+     "probes": [
+      {
+       "name": "gif",
+       "x": 270,
+       "y": 140
+      }
+     ]
+    },
+    {
+     "k": 23,
+     "probes": [
+      {
+       "name": "gif",
+       "x": 270,
+       "y": 140
+      }
+     ]
+    },
+    {
+     "k": 26,
+     "probes": [
+      {
+       "name": "gif",
+       "x": 270,
+       "y": 140
+      }
+     ]
+    },
+    {
+     "k": 40,
+     "golden": true
+    },
+    {
+     "k": 60,
+     "golden": true
+    },
+    {
+     "k": 100,
+     "golden": true
+    }
+   ]
+  },
+  {
+   "name": "hlg-color",
+   "plan": "packages/shared/fixtures/render-plans/hlg-color.json",
+   "frames": [
+    {
+     "k": 30,
+     "golden": true,
+     "code": true,
+     "probes": [
+      {
+       "name": "white",
+       "x": 70,
+       "y": 130
+      },
+      {
+       "name": "grey",
+       "x": 190,
+       "y": 130
+      },
+      {
+       "name": "colour",
+       "x": 300,
+       "y": 130
+      },
+      {
+       "name": "highlight",
+       "x": 70,
+       "y": 250
+      }
+     ],
+     "rects": [
+      {
+       "name": "caption",
+       "x": 126,
+       "y": 547,
+       "w": 108,
+       "h": 9
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "caption-karaoke",
+   "plan": "packages/shared/fixtures/render-plans/caption-karaoke.json",
+   "downscale": 2,
+   "frames": [
+    {
+     "k": 10,
+     "rects": [
+      {
+       "name": "how",
+       "x": 195,
+       "y": 1452,
+       "w": 200,
+       "h": 50
+      }
+     ]
+    },
+    {
+     "k": 20,
+     "golden": true,
+     "rects": [
+      {
+       "name": "how",
+       "x": 195,
+       "y": 1452,
+       "w": 200,
+       "h": 50
+      },
+      {
+       "name": "are",
+       "x": 470,
+       "y": 1452,
+       "w": 190,
+       "h": 50
+      }
+     ]
+    },
+    {
+     "k": 40,
+     "golden": true,
+     "rects": [
+      {
+       "name": "are",
+       "x": 470,
+       "y": 1452,
+       "w": 190,
+       "h": 50
+      },
+      {
+       "name": "you",
+       "x": 690,
+       "y": 1452,
+       "w": 190,
+       "h": 50
+      },
+      {
+       "name": "doing",
+       "x": 208,
+       "y": 1592,
+       "w": 300,
+       "h": 50
+      }
+     ]
+    },
+    {
+     "k": 75,
+     "golden": true,
+     "rects": [
+      {
+       "name": "doing",
+       "x": 208,
+       "y": 1592,
+       "w": 300,
+       "h": 50
+      },
+      {
+       "name": "today",
+       "x": 554,
+       "y": 1592,
+       "w": 300,
+       "h": 50
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "caption-shrunk",
+   "plan": "packages/shared/fixtures/render-plans/caption-shrunk.json",
+   "frames": [
+    {
+     "k": 30,
+     "golden": true
+    }
+   ]
+  },
+  {
+   "name": "captions-multi-lane",
+   "plan": "packages/shared/fixtures/render-plans/captions-multi-lane.json",
+   "downscale": 2,
+   "frames": [
+    {
+     "k": 10,
+     "rects": [
+      {
+       "name": "top",
+       "x": 440,
+       "y": 248,
+       "w": 200,
+       "h": 24
+      },
+      {
+       "name": "bottom",
+       "x": 428,
+       "y": 1644,
+       "w": 225,
+       "h": 24
+      }
+     ]
+    },
+    {
+     "k": 30,
+     "golden": true,
+     "rects": [
+      {
+       "name": "top",
+       "x": 440,
+       "y": 248,
+       "w": 200,
+       "h": 24
+      },
+      {
+       "name": "bottom",
+       "x": 428,
+       "y": 1644,
+       "w": 225,
+       "h": 24
+      }
+     ]
+    },
+    {
+     "k": 50,
+     "golden": true,
+     "rects": [
+      {
+       "name": "top",
+       "x": 440,
+       "y": 248,
+       "w": 200,
+       "h": 24
+      },
+      {
+       "name": "bottom",
+       "x": 428,
+       "y": 1644,
+       "w": 225,
+       "h": 24
+      }
+     ]
+    },
+    {
+     "k": 80,
+     "rects": [
+      {
+       "name": "top",
+       "x": 440,
+       "y": 248,
+       "w": 200,
+       "h": 24
+      },
+      {
+       "name": "bottom",
+       "x": 428,
+       "y": 1644,
+       "w": 225,
+       "h": 24
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "audio-duck-loudness",
+   "plan": "packages/shared/fixtures/render-plans/audio-duck-loudness.json",
+   "frames": [
+    {
+     "k": 90,
+     "code": true
+    }
+   ],
+   "audio": {
+    "windows": [
+     {
+      "name": "pre",
+      "from": 0.4,
+      "to": 1.6
+     },
+     {
+      "name": "duck",
+      "from": 2.3,
+      "to": 3.7
+     },
+     {
+      "name": "post",
+      "from": 4.4,
+      "to": 5.6
+     }
+    ],
+    "tones": [
+     220,
+     330,
+     440
+    ]
+   }
+  },
+  {
+   "name": "empty-project",
+   "plan": "packages/shared/fixtures/render-plans/empty-project.json",
+   "frames": []
+  },
+  {
+   "name": "mixed-color-hlg",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/mixed-color-hlg.json",
+   "frames": [
+    {
+     "k": 15,
+     "golden": true,
+     "code": true,
+     "probes": [
+      {
+       "name": "sdr-white",
+       "x": 70,
+       "y": 130
+      },
+      {
+       "name": "sdr-grey",
+       "x": 190,
+       "y": 130
+      },
+      {
+       "name": "sdr-colour",
+       "x": 300,
+       "y": 130
+      },
+      {
+       "name": "sdr-highlight",
+       "x": 70,
+       "y": 250
+      },
+      {
+       "name": "hlg-white",
+       "x": 35.0,
+       "y": 375.0
+      },
+      {
+       "name": "hlg-grey",
+       "x": 95.0,
+       "y": 375.0
+      },
+      {
+       "name": "hlg-colour",
+       "x": 150.0,
+       "y": 375.0
+      },
+      {
+       "name": "hlg-highlight",
+       "x": 35.0,
+       "y": 435.0
+      },
+      {
+       "name": "pq-white",
+       "x": 215.0,
+       "y": 375.0
+      },
+      {
+       "name": "pq-grey",
+       "x": 275.0,
+       "y": 375.0
+      },
+      {
+       "name": "pq-colour",
+       "x": 330.0,
+       "y": 375.0
+      },
+      {
+       "name": "pq-highlight",
+       "x": 215.0,
+       "y": 435.0
+      }
+     ]
+    },
+    {
+     "k": 50,
+     "golden": true,
+     "probes": [
+      {
+       "name": "captionBox",
+       "x": 112,
+       "y": 140
+      },
+      {
+       "name": "background",
+       "x": 300,
+       "y": 600,
+       "r": 3
+      }
+     ]
+    }
+   ],
+   "audio": {
+    "windows": [],
+    "tones": []
+   }
+  },
+  {
+   "name": "mixed-color-sdr",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/mixed-color-sdr.json",
+   "frames": [
+    {
+     "k": 15,
+     "golden": true,
+     "code": true,
+     "probes": [
+      {
+       "name": "sdr-white",
+       "x": 70,
+       "y": 130
+      },
+      {
+       "name": "sdr-grey",
+       "x": 190,
+       "y": 130
+      },
+      {
+       "name": "sdr-colour",
+       "x": 300,
+       "y": 130
+      },
+      {
+       "name": "sdr-highlight",
+       "x": 70,
+       "y": 250
+      },
+      {
+       "name": "hlg-white",
+       "x": 35.0,
+       "y": 375.0
+      },
+      {
+       "name": "hlg-grey",
+       "x": 95.0,
+       "y": 375.0
+      },
+      {
+       "name": "hlg-colour",
+       "x": 150.0,
+       "y": 375.0
+      },
+      {
+       "name": "hlg-highlight",
+       "x": 35.0,
+       "y": 435.0
+      },
+      {
+       "name": "pq-white",
+       "x": 215.0,
+       "y": 375.0
+      },
+      {
+       "name": "pq-grey",
+       "x": 275.0,
+       "y": 375.0
+      },
+      {
+       "name": "pq-colour",
+       "x": 330.0,
+       "y": 375.0
+      },
+      {
+       "name": "pq-highlight",
+       "x": 215.0,
+       "y": 435.0
+      }
+     ]
+    },
+    {
+     "k": 50,
+     "golden": true,
+     "probes": [
+      {
+       "name": "captionBox",
+       "x": 112,
+       "y": 140
+      },
+      {
+       "name": "background",
+       "x": 300,
+       "y": 600,
+       "r": 3
+      }
+     ]
+    }
+   ],
+   "audio": {
+    "windows": [],
+    "tones": []
+   }
+  },
+  {
+   "name": "trailing-carrier",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/trailing-carrier.json",
+   "frames": [
+    {
+     "k": 75,
+     "golden": true
+    },
+    {
+     "k": 30,
+     "code": true
+    }
+   ],
+   "audio": {
+    "windows": [
+     {
+      "name": "a",
+      "from": 0.2,
+      "to": 0.98
+     },
+     {
+      "name": "b",
+      "from": 1.02,
+      "to": 1.8
+     },
+     {
+      "name": "tail",
+      "from": 2.2,
+      "to": 2.9
+     }
+    ],
+    "tones": [
+     220,
+     440
+    ]
+   }
+  },
+  {
+   "name": "surround",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/surround.json",
+   "frames": [],
+   "audio": {
+    "windows": [
+     {
+      "name": "all",
+      "from": 0.2,
+      "to": 1.8
+     }
+    ],
+    "tones": [
+     200,
+     300,
+     400,
+     50,
+     500,
+     600
+    ]
+   }
+  },
+  {
+   "name": "hold-vfr",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/hold-vfr.json",
+   "frames": [],
+   "sequential": true
+  },
+  {
+   "name": "fast-audio-end",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/fast-audio-end.json",
+   "frames": [],
+   "audio": {
+    "windows": [
+     {
+      "name": "fast",
+      "from": 1.2,
+      "to": 1.9
+     }
+    ],
+    "tones": [
+     220,
+     440
+    ]
+   }
+  },
+  {
+   "name": "hold-edit",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/hold-edit.json",
+   "frames": [],
+   "sequential": true
+  }
+ ]
+}

@@ -1,5 +1,5 @@
 import { buildApp } from './app.js';
-import { assetsRoot, port, rendersRoot } from './config.js';
+import { assetsRoot, buildInfo, port, rendersRoot } from './config.js';
 import { createDatabase } from './db/database.js';
 import { binaryAvailable } from './media/process.js';
 import { readOnlyFromEnv } from './read-only.js';
@@ -20,6 +20,8 @@ installShutdownHandlers({
   log: (line) => app.log.info(line),
 });
 await app.listen({ port, host: '0.0.0.0' });
+const { line, commit } = buildInfo();
+app.log.info({ line, commit }, `editify server line ${line} at ${commit}`);
 
 // Probing for ffmpeg spawns two processes and only ever prints a warning, so it
 // runs after the bind: fly-proxy checks for a listening socket early, and a

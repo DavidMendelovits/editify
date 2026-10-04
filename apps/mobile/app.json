@@ -24,7 +24,13 @@
       "appleTeamId": "F9R8TK7W79",
       "supportsTablet": true,
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSSpeechRecognitionUsageDescription": "Editify transcribes your clips on this iPhone to make captions and find cuts.",
+        "PHPhotoLibraryPreventAutomaticLimitedAccessAlert": true,
+        "NSPhotoLibraryAddUsageDescription": "Editify saves your finished videos to Photos.",
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.editify.app.export.*"
+        ]
       }
     },
     "android": {
@@ -86,7 +92,16 @@
         {
           "uploadNativeSymbols": true
         }
-      ]
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "26.0"
+          }
+        }
+      ],
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,0 +1,195 @@
+{
+  "description": "A 0.5 s crossfade into clip b at 2 s: clip a borrows 0.5 s of source past its out point under b, which fades in from opacity 0; the audio swaps edge fades for linear tri-fades.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 3,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 4,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 2,
+          "layers": [
+            {
+              "clipId": "a",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-a",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        },
+        {
+          "start": 2,
+          "end": 2.5,
+          "layers": [
+            {
+              "clipId": "a",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-a",
+                "kind": "video"
+              },
+              "srcStart": 2,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            },
+            {
+              "clipId": "b",
+              "trackIndex": 0,
+              "z": 1,
+              "assetRef": {
+                "id": "asset-b",
+                "kind": "video"
+              },
+              "srcStart": 1,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [
+                {
+                  "t": 2,
+                  "value": 0
+                },
+                {
+                  "t": 2.5,
+                  "value": 1
+                }
+              ],
+              "dimKeys": []
+            }
+          ]
+        },
+        {
+          "start": 2.5,
+          "end": 4,
+          "layers": [
+            {
+              "clipId": "b",
+              "trackIndex": 0,
+              "z": 1,
+              "assetRef": {
+                "id": "asset-b",
+                "kind": "video"
+              },
+              "srcStart": 1.5,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2.5,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": [
+      {
+        "id": "a",
+        "clipId": "a",
+        "assetRef": {
+          "id": "asset-a",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 2.5,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.5,
+          "curve": "linear"
+        }
+      },
+      {
+        "id": "b",
+        "clipId": "b",
+        "assetRef": {
+          "id": "asset-b",
+          "kind": "video"
+        },
+        "at": 2,
+        "in": 1,
+        "out": 3,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 2,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.5,
+          "curve": "linear"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

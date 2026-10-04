@@ -1,0 +1,179 @@
+{
+  "description": "Two caption lanes on screen at once: a bottom lane with two captions, the first trimmed to end where the second starts, and a top lane caption overlapping both.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 9,
+    "buildSeq": 1,
+    "size": {
+      "w": 1080,
+      "h": 1920
+    },
+    "fps": 30,
+    "duration": 3,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 3,
+          "layers": [
+            {
+              "clipId": "talk",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [
+      {
+        "id": "cap-1",
+        "rev": "b9b7b307d408b3e5",
+        "start": 0,
+        "end": 1.5,
+        "lane": 0,
+        "font": "Montserrat-Bold",
+        "sizePx": 40.973,
+        "color": "#FFFFFF",
+        "strokeColor": "#000000",
+        "strokePx": 3,
+        "emphasisColor": "#FACC15",
+        "shadow": {
+          "color": "#000000",
+          "opacity": 0.607843,
+          "offsetPx": 1
+        },
+        "align": "center",
+        "lines": [
+          {
+            "text": "FIRST LINE",
+            "x": 424.415,
+            "y": 1671.439,
+            "width": 231.17
+          }
+        ],
+        "fitted": {
+          "shrunk": false,
+          "scale": 1
+        }
+      },
+      {
+        "id": "cap-top",
+        "rev": "460d1b86c32b4dc0",
+        "start": 0.5,
+        "end": 2.5,
+        "lane": 1,
+        "font": "Montserrat-Bold",
+        "sizePx": 40.973,
+        "color": "#FFFFFF",
+        "strokeColor": "#000000",
+        "strokePx": 3,
+        "emphasisColor": "#FACC15",
+        "shadow": {
+          "color": "#000000",
+          "opacity": 0.607843,
+          "offsetPx": 1
+        },
+        "align": "center",
+        "lines": [
+          {
+            "text": "TOP TEXT",
+            "x": 436.502,
+            "y": 275.439,
+            "width": 206.996
+          }
+        ],
+        "fitted": {
+          "shrunk": false,
+          "scale": 1
+        }
+      },
+      {
+        "id": "cap-2",
+        "rev": "5e554531e407ec4f",
+        "start": 1.5,
+        "end": 3,
+        "lane": 0,
+        "font": "Montserrat-Bold",
+        "sizePx": 40.973,
+        "color": "#FFFFFF",
+        "strokeColor": "#000000",
+        "strokePx": 3,
+        "emphasisColor": "#FACC15",
+        "shadow": {
+          "color": "#000000",
+          "opacity": 0.607843,
+          "offsetPx": 1
+        },
+        "align": "center",
+        "lines": [
+          {
+            "text": "SECOND LINE",
+            "x": 393.029,
+            "y": 1671.439,
+            "width": 293.941
+          }
+        ],
+        "fitted": {
+          "shrunk": false,
+          "scale": 1
+        }
+      }
+    ],
+    "audio": [
+      {
+        "id": "talk",
+        "clipId": "talk",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 3,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

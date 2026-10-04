@@ -1,0 +1,129 @@
+{
+  "description": "A caption too long for three lines at its styled size: the layout shrank it by 0.7 to 19.42 px over 3 lines and flagged it, with no ellipsis.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 11,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 3,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 3,
+          "layers": [
+            {
+              "clipId": "talk",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [
+      {
+        "id": "cap-long",
+        "rev": "c3a8758baf3e66b9",
+        "start": 0,
+        "end": 3,
+        "lane": 0,
+        "font": "Montserrat-Bold",
+        "sizePx": 19.42,
+        "color": "#FFFFFF",
+        "strokeColor": "#000000",
+        "strokePx": 1,
+        "emphasisColor": "#FACC15",
+        "shadow": {
+          "color": "#000000",
+          "opacity": 0.607843,
+          "offsetPx": 0.333
+        },
+        "align": "center",
+        "lines": [
+          {
+            "text": "NOBODY TELLS YOU THIS",
+            "x": 50.054,
+            "y": 493.87,
+            "width": 259.892
+          },
+          {
+            "text": "ABOUT RUNNING A MARATHON",
+            "x": 17.915,
+            "y": 524.203,
+            "width": 324.171
+          },
+          {
+            "text": "IN THE POURING RAIN",
+            "x": 66.153,
+            "y": 554.536,
+            "width": 227.694
+          }
+        ],
+        "fitted": {
+          "shrunk": true,
+          "scale": 0.7
+        }
+      }
+    ],
+    "audio": [
+      {
+        "id": "talk",
+        "clipId": "talk",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 3,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import {
   newProjectSchema,
   operationSchema,
@@ -8,33 +7,19 @@ import {
   type Operation,
   type Project,
 } from '@editify/shared';
+import { removeRenderFiles } from '../media/render-files.js';
 import { AssetStore } from './asset-store.js';
 import type { EditifyDatabase } from './database.js';
-import { applyOperation, findVideoOverlaps, overlapKey, OperationError } from '../operations/apply.js';
+import { applyOperation, assertNoNewVideoOverlap, OperationError } from '../operations/apply.js';
+
+// Moved to @editify/shared so the phone's optimistic paint refuses the same overlaps.
+export { assertNoNewVideoOverlap };
 
 export class VersionConflictError extends Error {
   constructor(public readonly expected: number, public readonly actual: number) {
     super(`Version conflict: expected ${expected}, current version is ${actual}`);
     this.name = 'VersionConflictError';
   }
-}
-
-/**
- * A video track shows one picture at a time, so two clips sharing timeline time
- * there is corruption, not an edit. Only a *newly* introduced pair throws: a
- * project that already overlaps has to stay editable so it can be repaired.
- */
-function assertNoNewVideoOverlap(before: Project, after: Project): void {
-  const existing = new Set(findVideoOverlaps(before).map(overlapKey));
-  const introduced = findVideoOverlaps(after).find((overlap) => !existing.has(overlapKey(overlap)));
-  if (!introduced) return;
-  const [first, second] = introduced.clipIds;
-  // Rounded: float ends read as 2.5999999999999996s, which is noise to whoever
-  // (the user or the model) has to act on the message.
-  const second3 = (value: number): string => `${Number(value.toFixed(3))}s`;
-  throw new OperationError(
-    `Clips ${first} and ${second} would overlap on video track ${introduced.trackId} from ${second3(introduced.start)} to ${second3(introduced.end)}; video clips cannot share timeline time`,
-  );
 }
 
 /** Raised when an edit references media the project was never given. */
@@ -45,12 +30,12 @@ export class AssetAccessError extends OperationError {
   }
 }
 
-function assetIds(project: Project): Set<string> {
+export function assetIds(project: Project): Set<string> {
   return new Set(project.tracks.flatMap((track) => track.clips.flatMap((clip) => clip.assetId ?? [])));
 }
 
 /** Structural project comparison ignoring `version`, normalized through the schema so key order can't differ. */
-function sameDoc(left: Project, right: Project): boolean {
+export function sameDoc(left: Project, right: Project): boolean {
   return JSON.stringify(projectSchema.parse({ ...left, version: 0 }))
     === JSON.stringify(projectSchema.parse({ ...right, version: 0 }));
 }
@@ -151,6 +136,16 @@ export class ProjectStore {
     return rows.map((row) => projectSchema.parse(JSON.parse(row.doc_json)));
   }
 
+  /**
+   * The project's owner: a user id, null for a NULL-owner (pre-auth) project,
+   * undefined when there is no such project. The plan render scopes asset
+   * reads to it.
+   */
+  ownerId(id: string): string | null | undefined {
+    const row = this.database.prepare('SELECT user_id FROM projects WHERE id = ?').get(id) as { user_id: string | null } | undefined;
+    return row ? row.user_id : undefined;
+  }
+
   get(id: string, userId?: string): Project | undefined {
     const row = (userId === undefined
       ? this.database.prepare('SELECT doc_json FROM projects WHERE id = ?').get(id)
@@ -163,14 +158,14 @@ export class ProjectStore {
    * Removes the project and, through `ON DELETE CASCADE`, its operation log,
    * asset links, renders and chat. Rows in `assets` deliberately stay: media is
    * shared between projects, so deleting one must not strand another's clips.
-   * Rendered outputs on disk belong to this project alone, so they are unlinked.
+   * Rendered files on disk belong to this project alone, so each render's
+   * directory goes (output, captions, work files), finished or not.
    */
   async delete(id: string, userId?: string): Promise<boolean> {
     if (!this.get(id, userId)) return false;
-    const outputs = (this.database.prepare(
-      'SELECT output_path FROM renders WHERE project_id = ? AND output_path IS NOT NULL',
-    ).all(id) as Array<{ output_path: string }>).map((row) => row.output_path);
-    await Promise.all(outputs.map(async (path) => { await rm(path, { force: true }); }));
+    const renders = (this.database.prepare('SELECT id, output_path FROM renders WHERE project_id = ?')
+      .all(id) as Array<{ id: string; output_path: string | null }>).map((row) => ({ id: row.id, outputPath: row.output_path }));
+    await removeRenderFiles(renders);
     return this.database.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
   }
 

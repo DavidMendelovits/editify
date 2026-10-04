@@ -2,10 +2,61 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, release/1.1]
 jobs:
+  # Where a push deploys (plan D8): main is the 1.0 line (Fly editify-dm, EAS
+  # preview), release/1.1 the 1.1 line (Fly editify-v11, EAS preview-1.1). On a
+  # pull request it prints where the merge would go, as a dry run. fly.v11.toml
+  # differs from fly.toml only in the app, PUBLIC_BASE_URL, volume, LINE and
+  # DATABASE_SCHEMA.
+  target:
+    runs-on: ubuntu-latest
+    outputs:
+      deploys: ${{ steps.resolve.outputs.deploys }}
+      app: ${{ steps.resolve.outputs.app }}
+      config: ${{ steps.resolve.outputs.config }}
+      url: ${{ steps.resolve.outputs.url }}
+      line: ${{ steps.resolve.outputs.line }}
+      token: ${{ steps.resolve.outputs.token }}
+      profile: ${{ steps.resolve.outputs.profile }}
+    steps:
+      - id: resolve
+        env:
+          BRANCH: ${{ github.event_name == 'push' && github.ref_name || github.base_ref }}
+        run: |
+          case "$BRANCH" in
+            main)
+              echo "deploys=true" >> "$GITHUB_OUTPUT"
+              app=editify-dm; config=fly.toml; line=1.0; token=FLY_API_TOKEN; profile=preview ;;
+            release/1.1)
+              echo "deploys=true" >> "$GITHUB_OUTPUT"
+              app=editify-v11; config=fly.v11.toml; line=1.1; token=FLY_API_TOKEN_V11; profile=preview-1.1 ;;
+            *)
+              echo "deploys=false" >> "$GITHUB_OUTPUT"
+              echo "Branch $BRANCH deploys nowhere."; exit 0 ;;
+          esac
+          url="https://$app.fly.dev"
+          { echo "app=$app"; echo "config=$config"; echo "url=$url"; echo "line=$line"; echo "token=$token"; echo "profile=$profile"; } >> "$GITHUB_OUTPUT"
+          verb=$([ "${{ github.event_name }}" = push ] && echo "Deploying" || echo "On merge, would deploy")
+          echo "$verb $BRANCH: Fly app $app ($config, line $line, $url); EAS profile/channel/branch $profile, environment preview, EXPO_PUBLIC_API_URL=$url" | tee -a "$GITHUB_STEP_SUMMARY"
   check:
     runs-on: ubuntu-latest
+    # Project sync (server/test/pg-sync.test.ts) runs against a real Postgres.
+    # Supabase is on 17; with CI set, that suite fails rather than skips
+    # when it cannot reach this database.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: editify_t9_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: No videos in the repo (demos go to Google Drive)
@@ -14,7 +65,22 @@ jobs:
             echo "::error::Video files are tracked in git. Upload them with scripts/bot/finish-demo.sh and link from the PR instead."; exit 1; fi
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
-      - run: sudo apt-get install -y ffmpeg
+      # fonts-noto-color-emoji + Pillow: the plan render's colour emoji stickers (server/src/media/emoji.ts).
+      - name: Install ffmpeg, Noto Color Emoji and Pillow (retried; mirrors flake)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-color-emoji python3-pil && break
+            [ "$attempt" = 5 ] && exit 1
+            sleep $((attempt * 10))
+          done
+      # The RENDER_PLAN server render (server/src/media/plan, P6) needs these
+      # filters (zscale = libzimg, subtitles = libass). Ubuntu's ffmpeg has
+      # them; the plan render tests fail rather than skip when CI is set.
+      - name: ffmpeg has the plan render's filters
+        run: |
+          for f in zscale lut1d maskedmerge blend subtitles geq fillborders alimiter premultiply unpremultiply negate extractplanes mergeplanes rotate tpad aeval; do
+            ffmpeg -hide_banner -filters | grep -qE "^ [A-Z.|]+ $f " || { echo "::error::ffmpeg lacks the $f filter"; exit 1; }
+          done
       - run: npm ci
       - run: npm run lint:copy
       # Plan C9: fly.v11.toml may differ from fly.toml only in app, PUBLIC_BASE_URL,
@@ -23,60 +89,190 @@ jobs:
       - run: npm run build -w @editify/shared
       - run: npm run typecheck
       - run: npm test -w @editify/server
+        env:
+          SYNC_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/editify_t9_test
       - run: npm test -w @editify/mobile
-  deploy:
-    needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # The plan render (RENDER_PLAN, server/src/media/plan) on the ffmpeg production
+  # runs: the Docker runtime stage is node:20-bookworm-slim + Debian 12's apt
+  # ffmpeg (5.1), which differs from ubuntu-latest's 6.1 in filter formats and
+  # options (5.1's tpad has no float formats; mergeplanes, ebur128 options). Same
+  # Debian release, same ffmpeg package, so the parity suite here is the one
+  # production would pass. CI set: a missing filter fails rather than skips.
+  plan-render-runtime:
     runs-on: ubuntu-latest
-    concurrency: { group: fly-deploy, cancel-in-progress: false }
+    container: node:20-bookworm
     steps:
       - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
-        env: { FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN }}" }
-      # Post-deploy smoke (plan C13, scripts/deploy-smoke.sh): /health is ok,
-      # /client-config serves the update gate, GET /projects without
-      # credentials is 401, signed in as the smoke user (SMOKE_EMAIL /
-      # SMOKE_PASSWORD, skipped with a warning when unset) /projects is 200,
-      # and the app has its secrets.
-      - name: Smoke the deployed app
-        run: ./scripts/deploy-smoke.sh
+      - name: Install Debian's ffmpeg and the runtime image's emoji fonts and Pillow (retried; mirrors flake)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-symbola fonts-noto-color-emoji python3 python3-pip && break
+            [ "$attempt" = 5 ] && exit 1
+            sleep $((attempt * 10))
+          done
+          pip3 install --no-cache-dir --break-system-packages pillow==11.3.0
+      - run: ffmpeg -version | head -1
+      - run: npm ci
+      - run: npm run build -w @editify/shared
+      # The plan render, plus the production-facing pieces it changed: render QA's loudness scan, the import
+      # format allowlist, the legacy ASS writer.
+      - run: npx vitest run --testTimeout=60000 test/render-plan-parity.test.ts test/render-plan-loudness.test.ts test/render-plan-ass.test.ts test/render-files.test.ts test/render-qa.test.ts test/import-formats.test.ts test/ass.test.ts
+        working-directory: server
         env:
-          URL: https://editify-dm.fly.dev
-          APP: editify-dm
-          CONFIG: fly.toml
-          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
-          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
-          FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN }}"
-          # Missing Fly secrets warn for now; '1' fails the deploy on them.
-          STRICT_SECRETS: '0'
+          CI: 'true'
+  # The engine's macOS checks: the Swift AudioSync port held to sync.ts
+  # (decision 1A, server/test/sync-parity.test.ts), the renderer's golden
+  # frames (plan 9A, server/test/render-golden.test.ts) and the on-device
+  # export (plan P4, server/test/device-export.test.ts) and the native preview
+  # (plan P5, server/test/native-preview.test.ts). They need swiftc, so
+  # they run on macOS, and only when a change could break them (macOS minutes
+  # cost ~10x Linux): the engine, the render plan, caption fonts and layout,
+  # the fixtures and goldens, the server's media code.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      engine: ${{ steps.diff.outputs.engine }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: diff
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then echo "engine=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/(sync\.ts|render-plan|caption-)|packages/shared/fixtures/render-plans/|server/fonts/|server/src/media/|server/test/(sync-parity\.test\.ts|render-golden\.test\.ts|device-export\.test\.ts|native-preview\.test\.ts|helpers/sync-fixtures\.ts|helpers/rotated-plan\.ts|media-pipeline\.test\.ts)|scripts/check-core-imports\.mjs|\.github/workflows/ci\.yml)'; then
+            echo "engine=true" >> "$GITHUB_OUTPUT"; else echo "engine=false" >> "$GITHUB_OUTPUT"; fi
+  # Always runs, so deploy and preview can depend on it: a change that touches
+  # none of the engine paths reports success without spinning up macOS.
+  engine:
+    needs: changes
+    # Pinned image and Xcode: a runner image bump must not move the goldens
+    # (blessed with Xcode 26.6). Bump both deliberately and re-bless.
+    runs-on: ${{ needs.changes.outputs.engine == 'true' && 'macos-26' || 'ubuntu-latest' }}
+    steps:
+      - name: No engine change
+        if: needs.changes.outputs.engine != 'true'
+        run: echo "No engine, render-plan or caption change; macOS checks skipped."
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.engine == 'true'
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: needs.changes.outputs.engine == 'true'
+        with: { xcode-version: '26.6' }
+      - uses: actions/setup-node@v4
+        if: needs.changes.outputs.engine == 'true'
+        with: { node-version: 20, cache: npm }
+      # D4: the EditifyCore pod (domain + ports) imports no AVFoundation, Speech, SoundAnalysis,
+      # Vision, BackgroundTasks, Photos, UIKit, Metal, VideoToolbox or ExpoModulesCore.
+      - name: EditifyCore import allowlist
+        if: needs.changes.outputs.engine == 'true'
+        run: node scripts/check-core-imports.mjs
+      - run: npm ci
+        if: needs.changes.outputs.engine == 'true'
+      - run: npm run build -w @editify/shared
+        if: needs.changes.outputs.engine == 'true'
+      - name: Swift AudioSync parity with sync.ts
+        if: needs.changes.outputs.engine == 'true'
+        run: npx vitest run test/sync-parity.test.ts
+        working-directory: server
+      # The device proxy writer and media fingerprint (plan P1) on ffmpeg-made HDR/SDR clips.
+      - name: ffmpeg (with x265) for the media pipeline clips
+        if: needs.changes.outputs.engine == 'true'
+        run: brew install ffmpeg
+      - name: Swift media pipeline (proxy, LRU store, fingerprint)
+        if: needs.changes.outputs.engine == 'true'
+        run: npx vitest run test/media-pipeline.test.ts
+        working-directory: server
+      - name: Renderer golden frames (PlanBuilder + EditifyCompositor)
+        if: needs.changes.outputs.engine == 'true'
+        run: npx vitest run test/render-golden.test.ts
+        working-directory: server
+        env:
+          REQUIRE_SWIFT: '1'
+          GOLDEN_OUT_DIR: ${{ runner.temp }}/render-goldens
+      # The on-device export (plan P4): PlanExporter's files checked for frames, codec and
+      # colour tags, A/V sync through the limiter, and loudness against ffmpeg's ebur128.
+      - name: On-device export (PlanExporter, loudness, A/V sync)
+        if: needs.changes.outputs.engine == 'true'
+        run: npx vitest run test/device-export.test.ts
+        working-directory: server
+        env:
+          REQUIRE_SWIFT: '1'
+      # The native preview (plan P5): PlanPlayer's AVPlayer at exact seeks against the
+      # goldens, in-place parameter updates, rebuilds, ordering, 60 Hz drags, audio continuity.
+      - name: Native preview (PlanPlayer, OV10)
+        if: needs.changes.outputs.engine == 'true'
+        run: npx vitest run test/native-preview.test.ts
+        working-directory: server
+        env:
+          REQUIRE_SWIFT: '1'
+      # The rendered frames (named like the goldens) and diffs/. To adopt
+      # them: download, copy the top-level *.png over
+      # apps/mobile/modules/editify-engine/parity/goldens/, commit.
+      - name: Upload rendered goldens
+        if: failure() && needs.changes.outputs.engine == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-goldens
+          path: ${{ runner.temp }}/render-goldens
+          if-no-files-found: ignore
+  deploy:
+    needs: [check, engine, plan-render-runtime, target]
+    if: github.event_name == 'push' && needs.target.outputs.deploys == 'true'
+    runs-on: ubuntu-latest
+    concurrency: { group: "fly-deploy-${{ needs.target.outputs.app }}", cancel-in-progress: false }
+    env:
+      APP: ${{ needs.target.outputs.app }}
+      CONFIG: ${{ needs.target.outputs.config }}
+      URL: ${{ needs.target.outputs.url }}
+      LINE: ${{ needs.target.outputs.line }}
+    steps:
+      - run: echo "Deploying $GITHUB_SHA to $APP with $CONFIG (line $LINE)"
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # Each app has its own app-scoped deploy token (FLY_API_TOKEN: editify-dm, FLY_API_TOKEN_V11: editify-v11).
+      - run: flyctl deploy --remote-only -c "$CONFIG" -a "$APP" --build-arg GIT_SHA="$GITHUB_SHA"
+        env: { FLY_API_TOKEN: "${{ secrets[needs.target.outputs.token] }}" }
+      # Post-deploy smoke (plan C13): the new build answers /health with this
+      # line and commit, and a protected route still demands credentials.
+      - name: Smoke /health and auth
+        run: |
+          for attempt in $(seq 1 30); do
+            body=$(curl -fsS "$URL/health" || true)
+            if [ "$(echo "$body" | jq -r '.line // empty' 2>/dev/null)" = "$LINE" ] && [ "$(echo "$body" | jq -r '.commit // empty' 2>/dev/null)" = "$GITHUB_SHA" ]; then
+              echo "$URL/health: $body"; break
+            fi
+            [ "$attempt" = 30 ] && { echo "::error::$URL/health is not line $LINE at $GITHUB_SHA: $body"; exit 1; }
+            sleep 10
+          done
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: application/json' "$URL/projects")
+          [ "$status" = 401 ] || { echo "::error::GET $URL/projects without credentials answered $status, not 401"; exit 1; }
   # Every merge reaches preview installs. The fingerprint action compares the
   # native fingerprint against existing EAS builds: JS-only changes go out as an
   # OTA update on the preview channel, and a native change starts a new iOS
   # preview build instead (which only reaches phones once it is installed).
   #
   # The API URL: a build takes it from the eas.json profile's env, but `eas
-  # update` does not read build profile env, and the EAS preview environment
-  # does not define it. So a step exports the profile's eas.json env (API URL,
-  # Google client ids) before the update; without it every OTA fell back to
-  # http://localhost:3001 (src/lib/api.ts) and hid Google sign-in.
+  # update` does not read build profile env, and custom EAS environments
+  # (a preview-1.1 one, plan D17) need a Production plan. So a step exports
+  # the profile's eas.json env (API URL, Google client ids) before the update,
+  # and every update carries its line's server.
   preview:
-    needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [check, engine, target]
+    if: github.event_name == 'push' && needs.target.outputs.deploys == 'true'
     runs-on: ubuntu-latest
-    concurrency: { group: eas-preview, cancel-in-progress: false }
+    concurrency: { group: "eas-${{ needs.target.outputs.profile }}", cancel-in-progress: false }
     permissions: { contents: read, pull-requests: write }
     env:
-      PROFILE: preview
-      EXPECTED_API_URL: https://editify-dm.fly.dev
+      PROFILE: ${{ needs.target.outputs.profile }}
+      EXPECTED_API_URL: ${{ needs.target.outputs.url }}
     steps:
+      - run: echo "EAS profile, channel and update branch $PROFILE (environment preview), EXPO_PUBLIC_API_URL=$EXPECTED_API_URL"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }  # eas-cli needs >= 22
       - run: npm ci
       - uses: expo/expo-github-action@v8
         with: { eas-version: latest, token: "${{ secrets.EXPO_TOKEN }}" }
-      # The release/1.1 line shares this environment, so it must not set the API URL.
+      # Shared by both lines, so it must not set the API URL: it could override the line's own.
       # A failed listing fails the step (the assignment carries eas's exit status) rather than passing unchecked.
       - name: The EAS preview environment leaves EXPO_PUBLIC_API_URL to CI
         working-directory: apps/mobile
@@ -84,6 +280,12 @@ jobs:
           listing=$(eas env:list --environment preview --format short)
           if grep -q '^EXPO_PUBLIC_API_URL=' <<<"$listing"; then
             echo "::error::The EAS preview environment defines EXPO_PUBLIC_API_URL; delete it so each line's updates keep their own server."; exit 1; fi
+      # `eas update` does not read eas.json build env, so an update would ship
+      # without the profile's EXPO_PUBLIC_* values: no API URL means
+      # http://localhost:3001 (src/lib/api.ts), and no Google client ids hides
+      # Google sign-in (app/sign-in.tsx). Export the profile's env (base
+      # included) so every update carries what its build has, and check that
+      # the profile points at this line's server.
       - name: Give the update its build profile's env
         working-directory: apps/mobile
         run: |
@@ -111,8 +313,8 @@ jobs:
           JS
       - uses: expo/expo-github-action/continuous-deploy-fingerprint@main
         with:
-          profile: preview
-          branch: preview
+          profile: ${{ env.PROFILE }}
+          branch: ${{ env.PROFILE }}
           environment: preview
           platform: ios
           working-directory: apps/mobile

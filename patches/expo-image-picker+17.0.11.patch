@@ -1,0 +1,40 @@
+diff --git a/node_modules/expo-image-picker/ios/MediaHandler.swift b/node_modules/expo-image-picker/ios/MediaHandler.swift
+index 6e4fbe1..ca932f4 100644
+--- a/node_modules/expo-image-picker/ios/MediaHandler.swift
++++ b/node_modules/expo-image-picker/ios/MediaHandler.swift
+@@ -389,16 +389,25 @@ internal struct MediaHandler {
+ 
+           // Stream the resource into our cache directory. This API is asynchronous but doesn't require
+           // a temporary file like `loadFileRepresentation`.
+-          try await PHAssetResourceManager.default().writeData(for: resource, toFile: destinationUrl, options: nil)
+-
+-          // Build and return the result using the helper.
+-          let mimeType = getMimeType(from: destinationUrl.pathExtension)
+-          return try buildVideoResult(
+-            for: destinationUrl,
+-            withName: originalFilename,
+-            mimeType: mimeType,
+-            assetId: assetId
+-          )
++          // [editify patch] Allow the iCloud download (an offloaded original otherwise fails with
++          // PHPhotosErrorDomain 3164), and on any error fall through to the slow path below
++          // instead of failing the pick. See patches/README.md.
++          let resourceOptions = PHAssetResourceRequestOptions()
++          resourceOptions.isNetworkAccessAllowed = true
++          do {
++            try await PHAssetResourceManager.default().writeData(for: resource, toFile: destinationUrl, options: resourceOptions)
++
++            // Build and return the result using the helper.
++            let mimeType = getMimeType(from: destinationUrl.pathExtension)
++            return try buildVideoResult(
++              for: destinationUrl,
++              withName: originalFilename,
++              mimeType: mimeType,
++              assetId: assetId
++            )
++          } catch {
++            try? FileManager.default.removeItem(at: destinationUrl)
++          }
+         }
+       }
+       // If anything above fails we'll gracefully fall back to the existing (slower) path below.

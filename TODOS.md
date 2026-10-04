@@ -43,3 +43,11 @@
 - **Why:** After per-user scoping they're invisible to everyone but still use the Fly volume, which has a hard 500 GB cap.
 - **Context:** They were kept on purpose (orphaned, not claimed or deleted) when scoping landed, 2026-09-29. Only the shared token can still reach them.
 - **Blocked by:** scoping PR soaking in prod with nobody missing anything.
+
+## Animated caption styles (CapCut/Mirage parity)
+- **What:** Word pop-in, bounce, scale-on-sung and auto emoji as caption styles, drawn by the native CaptionRenderer and by the server's ASS writer.
+- **Why:** Short-form creators expect the CapCut/Mirage looks. v1 captions only switch a word's colour when it is sung, so an Editify export reads as static next to theirs.
+- **Pros:** Uses the pipeline P2/P3 build anyway: captions are plan data drawn in the compositor, so preview and export animate the same frames.
+- **Cons:** Every animation needs a matching ASS form (`\t`, `\fscx`) for the server fallback, or the server has to render those captions as images. The CaptionRenderer's bitmap cache grows with each animation phase.
+- **Context:** Start from `captionStyleSchema` (`packages/shared/src/index.ts`) and the render plan's caption entries (`packages/shared/src/render-plan-schema.ts`: `words[].s/e` are already absolute timeline seconds, and `e` is unused in v1). CaptionRenderer caches per caption and animation phase, so the cache key grows from (id, rev, sung-word count, scale) to include the phase. Out of scope in `~/.claude/plans/on-device-export.md`.
+- **Depends on:** P2 render plan (`buildRenderPlan`) + P3 CaptionRenderer.

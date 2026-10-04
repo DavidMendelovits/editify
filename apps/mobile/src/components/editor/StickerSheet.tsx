@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleShee
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import type { AssetMetadata, Callout } from '@editify/shared';
-import { uploadAsset } from '../../lib/api';
+import { uploadMediaFile } from '../../lib/pick';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 /** The three card treatments, in the order they read: right, wrong, plain. */
@@ -71,12 +71,11 @@ export function StickerSheet({ projectId, visible, onClose, onAddEmoji, onAddIma
     if (picked.canceled || !file) return;
     setUploading(true);
     try {
-      const asset = await uploadAsset({
+      const asset = await uploadMediaFile(projectId, {
         uri: file.uri,
         name: file.fileName ?? `sticker-${Date.now()}.png`,
         mimeType: file.mimeType ?? 'image/png',
-        projectId,
-      });
+      }, { kind: 'image', origin: 'photos', phLocalId: file.assetId ?? null });
       onAddImage(asset);
       onClose();
     } catch (uploadError) {

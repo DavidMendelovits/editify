@@ -58,6 +58,8 @@ function summarizeResult(tool: string, result: unknown, ok: boolean): string {
   if (tool === 'caption_clip_from_transcript' && isRecord(result) && result.changed !== false) {
     return `Added ${String(result.captionsAdded)} transcript captions; project is now version ${String(result.version)}.`;
   }
+  // A stateless turn proposes history commands to the phone instead of running them.
+  if (isRecord(result) && typeof result.deviceCommand === 'string') return `Proposed ${result.deviceCommand} to the phone; nothing was applied here.`;
   if (isRecord(result) && result.ok === true) {
     if (result.changed === false) return `No change from ${tool}: the project already matched this request.`;
     const changed = Array.isArray(result.changedClips) ? result.changedClips.length : 0;

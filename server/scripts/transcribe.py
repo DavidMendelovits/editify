@@ -2,6 +2,7 @@
 """Transcribe one media file with faster-whisper and emit machine-readable JSON."""
 
 import json
+import os
 import sys
 from contextlib import redirect_stdout
 
@@ -22,7 +23,10 @@ def main():
     with redirect_stdout(sys.stderr):
         from faster_whisper import WhisperModel
 
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        # 0 lets CTranslate2 pick (4 threads). The server passes fewer for an
+        # import's background run so the preview encode next to it keeps the cores.
+        cpu_threads = int(os.environ.get("WHISPER_CPU_THREADS") or 0)
+        model = WhisperModel(model_size, device="cpu", compute_type="int8", cpu_threads=cpu_threads)
         segment_stream, info = model.transcribe(media_path, word_timestamps=True)
         for segment in segment_stream:
             text = (segment.text or "").strip()

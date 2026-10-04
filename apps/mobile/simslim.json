@@ -1,0 +1,5 @@
+{
+  "name": "editify",
+  "description": "Slim iOS sims for Editify: keep Photos (expo-image-picker), StoreKit (RevenueCat) and speech (SpeechAnalyzer words analyzer / lab S11)",
+  "except": ["photos", "store", "siri"]
+}

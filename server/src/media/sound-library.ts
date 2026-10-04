@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { LibrarySound, SoundCategory } from '@editify/shared';
+import { SOUND_ID_PREFIX, type LibrarySound, type SoundCategory } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import { dataRoot } from '../config.js';
 import { probeMedia, runProcess } from './process.js';
@@ -9,7 +9,7 @@ import { probeMedia, runProcess } from './process.js';
 export const soundsRoot = join(dataRoot, 'sounds');
 
 /** Library sounds are the only NULL-owner assets a signed-in user can see. */
-export const SOUND_ID_PREFIX = 'sound-';
+export { SOUND_ID_PREFIX };
 
 /**
  * The built-in sound library is synthesized with ffmpeg's lavfi sources on
@@ -161,7 +161,7 @@ export async function synthesizeSound(id: string, path: string): Promise<void> {
  * `readOnly` (the cutover freeze) lists only sounds that already have both a
  * file and a row: making a missing one would write to disk and to SQLite.
  */
-export async function ensureSoundLibrary(assets: AssetStore, readOnly = false): Promise<LibrarySound[]> {
+export async function ensureSoundLibrary(assets: Pick<AssetStore, 'get' | 'getByOriginalName' | 'upsert'>, readOnly = false): Promise<LibrarySound[]> {
   generated ??= (async () => {
     if (!readOnly) await mkdir(soundsRoot, { recursive: true });
     const sounds: LibrarySound[] = [];

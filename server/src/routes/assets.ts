@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply } from 'fastify';
 import type { AssetMetadata } from '@editify/shared';
 import { z } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
@@ -14,10 +14,12 @@ import { assetsRoot, mediaImportDir } from '../config.js';
 import { COLOR_PIPELINE_VERSION } from '../media/color.js';
 import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbnail, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
+import { isFile } from '../services/asset-availability.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { FaceService } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
-import { withMediaSlot } from '../services/media-slots.js';
+import { timeMediaJob } from '../services/media-jobs.js';
+import { mediaSlots, withMediaSlot, type SlotLane } from '../services/media-slots.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 import { WaveformService } from '../services/waveform-service.js';
 import { READ_ONLY_MESSAGE, readOnlyReply } from '../read-only.js';
@@ -42,6 +44,31 @@ const labelRequestSchema = z.object({ label: z.string().max(120) }).strict();
 const linkRequestSchema = z.object({ projectId: z.string().min(1) }).strict();
 const rawUploadSchema = z.string().trim().min(1).max(255);
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+/**
+ * The only spelling of an asset id that may name a folder: server ids are lowercase UUIDs
+ * (and the library's `sound-…`). Exact-case only, since SQLite compares ids byte for byte
+ * while a case-insensitive filesystem would not.
+ */
+const CANONICAL_ASSET_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
+/** A re-uploaded original may differ from the record by a remux's frame or two, never by a trim. */
+export const RESTORE_DURATION_TOLERANCE = 0.25;
+/** Pixel sizes may differ by rounding in a re-wrap, never by a resize. */
+const RESTORE_SIZE_TOLERANCE = 0.01;
+
+/**
+ * Is a re-uploaded file the original `record` describes? Same kind of media (a picture
+ * where there was one, audio where there was audio), the same duration within a frame or
+ * two, and the same pixel size either way round (a rotation flag may swap them).
+ */
+export function sameMedia(record: Pick<StoredAsset, 'mimeType' | 'duration' | 'width' | 'height' | 'hasAudio'>, probe: ProbeResult): boolean {
+  const close = (a: number, b: number): boolean => Math.abs(a - b) <= Math.max(2, Math.max(a, b) * RESTORE_SIZE_TOLERANCE);
+  const sameSize = (close(probe.width, record.width) && close(probe.height, record.height))
+    || (close(probe.width, record.height) && close(probe.height, record.width));
+  if (record.mimeType.startsWith('image/')) return probe.hasVideo && sameSize;
+  if (Math.abs(probe.duration - record.duration) > RESTORE_DURATION_TOLERANCE) return false;
+  if (record.mimeType.startsWith('audio/')) return probe.hasAudio;
+  return probe.hasVideo && probe.hasAudio === record.hasAudio && sameSize;
+}
 
 export class UploadTooLargeError extends Error {}
 
@@ -95,51 +122,83 @@ function downsampleEnvelope(envelope: { cellSeconds: number; rmsDb: number[] }):
 }
 
 /**
- * Background work per asset id: proxy, thumbnail and transcription. Imports do
- * not wait for it — the row is already in the library, marked `processing`.
- * Exposed so tests can await an import deterministically.
+ * Background work per asset id: proxy, thumbnail, transcription and faces.
+ * Imports do not wait for it — the row is already in the library, marked
+ * `processing`. Exposed so tests can await an import deterministically.
  */
 export const pendingAssetWork = new Map<string, Promise<void>>();
 
 /**
  * ffmpeg and whisper each saturate the box on their own, so a 40-clip import
- * that spawns 40 of them leaves everything crawling. Imports wait their turn in
- * the shared media pool (`media-slots.ts`) inside their own `pendingAssetWork`
- * promise, so awaiting an import still waits for the queue. One slot covers the
- * encode *and* the transcription: the transcription runs inside the slot this
- * chain already holds rather than taking a second one.
+ * that spawns 40 of them leaves everything crawling. Every import job waits its
+ * turn in the shared media pool (`media-slots.ts`) inside the asset's
+ * `pendingAssetWork` promise, so awaiting an import still waits for the queue.
+ *
+ * Each import queues two slot jobs the moment it lands:
+ * - `import <id>`, foreground: proxy + thumbnail + colour sidecar, which is what
+ *   moves the row to `ready`, then face tracking while it still holds the slot.
+ * - `transcribe <id>`, background: Whisper reads the original's audio and never
+ *   needs the proxy, so it no longer queues behind the encode. That encode used
+ *   to hold the one slot through the whole Whisper run, and an agent turn on a
+ *   fresh 5-minute clip waited for both back to back.
+ *
+ * Memory and concurrency: this changes *who* holds a slot, never *how many*.
+ * The pool still runs at most `capacity` (2) jobs, and "a preview encode next
+ * to a Whisper run" was already a reachable pair (two imports, or an import
+ * plus an on-demand transcription), as was "a render next to Whisper". The
+ * worst case on the 4 GB box stays a ~2 GB render plus one other job. The
+ * background lane keeps previews fast: background work holds at most
+ * `capacity - 1` slots, so a preview or render waits on at most one Whisper; a
+ * waiting proxy (or render) gets a freed slot before a waiting import
+ * transcription, except that the transcription gets a turn every few grants;
+ * and a transcript someone asks for, or a timeline reader misses, is promoted
+ * out of the background lane (`TranscriptService`). Background Whisper also
+ * runs on fewer CPU threads so the encode next to it keeps the cores.
+ *
+ * No deadlock: the two jobs are siblings started outside any slot (`detached`), neither waits on the
+ * other, and nothing inside a slot waits for a second one. An on-demand
+ * transcription during the import joins this run through `TranscriptService`'s
+ * in-flight map rather than starting a second Whisper.
  *
  * Runs after the import responded, and moves the row to `ready` or `error`.
  */
-function queueAssetWork(
-  app: FastifyInstance,
+export function queueAssetWork(
+  log: Pick<FastifyBaseLogger, 'error' | 'warn'>,
   assets: AssetStore,
   transcripts: TranscriptService,
   asset: StoredAsset,
   probe: ProbeResult,
   faces?: FaceService,
 ): void {
-  const pending = (async () => {
-    await withMediaSlot(`import ${asset.id}`, async () => {
+  const pending = mediaSlots.detached(() => {
+    const queuedAt = performance.now();
+    // Queued first, so when only one slot is free the preview takes it.
+    const preview = withMediaSlot(`import ${asset.id}`, async () => {
       try {
-        const generated = await createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe);
+        const generated = await timeMediaJob('proxy', { assetId: asset.id }, () =>
+          createProxyAndThumbnail(asset.originalPath, dirname(asset.proxyPath), probe), performance.now() - queuedAt);
         assets.setStatus(asset.id, 'ready', generated);
       } catch (error) {
         assets.setStatus(asset.id, 'error');
-        app.log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
+        log.error({ err: error, assetId: asset.id }, 'Asset proxy generation failed');
+        // A video ffmpeg cannot encode is unlikely to decode for Whisper either:
+        // drop its transcription if it has not started (an audio-only clip, or
+        // one someone already asked for, keeps it).
+        if (probe.hasVideo) transcripts.dropQueued(asset.id, 'Skipped: the video could not be decoded');
         return;
       }
-      await transcribeQuietly(app, transcripts, asset);
       // Tracked now so the first caption placement doesn't wait on OpenCV.
       if (faces && probe.hasVideo) {
         try {
-          await faces.getOrCreate(asset);
+          await timeMediaJob('faces', { assetId: asset.id }, () => faces.getOrCreate(asset));
         } catch (error) {
-          app.log.warn({ err: error, assetId: asset.id }, 'Face tracking failed; captions will only keep to the safe area');
+          log.warn({ err: error, assetId: asset.id }, 'Face tracking failed; captions will only keep to the safe area');
         }
       }
     });
-  })().finally(() => pendingAssetWork.delete(asset.id));
+    const transcript = transcribeQuietly(log, transcripts, asset, 'background');
+    return Promise.all([preview, transcript]);
+  }).then(() => undefined).finally(() => pendingAssetWork.delete(asset.id));
   pendingAssetWork.set(asset.id, pending);
 }
 
@@ -152,14 +211,14 @@ async function processAsset(
   assets: AssetStore,
   transcripts: TranscriptService,
   input: { originalName: string; mimeType: string; originalPath: string },
-  id = randomUUID(),
+  id: string = randomUUID(),
   userId?: string,
   faces?: FaceService,
 ): Promise<StoredAsset> {
   const directory = join(assetsRoot, id);
   await mkdir(directory, { recursive: true });
   try {
-    const probe = await probeMedia(input.originalPath);
+    const probe = await timeMediaJob('probe', { assetId: id }, () => probeMedia(input.originalPath));
     if (!probe.hasVideo && !probe.hasAudio) throw new Error('The media file has no video or audio streams');
     if (input.mimeType.startsWith('image/')) {
       // Stickers: no proxy or transcode — the original IS the display asset.
@@ -204,7 +263,7 @@ async function processAsset(
       filmstripUrl: `/assets/${id}/filmstrip.jpg`,
       createdAt: new Date().toISOString(),
     }, userId);
-    queueAssetWork(app, assets, transcripts, asset, probe, faces);
+    queueAssetWork(app.log, assets, transcripts, asset, probe, faces);
     return asset;
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
@@ -213,15 +272,16 @@ async function processAsset(
 }
 
 async function transcribeQuietly(
-  app: FastifyInstance,
+  log: Pick<FastifyBaseLogger, 'warn'>,
   transcripts: TranscriptService,
   asset: StoredAsset,
+  lane: SlotLane,
 ): Promise<void> {
   if (!asset.hasAudio) return;
   try {
-    await transcripts.transcribe(asset);
+    await transcripts.transcribe(asset, false, { lane });
   } catch (error) {
-    app.log.warn({ err: error, assetId: asset.id }, 'Asset transcription failed; media import will continue');
+    log.warn({ err: error, assetId: asset.id }, 'Asset transcription failed; media import will continue');
   }
 }
 
@@ -327,6 +387,78 @@ export function registerAssetRoutes(
     return await saveUpload(reply, body, { name: name.data, mimeType }, projectId, request.userId);
   });
 
+  /**
+   * Puts an original back on the server under its existing asset id (plan OV1, "upload
+   * clips X"): the phone uploads only the clips a server render is missing, from its app
+   * copy or the Photos original, and the project's references keep working.
+   *
+   *   an id that isn't canonical ...... 400 (lowercase, no dots or slashes: it names a folder)
+   *   no row, or another account's .... 404, as if absent
+   *   own row, original on disk ....... 200, nothing written (a retry)
+   *   own row, original gone .......... written to a new file beside it, checked against the
+   *                                     record (kind, duration, size; 409 { code: 'mismatch' }
+   *                                     when it is another file), then renamed into place
+   *
+   * Always linked to `projectId`, which is required. The body is the raw file, as for /assets/raw.
+   * Only the incoming file this request wrote is ever removed, never a folder.
+   */
+  app.put<{ Params: { id: string }; Querystring: { projectId?: string; name?: string } }>('/assets/:id/original', async (request, reply) => {
+    const body = typeof (request.body as NodeJS.ReadableStream | undefined)?.pipe === 'function'
+      ? request.body as NodeJS.ReadableStream
+      : undefined;
+    const refuse = async (status: number, payload: unknown): Promise<FastifyReply> => {
+      body?.resume();
+      return await reply.code(status).send(payload);
+    };
+    const { id } = request.params;
+    // Case-insensitive filesystems (a Mac host) would map "ABC" onto another row's "abc"
+    // folder: only the canonical spelling ever reaches the disk.
+    if (!CANONICAL_ASSET_ID.test(id)) return await refuse(400, { error: 'Asset ids are lowercase letters, digits and dashes' });
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
+    if (projectId === null) { body?.resume(); return reply; }
+    if (!projectId) return await refuse(400, { error: 'projectId is required' });
+    const existing = assets.owned(id, request.userId);
+    if (!existing) return await refuse(404, { error: 'Asset not found' });
+    if (await isFile(existing.originalPath)) {
+      assets.link(projectId, id);
+      return await refuse(200, publicAsset(existing));
+    }
+    const name = rawUploadSchema.safeParse(request.query.name);
+    const mimeType = (request.headers['content-type'] ?? '').split(';')[0]?.trim() ?? '';
+    if (!name.success || !body || !isMediaType(mimeType)) {
+      return await refuse(!name.success ? 400 : 415, {
+        error: !name.success ? 'A file name is required' : 'Only video, audio, and image files are supported',
+      });
+    }
+    if (Number(request.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) {
+      return await refuse(413, { error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
+    }
+
+    const directory = join(assetsRoot, id);
+    // The asset's own folder (it may already hold its proxy and thumbnail).
+    await mkdir(directory, { recursive: true });
+    const extension = extname(name.data).replace(/[^.a-zA-Z0-9]/g, '').slice(0, 12) || extname(existing.originalPath) || '.media';
+    const incoming = join(directory, `incoming-${randomUUID()}${extension}`);
+    try {
+      await pipeline(body, capBytes(MAX_UPLOAD_BYTES), (await import('node:fs')).createWriteStream(incoming, { flags: 'wx' }));
+      const probe = await probeMedia(incoming).catch(() => undefined);
+      if (!probe || !sameMedia(existing, probe)) {
+        await rm(incoming, { force: true });
+        return await reply.code(409).send({ error: "That file isn't the clip this project uses", code: 'mismatch' });
+      }
+      const originalPath = join(directory, `original${extension}`);
+      // Atomic: two restores of the same clip each rename a whole file; the last one stays.
+      await rename(incoming, originalPath);
+      assets.setOriginalPath(id, originalPath);
+      assets.link(projectId, id);
+      return await reply.code(200).send(publicAsset(assets.get(id) ?? existing));
+    } catch (error) {
+      await rm(incoming, { force: true });
+      if (error instanceof UploadTooLargeError) return await reply.code(413).send({ error: error.message });
+      throw error;
+    }
+  });
+
   // The media library. With `?projectId=` it is scoped to that project's own
   // imports; without it, every asset the caller can see, for the "all clips" browser.
   // Newest first either way.
@@ -396,7 +528,7 @@ export function registerAssetRoutes(
     if (existing) {
       if (projectId) assets.link(projectId, existing.id);
       // Already on disk — a missing transcript can catch up in the background.
-      void transcribeQuietly(app, transcripts, existing);
+      void transcribeQuietly(app.log, transcripts, existing, 'background');
       return publicAsset(existing);
     }
 
@@ -524,7 +656,8 @@ export function registerAssetRoutes(
     if (!existsSync(asset.thumbnailPath)) return notReady(reply, asset);
     // Read-only (the cutover freeze) serves the old thumb rather than re-shooting it.
     if (!database.readonly && colorPipelineIsStale(asset)) {
-      const pending = recolors.get(asset.id) ?? regenerateThumbnail(asset.originalPath, asset.thumbnailPath, asset)
+      const pending = recolors.get(asset.id) ?? timeMediaJob('thumbnail', { assetId: asset.id }, () =>
+        regenerateThumbnail(asset.originalPath, asset.thumbnailPath, asset))
         .then(async () => { await rm(join(dirname(asset.thumbnailPath), 'filmstrip.jpg'), { force: true }); })
         .catch((error: unknown) => { app.log.warn({ err: error, assetId: asset.id }, 'thumbnail recolor failed'); })
         .finally(() => recolors.delete(asset.id));

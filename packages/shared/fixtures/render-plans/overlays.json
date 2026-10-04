@@ -1,0 +1,218 @@
+{
+  "description": "Every overlay kind over one video layer, each rotated except the logo: image sticker, looping GIF, emoji fitted to its box (Apple Color Emoji advance 1.0 em, ascent 1.0 em, descent 0.3125 em: 100 px, baseline 100.375), a check callout resolved to card, vector glyph and label, and a picture-in-picture b-roll clip trimmed from its source, stacked by z.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 8,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 4,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 4,
+          "layers": [
+            {
+              "clipId": "talk",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [
+      {
+        "id": "sticker-logo",
+        "z": 0,
+        "start": 0,
+        "end": 4,
+        "kind": "image",
+        "box": {
+          "x": 90,
+          "y": 120,
+          "w": 100,
+          "h": 100,
+          "rotationDeg": 0
+        },
+        "media": {
+          "assetRef": {
+            "id": "asset-logo",
+            "kind": "image"
+          },
+          "srcStart": 0,
+          "speed": 1
+        }
+      },
+      {
+        "id": "sticker-gif",
+        "z": 1,
+        "start": 0.5,
+        "end": 3.5,
+        "kind": "gif",
+        "box": {
+          "x": 270,
+          "y": 140,
+          "w": 120,
+          "h": 90,
+          "rotationDeg": -12
+        },
+        "media": {
+          "assetRef": {
+            "id": "asset-gif",
+            "kind": "image"
+          },
+          "srcStart": 0,
+          "speed": 1,
+          "loop": true
+        }
+      },
+      {
+        "id": "emoji-fire",
+        "z": 2,
+        "start": 1,
+        "end": 3,
+        "kind": "emoji",
+        "box": {
+          "x": 180,
+          "y": 300,
+          "w": 100,
+          "h": 132,
+          "rotationDeg": 15
+        },
+        "emoji": {
+          "text": "🔥",
+          "sizePx": 100,
+          "x": 0,
+          "y": 100.375,
+          "width": 100
+        }
+      },
+      {
+        "id": "callout-check",
+        "z": 3,
+        "start": 1.5,
+        "end": 4,
+        "kind": "callout",
+        "box": {
+          "x": 180,
+          "y": 480,
+          "w": 260,
+          "h": 104,
+          "rotationDeg": -4
+        },
+        "callout": {
+          "variant": "check",
+          "card": {
+            "x": 0,
+            "y": 0,
+            "w": 260,
+            "h": 104,
+            "radiusPx": 19.439,
+            "color": "#14141BF2"
+          },
+          "glyph": {
+            "shape": "check",
+            "x": 25.757,
+            "y": 34.814,
+            "w": 34.019,
+            "h": 34.019,
+            "strokePx": 4.763,
+            "color": "#39D98A"
+          },
+          "label": {
+            "text": "Do this",
+            "font": "Montserrat-Bold",
+            "sizePx": 42.766,
+            "x": 74.841,
+            "y": 67.155,
+            "width": 159.176,
+            "color": "#FFFFFF"
+          }
+        }
+      },
+      {
+        "id": "broll-city",
+        "z": 4,
+        "start": 2,
+        "end": 3.5,
+        "kind": "broll",
+        "box": {
+          "x": 250,
+          "y": 200,
+          "w": 180,
+          "h": 320,
+          "rotationDeg": 6
+        },
+        "media": {
+          "assetRef": {
+            "id": "asset-city",
+            "kind": "video"
+          },
+          "srcStart": 3,
+          "speed": 1,
+          "loop": false
+        }
+      }
+    ],
+    "captions": [],
+    "audio": [
+      {
+        "id": "talk",
+        "clipId": "talk",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 4,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

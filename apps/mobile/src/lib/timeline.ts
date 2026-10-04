@@ -1,5 +1,5 @@
 import type { Clip, Project, Track } from '@editify/shared';
-import { clipTimelineDuration, deriveProjectDuration } from '@editify/shared';
+import { clipTimelineDuration, planFrameAt } from '@editify/shared';
 
 /** Shortest timeline duration a manual trim is allowed to leave behind. */
 export const MIN_CLIP_DURATION = 0.2;
@@ -12,6 +12,17 @@ export const VIDEO_LANE_HEIGHT = 62;
 export const CAPTION_ROW_HEIGHT = 22;
 /** Fixed gutter on the left of the timeline holding the lane labels. */
 export const LANE_GUTTER = 60;
+
+/**
+ * Where something added "at the playhead" starts: in whole milliseconds, on or before the frame
+ * on screen and after the one before it. Overlays cover [start, end) and frame k shows
+ * t = k / fps, so a playhead of 10.6667 s (frame 320 at 30 fps) rounded UP to 10.667 would
+ * start the sticker on frame 321, leaving the paused frame without it until the playhead moves.
+ */
+export function playheadStart(time: number, fps: number): number {
+  const frameTime = fps > 0 ? planFrameAt(Math.max(0, time), fps) / fps : Math.max(0, time);
+  return Math.floor(frameTime * 1000 + 1e-6) / 1000;
+}
 
 export function clipEnd(clip: Clip): number {
   return clip.start + clipTimelineDuration(clip);
@@ -302,37 +313,6 @@ export function captionRows(clips: readonly Clip[]): { rows: CaptionRow[]; rowCo
     rows.push({ clip, row, overlapping: row > 0 });
   }
   return { rows, rowCount: Math.max(1, rowEnds.length) };
-}
-
-/** Optimistic edit: replaces one clip's fields and re-derives the project duration. */
-export function patchClip(project: Project, clipId: string, patch: Partial<Clip>): Project {
-  const tracks = project.tracks.map((track) => ({
-    ...track,
-    clips: track.clips.map((clip) => (clip.id === clipId ? { ...clip, ...patch } : clip)),
-  }));
-  return { ...project, tracks, duration: deriveProjectDuration({ tracks }) };
-}
-
-/** Optimistic edit for a `set_clip_properties` batch of start moves. */
-export function patchStarts(project: Project, updates: ReadonlyArray<{ clipId: string; start: number }>): Project {
-  const byId = new Map(updates.map((update) => [update.clipId, update.start]));
-  const tracks = project.tracks.map((track) => ({
-    ...track,
-    clips: track.clips.map((clip) => {
-      const start = byId.get(clip.id);
-      return start === undefined ? clip : { ...clip, start };
-    }),
-  }));
-  return { ...project, tracks, duration: deriveProjectDuration({ tracks }) };
-}
-
-/** Optimistic removal of a clip from whichever track holds it. */
-export function removeClip(project: Project, clipId: string): Project {
-  const tracks = project.tracks.map((track) => ({
-    ...track,
-    clips: track.clips.filter((clip) => clip.id !== clipId),
-  }));
-  return { ...project, tracks, duration: deriveProjectDuration({ tracks }) };
 }
 
 /**
