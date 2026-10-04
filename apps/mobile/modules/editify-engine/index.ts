@@ -183,10 +183,13 @@ export interface ExportProjectOptions {
  * What the composition root picked for this process (decision D5), read once at startup.
  * `adapterSet`: modern (iOS 26 adapters) or legacy (iOS 18). `backgroundExport`: the
  * BackgroundExecution adapter (`foreground` means every export runs with Editify open).
- * `composition`: the VideoComposition adapter. `tier` is reserved for the RAM tier (T7).
+ * `composition`: the VideoComposition adapter. `tier`: the RAM tier (TierPolicy, D13); a
+ * `low` phone exports on the server (routeExport `why: 'device'`) and previews at 720p.
  */
 export type TranscriberName = 'speech-analyzer' | 'sfspeech';
 export type SpeechAuthorizationStatus = 'notDetermined' | 'denied' | 'restricted' | 'authorized';
+/** RAM tier (D13): full at 6 GB and up, standard at 4-5 GB, low under 4 GB (provisional). */
+export type DeviceTier = 'full' | 'standard' | 'low';
 
 export interface EngineCapabilities {
   /** "18.0.0" */
@@ -210,10 +213,11 @@ export interface EngineCapabilities {
   backgroundExport: 'continued-processing' | 'foreground';
   backgroundGPU: boolean;
   composition: 'configuration' | 'mutable';
-  tier: null;
+  /** Null in binaries built before T7. */
+  tier: DeviceTier | null;
 }
 
-interface EditifyEngineNative {
+export interface EditifyEngineNative {
   runSpike(spike: SpikeId, variant: string, run: number, params: Record<string, unknown>): Promise<LabRow>;
   readResults(): string;
   resultsPath(): string;

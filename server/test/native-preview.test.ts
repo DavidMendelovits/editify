@@ -249,15 +249,16 @@ describe('native preview: harness availability', () => {
     // achieved just before the drag, with no updates, is logged with it: on CI runners that is a
     // steady ~31 fps and the drag gets 8 to 25 (a composition swap per tick costs frames on their
     // renderer; a phone is the real measure, P7), on a loaded Mac ~30 and 18 to 30. So the drag is
-    // held to not freezing the picture: at least a fifth of that pacing, at least 5 fps, and no gap
-    // of half a second.
+    // held to not freezing the picture on CI: at least a fifth of that pacing, at least 5 fps, and
+    // no gap of half a second. Off CI (no CI env) the drag must keep 60% of that pacing, so a
+    // compositor that got 3 to 5x slower per update fails a local run.
     expect(drag.playedSeconds / drag.wallSeconds).toBeGreaterThan(0.85);
     const fps = drag.frames / drag.wallSeconds;
     const baselineFps = drag.baselineFrames / drag.baselineWallSeconds;
     console.info(`native preview 60 Hz drag (${report.adapters.set}): ${fps.toFixed(1)} fps while dragging, ${baselineFps.toFixed(1)} fps before`);
     expect(baselineFps).toBeGreaterThan(5);
     expect(fps).toBeGreaterThan(5);
-    expect(fps / baselineFps).toBeGreaterThan(0.2);
+    expect(fps / baselineFps).toBeGreaterThan(process.env.CI ? 0.2 : 0.6);
     expect(drag.frameIntervalMs.max).toBeLessThan(500);
     expect(drag.latencyMs.p95).toBeLessThan(1000 / 60 * 3);
     // Only the logo moved: the emoji and callout bitmaps came from the cache.

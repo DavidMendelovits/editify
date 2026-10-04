@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 import * as Application from 'expo-application';
 import { API_URL } from './api';
-import { decideGate, fetchClientConfig, type Gate } from './client-config';
+import { decideGate, fetchClientConfig, rememberClientConfig, type Gate } from './client-config';
 import { track } from './event-log';
 
 const OPEN: Gate = { kind: 'none' };
@@ -23,6 +23,7 @@ export function useClientGate(): Gate {
     const check = async (): Promise<void> => {
       const config = await fetchClientConfig(API_URL, (detail) => track('client_config', detail));
       if (!active) return;
+      rememberClientConfig(config);
       setGate(decideGate(config, {
         appVersion: Application.nativeApplicationVersion,
         platform: Platform.OS,

@@ -4,7 +4,10 @@
  *
  *   project + assets ─▶ buildRenderPlan (target export: size from the resolution, colour from
  *                       the HDR choice, loudness from its toggle)
- *   press export ─▶ 4K? ─▶ server ("4K exports render on the server for now", until P7)
+ *   press export ─▶ no engine (web, Android) ─▶ server
+ *     ─▶ RAM tier low (capabilities().tier, D13) ─▶ server, why 'device' ("This iPhone exports
+ *        on the server to stay within its memory")
+ *     ─▶ 4K? ─▶ server ("4K exports render on the server for now", until P7)
  *     ─▶ lease every plan asset ─▶ resolveMedia(purpose export) for each
  *        ├─ all 'local' / 'file' ─▶ their geometry (stored size + rotation, from the device:
  *        │     the server's records have no rotation) ─▶ plan rebuilt with it ─▶ native
@@ -39,7 +42,7 @@ import {
   type AssetAvailability, type AssetMetadata, type PlanAssetInfo, type PlanAssetRef, type PlanResolution, type Project, type RenderPlan,
   type RenderSnapshot,
 } from '@editify/shared';
-import type { ExportProjectOptions, ExportStateEvent, ExportStateName, NativeExportStats } from '../../modules/editify-engine';
+import type { DeviceTier, ExportProjectOptions, ExportStateEvent, ExportStateName, NativeExportStats } from '../../modules/editify-engine';
 import {
   downloadMedia, leaseMedia, mediaGeometry, mediaKindOf, resolveMedia, type MediaDeps, type MediaGeometry, type ResolvedMedia,
 } from './local-media';
@@ -50,6 +53,9 @@ import type { ImportProgress } from './upload-progress';
  * measured on a phone (plan P7); add '4k' here to flip it.
  */
 export const DEVICE_EXPORT_RESOLUTIONS: ReadonlySet<PlanResolution> = new Set<PlanResolution>(['720p', '1080p']);
+
+/** Why a low-tier phone (D13, under 4 GB) never exports itself. */
+export const LOW_TIER_LINE = 'This iPhone exports on the server to stay within its memory.';
 
 /** Asset id → its geometry on this phone. */
 export type GeometryMap = Readonly<Record<string, MediaGeometry>>;
@@ -120,11 +126,12 @@ export interface MissingClip { assetId: string; name: string; reason: string }
 export type ExportRoute =
   | { kind: 'device'; media: Record<string, string>; geometry: GeometryMap }
   /**
-   * `no-engine`: web, Android, a build without the engine. `plan`: the project couldn't
-   * become a plan. `resolution`: not a DEVICE_EXPORT_RESOLUTIONS one. `missing`: clips aren't here.
-   * `server`: what the server holds, when it was asked (routeExport's `server` argument).
+   * `no-engine`: web, Android, a build without the engine. `device`: a low RAM tier phone (D13).
+   * `plan`: the project couldn't become a plan. `resolution`: not a DEVICE_EXPORT_RESOLUTIONS
+   * one. `missing`: clips aren't here. `server`: what the server holds, when it was asked
+   * (routeExport's `server` argument).
    */
-  | { kind: 'server'; why: 'no-engine' | 'plan' | 'resolution' | 'missing'; missing: MissingClip[]; server?: ServerReadiness };
+  | { kind: 'server'; why: 'no-engine' | 'device' | 'plan' | 'resolution' | 'missing'; missing: MissingClip[]; server?: ServerReadiness };
 
 /** A clip the server is missing that this iPhone can upload. */
 export interface UploadClip { assetId: string; kind: PlanAssetRef['kind']; name: string }
@@ -174,21 +181,24 @@ function missingReason(media: Exclude<ResolvedMedia, { state: 'local' | 'file' }
 }
 
 /**
- * Where this plan can render: here when the resolution is one the phone exports and every
- * asset resolves to a local original or app copy (with its geometry read on the way).
+ * Where this plan can render: here when the phone's RAM tier isn't low (`tier`, from
+ * capabilities()), the resolution is one the phone exports and every asset resolves to a
+ * local original or app copy (with its geometry read on the way).
  */
 export async function routeExport(
   plan: RenderPlan | null, deps: MediaDeps | null, nameOf: (assetId: string) => string, resolution?: PlanResolution, server?: ServerCheck,
+  tier?: DeviceTier | null,
 ): Promise<ExportRoute> {
-  const route = await routeLocally(plan, deps, nameOf, resolution);
+  const route = await routeLocally(plan, deps, nameOf, resolution, tier);
   if (route.kind === 'device' || !server) return route;
   return { ...route, server: await serverReadiness(server, deps, nameOf) };
 }
 
 async function routeLocally(
-  plan: RenderPlan | null, deps: MediaDeps | null, nameOf: (assetId: string) => string, resolution?: PlanResolution,
+  plan: RenderPlan | null, deps: MediaDeps | null, nameOf: (assetId: string) => string, resolution?: PlanResolution, tier?: DeviceTier | null,
 ): Promise<ExportRoute> {
   if (!deps) return { kind: 'server', why: 'no-engine', missing: [] };
+  if (tier === 'low') return { kind: 'server', why: 'device', missing: [] };
   if (resolution && !DEVICE_EXPORT_RESOLUTIONS.has(resolution)) return { kind: 'server', why: 'resolution', missing: [] };
   if (!plan) return { kind: 'server', why: 'plan', missing: [] };
   const media: Record<string, string> = {};
@@ -250,8 +260,12 @@ export function serverRenderable(route: ExportRoute | undefined): boolean {
 
 /** One short line saying why a render goes to the server, or what it needs first; null when there is nothing to say. */
 export function serverRouteLine(route: ExportRoute): string | null {
-  if (route.kind === 'server' && route.server?.state === 'upload') return uploadLine(route.server.clips);
-  if (route.kind === 'server' && route.server?.state === 'blocked') return blockedLine(route.server.clips);
+  // A low-tier phone says why first, then what the server still needs.
+  const why = route.kind === 'server' && route.why === 'device' ? LOW_TIER_LINE : null;
+  const join = (line: string): string => (why ? `${why} ${line}` : line);
+  if (route.kind === 'server' && route.server?.state === 'upload') return join(uploadLine(route.server.clips));
+  if (route.kind === 'server' && route.server?.state === 'blocked') return join(blockedLine(route.server.clips));
+  if (why) return why;
   if (route.kind === 'server' && route.why === 'resolution') return '4K exports render on the server for now.';
   return missingClipsLine(route);
 }
@@ -494,6 +508,8 @@ export interface ExportOnDeviceArgs {
   signal?: AbortSignal;
   /** Asked when the route turns out to be the server's, so the outcome says what the server holds. */
   server?: ServerCheck;
+  /** The RAM tier (capabilities().tier): `low` routes to the server. */
+  tier?: DeviceTier | null;
 }
 
 /**
@@ -506,7 +522,7 @@ export async function exportOnDevice(args: ExportOnDeviceArgs): Promise<DeviceEx
   if (!draft) return { kind: 'server', route: { kind: 'server', why: 'plan', missing: [] } };
   const lease = leaseMedia(args.deps, planAssetRefs(draft).map((ref) => ref.id));
   try {
-    const route = await routeExport(draft, args.deps, args.nameOf, args.resolution, args.server);
+    const route = await routeExport(draft, args.deps, args.nameOf, args.resolution, args.server, args.tier);
     if (route.kind === 'server') return { kind: 'server', route };
     // Same assets, now laid out with each one's real stored size and rotation. Never fall
     // back to the draft silently: it would lay rotated clips out sideways.

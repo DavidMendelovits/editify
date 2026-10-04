@@ -9,7 +9,8 @@ import Foundation
 ///      │
 ///      ├─ override: EDITIFY_ADAPTERS=legacy (env or launch argument). Read only in builds
 ///      │  with -D EDITIFY_TEST_ADAPTERS (harnesses, Debug); Release compiles it out, so
-///      │  `override(environment:arguments:)` is always nil there.
+///      │  `override(environment:arguments:)` is always nil there. EDITIFY_TIER=low (the RAM
+///      │  tier, SystemDeviceProfile) is read the same way, under the same flag.
 ///      ▼
 ///   override == legacy ? ── yes ──────────────────────────────────────▶ legacy set
 ///      │ no
@@ -66,21 +67,37 @@ struct AdapterSelection: Equatable, Sendable {
   /// EDITIFY_ADAPTERS from the environment, or a launch argument (`EDITIFY_ADAPTERS=legacy`, or
   /// `-EDITIFY_ADAPTERS legacy` as `simctl launch` passes it). Nil without the test flag.
   static func override(environment: [String: String], arguments: [String]) -> AdapterSet? {
-    #if EDITIFY_TEST_ADAPTERS
-    if let value = environment["EDITIFY_ADAPTERS"] { return AdapterSet(rawValue: value) }
-    for (index, argument) in arguments.enumerated() {
-      if argument.hasPrefix("EDITIFY_ADAPTERS=") { return AdapterSet(rawValue: String(argument.dropFirst("EDITIFY_ADAPTERS=".count))) }
-      if argument == "-EDITIFY_ADAPTERS", index + 1 < arguments.count { return AdapterSet(rawValue: arguments[index + 1]) }
-    }
-    return nil
-    #else
-    return nil
-    #endif
+    testValue("EDITIFY_ADAPTERS", environment: environment, arguments: arguments).flatMap(AdapterSet.init(rawValue:))
   }
 
   /// This process's override (nil in Release).
   static var launchOverride: AdapterSet? {
     override(environment: ProcessInfo.processInfo.environment, arguments: ProcessInfo.processInfo.arguments)
+  }
+
+  /// EDITIFY_TIER (full | standard | low), read the same way and only with the test flag: forces
+  /// the RAM tier (D13) so a simulator, which reports the Mac's memory, can show the low tier.
+  static func tierOverride(environment: [String: String], arguments: [String]) -> DeviceTier? {
+    testValue("EDITIFY_TIER", environment: environment, arguments: arguments).flatMap(DeviceTier.init(rawValue:))
+  }
+
+  /// This process's tier override (nil in Release).
+  static var launchTierOverride: DeviceTier? {
+    tierOverride(environment: ProcessInfo.processInfo.environment, arguments: ProcessInfo.processInfo.arguments)
+  }
+
+  /// `key` from the environment, `KEY=value` or `-KEY value` in the arguments; nil without the test flag.
+  private static func testValue(_ key: String, environment: [String: String], arguments: [String]) -> String? {
+    #if EDITIFY_TEST_ADAPTERS
+    if let value = environment[key] { return value }
+    for (index, argument) in arguments.enumerated() {
+      if argument.hasPrefix("\(key)=") { return String(argument.dropFirst(key.count + 1)) }
+      if argument == "-\(key)", index + 1 < arguments.count { return arguments[index + 1] }
+    }
+    return nil
+    #else
+    return nil
+    #endif
   }
 
   /// Info.plist `EditifyBackgroundGPU` (true): set in app.json next to the

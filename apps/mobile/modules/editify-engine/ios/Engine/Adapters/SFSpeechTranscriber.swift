@@ -76,29 +76,25 @@ struct SFSpeechTranscriber: Transcriber {
       // Nothing decoded in this range (the track ends early): no words, not a failure.
       return ChunkWords(chunk: chunk, origin: chunk.start, words: [])
     }
-    let box = RecognitionBox()
-    let words: [TimedWord] = try await withTaskCancellationHandler {
-      try await withCheckedThrowingContinuation { continuation in
-        box.start(recognizer.recognitionTask(with: request) { result, error in
-          // Each utterance arrives as its own result with metadata, and the final one holds only
-          // the last utterance, so every one is kept and joined (SpeechChunks.joinUtterances).
-          if let result, result.isFinal || result.speechRecognitionMetadata != nil {
-            box.heard(result.bestTranscription.segments.map {
-              TimedWord(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
-            })
-          }
-          if let result, result.isFinal {
-            box.finish { continuation.resume(returning: SpeechChunks.joinUtterances(box.utterances)) }
-          } else if let error {
-            box.finish {
-              if Self.isNoSpeech(error) { continuation.resume(returning: SpeechChunks.joinUtterances(box.utterances)) }
-              else { continuation.resume(throwing: error) }
-            }
-          }
-        })
+    // RecognitionRun answers once: the final result, an error, or a cancel (the chunk timeout
+    // or the caller), which resumes the wait itself instead of trusting the recognizer to call
+    // back after task.cancel(). Each utterance arrives as its own result with metadata, and the
+    // final one holds only the last utterance, so every one is kept and joined (T10).
+    let heard = Utterances()
+    let words = try await RecognitionRun<[TimedWord]>().run { run in
+      let task = recognizer.recognitionTask(with: request) { result, error in
+        if let result, result.isFinal || result.speechRecognitionMetadata != nil {
+          heard.append(result.bestTranscription.segments.map {
+            TimedWord(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
+          })
+        }
+        if let result, result.isFinal {
+          run.finish(.success(heard.joined))
+        } else if let error {
+          run.finish(Self.isNoSpeech(error) ? .success(heard.joined) : .failure(error))
+        }
       }
-    } onCancel: {
-      box.cancel()
+      return { task.cancel() }
     }
     return ChunkWords(chunk: chunk, origin: origin, words: words)
   }
@@ -110,48 +106,13 @@ struct SFSpeechTranscriber: Transcriber {
   }
 }
 
-/// The recognition task of one request, finished once (its handler can fire more than once)
-/// and cancellable from another thread.
-private final class RecognitionBox: @unchecked Sendable {
+/// The utterances one request reported so far (its handler runs on the recognizer's queue).
+private final class Utterances: @unchecked Sendable {
   private let lock = NSLock()
-  private var task: SFSpeechRecognitionTask?
-  private var done = false
-  private var cancelled = false
-  private var heardSoFar: [[TimedWord]] = []
+  private var heard: [[TimedWord]] = []
 
-  /// The utterances reported so far, in order.
-  var utterances: [[TimedWord]] { lock.withLock { heardSoFar } }
-
-  func heard(_ words: [TimedWord]) {
-    lock.withLock { heardSoFar.append(words) }
-  }
-
-  func start(_ task: SFSpeechRecognitionTask) {
-    let cancelNow = lock.withLock { () -> Bool in
-      self.task = task
-      return cancelled
-    }
-    if cancelNow { task.cancel() }
-  }
-
-  func finish(_ body: () -> Void) {
-    let first = lock.withLock { () -> Bool in
-      if done { return false }
-      done = true
-      return true
-    }
-    if first { body() }
-  }
-
-  func cancel() {
-    let task = lock.withLock { () -> SFSpeechRecognitionTask? in
-      cancelled = true
-      return self.task
-    }
-    // The handler then reports an error, which resumes the continuation; the runner sees
-    // the task cancelled and throws CancellationError.
-    task?.cancel()
-  }
+  func append(_ words: [TimedWord]) { lock.withLock { heard.append(words) } }
+  var joined: [TimedWord] { SpeechChunks.joinUtterances(lock.withLock { heard }) }
 }
 
 /// SpeechAuthorization adapter: SFSpeechRecognizer's permission.

@@ -16,16 +16,15 @@
  *         or --source-dir DIR --source-db FILE for a local rehearsal.
  * Paths:  --source-root /data (where 1.0's stored paths start), --dest-root (EDITIFY_DATA_DIR, /data),
  *         --dest-db (DATABASE_PATH, <dest-root>/editify.db).
- * Postgres sync (public ─▶ DATABASE_SCHEMA) is included when DATABASE_URL is set; --no-pg skips it.
+ * DATABASE_URL, when set, is only used to look an --user email up in auth.users (else the admin API).
  *
  * Exit codes: 0 ok, 1 dry-run diff, 2 error, 3 import failures recorded, 4 not enough space.
  */
 import { join, resolve } from 'node:path';
 import { createDatabase } from '../../src/db/database.js';
-import { createPgPools, schemaFrom } from '../../src/db/postgres.js';
+import { createPgPools } from '../../src/db/postgres.js';
 import { Importer, type Scope } from './importer.js';
 import { SpaceError } from './media.js';
-import { PgSyncCopy } from './pg-copy.js';
 import { HttpSource, LocalSource, type CutoverSource } from './source.js';
 import { displayUser } from './tables.js';
 import { resolveUser } from './users.js';
@@ -72,8 +71,7 @@ async function main(argv: string[]): Promise<number> {
     source = new HttpSource(url, process.env.CUTOVER_TOKEN ?? '');
   }
   const databaseUrl = process.env.DATABASE_URL;
-  const pools = databaseUrl && !flags.has('no-pg') ? createPgPools(databaseUrl) : undefined;
-  const pg = pools ? new PgSyncCopy(pools.sync, 'public', schemaFrom(process.env) ?? 'v11') : undefined;
+  const pools = databaseUrl ? createPgPools(databaseUrl) : undefined;
   // Writable: READ_ONLY freezes 1.0, never the 1.1 side the importer writes.
   const dest = createDatabase(destDb, { readonly: false });
   const importer = new Importer({
@@ -82,7 +80,6 @@ async function main(argv: string[]): Promise<number> {
     destRoot,
     sourceRoot: one(flags, 'source-root') ?? '/data',
     workDir,
-    pg,
     concurrency: Number(one(flags, 'concurrency') ?? 4),
     log: (line) => console.log(line),
   });
@@ -138,7 +135,6 @@ async function main(argv: string[]): Promise<number> {
             console.log(`     ${table.table}: 1.0 ${table.sourceRows} rows, 1.1 ${table.destRows}; missing ${table.missing.length}, extra ${table.extra.length}, changed ${table.changed.length} ${[...table.missing, ...table.changed, ...table.extra].slice(0, 3).join(' ')}`);
           }
           for (const file of user.fileDiffs.slice(0, 10)) console.log(`     file ${file.problem}: ${file.path}`);
-          if (user.pg && user.pg.source !== user.pg.dest) console.log(`     postgres sync rows differ (1.0 ${JSON.stringify(user.pg.counts)})`);
         }
         console.log(`dry run against ${report.snapshot} (J=${report.watermark}): ${report.users.length} scope(s), ${report.diffs} diff(s)`);
         return report.diffs ? 1 : 0;

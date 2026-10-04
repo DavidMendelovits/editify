@@ -12,16 +12,16 @@ import AVFoundation
 ///                                             ├─ speechAuthorization ─▶ SFSpeechAuthorization
 ///                                             ├─ soundClassifier     ─▶ SoundAnalysisClassifier
 ///                                             ├─ faceDetector        ─▶ VisionFaceDetector
-///                                             ├─ proxy               ─▶ WriterProxy (ProxyPipeline, Gemini style proxy)
+///                                             ├─ proxy               ─▶ WriterProxy (ProxyPipeline, Gemini style proxy; tier's short side)
 ///                                             ├─ videoComposition    ─▶ modern: ConfigurationVideoComposition (iOS 26)
 ///                                             │     │                   legacy: MutableVideoComposition (iOS 18)
 ///                                             │     └─ handed to videoExport and playback, which build plans with it
 ///                                             ├─ videoExport         ─▶ WriterVideoExport (PlanExporter)
-///                                             ├─ playback            ─▶ PlanPlayerPlayback (PlanPlayer)
+///                                             ├─ playback            ─▶ PlanPlayerPlayback (PlanPlayer; tier's render cap)
 ///                                             ├─ backgroundExecution ─▶ modern + entitlement: ContinuedProcessingExecution
 ///                                             │                         otherwise: ForegroundExecution
 ///                                             ├─ photoLibrary        ─▶ PhotoKitLibrary
-///                                             └─ deviceProfile       ─▶ SystemDeviceProfile
+///                                             └─ deviceProfile       ─▶ SystemDeviceProfile ─▶ tier (TierPolicy) ─▶ tierCaps
 ///
 /// Which set: AdapterSelection.choose (the diagram of the decision is there). `make` builds
 /// each instance behind `#available`, so the iOS 26 APIs are reached only from adapters the
@@ -64,6 +64,8 @@ struct EngineAdapters: Sendable {
   let backgroundExecution: any BackgroundExecution
   let photoLibrary: any PhotoLibrary
   let deviceProfile: any DeviceProfile
+  /// What the RAM tier caps (D13, D25): read once from the DeviceProfile adapter.
+  let tierCaps: TierCaps
 
   /// The set the app runs with, built once at module load.
   static let current = make(os: ProcessInfo.processInfo.operatingSystemVersion, override: AdapterSelection.launchOverride)
@@ -74,6 +76,8 @@ struct EngineAdapters: Sendable {
     let selection = AdapterSelection.choose(os: os, override: override, backgroundGPUEntitled: backgroundGPUEntitled)
     let composition = PlanVideoCompositions.make(selection.videoComposition)
     let authorization = SFSpeechAuthorization()
+    let device = SystemDeviceProfile()
+    let caps = TierCaps.of(device.tier)
     return EngineAdapters(
       selection: selection,
       mediaSource: PhotoKitMediaSource(),
@@ -82,13 +86,14 @@ struct EngineAdapters: Sendable {
       speechAuthorization: authorization,
       soundClassifier: SoundAnalysisClassifier(),
       faceDetector: VisionFaceDetector(),
-      proxy: WriterProxy(),
+      proxy: WriterProxy(maxShortSide: caps.proxyMaxShortSide),
       videoComposition: composition,
       videoExport: WriterVideoExport(composition: composition),
-      playback: PlanPlayerPlayback(composition: composition),
+      playback: PlanPlayerPlayback(composition: composition, caps: caps),
       backgroundExecution: makeBackgroundExecution(selection.backgroundExecution),
       photoLibrary: PhotoKitLibrary(),
-      deviceProfile: SystemDeviceProfile())
+      deviceProfile: device,
+      tierCaps: caps)
   }
 
   /// Where the last adapter that ran is remembered across launches (capabilities' `lastRan`).
@@ -139,7 +144,8 @@ struct EngineAdapters: Sendable {
   /// `transcriber.order`: the chain in the order it is tried; `lastRan`: the adapter whose
   /// words were last ready (kept across launches, null before any); `best`, `versions` and
   /// `trigger`: the C25 re-run rule (WordsFreshness, analysis-bundle.ts `wordsCurrent`).
-  /// `tier` is reserved for the RAM tier (T7) and null until then.
+  /// `tier`: the RAM tier, 'full' | 'standard' | 'low' (TierPolicy, D13); JS routes a low-tier
+  /// export to the server.
   func capabilities() -> [String: Any] {
     [
       "os": AdapterSelection.versionString(ProcessInfo.processInfo.operatingSystemVersion),
@@ -155,7 +161,7 @@ struct EngineAdapters: Sendable {
       "backgroundExport": backgroundExecution.name,
       "backgroundGPU": backgroundExecution.supportsBackgroundGPU,
       "composition": videoComposition.name,
-      "tier": NSNull(),
+      "tier": deviceProfile.tier.rawValue,
     ]
   }
 }

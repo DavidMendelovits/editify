@@ -7,6 +7,7 @@ import type { AssetMetadata } from '@editify/shared';
 import { uploadAsset, type UploadBytes } from './api';
 import { askForPhotosAccessOnce, mediaKindOf, stageImport, type ImportCandidate } from './local-media';
 import { localMedia } from './local-media-native';
+import { importCompleted } from './import-hooks';
 import type { ImportProgress } from './upload-progress';
 import type { SharedFile } from './share-intake';
 
@@ -88,7 +89,10 @@ async function uploadAll(projectId: string | undefined, files: PendingFile[], on
       report(true);
     }
   }));
-  return { assets: uploaded.filter((asset) => asset !== undefined), failed };
+  const assets = uploaded.filter((asset) => asset !== undefined);
+  // On this iPhone: words for the clips with sound, and the speech pre-prompt when it's due (C15).
+  importCompleted(assets);
+  return { assets, failed };
 }
 
 /**

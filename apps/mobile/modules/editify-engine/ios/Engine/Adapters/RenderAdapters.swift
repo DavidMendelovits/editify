@@ -15,12 +15,15 @@ struct WriterVideoExport: VideoExport {
 }
 
 /// Playback adapter: PlanPlayer (AVPlayer + EditifyCompositor), building with the composition
-/// root's VideoComposition adapter.
+/// root's VideoComposition adapter, at most the RAM tier's preview size (TierCaps, D25).
 struct PlanPlayerPlayback: Playback {
   let composition: PlanVideoComposition
+  var caps = TierCaps.of(.full)
   var name: String { "avplayer" }
 
   @MainActor func makePlayer(resolver: @escaping ([String: String]) -> PlanAssetResolver) -> PlanPlayer {
-    PlanPlayer(resolver: resolver, videoComposition: composition)
+    let player = PlanPlayer(resolver: resolver, videoComposition: composition)
+    player.renderCap = (short: CGFloat(caps.previewMaxShortSide), long: CGFloat(caps.previewMaxLongSide))
+    return player
   }
 }

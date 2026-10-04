@@ -83,7 +83,7 @@ function loadReference(): { transcript: Transcript; kind: string; seconds?: numb
 // ── device engines ────────────────────────────────────────────────────────
 const HARNESS_SOURCES = [
   'Core/EditifyCore', 'Core/Ports/DevicePorts', 'Core/Ports/SpeechPorts', 'Core/Analysis', 'Core/AnalysisSupport', 'Core/AnalysisMath',
-  'Core/AudioSync', 'Core/TranscriptAssembler', 'Core/SpeechChunks', 'Core/TranscriberChain', 'Engine/AudioDecode',
+  'Core/AudioSync', 'Core/TranscriptAssembler', 'Core/SpeechChunks', 'Core/TranscriberChain', 'Core/TierPolicy', 'Engine/AudioDecode',
   'Engine/Adapters/SFSpeechTranscriber', 'Engine/Adapters/SpeechAnalyzerTranscriber',
 ].map((name) => join(engineRoot, 'ios', `${name}.swift`));
 

@@ -18,6 +18,8 @@ import { describeImport, type ImportProgress } from '../../../src/lib/upload-pro
 import { useEngineActivity } from '../../../src/lib/engine-activity';
 import { localMedia } from '../../../src/lib/local-media-native';
 import { track } from '../../../src/lib/telemetry';
+import { captureExportDone, captureExportFailed, deviceTier } from '../../../src/lib/device-runtime';
+import { secondsSince } from '../../../src/lib/analytics-properties';
 import { backControlStyle, goBack } from '../../../src/lib/nav';
 import { colors, radius, space, type, fonts } from '../../../src/lib/theme';
 
@@ -80,7 +82,7 @@ export default function ExportScreen() {
     enabled: Boolean(engine && project.data && assets.data),
     queryFn: async (): Promise<ExportRoute> => {
       const plan = buildExportPlan(project.data!, assets.data!, choices);
-      return await routeExport(plan, await localMedia(), nameOf, resolution, serverCheck());
+      return await routeExport(plan, await localMedia(), nameOf, resolution, serverCheck(), deviceTier());
     },
   });
   const [uploading, setUploading] = useState<ImportProgress>();
@@ -112,8 +114,11 @@ export default function ExportScreen() {
     ]);
   });
 
+  /** When the server render was asked for, for export_done's secs. */
+  const serverStartedAt = useRef<number | null>(null);
   const renderOnServer = (note: string | null): void => {
     setServerNote(note);
+    serverStartedAt.current = Date.now();
     // With the engine the server renders this screen's document, not its own copy (OV1).
     let snapshot: RenderSnapshot | undefined;
     try {
@@ -198,6 +203,7 @@ export default function ExportScreen() {
         signal: controller.signal,
       });
       if (result.kind === 'rendering') {
+        serverStartedAt.current = Date.now();
         track('render_started', resolution);
         setDevice(undefined);
         setServerNote('Finishing on the server: it keeps going if you leave Editify.');
@@ -223,10 +229,11 @@ export default function ExportScreen() {
     abort.current = controller;
     track('device_export_started', resolution);
     const server = serverCheck();
+    const startedAt = Date.now();
     try {
       const outcome = await exportOnDevice({
         build: (geometry) => buildExportPlan(current, list, choices, geometry),
-        resolution, deps, native: engine, nameOf, onUpdate: setDevice, signal: controller.signal,
+        resolution, deps, native: engine, nameOf, onUpdate: setDevice, signal: controller.signal, tier: deviceTier(),
         ...(server ? { server } : {}),
       });
       if (outcome.kind === 'server') {
@@ -242,6 +249,8 @@ export default function ExportScreen() {
         return;
       }
       track(`device_export_${outcome.view.state}`, outcome.view.stats ? `${outcome.view.stats.xRealtime}x` : undefined);
+      if (outcome.view.state === 'done') captureExportDone({ route: 'device', tier: deviceTier(), secs: secondsSince(startedAt, Date.now()) });
+      if (outcome.view.state === 'failed') captureExportFailed({ reason: outcome.view.reason ?? 'error', route: 'device' });
     } finally {
       if (abort.current === controller) abort.current = null;
     }
@@ -277,6 +286,12 @@ export default function ExportScreen() {
 
   useEffect(() => {
     if (status === 'done' || status === 'error') track(`render_${status}`);
+    // A render this screen asked for (not one it only opened): once per render.
+    const startedAt = serverStartedAt.current;
+    if (startedAt === null || (status !== 'done' && status !== 'error')) return;
+    serverStartedAt.current = null;
+    if (status === 'done') captureExportDone({ route: 'server', tier: deviceTier(), secs: secondsSince(startedAt, Date.now()) });
+    else captureExportFailed({ reason: 'server-error', route: 'server' });
   }, [status]);
 
   return (

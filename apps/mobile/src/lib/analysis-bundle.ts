@@ -172,14 +172,18 @@ export function wordsCurrent(policy: WordsFreshness, part: Pick<PartState, 'anal
  * Parts made by an analyzer older than the one installed go back to `pending`
  * under the current version (their data dropped), and are listed so the caller
  * re-queues them with `analyze(..., { force: true })` or re-runs `syncPair`.
- * Parts with no current version (unknown to this build) are left alone. With `words`, a
- * words part follows `wordsCurrent` instead of an exact match against `versions.words`
- * (a binary with the Transcriber chain writes one version per adapter).
+ * Parts with no current version (unknown to this build) are left alone.
+ *
+ * `words` is required on purpose: a binary with the Transcriber chain writes one version per
+ * adapter, so an exact match against `versions.words` (the best adapter's) would mark every
+ * fallback result stale, and on an iOS 26 phone whose SpeechAnalyzer can't run that re-runs
+ * SFSpeech forever. Pass `wordsFreshness(capabilities)`; null only for a binary without the
+ * chain (no `capabilities().transcriber`), where one version is the whole rule.
  */
 export function markStale(
   state: DeviceAnalysisState,
   versions: Partial<Record<NativeAnalysisPart | 'sync', string>>,
-  words?: WordsFreshness,
+  words: WordsFreshness | null,
 ): { state: DeviceAnalysisState; stale: StalePart[] } {
   const stale: StalePart[] = [];
   const assets: DeviceAnalysisState['assets'] = {};

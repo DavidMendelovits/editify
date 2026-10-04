@@ -41,7 +41,6 @@ The importer for release/1.1 plan tasks T9 and T16 (decisions D14, D15, C3, C6, 
 | NULL-owner rows (pre-auth projects and assets, the `sound-*` library, orphan observations) | same tables | the shared scope, full cutover only |
 | media: `assets/<id>/` (original, proxy, thumb, filmstrip), `renders/<id>/` (output, captions, contact sheet) | `/data/assets`, `/data/renders` on editify_v11_data | with their rows |
 | media: `sounds/`, `emoji/`, `callouts/`, `luts/`, `models/`, `user-insights.md` | same paths | shared scope |
-| Postgres `public.sync_projects`, `sync_op_log`, `sync_receipts` (1.0 line) | `v11.sync_*` in the same Supabase database (D3) | `user_id`; copied when DATABASE_URL is set |
 | `mutations` (the C19 journal) | not copied; the delta replays it | |
 
 Paths: `original_path`, `proxy_path`, `thumbnail_path`, `output_path`, and any quoted absolute path inside JSON columns, are rewritten from `--source-root` to the 1.1 root. On Fly both are `/data`, so in production the rewrite is a no-op; a local rehearsal exercises it.
@@ -87,7 +86,7 @@ All commands from the repo root on your laptop, logged in with `fly auth login`.
 
    editify-v11 restarts now. On editify-dm the staged secret applies at its next restart (step 1's restart, or `fly machine restart <id> -a editify-dm` at a quiet moment). `fly ssh console` sessions see app secrets in their environment.
 
-3. editify-v11 needs `DATABASE_URL` (already set for sync) for the Postgres copy and for `--user <email>` lookups, and `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` as the email fallback.
+3. `--user <email>` lookups use `DATABASE_URL` (auth.users) when editify-v11 has it, else `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (the admin API). Postgres sync tables are not copied: 1.0 has no `/sync`, so `public.sync_*` never holds rows.
 
 ## 1. Measure and size the volume (C11)
 
@@ -163,7 +162,7 @@ fly ssh console -a editify-v11 -C "tail -f /data/cutover/copy.log"
 
    Fix the cause (usually re-run: a transient copy failure retries), then `import --all` again. It retries only failed and not-yet-imported users. `--force` re-imports everyone from the same snapshot. Both are for before the release only.
 
-4. Dry run. Per user: every table's rows (1.0 columns, paths rewritten) and every media file's sha256, 1.0 against 1.1, plus the Postgres sync rows. Exit 1 on any diff; `--json` for the detail, `--quick` trusts the copy's recorded hashes instead of re-reading every file.
+4. Dry run. Per user: every table's rows (1.0 columns, paths rewritten) and every media file's sha256, 1.0 against 1.1. Exit 1 on any diff; `--json` for the detail, `--quick` trusts the copy's recorded hashes instead of re-reading every file.
 
    ```
    ... cutover.ts dry-run --all
@@ -235,7 +234,7 @@ npx tsx scripts/cutover/cutover.ts import --all --source-dir /path/to/v10-data -
 npx tsx scripts/cutover/cutover.ts dry-run --all --source-dir /path/to/v10-data --source-root /data --dest-root /path/to/v11-data
 ```
 
-`--source-root` is where the 1.0 rows' absolute paths start (`/data` for a copy of the production volume), so the rewrite to the local 1.1 directory is exercised. A copy taken while editify-dm still ran without the journal needs `import --all --without-journal`; the delta then refuses, as it should. Without DATABASE_URL (or with `--no-pg`) the Postgres copy is skipped. The test suite (`server/test/cutover.test.ts`, `cutover-pg.test.ts`) runs the same flow on a fixture, including the HTTP agent on a loopback port.
+`--source-root` is where the 1.0 rows' absolute paths start (`/data` for a copy of the production volume), so the rewrite to the local 1.1 directory is exercised. A copy taken while editify-dm still ran without the journal needs `import --all --without-journal`; the delta then refuses, as it should. The test suite (`server/test/cutover.test.ts`, `cutover-agent.test.ts`) runs the same flow on a fixture, including the HTTP agent on a loopback port.
 
 The rehearsal on a production copy (plan Verification 4) needs production data: take a snapshot through the agent (section 1, then `snapshot` with `--dest-root` on a scratch volume) or a `fly volumes snapshots create` of editify_data restored to a scratch app, and run sections 3.1 to 3.4 and 3.8 against it, timing the read-only window.
 

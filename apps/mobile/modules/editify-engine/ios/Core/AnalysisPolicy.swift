@@ -48,8 +48,8 @@ public enum AnalysisPolicy {
   /// taps don't restart an encode from zero each time.
   public static let proxyResumeDelay: Duration = .seconds(4)
 
-  /// Decoded 8 kHz audio kept for sync/energy; ~32 MB is about 17 minutes of audio.
-  public static let pcmBudgetSamples = 8_000_000
+  /// Decoded 8 kHz audio kept for sync/energy on full and standard tiers (TierCaps; low keeps none).
+  public static let pcmBudgetSamples = TierCaps.pcmBudgetSamples
 
   /// A part already `ready` from the current analyzer version is skipped (unless forced);
   /// a proxy only while its file is still on disk; words by the C25 rule (WordsFreshness).
@@ -83,11 +83,11 @@ public enum AnalysisPolicy {
   }
 
   /// The cached decodes to drop, oldest first, until the cache fits its budget (the newest always stays).
-  public static func pcmEvictions(order: [String], counts: [String: Int]) -> [String] {
+  public static func pcmEvictions(order: [String], counts: [String: Int], budget: Int = pcmBudgetSamples) -> [String] {
     var total = counts.values.reduce(0, +)
     var remaining = order[...]
     var evicted: [String] = []
-    while total > pcmBudgetSamples, remaining.count > 1 {
+    while total > budget, remaining.count > 1 {
       let key = remaining.removeFirst()
       total -= counts[key] ?? 0
       evicted.append(key)

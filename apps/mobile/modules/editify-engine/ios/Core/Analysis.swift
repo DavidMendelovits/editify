@@ -87,8 +87,12 @@ public enum Analyzers {
 
   /// energyAnalysisSchema data plus the onset peaks cut_to_beats lands on.
   public static func energy(samples: [Float], rate: Int = AudioSync.sampleRate) -> PartResult {
-    let rmsDb = AnalysisMath.energy(samples, sampleRate: rate)
-    return .ready(AnalyzerVersion.energy, [
+    energy(levels: AnalysisMath.energy(samples, sampleRate: rate))
+  }
+
+  /// The same part from levels already measured (AnalysisMath.EnergyStream, the low tier).
+  public static func energy(levels rmsDb: [Double]) -> PartResult {
+    .ready(AnalyzerVersion.energy, [
       "cellSeconds": AnalysisMath.energyCellSeconds,
       "rmsDb": rmsDb,
       "onsetPeaks": AnalysisMath.onsetPeaks(rmsDb, cellSeconds: AnalysisMath.energyCellSeconds),

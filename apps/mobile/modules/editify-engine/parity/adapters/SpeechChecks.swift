@@ -158,7 +158,10 @@ func speechChecks() async {
     case .authorized:
       check("auth authorized: transcribes without asking", result.status == "ready" && auth.requests == 0 && sf.runs == 1)
     case .notDetermined:
-      check("auth notDetermined: asks once on the first words run, then transcribes", result.status == "ready" && auth.requests == 1 && sf.runs == 1)
+      // C15: the words run never prompts (it may run with Editify in the background); the
+      // pre-prompt sheet asks and JS re-queues.
+      check("auth notDetermined: no prompt from the words run, unavailable with the not-asked code, nothing transcribed",
+            result.status == "unavailable" && result.code == "speechRecognitionNotAsked" && auth.requests == 0 && sf.runs == 0, result.dictionary)
     case .denied, .restricted:
       check("auth \(status.rawValue): unavailable, speech-off reason + Settings code, nothing transcribed",
             result.status == "unavailable" && result.error == "Speech recognition is off for Editify" && result.code == "speechRecognitionOff"
@@ -168,9 +171,30 @@ func speechChecks() async {
   do {
     let sf = StubTranscriber("sfspeech", version: "w-sf1", auth: true, outcome: .results(sample))
     let declined = StubAuthorization(.notDetermined, answer: .denied)
-    let result = await chain([sf], auth: declined).words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
-    check("auth: declining the prompt → unavailable with the Settings code", result.status == "unavailable" && result.code == "speechRecognitionOff"
-          && sf.runs == 0)
+    let words = chain([sf], auth: declined)
+    let before = await words.words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
+    _ = await declined.request() // the sheet's Continue, answered "Don't Allow"
+    let result = await words.words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
+    check("auth: declining the sheet's prompt → the re-run is unavailable with the Settings code",
+          before.code == "speechRecognitionNotAsked" && result.status == "unavailable" && result.code == "speechRecognitionOff"
+          && declined.requests == 1 && sf.runs == 0, result.dictionary)
+    let granting = StubAuthorization(.notDetermined, answer: .authorized)
+    let grantChain = chain([sf], auth: granting)
+    let first = await grantChain.words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
+    _ = await granting.request() // the sheet's Continue, answered "Allow"
+    let requeued = await grantChain.words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
+    let foreground = StubAuthorization(.notDetermined, answer: .authorized)
+    let foregroundSF = StubTranscriber("sfspeech", version: "w-sf1", auth: true, outcome: .results(sample))
+    let asking = TranscriberChain<String>([foregroundSF], authorization: foreground, trigger: { "os=18.0;sa=0" }, asksForSpeech: true)
+    let asked = await asking.words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
+    check("auth: asksForSpeech (a foreground caller) asks once, then transcribes", asked.status == "ready" && foreground.requests == 1, asked.dictionary)
+    let noModel = StubTranscriber("sfspeech", version: "w-sf1", auth: true, eligible: .ineligible("On-device speech recognition is not available for en_US"),
+                                  outcome: .results(sample))
+    let deniedNoModel = await chain([noModel], auth: StubAuthorization(.denied)).words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
+    check("auth: denied before eligibility, so a phone without the on-device model still gets the Settings code",
+          deniedNoModel.status == "unavailable" && deniedNoModel.code == "speechRecognitionOff", deniedNoModel.dictionary)
+    check("auth: granted from the sheet → the re-queued run transcribes",
+          first.code == "speechRecognitionNotAsked" && requeued.status == "ready" && granting.requests == 1 && sf.runs == 1, requeued.dictionary)
     // SpeechAnalyzer needs no speech permission: a denied user still gets words on 26.
     let sa = StubTranscriber("speech-analyzer", version: "w-sa1", auth: false, outcome: .results(sample))
     let saResult = await chain([sa, sf], auth: StubAuthorization(.denied)).words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
@@ -248,6 +272,13 @@ func speechChecks() async {
       ChunkWords(chunk: c1, origin: 48, words: [TimedWord(text: "no", start: 1.5, end: 1.7)]),
     ])
     check("merge: the same word said twice, apart in time, stays twice", repeated.map(\.text) == ["no", "no"])
+    // "no no" said inside the overlap, 0.4 s apart: both chunks hear both, each keeps one on its
+    // side of the cut. A genuine repeat, not one word heard twice.
+    let saidTwice = SpeechChunks.merge([
+      ChunkWords(chunk: c0, origin: 0, words: [TimedWord(text: "no", start: 48.6, end: 48.85), TimedWord(text: "no", start: 49.0, end: 49.25)]),
+      ChunkWords(chunk: c1, origin: 48, words: [TimedWord(text: "no", start: 0.62, end: 0.86), TimedWord(text: "no", start: 1.02, end: 1.26)]),
+    ])
+    check("merge: a repeat inside the overlap (\"no no\") stays twice", saidTwice.map(\.text) == ["no", "no"], saidTwice.map { "\($0.text)@\($0.start)" })
     let phrases = SpeechChunks.phrases([TimedWord(text: "Hi", start: 0, end: 0.2), TimedWord(text: "there.", start: 0.3, end: 0.6),
                                         TimedWord(text: "Next", start: 0.7, end: 0.9), TimedWord(text: "bit", start: 2.5, end: 2.8)])
     // T10: a request reports each utterance on its own, then a final result repeating the last.
@@ -327,6 +358,40 @@ func speechChecks() async {
     task.cancel()
     let outcome = await task.value
     check("cancel: cancelling the task stops the running chunk, no retry", outcome == "cancelled", outcome)
+
+    // The SFSpeech request itself (RecognitionRun): a recognizer that never calls back after
+    // cancel() must not hang the chunk timeout. This one ignores its stop entirely.
+    let deaf = AttemptLog()
+    let started = ContinuousClock.now
+    do {
+      _ = try await runner.run([SpeechChunk(index: 0, start: 0, end: 50)], gate: nil) { chunk, attempt in
+        deaf.add(chunk.index, attempt)
+        return try await RecognitionRun<Int>().run { _ in { /* the recognizer never answers, even when stopped */ } }
+      }
+      check("recognition: a recognizer silent after cancel still times out and fails the chunk", false)
+    } catch let failure as ChunkFailure {
+      check("recognition: a recognizer silent after cancel still times out and fails the chunk",
+            deaf.count(0) == 3 && failure.message.contains("did not finish") && ContinuousClock.now - started < .seconds(5), failure.message)
+    } catch {
+      check("recognition: a recognizer silent after cancel still times out and fails the chunk", false, error)
+    }
+    let stops = AttemptLog()
+    let pending = RecognitionRun<Int>()
+    let waiter = Task { () -> String in
+      do { return "answered \(try await pending.run { _ in { stops.add(0, 0) } })" } catch is CancellationError { return "cancelled" } catch { return "\(error)" }
+    }
+    try? await Task.sleep(for: .milliseconds(50))
+    waiter.cancel()
+    let waited = await waiter.value
+    pending.finish(.success(7)) // the recognizer's late handler: ignored
+    check("recognition: cancelling stops the request once and answers CancellationError itself", waited == "cancelled" && stops.all.count == 1,
+          [waited, "\(stops.all.count)"])
+    let twice = try? await RecognitionRun<Int>().run { run in
+      run.finish(.success(1))
+      run.finish(.success(2)) // a handler that fires again
+      return {}
+    }
+    check("recognition: only the first answer counts", twice == 1, twice as Any)
   }
 }
 

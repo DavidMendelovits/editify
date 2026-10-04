@@ -44,6 +44,31 @@ extension Analyzers {
     }
   }
 
+  /// The recording buffer by buffer, none kept (the low tier's decode and energy, D25): the
+  /// most held at once is one AVAssetReader buffer.
+  static func streamMono(_ asset: AVAsset, rate: Double = Double(AudioSync.sampleRate), progress: AnalyzerProgress? = nil,
+                         each: @escaping @Sendable ([Float]) -> Void) async throws -> Int {
+    let chunks = try await PCMChunks(asset: asset, rate: rate)
+    let stop = CancelFlag()
+    return try await withTaskCancellationHandler {
+      try await AnalysisQueue.run {
+        var count = 0
+        var ticks = 0
+        while let (chunk, position) = try chunks.next() {
+          each(chunk)
+          count += chunk.count
+          ticks += 1
+          if ticks % 64 == 0 { progress?(chunks.fraction(at: position)) }
+          if stop.isSet { chunks.cancel(); throw CancellationError() }
+        }
+        progress?(1)
+        return count
+      }
+    } onCancel: {
+      stop.set()
+    }
+  }
+
   // MARK: - Laughter (SoundAnalysis)
 
   /// Laughter spans with confidence (OV10), from the built-in classifier over

@@ -57,8 +57,8 @@ simulator run should confirm it. The fix is safe either way.
 | sfspeech (chunked) | 51.7% | 26 | 266 | 2 | 305 | 263 ms | 4380 ms | 31 | 4.1 s | 9.8 | 15.4-19.7 s |
 | sfspeech-single | 52.2% | 25 | 272 | 0 | 297 | 740 ms | 5780 ms | 32 | 3.1 s | 9.3 | 14.7-14.9 s |
 
-- **Run-to-run spread (3 runs):** SpeechAnalyzer gave the same result every time. Chunked
-  SFSpeech had WER 51.5% to 52.0% and start error p95 from 4.4 s to 9.9 s.
+- **Run-to-run spread (4 runs, the last after merging release/1.1):** SpeechAnalyzer gave the same result every time. Chunked
+  SFSpeech had WER 51.3% to 52.0% and start error p95 from 4.4 s to 9.9 s.
 - **Reference runtime:** large-v3 on CPU took 669 s, about 3.1x real time.
 
 Errors within 2 s of each chunk cut, shown as deletions/insertions/substitutions (doubles):
