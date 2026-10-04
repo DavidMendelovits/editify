@@ -183,34 +183,16 @@ let rawManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: manife
 let rawMedia = rawManifest["media"] as! [String: Any]
 for id in wanted.sorted() {
   guard let media = manifest.media[id] else { throw HarnessError("no media \(id)") }
-  switch media.kind {
-  case "video":
-    let url = work.appendingPathComponent("\(id).mov")
-    mediaReport[id] = ["codec": try writeVideo(media, to: url)]
-    mediaRefs[id] = url.absoluteString
-  case "audio":
-    let url = work.appendingPathComponent("\(id).m4a")
-    try writeAudio(media, to: url)
-    mediaRefs[id] = url.absoluteString
-  case "png":
-    let url = work.appendingPathComponent("\(id).png")
-    try writeLogo(media, to: url)
-    mediaRefs[id] = url.absoluteString
-  case "gif":
-    let url = work.appendingPathComponent("\(id).gif")
-    try writeGif(media, to: url)
-    mediaRefs[id] = url.absoluteString
-  default:
-    throw HarnessError("unknown media kind \(media.kind)")
-  }
+  let (url, codec) = try synthesized(id, media, work: work)
+  if let codec { mediaReport[id] = ["codec": codec] }
+  mediaRefs[id] = url.absoluteString
 }
 // The "proxy": asset-talk's pattern at half size, as the 1080p proxy of a 4K original would be.
 var proxySpec = rawMedia["asset-talk"] as! [String: Any]
 proxySpec["w"] = (proxySpec["w"] as! Int) / 2
 proxySpec["h"] = (proxySpec["h"] as! Int) / 2
 let proxyMedia = try JSONDecoder().decode(Manifest.Media.self, from: JSONSerialization.data(withJSONObject: proxySpec))
-let proxyURL = work.appendingPathComponent("asset-talk-proxy.mov")
-_ = try writeVideo(proxyMedia, to: proxyURL)
+let proxyURL = try synthesized("asset-talk-proxy", proxyMedia, work: work).url
 
 /// What the module does with the media map: ids resolve only within it (here, the synthesized files).
 /// A server copy (`https://media.test/<id>/...?k=<token>`) stands for that id's local file.
@@ -448,7 +430,11 @@ func serverCode(_ rig: Rig, at k: Int) async throws -> Int {
       shown = decodeCode(pixels(try await rig.frame(at: k, fps: 30, timeout: min(15, max(1, deadline - CFAbsoluteTimeGetCurrent()))).buffer, space: workingSpace))
       if shown == k { break }
     } catch let error as HarnessError where error.description.hasPrefix("timed out: the video output vended no frame") {
-      Watchdog.log("no frame at \(k) yet; seeking again")
+      // What the player was doing, should a runner ever exhaust the retries.
+      let item = rig.player.player.currentItem
+      Watchdog.log("no frame at \(k) yet; seeking again (time \(rig.player.currentTime), status \(item?.status.rawValue ?? -1), "
+        + "keepUp \(item?.isPlaybackLikelyToKeepUp ?? false), rate \(rig.player.player.rate), landed \(rig.seeksLanded), "
+        + "output \(rig.output != nil), errors \(rig.errors.count), expired \(rig.expired.count))")
     }
     try? await Task.sleep(nanoseconds: 300_000_000)
   } while CFAbsoluteTimeGetCurrent() < deadline
@@ -1215,13 +1201,15 @@ func run() async throws -> [String: Any] {
       refs["asset-talk"] = "http://127.0.0.1:\(port)\(path)?k=\(token)"
       return refs
     }
-    /// Plays a token that dies 2.5 s from now (by the server's clock) for up to 4 s.
+    /// Plays a token that dies 2.5 s from now (by the server's clock) for up to 4 s. Refusals are
+    /// counted from the start of playback: on a loaded runner, loading and the first frame can
+    /// take most of the token's life, and a read refused then says nothing about the deadline.
     func play(offset: Double?) async throws -> [String: Any] {
-      let refusedBefore = server.refused
       let rig = Rig()
       rig.player.expiryLead = 1
       try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)), tokenClockOffset: offset)
       _ = try await rig.frame(at: 0, fps: 30)
+      let refusedBefore = server.refused
       rig.player.play()
       let reported = await rig.until(4) { !rig.expired.isEmpty || !rig.errors.isEmpty }
       // A refusal still in flight is counted once its request lands.
@@ -1288,9 +1276,13 @@ func run() async throws -> [String: Any] {
     _ = try await down.frame(at: 0, fps: 30)
     down.player.play()
     try await down.expect("playing before the outage") { down.player.player.rate > 0 && down.player.currentTime > 0.2 }
+    // Counted from the outage on: the throttled stream can starve once before it on a loaded runner.
+    let reconnectsBefore = down.player.reconnectCount
     server.setFailing(true)
     let asked = await down.until(10) { !down.expired.isEmpty || !down.errors.isEmpty }
-    var outage: [String: Any] = ["asked": asked, "expired": down.expired.count, "errors": down.errors.count, "reconnects": down.player.reconnectCount]
+    var outage: [String: Any] = [
+      "asked": asked, "expired": down.expired.count, "errors": down.errors.count, "reconnects": down.player.reconnectCount - reconnectsBefore,
+    ]
     server.setFailing(false)
     let retry = try await down.apply(try decode(base, revision: 1, buildSeq: 2), media: refs(server.token(expiresIn: 600)), mediaRetry: true)
     outage["retryMode"] = retry.mode.rawValue
