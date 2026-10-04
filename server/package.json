@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --testTimeout=20000",
     "seed": "tsx src/seed.ts",
+    "drain": "tsx src/drain.ts",
     "repro": "tsx src/repro.ts",
     "style:smoke": "tsx src/style-smoke.ts"
   },

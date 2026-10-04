@@ -394,6 +394,8 @@ export const api = {
     return Object.fromEntries(assets.map((entry) => [entry.id, entry.status]));
   },
   getRender: (id: string) => request<RenderRecord>(`/renders/${id}`),
+  /** The newest finished master of each of the user's projects. */
+  listFinishedRenders: () => request<RenderRecord[]>('/renders'),
   /** Measures where an audio clip lines up under the video; never edits. Apply `ops` to commit. */
   syncAudio: (id: string, audioClipId: string, videoClipId?: string) => request<SyncAudioResult>(
     `/projects/${id}/sync?audioClipId=${encodeURIComponent(audioClipId)}${videoClipId ? `&videoClipId=${encodeURIComponent(videoClipId)}` : ''}`,

@@ -204,6 +204,17 @@ public class EditifyEngineModule: Module {
       self.adapters.capabilities()
     }
 
+    /// 'sandbox' | 'production' | 'none': the App Store receipt's kind, read without loading it.
+    /// TestFlight installs carry a sandbox receipt; JS pairs this with expo-application's release
+    /// type (App Store signed) to tell a TestFlight build, which shows the test-server banner (C8).
+    Function("appStoreReceipt") { () -> String in
+      switch Bundle.main.appStoreReceiptURL?.lastPathComponent {
+      case "sandboxReceipt": return "sandbox"
+      case "receipt": return "production"
+      default: return "none"
+      }
+    }
+
     // MARK: Local media registry (decision 3A) and preview proxies (10B)
 
     /// 'all' | 'limited' | 'denied' | 'undetermined', read without prompting.
