@@ -61,6 +61,25 @@ export class RenderStore {
     return row ? this.toRecord(row) : undefined;
   }
 
+  /**
+   * The newest finished render of every project, newest first: what "export
+   * my videos" saves. Scoped through the owning project like `get`.
+   */
+  latestDoneByProject(userId?: string): RenderRecord[] {
+    const rows = this.database.prepare(`
+      SELECT renders.* FROM renders JOIN projects ON projects.id = renders.project_id
+      WHERE renders.status = 'done' AND renders.output_path IS NOT NULL
+        AND (? IS NULL OR projects.user_id = ?)
+        AND renders.updated_at = (
+          SELECT MAX(latest.updated_at) FROM renders AS latest
+          WHERE latest.project_id = renders.project_id AND latest.status = 'done' AND latest.output_path IS NOT NULL
+        )
+      GROUP BY renders.project_id
+      ORDER BY renders.updated_at DESC
+    `).all(userId ?? null, userId ?? null) as RenderRow[];
+    return rows.map((row) => this.toRecord(row));
+  }
+
   /** `userId` scopes through the owning project: owner-only, like ProjectStore. */
   get(id: string, userId?: string): RenderRecord | undefined {
     const row = (userId === undefined

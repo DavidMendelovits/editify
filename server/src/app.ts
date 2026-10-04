@@ -22,6 +22,7 @@ import { OperationError } from './operations/apply.js';
 import { registerAccountRoutes } from './routes/account.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerChatRoutes } from './routes/chat.js';
+import { isClientConfigRoute, registerClientConfigRoutes } from './routes/client-config.js';
 import { isLegalRoute, registerLegalRoutes } from './routes/legal.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerRenderRoutes } from './routes/renders.js';
@@ -97,6 +98,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       (request.method === 'GET' || request.method === 'HEAD') &&
       (request.routeOptions.url === '/*' ||
         isLegalRoute(request.routeOptions.url) ||
+        // The update gate has to reach signed-out phones too.
+        isClientConfigRoute(request.routeOptions.url) ||
         (request.routeOptions.url === undefined && (request.headers.accept ?? '').includes('text/html'))),
     // POST /telemetry takes credentials when there are any and proceeds without
     // them when there are not: a crash on the sign-in screen has none to send,
@@ -114,6 +117,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   // Built-in SFX/music, synthesized on first request and registered as assets.
   app.get('/sounds', async () => await ensureSoundLibrary(assets));
   registerLegalRoutes(app);
+  registerClientConfigRoutes(app);
   registerAccountRoutes(app, database, styles);
   await registerWebhookRoutes(app, database, styles);
   registerProjectRoutes(app, projects, renderQueue, assets, transcripts, syncs);
