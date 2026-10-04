@@ -44,12 +44,6 @@
 - **Context:** They were kept on purpose (orphaned, not claimed or deleted) when scoping landed, 2026-09-29. Only the shared token can still reach them.
 - **Blocked by:** scoping PR soaking in prod with nobody missing anything.
 
-## Raise the iOS floor to 26 on main after 1.0 is submitted
-- **What:** Merge `mobile-capability-lab`'s `expo-build-properties` (`ios.deploymentTarget: "26.0"`) and update the App Store listing to "Requires iOS 26".
-- **Why:** The on-device engine is built against iOS 26 only (SpeechAnalyzer, BGContinuedProcessingTask), with no `@available` forks (lab decision 2A).
-- **Context:** Held off main on purpose (decision 3A) so the 1.0 binary stays on iOS 15.1. The deployment target change alters the runtime fingerprint, so preview gets a new native build, not an OTA. Plan: `~/.claude/plans/idempotent-beaming-puppy.md`.
-- **Blocked by:** 1.0 submitted to App Store review.
-
 ## Animated caption styles (CapCut/Mirage parity)
 - **What:** Word pop-in, bounce, scale-on-sung and auto emoji as caption styles, drawn by the native CaptionRenderer and by the server's ASS writer.
 - **Why:** Short-form creators expect the CapCut/Mirage looks. v1 captions only switch a word's colour when it is sung, so an Editify export reads as static next to theirs.
