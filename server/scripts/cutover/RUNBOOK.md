@@ -127,7 +127,7 @@ fly ssh console -a editify-v11 -C "sh -c 'cd /app/server && npx tsx scripts/cuto
 fly ssh console -a editify-v11 -C "sh -c 'cd /app/server && npx tsx scripts/cutover/cutover.ts dry-run --user appreview@editify.app'"
 ```
 
-The import is tagged `beta_copy`. Re-importing a user replaces their beta copy. The full cutover replaces every beta copy in the same transaction that imports the user's real rows, which drops whatever testers changed on 1.1 under the copied projects (C18). Projects a tester created on 1.1 from scratch are not copies and stay.
+The import is tagged `beta_copy`. Re-importing a user replaces their beta copy. The full cutover replaces every beta copy in the same transaction that imports the user's real rows, which drops whatever testers changed on 1.1 under the copied projects (C18). Projects a tester created on 1.1 from scratch are not copies and stay. Once the launch-day `import --all` has completed, `--user` imports are refused (they would turn real data back into a beta copy).
 
 ## 3. Launch day
 

@@ -108,6 +108,8 @@ describe('cutover importer', () => {
     expect(again.copied).toBe(0);
     expect(counts()).toEqual(before);
 
+    await expect(importer.import({ kind: 'users', users: [ALICE] })).rejects.toThrow(/beta_copy/);
+
     const forced = await importer.import({ kind: 'all' }, { force: true });
     expect(forced.users.every((user) => user.status === 'imported')).toBe(true);
     expect(forced.copied).toBe(0);

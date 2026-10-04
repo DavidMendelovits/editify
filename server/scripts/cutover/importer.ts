@@ -326,6 +326,9 @@ export class Importer {
    */
   async import(scope: Scope, options: { force?: boolean } = {}): Promise<ImportReport> {
     const tag: ImportTag = scope.kind === 'all' ? 'cutover' : 'beta_copy';
+    if (scope.kind === 'users' && getState(this.dest, STATE_BULK_WATERMARK) !== undefined) {
+      throw new Error('The cutover bulk import has run: a --user import now would turn real data back into a beta_copy. Use import --all.');
+    }
     const prepared = await this.prepare();
     try {
       const users = this.scopeUsers(prepared, scope);
