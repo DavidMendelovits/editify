@@ -149,6 +149,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     readOnly,
     // What `src/drain.ts` waits on before the operator sets READ_ONLY=1.
     jobs: pendingJobs(renders, database),
+    // Whether this machine has Postgres project sync (DATABASE_URL), so the deploy smoke knows to check /sync.
+    sync: Boolean(pg),
   }));
   app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   // Built-in SFX/music, synthesized on first request and registered as assets.
@@ -162,7 +164,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerRenderRoutes(app, renders);
   registerStyleRoutes(app, styles);
   registerChatRoutes(app, projects, assets, chats, agent, styles, transcripts, insights, dissections, syncs, { faces, renders });
-  registerAgentTurnRoutes(app, agent, pg?.lock ? { lock: new PgTurnLock(pg.lock) } : {});
+  registerAgentTurnRoutes(app, agent, pg?.lock ? { lock: new PgTurnLock(pg.lock, pg.schema) } : {});
   registerSyncRoutes(app, pg ? new PgSyncStore(pg.sync, pg.schema) : undefined);
   registerTelemetryRoutes(app, telemetry);
 
