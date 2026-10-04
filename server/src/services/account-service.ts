@@ -1,12 +1,12 @@
 import { rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { assetsRoot, supabaseUrl } from '../config.js';
+import { basename, dirname, join } from 'node:path';
+import { assetsRoot, rendersRoot, supabaseUrl } from '../config.js';
 import type { EditifyDatabase } from '../db/database.js';
 import type { StyleService } from './style-service.js';
 
 export interface AccountDeletion { projects: number; assets: number; reports: number; styles: number }
 
-/** What a purge removed from the volume: one directory per asset, one file per render. */
+/** What a purge removed from the volume: one directory per asset, one directory per render. */
 export interface FilesPurged { assetDirs: number; renderOutputs: number }
 
 export interface UserPurge { rows: AccountDeletion; files: FilesPurged }
@@ -45,11 +45,13 @@ export async function purgeUserData(database: EditifyDatabase, userId: string, s
   const assetIds = (database.prepare('SELECT id FROM assets WHERE user_id = ?').all(userId) as Array<{ id: string }>)
     .map((row) => row.id);
   // Read before the delete: dropping the projects cascades these rows away.
-  const outputs = (database.prepare(`
-    SELECT renders.output_path AS output_path FROM renders
+  // Every render, finished or not: `renders/<id>/` also holds the caption text
+  // (captions.ass) and the contact sheet of frames, not just output.mp4.
+  const renderRows = database.prepare(`
+    SELECT renders.id AS id, renders.output_path AS output_path FROM renders
     JOIN projects ON projects.id = renders.project_id
-    WHERE projects.user_id = ? AND renders.output_path IS NOT NULL
-  `).all(userId) as Array<{ output_path: string }>).map((row) => row.output_path);
+    WHERE projects.user_id = ?
+  `).all(userId) as Array<{ id: string; output_path: string | null }>;
 
   const rows = database.transaction((): AccountDeletion => {
     // One placeholder per asset would blow SQLite's variable limit for a heavy
@@ -69,10 +71,18 @@ export async function purgeUserData(database: EditifyDatabase, userId: string, s
     };
   })();
 
-  // Media is one directory per asset; a render output is a single file.
+  // Media is one directory per asset and one per render. A recorded output
+  // outside its render directory (older layouts, tests) goes too.
   const removed = await Promise.all([
-    ...assetIds.map(async (id) => await removeIfPresent(join(assetsRoot, id))),
-    ...outputs.map(async (path) => await removeIfPresent(path)),
+    ...assetIds.map(async (id) => await removeIfPresent(childDirectory(assetsRoot, id))),
+    ...renderRows.map(async ({ id, output_path: output }) => {
+      const directory = childDirectory(rendersRoot, id);
+      const [dir, file] = await Promise.all([
+        removeIfPresent(directory),
+        output && dirname(output) !== directory ? removeIfPresent(output, { recursive: false }) : Promise.resolve(false),
+      ]);
+      return dir || file;
+    }),
   ]);
   const files: FilesPurged = {
     assetDirs: removed.slice(0, assetIds.length).filter(Boolean).length,
@@ -81,10 +91,22 @@ export async function purgeUserData(database: EditifyDatabase, userId: string, s
   return { rows, files };
 }
 
-/** True when something was there to remove; a missing path is not an error. */
-async function removeIfPresent(path: string): Promise<boolean> {
+/**
+ * `root/<id>`, or undefined when the id is not one plain path segment: a
+ * recursive delete must never be able to resolve to the root or above it.
+ */
+function childDirectory(root: string, id: string): string | undefined {
+  return id && id !== '.' && id !== '..' && basename(id) === id && !id.includes('\\') ? join(root, id) : undefined;
+}
+
+/**
+ * True when something was there to remove; a missing path is not an error.
+ * A recorded output path is removed as a file only, never recursively.
+ */
+async function removeIfPresent(path: string | undefined, options = { recursive: true }): Promise<boolean> {
+  if (!path) return false;
   const present = await stat(path).then(() => true, () => false);
-  await rm(path, { recursive: true, force: true });
+  await rm(path, { recursive: options.recursive, force: true });
   return present;
 }
 

@@ -138,6 +138,67 @@ describe('POST /webhooks/supabase/user-deleted', () => {
     expect(listDataOwners(database)).toEqual([BOB]);
   });
 
+  it('purges whole render directories (captions and contact sheet too), even unfinished renders', async () => {
+    stubAdmin([ALICE]);
+    const renderDirs = (userId: string, tag: string) => {
+      const project = new ProjectStore(database).create({ title: tag, format: '9:16', fps: 30 }, userId);
+      const renders = new RenderStore(database);
+      const done = renders.create(project.id, '720p');
+      const failed = renders.create(project.id, '720p');
+      const doneDir = join(scratch.dataDir, 'renders', done.id);
+      const failedDir = join(scratch.dataDir, 'renders', failed.id);
+      for (const dir of [doneDir, failedDir]) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(doneDir, 'output.mp4'), 'x');
+      writeFileSync(join(doneDir, 'contact.jpg'), 'x');
+      writeFileSync(join(doneDir, 'captions.ass'), 'Dialogue: private words');
+      // A failed render never records an output, but its caption file stays behind.
+      writeFileSync(join(failedDir, 'captions.ass'), 'Dialogue: private words');
+      renders.update(done.id, 'done', { outputPath: join(doneDir, 'output.mp4') });
+      renders.update(failed.id, 'error', { error: 'ffmpeg exploded' });
+      return { doneDir, failedDir };
+    };
+    const alice = renderDirs(ALICE, 'alice-renders');
+    const bob = renderDirs(BOB, 'bob-renders');
+
+    const response = await app.inject(delivery(event('evt-render-dirs')));
+    expect(response.json().purged.files).toEqual({ assetDirs: 0, renderOutputs: 2 });
+    expect(existsSync(alice.doneDir)).toBe(false);
+    expect(existsSync(alice.failedDir)).toBe(false);
+    expect(existsSync(join(bob.doneDir, 'captions.ass'))).toBe(true);
+    expect(existsSync(join(bob.failedDir, 'captions.ass'))).toBe(true);
+  });
+
+  it('never resolves a recursive delete outside its own asset or render directory', async () => {
+    stubAdmin([ALICE]);
+    const bob = seedUser(database, BOB, 'bob-escape');
+    // Ids are server UUIDs, but a bad row must not turn into `rm -rf <data dir>`.
+    new AssetStore(database).insert(media('..'), ALICE);
+    const response = await app.inject(delivery(event('evt-escape')));
+    expect(response.statusCode).toBe(200);
+    expect(existsSync(bob.assetDir)).toBe(true);
+    expect(existsSync(bob.renderFile)).toBe(true);
+  });
+
+  it('verifies the exact bytes Postgres sends (jsonb::text spacing, charset parameter)', async () => {
+    stubAdmin([ALICE]);
+    seedUser(database, ALICE, 'pg-shape');
+    // What `payload::text` looks like for the trigger's jsonb_build_object.
+    const raw = `{"type": "user.deleted", "user_id": "${ALICE}", "event_id": "evt-pg", "occurred_at": "2026-10-03 12:00:00.123+00"}`;
+    const timestamp = String(nowSeconds());
+    const response = await app.inject({
+      method: 'POST',
+      url: USER_DELETED_PATH,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        [TIMESTAMP_HEADER]: timestamp,
+        [SIGNATURE_HEADER]: signWebhook(SECRET, timestamp, raw),
+      },
+      payload: raw,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().status).toBe('purged');
+  });
+
   it('is idempotent per event id: a repeat answers 200 without purging again', async () => {
     const fetchMock = stubAdmin([ALICE]);
     seedUser(database, ALICE, 'replay1');
