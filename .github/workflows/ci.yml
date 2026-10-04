@@ -228,20 +228,20 @@ jobs:
       # Each app has its own app-scoped deploy token (FLY_API_TOKEN: editify-dm, FLY_API_TOKEN_V11: editify-v11).
       - run: flyctl deploy --remote-only -c "$CONFIG" -a "$APP" --build-arg GIT_SHA="$GITHUB_SHA"
         env: { FLY_API_TOKEN: "${{ secrets[needs.target.outputs.token] }}" }
-      # Post-deploy smoke (plan C13): the new build answers /health with this
-      # line and commit, and a protected route still demands credentials.
-      - name: Smoke /health and auth
-        run: |
-          for attempt in $(seq 1 30); do
-            body=$(curl -fsS "$URL/health" || true)
-            if [ "$(echo "$body" | jq -r '.line // empty' 2>/dev/null)" = "$LINE" ] && [ "$(echo "$body" | jq -r '.commit // empty' 2>/dev/null)" = "$GITHUB_SHA" ]; then
-              echo "$URL/health: $body"; break
-            fi
-            [ "$attempt" = 30 ] && { echo "::error::$URL/health is not line $LINE at $GITHUB_SHA: $body"; exit 1; }
-            sleep 10
-          done
-          status=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: application/json' "$URL/projects")
-          [ "$status" = 401 ] || { echo "::error::GET $URL/projects without credentials answered $status, not 401"; exit 1; }
+      # Post-deploy smoke (plan C13, scripts/deploy-smoke.sh): /health names this
+      # line and commit, /client-config serves the update gate, GET /projects
+      # without credentials is 401, signed in as the smoke user (SMOKE_EMAIL /
+      # SMOKE_PASSWORD, skipped with a warning when unset) /projects and, with
+      # Postgres sync, /sync/projects are 200, and the app has its secrets.
+      - name: Smoke the deployed app
+        run: ./scripts/deploy-smoke.sh
+        env:
+          COMMIT: ${{ github.sha }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          FLY_API_TOKEN: "${{ secrets[needs.target.outputs.token] }}"
+          # Missing Fly secrets warn while editify-v11 is provisioned; '1' fails the deploy on them.
+          STRICT_SECRETS: '0'
   # Every merge reaches preview installs. The fingerprint action compares the
   # native fingerprint against existing EAS builds: JS-only changes go out as an
   # OTA update on the preview channel, and a native change starts a new iOS
