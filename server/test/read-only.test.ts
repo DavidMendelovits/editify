@@ -164,6 +164,7 @@ describe('READ_ONLY=1', () => {
       ['PUT', '/style/analyzer', { analyzer: 'ffmpeg' }],
       ['POST', '/telemetry', { kind: 'feedback' }],
       ['DELETE', '/account', undefined],
+      ['POST', '/webhooks/supabase/user-deleted', { type: 'DELETE', record: { id: ALICE } }],
     ];
     for (const [method, url, payload] of writes) {
       // With and without credentials: the gate runs before auth.
