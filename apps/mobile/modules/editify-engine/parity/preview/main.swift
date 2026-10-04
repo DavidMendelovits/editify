@@ -1239,7 +1239,8 @@ func run() async throws -> [String: Any] {
     /// token, as the policy says; those later refusals say nothing about the deadline).
     func play(offset: Double?) async throws -> [String: Any] {
       let rig = Rig()
-      rig.player.expiryLead = 1
+      // 1.5 s ahead of the token's 2.5 s: the margin a loaded main thread has to act.
+      rig.player.expiryLead = 1.5
       try await rig.apply(try decode(base, revision: 1, buildSeq: 1), media: refs(server.token(expiresIn: 2.5)), tokenClockOffset: offset)
       _ = try await rig.frame(at: 0, fps: 30)
       let playing = CFAbsoluteTimeGetCurrent()
