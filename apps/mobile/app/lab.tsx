@@ -178,6 +178,8 @@ export default function LabScreen() {
     <Screen>
       <Text style={styles.title}>Capability lab</Text>
       <Text style={styles.body}>Release build, cool phone, battery over 50%, Low Power off. Each spike runs {RUNS_REQUIRED} times.</Text>
+      {/* What the composition root picked (D5): the adapter set a run measured. */}
+      <Text style={styles.body}>{JSON.stringify(engine.capabilities?.() ?? engine.exportCapabilities())}</Text>
 
       <View style={styles.row}>
         <Button secondary onPress={() => pick('local')}>{slots.local ? 'Local clip ✓' : 'Pick local clip'}</Button>

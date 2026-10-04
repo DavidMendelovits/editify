@@ -56,6 +56,14 @@ struct AnalyzerSpike: Spike {
         await stage("words") {
           let result = await EngineAdapters.current.transcriber.words(speech, locale: .current, allowModelDownload: true, progress: report, gate: nil)
           metrics["wordsAdapter"] = result.analyzerVersion
+          metrics["wordsStatus"] = result.status
+          if let error = result.error { metrics["wordsError"] = error }
+          // What was heard, and the words near SFSpeech's first chunk seam (48-50 s), to read
+          // the overlap dedupe off a run.
+          let words = (result.data?["words"] as? [[String: Any]]) ?? []
+          metrics["transcript"] = ((result.data?["segments"] as? [[String: Any]]) ?? []).compactMap { $0["text"] as? String }.joined(separator: " ")
+          metrics["wordsNearSeam"] = words.filter { (($0["s"] as? Double) ?? 0) >= 45 && (($0["s"] as? Double) ?? 0) <= 53 }
+            .map { "\($0["w"] ?? "")@\($0["s"] ?? "")" }.joined(separator: " ")
           metrics["wordsReady"] = result.status == "ready"
           metrics["wordCount"] = ((result.data?["words"] as? [Any])?.count ?? 0)
           metrics["segmentCount"] = ((result.data?["segments"] as? [Any])?.count ?? 0)
