@@ -14,6 +14,7 @@ The importer for release/1.1 plan tasks T9 and T16 (decisions D14, D15, C3, C6, 
  BEFORE LAUNCH
    MUTATION_JOURNAL=1 on editify-dm (C19; off in production until set) ─▶ measure, size editify_v11_data at 1.5x (C11)
    beta: snapshot ─▶ import --user <email> (tag beta_copy, C8/C18) ─▶ dry-run --user <email>
+   submit 1.1: TEST_SERVER=0 secret on editify-v11 (hides the TestFlight banner from App Review)
  LAUNCH
    snapshot (J = newest journal id in it) ─▶ copy --all (verified, space-checked) ─▶ import --all
      (per user, one transaction: beta_copy rows out, 1.0 rows in, only if all their files verified)
@@ -22,6 +23,7 @@ The importer for release/1.1 plan tasks T9 and T16 (decisions D14, D15, C3, C6, 
    ─▶ drain 1.0 ─▶ restart writable (WAL checkpoint) ─▶ READ_ONLY=1 on editify-dm (C20)
    ─▶ delta (fresh snapshot, new media copied, journal id > J replayed) ─▶ dry-run --all = 0 diffs
    ─▶ /client-config minVersion=1.1.0 on editify-dm (C16/C17)
+   ─▶ drop TEST_SERVER from fly.v11.toml when it folds into fly.toml (C14)
  AFTER: recovery is forward (C22). Un-freezing 1.0 is only a pre-release no-go.
 ```
 
@@ -206,6 +208,8 @@ fly ssh console -a editify-v11 -C "tail -f /data/cutover/copy.log"
    Exit 3 means some file did not verify and nothing was replayed: `failures` lists them (reasons start with `delta:`). Re-run `delta`; it clears its own failures, copies again and replays. Do not run `import --all` to clear them.
 
 9. Gate 1.0: set `/client-config` minVersion to 1.1.0 on editify-dm (T14, C16/C17). Then the C14 follow-ups (merge release/1.1 into main).
+
+   editify-v11 must not call itself a test server from here on. `TEST_SERVER = "1"` in fly.v11.toml makes `/client-config` send `testServer: true`, and 1.1 TestFlight builds (and App Review installs, which also carry a sandbox receipt) show the "separate test server" banner while it does. Before submitting 1.1 for review, `fly secrets set TEST_SERVER=0 -a editify-v11` (a secret overrides `[env]`); when fly.v11.toml folds into fly.toml (C14), leave TEST_SERVER out. `curl -s https://editify-v11.fly.dev/client-config` must not contain `testServer`.
 
 `cutover.ts status` prints the current snapshot, J and how far the delta replayed.
 

@@ -4,12 +4,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Application from 'expo-application';
 import { EditifyEngine } from '../../modules/editify-engine';
 import { API_URL } from '../lib/api';
+import { fetchClientConfig } from '../lib/client-config';
 import {
-  isTestFlight, serverLine, shouldShowTestBanner, TEST_BANNER_DISMISSED_KEY, TEST_BUILD_BANNER_TEXT,
+  isTestFlight, shouldShowTestBanner, TEST_BANNER_DISMISSED_KEY, TEST_BUILD_BANNER_TEXT,
 } from '../lib/test-build-banner';
 import { colors, fonts, radius, space, type } from '../lib/theme';
 
-const HEALTH_TIMEOUT_MS = 5000;
 /**
  * `EXPO_PUBLIC_TEST_BANNER=force` (a local build's env, never set in eas.json) shows it on any
  * build, for simulator screenshots.
@@ -24,17 +24,13 @@ async function readDismissed(): Promise<boolean> {
   }
 }
 
-async function fetchHealth(): Promise<unknown> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${API_URL}/health`, { signal: controller.signal });
-    return response.ok ? await response.json() : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+/**
+ * Whether this build's server says it is a pre-cutover test server; false on any failure.
+ * Failures aren't logged here: the update gate (use-client-gate) already logs this same fetch.
+ */
+async function onTestServer(): Promise<boolean> {
+  const config = await fetchClientConfig(API_URL, () => undefined);
+  return config?.testServer === true;
 }
 
 async function testFlightBuild(): Promise<boolean> {
@@ -57,8 +53,8 @@ function useTestBanner(): [boolean, () => void] {
       if (dismissed) return;
       if (FORCE) { if (active) setShow(true); return; }
       if (!(await testFlightBuild())) return;
-      const line = serverLine(await fetchHealth(), API_URL);
-      if (active) setShow(shouldShowTestBanner({ testFlight: true, line, dismissed }));
+      const testServer = await onTestServer();
+      if (active) setShow(shouldShowTestBanner({ testFlight: true, testServer, dismissed }));
     })();
     return () => { active = false; };
   }, []);

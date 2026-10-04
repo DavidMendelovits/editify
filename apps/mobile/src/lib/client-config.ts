@@ -16,6 +16,8 @@ export interface ClientConfig {
   storeUrl: string;
   /** The iOS floor of `latestVersion`. Servers always send it now; absent (an older server) means the 1.1 floor below. */
   minOs?: string;
+  /** True only on a pre-cutover test server (editify-v11 before launch): TestFlight builds show the test banner. */
+  testServer?: true;
 }
 
 /** Editify 1.1 needs iOS 18; a server that does not say otherwise means that. */
@@ -54,7 +56,7 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 | null {
 /** The response, or null for anything that is not one. */
 export function parseClientConfig(value: unknown): ClientConfig | null {
   if (!value || typeof value !== 'object') return null;
-  const { minVersion, latestVersion, storeUrl, minOs } = value as Record<string, unknown>;
+  const { minVersion, latestVersion, storeUrl, minOs, testServer } = value as Record<string, unknown>;
   if (typeof minVersion !== 'string' || !parts(minVersion)) return null;
   if (typeof storeUrl !== 'string' || !/^https?:\/\//.test(storeUrl)) return null;
   const latest = typeof latestVersion === 'string' && parts(latestVersion) ? latestVersion : minVersion;
@@ -63,6 +65,7 @@ export function parseClientConfig(value: unknown): ClientConfig | null {
     latestVersion: latest,
     storeUrl,
     ...(typeof minOs === 'string' && parts(minOs) ? { minOs } : {}),
+    ...(testServer === true ? { testServer: true as const } : {}),
   };
 }
 

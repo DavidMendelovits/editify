@@ -14,6 +14,11 @@ primary_region = "sjc"
   LINE = "1.1"
   # The 1.1 line's sync tables live in the v11 Postgres schema (plan D3).
   DATABASE_SCHEMA = "v11"
+  # Pre-cutover test server: /client-config says testServer, and 1.1 TestFlight builds show
+  # the "separate test server" banner (C8, C18). App Review installs count as TestFlight, so
+  # `fly secrets set TEST_SERVER=0 -a editify-v11` (a secret overrides [env]) before submitting
+  # 1.1, and drop this line at cutover (RUNBOOK).
+  TEST_SERVER = "1"
 
 [http_service]
   internal_port = 3001

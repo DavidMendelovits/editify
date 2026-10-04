@@ -85,6 +85,14 @@ describe('GET /client-config', () => {
     expect(readClientConfig({ MIN_IOS_VERSION: ' ' }).minOs).toBe('18.0');
     expect(readClientConfig({ MIN_IOS_VERSION: '19.2' }).minOs).toBe('19.2');
   });
+
+  it('says testServer only while TEST_SERVER=1 (editify-v11 before cutover), and omits it otherwise', () => {
+    expect(readClientConfig({ TEST_SERVER: '1' }).testServer).toBe(true);
+    expect(readClientConfig({ TEST_SERVER: ' 1 ' }).testServer).toBe(true);
+    for (const off of [{}, { TEST_SERVER: '0' }, { TEST_SERVER: '' }, { TEST_SERVER: 'true' }]) {
+      expect(readClientConfig(off)).not.toHaveProperty('testServer');
+    }
+  });
 });
 
 describe('GET /renders', () => {
