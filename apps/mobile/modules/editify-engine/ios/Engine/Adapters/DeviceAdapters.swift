@@ -82,6 +82,10 @@ struct SystemDeviceProfile: DeviceProfile {
   var thermalState: ProcessInfo.ThermalState { ProcessInfo.processInfo.thermalState }
   var thermalName: String { Sampler.thermalName() }
   var physicalMemoryBytes: UInt64 { ProcessInfo.processInfo.physicalMemory }
+  /// Read once per process: the tier never changes while the app runs.
+  var tier: DeviceTier { Self.tier }
+  static let tier: DeviceTier = AdapterSelection.launchTierOverride
+    ?? TierPolicy.provisional.tier(physicalMemory: ProcessInfo.processInfo.physicalMemory)
   var osVersion: String { ProcessInfo.processInfo.operatingSystemVersionString }
   var model: String { Sampler.deviceModel() }
 

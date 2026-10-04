@@ -9,9 +9,9 @@
 /** Flags every harness build passes. Release app builds never set this condition. */
 export const ADAPTER_FLAGS = ['-D', 'EDITIFY_TEST_ADAPTERS'];
 
-/** The composition root's selection plus both VideoComposition adapters (paths under ios/, no extension). */
+/** The composition root's selection (with the RAM tier it can override) plus both VideoComposition adapters (paths under ios/, no extension). */
 export const ADAPTER_SOURCES = [
-  'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/AdapterSelection',
+  'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Core/TierPolicy', 'Engine/AdapterSelection',
   'Engine/Adapters/ConfigurationVideoComposition', 'Engine/Adapters/MutableVideoComposition',
 ];
 

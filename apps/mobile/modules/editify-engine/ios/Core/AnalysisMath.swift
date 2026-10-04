@@ -33,6 +33,51 @@ public enum AnalysisMath {
     return levels
   }
 
+  /// `energy` over a stream (the low tier's chunked decode, D25): buffers of any size go in,
+  /// the same 50 ms levels come out, holding at most one cell of samples. Each full cell is
+  /// measured over the same contiguous samples as `energy` does, so the levels are identical.
+  public struct EnergyStream {
+    private let cell: Int
+    private var pending: [Float] = []
+    public private(set) var levels: [Double] = []
+    public private(set) var sampleCount = 0
+
+    public init(sampleRate: Int) {
+      cell = Int((Double(sampleRate) * energyCellSeconds).rounded())
+      pending.reserveCapacity(max(0, cell))
+    }
+
+    public mutating func append(_ samples: [Float]) {
+      guard cell > 0 else { return }
+      sampleCount += samples.count
+      var start = 0
+      if !pending.isEmpty {
+        let take = min(cell - pending.count, samples.count)
+        pending.append(contentsOf: samples[0..<take])
+        start = take
+        if pending.count == cell { measure(pending); pending.removeAll(keepingCapacity: true) }
+      }
+      while samples.count - start >= cell {
+        measure(Array(samples[start..<(start + cell)]))
+        start += cell
+      }
+      if start < samples.count { pending.append(contentsOf: samples[start...]) }
+    }
+
+    /// The levels, with the trailing partial cell (as `energy` keeps it).
+    public mutating func finish() -> [Double] {
+      if !pending.isEmpty { measure(pending); pending.removeAll() }
+      return levels
+    }
+
+    private mutating func measure(_ cellSamples: [Float]) {
+      var rms: Float = 0
+      cellSamples.withUnsafeBufferPointer { vDSP_rmsqv($0.baseAddress!, 1, &rms, vDSP_Length(cellSamples.count)) }
+      let db = rms > 0 ? 20 * log10(Double(rms)) : silentDb
+      levels.append((max(silentDb, db) * 100).rounded() / 100)
+    }
+  }
+
   /// Local maxima of linear energy above the 85th percentile, at least 0.25 s
   /// apart: a port of `onsetPeaks` in server/src/services/dissect-service.ts
   /// (the beats cut_to_beats lands on).

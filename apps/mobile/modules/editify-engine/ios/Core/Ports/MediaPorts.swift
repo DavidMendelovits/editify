@@ -29,10 +29,13 @@ public protocol MediaSource<Asset>: PortAdapter {
   func requestPhotosAccess() async -> String
 }
 
-/// The whole recording as mono Float32 at `rate`.
+/// The recording as mono Float32 at `rate`: whole, or streamed buffer by buffer.
 public protocol AudioDecoder<Asset>: PortAdapter {
   associatedtype Asset
   func decodeMono(_ asset: Asset, rate: Double, progress: AnalyzerProgress?) async throws -> [Float]
+  /// Hands each decoded buffer to `each` and keeps none (the low tier's chunked decode, D25);
+  /// answers the number of samples read.
+  func streamMono(_ asset: Asset, rate: Double, progress: AnalyzerProgress?, each: @escaping @Sendable ([Float]) -> Void) async throws -> Int
 }
 
 /// Laughter spans with confidence (the `laughter` part).

@@ -38,6 +38,10 @@ struct AssetReaderAudioDecoder: AudioDecoder {
   func decodeMono(_ asset: AVAsset, rate: Double, progress: AnalyzerProgress?) async throws -> [Float] {
     try await Analyzers.decodeMono(asset, rate: rate, progress: progress)
   }
+
+  func streamMono(_ asset: AVAsset, rate: Double, progress: AnalyzerProgress?, each: @escaping @Sendable ([Float]) -> Void) async throws -> Int {
+    try await Analyzers.streamMono(asset, rate: rate, progress: progress, each: each)
+  }
 }
 
 /// SoundClassifier adapter: SoundAnalysis' built-in classifier.
@@ -58,12 +62,14 @@ struct VisionFaceDetector: FaceDetector {
   }
 }
 
-/// Proxy adapter: the AVAssetWriter proxy pipeline.
+/// Proxy adapter: the AVAssetWriter proxy pipeline, at most the RAM tier's short side (TierCaps:
+/// 1080, 540 on a low-tier phone, D25).
 struct WriterProxy: Proxy {
+  var maxShortSide: Double = Double(ProxyPipeline.maxShortSide)
   var name: String { "writer" }
 
   func make(_ asset: AVAsset, to output: URL, progress: AnalyzerProgress?) async throws -> [String: Any] {
-    try await ProxyPipeline.make(asset, to: output, progress: progress)
+    try await ProxyPipeline.make(asset, to: output, maxShortSide: CGFloat(maxShortSide), progress: progress)
   }
 
   func makeStyleProxy(_ asset: AVAsset, maxHeight: Double) async throws -> [String: Any] {

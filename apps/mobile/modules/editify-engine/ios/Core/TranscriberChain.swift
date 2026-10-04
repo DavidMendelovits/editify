@@ -10,9 +10,12 @@ import Foundation
 ///     │    installed, or installable now (allowModelDownload) ── no ─▶ next
 ///     │    └─ yes ─ model download fails ─▶ next (TranscriberIneligible; no `unavailable`, no loop)
 ///     │           └─ ok ─▶ FinalResult[] ──────────────────────────────────────────────┐
-///     ├─ SFSpeech on-device: eligible? recognizer for the locale + on-device support ─ no ─▶ next
-///     │    └─ yes ─ speech permission? (SpeechAuthorization)                            │
-///     │           ├─ notDetermined ─▶ request (the first words run asks)                │
+///     ├─ SFSpeech on-device: speech permission first (SpeechAuthorization; requested only with
+///     │    asksForSpeech), then eligible? recognizer for the locale + on-device support ─ no ─▶ next
+///     │    └─ permission:                                                                │
+///     │           ├─ notDetermined ─▶ unavailable(code speechRecognitionNotAsked): the   │
+///     │           │                   app's pre-prompt sheet asks, with Editify in front │
+///     │           │                   (C15), and JS re-queues the part once granted      │
 ///     │           ├─ denied / restricted ─▶ unavailable("Speech recognition is off      │
 ///     │           │                          for Editify", code speechRecognitionOff)   │
 ///     │           └─ authorized ─▶ 50 s chunks, 2 s overlap, 2 retries per chunk        │
@@ -37,15 +40,20 @@ public final class TranscriberChain<Asset>: @unchecked Sendable {
   private let lock = NSLock()
   private var ran: String?
   private let remember: (@Sendable (String) -> Void)?
+  /// False (the app): a words run never shows the speech prompt; an unanswered permission
+  /// comes back `speechRecognitionNotAsked` and the C15 sheet asks with Editify in front.
+  /// True only for a caller that is known to run in the foreground.
+  public let asksForSpeech: Bool
 
   /// `lastRan`: the adapter that ran last in an earlier process, `remember` stores a new one.
   public init(_ links: [Link], authorization: any SpeechAuthorization, trigger: @escaping @Sendable () -> String,
-              lastRan: String? = nil, remember: (@Sendable (String) -> Void)? = nil) {
+              lastRan: String? = nil, remember: (@Sendable (String) -> Void)? = nil, asksForSpeech: Bool = false) {
     self.links = links
     self.authorization = authorization
     self.trigger = trigger
     self.ran = lastRan
     self.remember = remember
+    self.asksForSpeech = asksForSpeech
   }
 
   /// The adapters by name, in the order they are tried.
@@ -67,21 +75,25 @@ public final class TranscriberChain<Asset>: @unchecked Sendable {
     var reasons: [String] = []
     let trigger = currentTrigger
     for link in links {
-      if case .ineligible(let reason) = await link.eligibility(locale: locale, allowModelDownload: allowModelDownload) {
-        reasons.append(reason)
-        continue
-      }
       if link.requiresSpeechAuthorization {
+        // Before eligibility: without the permission SFSpeech can't run (and the system may not
+        // fetch its on-device model), and the actionable answer is the Settings link (D21).
+        // No prompt by default: a words run can start with Editify in the background, where the
+        // system prompt can't be answered. Not asked yet means the pre-prompt sheet asks (C15).
         var status = authorization.status
-        if status == .notDetermined { status = await authorization.request() }
+        if status == .notDetermined, asksForSpeech { status = await authorization.request() }
         guard status == .authorized else {
-          // Denied, restricted, or a prompt that came back unanswered: the user decides, not a retry.
+          // Denied, restricted, or never asked: the user decides, not a retry.
           let asked = status != .notDetermined
           var result = PartResult.unavailable(link.wordsVersion, asked ? SpeechAuthorizationMessage.off : SpeechAuthorizationMessage.notAsked)
           result.code = asked ? SpeechAuthorizationMessage.offCode : SpeechAuthorizationMessage.notAskedCode
           result.trigger = trigger
           return result
         }
+      }
+      if case .ineligible(let reason) = await link.eligibility(locale: locale, allowModelDownload: allowModelDownload) {
+        reasons.append(reason)
+        continue
       }
       var result: PartResult
       do {
@@ -113,10 +125,10 @@ public enum SpeechAuthorizationMessage {
   public static let off = "Speech recognition is off for Editify"
   /// `code` on that part: JS shows a Settings link for it.
   public static let offCode = "speechRecognitionOff"
-  /// The reason when the prompt could not be answered.
+  /// The reason when the user hasn't answered the speech prompt yet.
   public static let notAsked = "Editify needs permission to recognize speech"
-  /// `code` when the prompt could not be answered (asked while Editify was not in front): JS
-  /// asks again with requestSpeechAuthorization.
+  /// `code` when the user hasn't answered yet: JS's pre-prompt sheet asks with
+  /// requestSpeechAuthorization and re-queues the part on `authorized`.
   public static let notAskedCode = "speechRecognitionNotAsked"
 }
 
