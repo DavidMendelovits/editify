@@ -20,6 +20,7 @@ enum Spikes {
     case "S3": return EditSpike()
     case "S6": return SourcesSpike()
     case "S10": return ProxySpike()
+    case "S11": return AnalyzerSpike()
     default: throw SpikeError(message: "Spike \(id) is not built yet")
     }
   }

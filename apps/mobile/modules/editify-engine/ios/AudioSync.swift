@@ -37,6 +37,9 @@ enum AudioSync {
     let driftSec: Double?
     let overlapSec: Double
     let windows: [FineMatch]
+    /// Whether the fine stage replaced the 10 ms coarse lag (not in sync.ts's result; the
+    /// lab uses it to know how close two measurements of the same pair should agree).
+    let fineLocked: Bool
   }
 
   struct Silent: Error, LocalizedError {
@@ -85,7 +88,7 @@ enum AudioSync {
       lag: first != nil && fineLocked ? first!.lag : coarseLagSec,
       anchor: first != nil && fineLocked ? first!.at : max(0, coarseLagSec),
       rate: rate, coarseRatio: coarse.ratio, fineScore: fineScore, confident: confident,
-      driftSec: driftSec, overlapSec: Double(overlap) / Double(sampleRate), windows: windows)
+      driftSec: driftSec, overlapSec: Double(overlap) / Double(sampleRate), windows: windows, fineLocked: fineLocked)
   }
 
   /// Half-wave-rectified change in log energy per 10 ms cell, z-normalised.

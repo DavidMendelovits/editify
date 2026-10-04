@@ -31,6 +31,29 @@ describe('evaluate', () => {
     expect(result.metrics.find((m) => m.metric === 'thermalEnd')).toMatchObject({ median: 'fair', worst: 'serious', worstPass: false });
   });
 
+  it('judges the analyzer pipeline (S11) on readiness, found faces and a real memo pair landing in sync', () => {
+    const metrics = { readyRealtimeFactor: 9, wordsReady: true, laughterReady: true, facesReady: true, facesFound: true, syncSelfCheck: false, syncFineLocked: true, syncParity: true };
+    const pipeline = { spike: 'S11' as const, variant: 'pipeline', metrics };
+    expect(evaluate(runs([pipeline, pipeline, pipeline]))[0]!.verdict).toBe('go');
+    const noModel = { ...pipeline, metrics: { ...metrics, wordsReady: false } };
+    expect(evaluate(runs([noModel, noModel, pipeline]))[0]!.verdict).toBe('no-go');
+    const blindFaces = { ...pipeline, metrics: { ...metrics, facesFound: false } };
+    expect(evaluate(runs([blindFaces, blindFaces, blindFaces]))[0]!.verdict).toBe('no-go');
+    const selfCheck = { ...pipeline, metrics: { ...metrics, syncSelfCheck: true } };
+    expect(evaluate(runs([selfCheck, selfCheck, selfCheck]))[0]!.verdict).toBe('no-go');
+    const offSync = { ...pipeline, metrics: { ...metrics, syncParity: false } };
+    expect(evaluate(runs([offSync, offSync, pipeline]))[0]!.verdict).toBe('no-go');
+    const coarseOnly = { ...pipeline, metrics: { ...metrics, syncFineLocked: false } };
+    expect(evaluate(runs([coarseOnly, coarseOnly, coarseOnly]))[0]!.verdict).toBe('no-go');
+  });
+
+  it('gives the S11 scheduler arm its own verdict on pauseHeld', () => {
+    const held = { spike: 'S11' as const, variant: 'scheduler', metrics: { pauseHeld: true, partsFailed: 0 } };
+    expect(evaluate(runs([held, held, held]))[0]).toMatchObject({ verdict: 'go', metrics: [{ metric: 'pauseHeld' }, { metric: 'partsFailed' }] });
+    const leaked = { ...held, metrics: { pauseHeld: false, partsFailed: 0 } };
+    expect(evaluate(runs([leaked, leaked, held]))[0]!.verdict).toBe('no-go');
+  });
+
   it('needs three ok runs before judging', () => {
     const result = evaluate(runs([{}, {}]))[0]!;
     expect(result.verdict).toBe('insufficient');
