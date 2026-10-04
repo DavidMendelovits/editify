@@ -26,7 +26,7 @@ import { z, ZodError, type ZodTypeAny } from 'zod';
 import type { AssetStore, StoredAsset } from '../db/asset-store.js';
 import { ProjectStore, VersionConflictError } from '../db/project-store.js';
 import type { RenderStore } from '../db/render-store.js';
-import type { StoredTranscript, TranscriptWord } from '../db/transcript-store.js';
+import type { EnergyAnalysis, StoredTranscript, TranscriptWord } from '../db/transcript-store.js';
 import { DEFAULT_CAPTION_STYLE, planCaptionPlacements, placeableCaption, PLATFORM_SAFE_AREAS, type PlaceableCaption } from '../media/safezone.js';
 import { ensureSoundLibrary } from '../media/sound-library.js';
 import { OperationError } from '../operations/apply.js';
@@ -67,6 +67,8 @@ export interface ToolContext {
   styleDoc: string | null;
   currentVersion: number;
   transcripts: Pick<TranscriptService, 'get' | 'transcribe' | 'ensureEnergy'>;
+  /** Loudness curves known without a transcript (a stateless turn's bundle); check_mix reads these before measuring. */
+  energyOf?: (assetId: string) => EnergyAnalysis | undefined;
   insights: Pick<InsightService, 'getOrCreate'>;
   dissections?: Pick<DissectService, 'getOrCreate'>;
   syncs?: Pick<SyncService, 'plan'>;
@@ -982,11 +984,16 @@ async function assembleTakes(ctx: ToolContext, rawInput: unknown): Promise<unkno
   }
 }
 
+/** What check_mix judges from: curves already in hand first, then measured from the file. */
+async function mixEnergy(ctx: ToolContext, project: Project) {
+  return await loadProjectEnergy(project, ctx.assets, (assetId) => ctx.energyOf?.(assetId) ?? ctx.transcripts.get(assetId)?.energy);
+}
+
 async function checkMixTool(ctx: ToolContext, rawInput: unknown): Promise<unknown> {
   try {
     const input = checkMixSchema.parse(rawInput);
     const project = requireProject(ctx);
-    const report = checkMix(project, await loadProjectEnergy(project, ctx.assets, ctx.transcripts));
+    const report = checkMix(project, await mixEnergy(ctx, project));
     const summary = { ...report, hits: report.hits.slice(0, 40), beds: report.beds.slice(0, 10) };
     if (!input.fix) return { ok: true, readOnly: true, ...summary };
     const updates = [...report.hits, ...report.beds]
@@ -994,7 +1001,7 @@ async function checkMixTool(ctx: ToolContext, rawInput: unknown): Promise<unknow
       .map((hit) => ({ clipId: hit.clipId, volume: hit.suggestedVolume as number }));
     if (!updates.length) return { ...createMutationDelta(project, project, ['Every sound already sat on its level target.']), ...summary };
     const after = applyMany(ctx, [operationSchema.parse({ type: 'set_clip_properties', params: { updates } })]);
-    const recheck = checkMix(after, await loadProjectEnergy(after, ctx.assets, ctx.transcripts));
+    const recheck = checkMix(after, await mixEnergy(ctx, after));
     return { ...createMutationDelta(project, after), rebalanced: updates.length, warnings: recheck.warnings, voiceReferenceDb: recheck.voiceReferenceDb };
   } catch (error) {
     if (error instanceof OperationError || error instanceof ZodError || error instanceof VersionConflictError) return { ok: false, error: error.message };
