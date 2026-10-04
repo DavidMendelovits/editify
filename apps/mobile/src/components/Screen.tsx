@@ -1,4 +1,4 @@
-import type { PropsWithChildren, ReactNode } from 'react';
+import { createContext, useRef, type PropsWithChildren, type ReactNode, type RefObject } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, space } from '../lib/theme';
@@ -9,6 +9,13 @@ interface Props {
   /** Editor chrome: drop the reading-width cap and tighten the padding. */
   bleed?: boolean;
 }
+
+/**
+ * The screen's own ScrollView, or null when the screen does not scroll (the
+ * wide editor). UIKit only lifts the focused caret above the keyboard, so a
+ * field that needs its surroundings in view too (the chat composer) asks here.
+ */
+export const ScreenScroll = createContext<RefObject<ScrollView | null> | null>(null);
 
 /**
  * Every screen's shell, and the one place the software keyboard is handled.
@@ -28,6 +35,7 @@ interface Props {
  */
 export function Screen({ children, scroll = true, header, bleed = false }: PropsWithChildren<Props>) {
   const insets = useSafeAreaInsets();
+  const scroller = useRef<ScrollView>(null);
   // SafeAreaView below claims the top and the sides. The bottom is left to the
   // content padding so a scrolling screen keeps scrolling under the home
   // indicator rather than ending in a dead band above it.
@@ -37,12 +45,13 @@ export function Screen({ children, scroll = true, header, bleed = false }: Props
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       {scroll ? (
         <ScrollView
+          ref={scroller}
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           automaticallyAdjustKeyboardInsets
         >
-          {content}
+          <ScreenScroll.Provider value={scroller}>{content}</ScreenScroll.Provider>
         </ScrollView>
       ) : (
         <KeyboardAvoidingView style={styles.safe} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>

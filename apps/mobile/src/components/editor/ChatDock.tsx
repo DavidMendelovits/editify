@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useContext, useEffect, useRef, useState } from 'react';
+import { Keyboard, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { AgentActivity } from '../AgentActivity';
 import { AgentTrace } from '../AgentTrace';
 import { PresetPicker } from '../PresetPicker';
+import { ScreenScroll } from '../Screen';
 import { Markdown } from './Markdown';
 import { api, rebaseServerUrl, type ChatMessage, type RenderRecord } from '../../lib/api';
 import { receiptItems, type AgentTraceStep } from '../../lib/agent';
@@ -46,6 +47,9 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
   const [suggestion, setSuggestion] = useState<{ original: string; improved: string; changes: string[] }>();
   const [improving, setImproving] = useState(false);
   const scroller = useRef<ScrollView>(null);
+  const screenScroll = useContext(ScreenScroll);
+  const composerBlock = useRef<View>(null);
+  const composing = useRef(false);
   const lastUserMessage = [...(messages ?? [])].reverse().find((message) => message.role === 'user')?.content;
 
   function draft(next: string): void {
@@ -71,6 +75,25 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
       .catch(() => dispatch(message))
       .finally(() => setImproving(false));
   }
+
+  // Stacked on iOS, UIKit lifts only the caret above the keyboard, leaving the
+  // composer's border and the error line under it (issue #111). Once the
+  // keyboard is up, lift the whole block clear. Wide mode has no screen scroll
+  // (its KeyboardAvoidingView already does this) and Android resizes instead.
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || !screenScroll) return;
+    const subscription = Keyboard.addListener('keyboardDidShow', () => {
+      const scroll = screenScroll.current;
+      const block = composerBlock.current;
+      if (!composing.current || !scroll || !block) return;
+      // The helper assumes the scroll view starts at the top of the window, so
+      // its real top goes in the offset, plus a little air above the keyboard.
+      scroll.getNativeScrollRef()?.measureInWindow((_x, top) => {
+        scroll.scrollResponderScrollNativeHandleToKeyboard(block, top + space.xl, true);
+      });
+    });
+    return () => subscription.remove();
+  }, [screenScroll]);
 
   return (
     <View style={styles.panel}>
@@ -139,7 +162,7 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
       </View>
       {/* The keyboard is handled by Screen: stacked, this dock sits in the
           screen's scroll view, and wide it sits in its KeyboardAvoidingView. */}
-      <View style={styles.composerLayer}>
+      <View ref={composerBlock} style={styles.composerLayer}>
         {suggestion && (
           <ImprovedPrompt
             suggestion={suggestion}
@@ -153,6 +176,8 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
           <TextInput
             value={text}
             onChangeText={draft}
+            onFocus={() => { composing.current = true; }}
+            onBlur={() => { composing.current = false; }}
             onSubmitEditing={send}
             blurOnSubmit
             placeholder="Describe an edit…"
@@ -171,8 +196,8 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
             <Text style={styles.sendText}>↑</Text>
           </Pressable>
         </View>
+        {error && <Text style={styles.error}>{error}</Text>}
       </View>
-      {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
 }
