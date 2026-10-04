@@ -22,6 +22,12 @@ export interface ClientConfig {
    * Absent everywhere else, so a 1.1 build on the launched server never shows it.
    */
   testServer?: true;
+  /**
+   * The native preview's kill switch: sent (false) only while NATIVE_PREVIEW=0, a
+   * `fly secrets set NATIVE_PREVIEW=0 -a editify-v11` away. It turns the preview off on builds
+   * whose profile turned it on (preview-1.1, decision D2); it never turns it on.
+   */
+  nativePreview?: false;
 }
 
 export const DEFAULT_MIN_VERSION = '1.0.0';
@@ -61,6 +67,7 @@ export function readClientConfig(env: NodeJS.ProcessEnv = process.env, warn: (me
     storeUrl: storeUrl(env.APP_STORE_URL, warn),
     minOs: version(env.MIN_IOS_VERSION, DEFAULT_MIN_OS, 'MIN_IOS_VERSION', warn),
     ...(env.TEST_SERVER?.trim() === '1' ? { testServer: true as const } : {}),
+    ...(env.NATIVE_PREVIEW?.trim() === '0' ? { nativePreview: false as const } : {}),
   };
 }
 

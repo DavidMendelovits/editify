@@ -28,9 +28,11 @@ import { mediaGeometry, mediaKindOf, resolveMedia, type MediaDeps, type MediaGeo
 // ─── Routing ───
 
 /**
- * The `nativePreview` flag: EXPO_PUBLIC_NATIVE_PREVIEW=1 in the build's environment. Default
- * off until P7's phone numbers pass. Read with a literal `process.env.EXPO_PUBLIC_...` so
- * Expo inlines it.
+ * The `nativePreview` flag: EXPO_PUBLIC_NATIVE_PREVIEW=1 in the build's environment. On in the
+ * preview-1.1 eas.json profile only (builds, and CI's OTA updates, which export that profile's
+ * env); off everywhere else until P7's phone numbers pass. The server can still switch it off
+ * (`nativePreview: false` in /client-config, see nativePreviewEnabled). Read with a literal
+ * `process.env.EXPO_PUBLIC_...` so Expo inlines it.
  */
 export const NATIVE_PREVIEW_FLAG = process.env.EXPO_PUBLIC_NATIVE_PREVIEW === '1';
 

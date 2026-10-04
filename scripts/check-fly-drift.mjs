@@ -5,6 +5,7 @@
 //   source                 ([[mounts]])
 //   DATABASE_SCHEMA        ([env], and only in fly.v11.toml)
 //   TEST_SERVER            ([env], only in fly.v11.toml, and only until cutover)
+//   RENDER_PLAN            ([env], only in fly.v11.toml: the plan render is on for 1.1, decision D3)
 // Comments and blank lines don't count. Passes when fly.v11.toml is absent (main
 // before the cutover, and after C14 folds it back into fly.toml).
 //
@@ -17,7 +18,7 @@ const VARIES = '<varies by line>';
 // section -> keys whose value may differ between the lines ('' is the top level).
 const ALLOWED = { '': ['app'], env: ['PUBLIC_BASE_URL', 'LINE'], mounts: ['source'] };
 // section -> keys only the 1.1 line has.
-const LINE_ONLY = { env: ['DATABASE_SCHEMA', 'TEST_SERVER'] };
+const LINE_ONLY = { env: ['DATABASE_SCHEMA', 'TEST_SERVER', 'RENDER_PLAN'] };
 
 /**
  * The config as comparable entries: `[section] key = value`, with allowed values
@@ -83,7 +84,7 @@ function main([basePath = 'fly.toml', linePath = 'fly.v11.toml']) {
     return 0;
   }
   const annotate = process.env.GITHUB_ACTIONS === 'true';
-  console.error(`${linePath} drifts from ${basePath}. Only app, PUBLIC_BASE_URL, LINE, the mount source, DATABASE_SCHEMA and TEST_SERVER (1.1 only) may differ:`);
+  console.error(`${linePath} drifts from ${basePath}. Only app, PUBLIC_BASE_URL, LINE, the mount source, and DATABASE_SCHEMA, TEST_SERVER and RENDER_PLAN (1.1 only) may differ:`);
   for (const d of found) {
     const file = d.side === 'base' ? basePath : linePath;
     const msg = `only in ${file}: ${d.text}`;

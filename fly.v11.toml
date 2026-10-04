@@ -19,6 +19,11 @@ primary_region = "sjc"
   # `fly secrets set TEST_SERVER=0 -a editify-v11` (a secret overrides [env]) before submitting
   # 1.1, and drop this line at cutover (RUNBOOK).
   TEST_SERVER = "1"
+  # Decision D3: exports render from the shared RenderPlan (src/media/plan), so "Finish on server"
+  # and the snapshot fallback look like the phone's export. A plan this server can't run (an
+  # ffmpeg without a filter, or over PLAN_RENDER_MEMORY_MB, default 3072) falls back to the legacy
+  # render per export. Rollback: `fly secrets set RENDER_PLAN=0 -a editify-v11`.
+  RENDER_PLAN = "1"
 
 [http_service]
   internal_port = 3001

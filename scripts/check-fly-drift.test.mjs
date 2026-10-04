@@ -23,7 +23,7 @@ test('drift fails and names each offending line', () => {
   assert.deepEqual(found, [
     'base:7 [env] PORT = "3001"',
     'line:7 [env] PORT = "3002"',
-    'line:17 [env] RENDER_PLAN = "1"',
+    'line:17 [env] EXTRA_FLAG = "1"',
     'base:40 [vm] memory = "4gb"',
     'line:43 [vm] memory = "8gb"',
   ]);
@@ -49,6 +49,18 @@ test('TEST_SERVER may only be in the 1.1 file (the pre-cutover test server flag)
   const v11 = 'app = "b"\n[env]\n  TEST_SERVER = "1"\n';
   assert.deepEqual(drift('app = "a"\n[env]\n', v11), []);
   assert.equal(drift('app = "a"\n[env]\n  TEST_SERVER = "1"\n', v11).length, 1);
+});
+
+test('RENDER_PLAN may only be in the 1.1 file (decision D3: the plan render on editify-v11)', () => {
+  const v11 = 'app = "b"\n[env]\n  RENDER_PLAN = "1"\n';
+  assert.deepEqual(drift('app = "a"\n[env]\n', v11), []);
+  assert.equal(drift('app = "a"\n[env]\n  RENDER_PLAN = "1"\n', v11).length, 1);
+  // Only in [env]: the same key elsewhere is drift.
+  assert.equal(drift('app = "a"\n[build]\n', 'app = "b"\n[build]\n  RENDER_PLAN = "1"\n').length, 1);
+});
+
+test('the repo\'s fly.v11.toml turns the plan render on', () => {
+  assert.match(readFileSync(path.join(here, '..', 'fly.v11.toml'), 'utf8'), /^\s*RENDER_PLAN = "1"$/m);
 });
 
 test('a missing allowed key is still drift', () => {

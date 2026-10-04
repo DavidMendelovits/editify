@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Animated, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -25,6 +25,7 @@ import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
 import { useEngineActivity } from '../../src/lib/engine-activity';
 import { NATIVE_PREVIEW_FLAG, previewRoute } from '../../src/lib/native-preview';
+import { latestClientConfig, nativePreviewEnabled, subscribeClientConfig } from '../../src/lib/client-config';
 import { editifyPlayerView } from '../../modules/editify-engine';
 import { api } from '../../src/lib/api';
 import { OptimisticLedger } from '../../src/lib/optimistic';
@@ -138,9 +139,12 @@ export default function EditorScreen() {
   const assets: Record<string, AssetMetadata | undefined> = assetsQuery.data ?? {};
 
   // The native preview (plan P5) behind the `nativePreview` flag, iOS only; web, the flag
-  // off, or a native failure on this screen keep PreviewPlayer.
+  // off (or switched off by the server's /client-config), or a native failure on this screen
+  // keep PreviewPlayer.
   const [nativeFellBack, setNativeFellBack] = useState(false);
-  const previewKind = previewRoute({ platform: Platform.OS, flag: NATIVE_PREVIEW_FLAG, hasView: NATIVE_PREVIEW_FLAG && editifyPlayerView() !== null, fellBack: nativeFellBack });
+  const clientConfig = useSyncExternalStore(subscribeClientConfig, latestClientConfig);
+  const nativeFlag = nativePreviewEnabled(NATIVE_PREVIEW_FLAG, clientConfig);
+  const previewKind = previewRoute({ platform: Platform.OS, flag: nativeFlag, hasView: nativeFlag && editifyPlayerView() !== null, fellBack: nativeFellBack });
   // `clock` is an external store, not state: the playhead ticks at ~60Hz and
   // only the components that draw it subscribe, so this screen does not
   // re-render during playback. With the native preview its player is the clock.
