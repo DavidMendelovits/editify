@@ -8,6 +8,7 @@ import { track } from '../lib/telemetry';
 import { formatMegabytes } from '../lib/agent';
 import { pickFromFiles, pickFromPhotos, uploadFiles, type PickResult } from '../lib/pick';
 import { describeImport, importFraction, type ImportProgress } from '../lib/upload-progress';
+import { usePresentedModal } from '../lib/modal-presence';
 import { ProgressBar } from './ProgressBar';
 
 type ImportState = 'queued' | 'importing' | 'done' | 'error';
@@ -30,6 +31,7 @@ interface Props {
  * slow on big files); extra taps queue up behind the running one.
  */
 export function ImportSheet({ projectId, visible, onClose, onImported }: Props) {
+  usePresentedModal(visible); // the speech pre-prompt waits until this sheet is gone
   const files = useQuery({ queryKey: ['importable'], queryFn: () => api.listImportable(), enabled: visible && IS_LOCAL_API });
   const [states, setStates] = useState<Record<string, ImportState>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});

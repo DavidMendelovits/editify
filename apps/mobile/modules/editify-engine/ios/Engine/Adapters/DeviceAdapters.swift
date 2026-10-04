@@ -75,12 +75,13 @@ struct PhotoKitLibrary: PhotoLibrary {
   }
 }
 
-/// DeviceProfile adapter: ProcessInfo and the lab Sampler's probes.
+/// DeviceProfile adapter: ProcessInfo (thermal state, Low Power Mode, memory) and the lab Sampler's probes.
 struct SystemDeviceProfile: DeviceProfile {
   var name: String { "system" }
 
   var thermalState: ProcessInfo.ThermalState { ProcessInfo.processInfo.thermalState }
   var thermalName: String { Sampler.thermalName() }
+  var isLowPowerModeEnabled: Bool { ProcessInfo.processInfo.isLowPowerModeEnabled }
   var physicalMemoryBytes: UInt64 { ProcessInfo.processInfo.physicalMemory }
   /// Read once per process: the tier never changes while the app runs.
   var tier: DeviceTier { Self.tier }
@@ -91,5 +92,9 @@ struct SystemDeviceProfile: DeviceProfile {
 
   func observeThermalState(_ handler: @escaping @Sendable () -> Void) -> AnyObject {
     NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { _ in handler() }
+  }
+
+  func observePowerState(_ handler: @escaping @Sendable () -> Void) -> AnyObject {
+    NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: nil) { _ in handler() }
   }
 }

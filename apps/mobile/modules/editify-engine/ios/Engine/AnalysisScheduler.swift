@@ -14,8 +14,9 @@ import Foundation
 /// Picking order inside a lane: the asset on screen first (`setFocus`), then
 /// part rank (decode, words, proxy, laughter, energy, faces), then arrival. The heavy
 /// gate holds words/faces between chunks while playback or scrubbing is active
-/// (`setPlaybackActive`), an export is running (`setExportActive`), or the thermal
-/// state is `.serious` or worse; light parts keep going.
+/// (`setPlaybackActive`), an export is running (`setExportActive`), the thermal
+/// state is `.serious` or worse, or Low Power Mode is on (DeviceProfile, re-read every
+/// `heavyPoll`, so the lane resumes when it turns off); light parts keep going.
 ///
 /// `proxy` (decision 10B + OV9, the 1080p preview proxy) is only queued on request
 /// (`ensureProxy`, or `parts: ["proxy"]`), never by a default `analyze`. An AVAssetWriter
@@ -84,6 +85,7 @@ actor AnalysisScheduler {
   private var emitterEpoch = 0
   private var emit: Emit?
   private var thermalObserver: AnyObject?
+  private var powerObserver: AnyObject?
   private let adapters: EngineAdapters
 
   init(adapters: EngineAdapters = .current) {
@@ -97,6 +99,11 @@ actor AnalysisScheduler {
     self.emit = emit
     if thermalObserver == nil {
       thermalObserver = adapters.deviceProfile.observeThermalState {
+        Task { await AnalysisScheduler.shared.emitState() }
+      }
+    }
+    if powerObserver == nil {
+      powerObserver = adapters.deviceProfile.observePowerState {
         Task { await AnalysisScheduler.shared.emitState() }
       }
     }
@@ -239,6 +246,7 @@ actor AnalysisScheduler {
       "playbackActive": playbackActive,
       "exportActive": exportActive,
       "thermal": adapters.deviceProfile.thermalName,
+      "lowPowerMode": adapters.deviceProfile.isLowPowerModeEnabled,
       "heavyPaused": heavyPaused,
       "queued": queue.map { ["assetId": $0.assetId, "part": $0.part.rawValue] },
       "running": running.values.map { ["assetId": $0.job.assetId, "part": $0.job.part.rawValue] },
@@ -275,16 +283,13 @@ actor AnalysisScheduler {
   // MARK: - Gate
 
   var heavyPaused: Bool {
-    AnalysisPolicy.heavyPaused(proxyBlocked: proxyBlocked, thermal: adapters.deviceProfile.thermalState)
+    AnalysisPolicy.heavyPaused(proxyBlocked: proxyBlocked, device: adapters.deviceProfile)
   }
 
   /// Awaited by heavy analyzers between chunks: holds while paused, and
   /// answers false once the part was cancelled so the analyzer stops.
   func waitWhileHeavyPaused(_ stop: CancelFlag) async -> Bool {
-    while heavyPaused && !stop.isSet {
-      try? await Task.sleep(for: .milliseconds(250))
-    }
-    return !stop.isSet
+    await AnalysisPolicy.waitWhilePaused({ [weak self] in await self?.heavyPaused ?? false }, stop: stop)
   }
 
   // MARK: - Lanes
@@ -493,7 +498,8 @@ actor AnalysisScheduler {
   }
 
   fileprivate func emitState() {
-    emit?("analysisState", ["playbackActive": playbackActive, "exportActive": exportActive, "thermal": adapters.deviceProfile.thermalName, "heavyPaused": heavyPaused])
+    emit?("analysisState", ["playbackActive": playbackActive, "exportActive": exportActive, "thermal": adapters.deviceProfile.thermalName,
+                            "lowPowerMode": adapters.deviceProfile.isLowPowerModeEnabled, "heavyPaused": heavyPaused])
   }
 
   // MARK: - Decoded audio cache

@@ -6,6 +6,7 @@ import { VideoView, useVideoPlayer } from 'expo-video';
 import type { AssetMetadata, LibrarySound, SoundCategory } from '@editify/shared';
 import { api, mediaUrl } from '../../lib/api';
 import { isAudioOnly } from '../../lib/media';
+import { usePresentedModal } from '../../lib/modal-presence';
 import { pickFromFiles } from '../../lib/pick';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 
@@ -50,6 +51,7 @@ interface Props {
  */
 export function SoundSheet({ visible, onClose, onAdd }: Props) {
   const insets = useSafeAreaInsets();
+  usePresentedModal(visible); // the speech pre-prompt waits until this sheet is gone
   const [tab, setTab] = useState<'sfx' | 'music'>('sfx');
   const [category, setCategory] = useState<SoundCategory | 'all'>('all');
   const [playingId, setPlayingId] = useState<string>();

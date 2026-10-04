@@ -5,7 +5,7 @@ import Foundation
 // the pull-based audio reader they read through is Engine/AudioDecode.swift.
 
 /// `gate` is awaited between chunks/frames: the scheduler (8A) uses it to hold a
-/// heavy analyzer while the user plays or scrubs, or the phone runs hot. It
+/// heavy analyzer while the user plays or scrubs, the phone runs hot, or Low Power Mode is on. It
 /// answers false when the analyzer should stop (its part was cancelled).
 public typealias AnalyzerGate = @Sendable () async -> Bool
 public typealias AnalyzerProgress = @Sendable (Double) -> Void

@@ -32,9 +32,11 @@ public protocol PhotoLibrary: PortAdapter {
   func saveVideo(_ url: URL) async -> Bool
 }
 
-/// What the phone is: thermal state, memory, OS, model.
+/// What the phone is: thermal state, Low Power Mode, memory, OS, model.
 public protocol DeviceProfile: PortAdapter {
   var thermalState: ProcessInfo.ThermalState { get }
+  /// Low Power Mode (ProcessInfo.isLowPowerModeEnabled): the heavy analysis lane holds while it is on.
+  var isLowPowerModeEnabled: Bool { get }
   /// "nominal" | "fair" | "serious" | "critical".
   var thermalName: String { get }
   var physicalMemoryBytes: UInt64 { get }
@@ -47,4 +49,7 @@ public protocol DeviceProfile: PortAdapter {
   /// Calls `handler` on every thermal state change; the observation lasts as long as the
   /// returned token is held.
   func observeThermalState(_ handler: @escaping @Sendable () -> Void) -> AnyObject
+  /// Calls `handler` whenever Low Power Mode turns on or off (NSProcessInfoPowerStateDidChange);
+  /// the observation lasts as long as the returned token is held.
+  func observePowerState(_ handler: @escaping @Sendable () -> Void) -> AnyObject
 }

@@ -5,8 +5,10 @@
  * capability cache are passed in, so every branch runs under vitest.
  *
  *   import completes ─▶ words queued for each clip with sound (analyzeMedia, parts ['words'])
- *     └─ SFSpeech is the active transcriber (legacy set, or the chain starts with sfspeech)
- *        and speech permission is notDetermined ─▶ pre-prompt sheet
+ *     └─ a words part from that import comes back unavailable with speechRecognitionNotAsked
+ *        (any adapter set: on iOS 26 the chain falls to SFSpeech when SpeechAnalyzer can't run,
+ *        offline before its model installs or for an unsupported locale) and speech permission
+ *        is notDetermined ─▶ pre-prompt sheet (shown once no other sheet is up: modal-presence)
  *           ├─ Continue ─▶ requestSpeechAuthorization (the system alert) ─┐
  *           └─ Not now ─▶ the part stays unavailable (speechRecognitionNotAsked);
  *                         the next import offers the sheet again          │
@@ -40,14 +42,14 @@ export const SPEECH_OFF_DETAIL = 'Captions need it. Turn on Speech Recognition f
 export const SPEECH_OFF_CODE = 'speechRecognitionOff';
 export const SPEECH_NOT_ASKED_CODE = 'speechRecognitionNotAsked';
 
-/** True when the words part on this iPhone runs through SFSpeech, the transcriber that needs permission. */
-export function sfspeechActive(capabilities: Capabilities): boolean {
-  return capabilities.adapterSet === 'legacy' || capabilities.transcriber?.order?.[0] === 'sfspeech';
-}
-
-/** C15: the sheet only after an import, only for SFSpeech, only while the question is unanswered. */
-export function shouldOfferSpeechPrompt(input: { capabilities: Capabilities; status: SpeechAuthorizationStatus | null; imported: boolean }): boolean {
-  return input.imported && input.status === 'notDetermined' && sfspeechActive(input.capabilities);
+/**
+ * C15: the sheet only for a words part from an import not yet answered (Not now waits for the
+ * next one), only when that part came back not asked, only while the question is unanswered.
+ * The adapter set doesn't matter: whichever transcriber ran, not-asked means SFSpeech needed
+ * the permission.
+ */
+export function shouldOfferSpeechPrompt(input: { fromImport: boolean; code: string | undefined; status: SpeechAuthorizationStatus | null }): boolean {
+  return input.fromImport && input.code === SPEECH_NOT_ASKED_CODE && input.status === 'notDetermined';
 }
 
 /** The words parts to queue again after the permission became `status`. */
@@ -108,7 +110,7 @@ export interface WordsView {
 }
 
 export interface DeviceWords {
-  /** An import finished: queue words for `refs` and offer the sheet when C15 says so. */
+  /** An import finished: queue words for `refs`; the sheet follows if one comes back not asked (C15). */
   importCompleted(refs: readonly PlanAssetRef[]): Promise<void>;
   /** The sheet's Continue: the system alert, then the re-queue (through `speechAuthorizationChanged`). */
   continuePrompt(): Promise<SpeechAuthorizationStatus | null>;
@@ -127,6 +129,8 @@ export function createDeviceWords(options: DeviceWordsOptions): DeviceWords {
   let analysis = emptyAnalysisState();
   let view: WordsView = { prompt: false, speechOff: false };
   let speechOffDismissed = false;
+  /** Clips from imports since the sheet was last answered: a not-asked words part among them offers it. */
+  const offerable = new Set<string>();
   /** Every clip words were queued for, so a re-queue can name its kind. */
   const refs = new Map<string, PlanAssetRef>();
   /** When each clip's words were (re)queued, for words_done. */
@@ -174,20 +178,23 @@ export function createDeviceWords(options: DeviceWordsOptions): DeviceWords {
 
   const speechAuthorizationChanged = async (event: Pick<SpeechAuthorizationEvent, 'status'>): Promise<void> => {
     options.capabilities.refresh();
-    if (event.status !== 'notDetermined') publish({ prompt: false });
+    if (event.status !== 'notDetermined') {
+      offerable.clear();
+      publish({ prompt: false });
+    }
     await requeue(wordsToRequeue(analysis, event.status));
   };
 
   return {
     async importCompleted(imported) {
       speechOffDismissed = false;
+      for (const ref of imported) offerable.add(ref.id); // before queueing: a not-asked answer can be immediate
       await Promise.all(imported.map(queue));
-      const offer = shouldOfferSpeechPrompt({ capabilities: options.capabilities.current(), status: status(), imported: imported.length > 0 });
-      publish({ prompt: offer || view.prompt });
       showSpeechOff();
     },
 
     async continuePrompt() {
+      offerable.clear();
       publish({ prompt: false });
       const request = options.native.requestSpeechAuthorization;
       if (!request) return null;
@@ -199,6 +206,7 @@ export function createDeviceWords(options: DeviceWordsOptions): DeviceWords {
     },
 
     notNow() {
+      offerable.clear();
       publish({ prompt: false });
     },
 
@@ -217,6 +225,10 @@ export function createDeviceWords(options: DeviceWordsOptions): DeviceWords {
         } catch { /* the next event or snapshot catches up */ }
       }
       const part = analysis.assets[event.assetId]?.words;
+      if (part && part.status !== 'pending') {
+        if (shouldOfferSpeechPrompt({ fromImport: offerable.has(event.assetId), code: part.code, status: status() })) publish({ prompt: true });
+        offerable.delete(event.assetId);
+      }
       if (part?.status === 'ready') {
         const capabilities = options.capabilities.refresh();
         const since = started.get(event.assetId);

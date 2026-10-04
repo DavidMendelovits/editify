@@ -65,10 +65,28 @@ public enum AnalysisPolicy {
     (job.assetId == focus ? 0 : 1, job.part.rank, job.seq)
   }
 
-  /// The heavy gate: held while playback or an export blocks the media engines, or the
-  /// phone is at `.serious` thermal state or worse.
-  public static func heavyPaused(proxyBlocked: Bool, thermal: ProcessInfo.ThermalState) -> Bool {
-    proxyBlocked || thermal.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+  /// The heavy gate: held while playback or an export blocks the media engines, the phone
+  /// is at `.serious` thermal state or worse, or Low Power Mode is on.
+  public static func heavyPaused(proxyBlocked: Bool, thermal: ProcessInfo.ThermalState, lowPower: Bool) -> Bool {
+    proxyBlocked || lowPower || thermal.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+  }
+
+  /// The heavy gate over what the DeviceProfile port reports now.
+  public static func heavyPaused(proxyBlocked: Bool, device: any DeviceProfile) -> Bool {
+    heavyPaused(proxyBlocked: proxyBlocked, thermal: device.thermalState, lowPower: device.isLowPowerModeEnabled)
+  }
+
+  /// How often a held heavy analyzer looks at the gate again.
+  public static let heavyPoll: Duration = .milliseconds(250)
+
+  /// Awaited by heavy analyzers between chunks: holds while `paused` answers true (it is read
+  /// again every `poll`, so the lane resumes once thermal, playback or Low Power Mode clears),
+  /// and answers false once the part was cancelled so the analyzer stops.
+  public static func waitWhilePaused(_ paused: @Sendable () async -> Bool, stop: CancelFlag, poll: Duration = heavyPoll) async -> Bool {
+    while await paused(), !stop.isSet {
+      try? await Task.sleep(for: poll)
+    }
+    return !stop.isSet
   }
 
   /// A proxy may start once nothing blocks it and the idle debounce has passed.
