@@ -807,9 +807,9 @@ final class PlanPlayer {
   /// A paused exact seek on remote sources can land before the frame's bytes arrived, without the
   /// compositor having been asked for that frame. Then it is seeked once more: when the item can
   /// keep up, or after `verifyDelay`, whichever comes first (a newer seek or play cancels it).
-  /// Only for a frame a remote source draws, and only while the compositor still hasn't been asked
-  /// for it: a re-seek cancels the frame in flight, so re-seeking one that is merely slow to start
-  /// (a loaded CPU) only delays it.
+  /// Only for a frame a remote source draws: a frame from local files is never waiting on bytes.
+  /// (Once scheduled, the re-seek happens even if the compositor is asked meanwhile: asked before
+  /// its bytes arrive, it draws the frame without its source picture.)
   private func verifyPausedSeek(_ time: CMTime, exact: Bool) {
     unverifiedSeek = nil
     guard !wantsPlay, exact, let built else { return }
@@ -848,8 +848,6 @@ final class PlanPlayer {
   private func reseekUnverified() {
     guard let time = unverifiedSeek, !torndown, !wantsPlay, !seeking, chase == nil else { return }
     unverifiedSeek = nil
-    // Asked for since the check (it only started late): nothing to re-seek.
-    if frameAsked(time) { return }
     reseeking = true
     seek(to: time.seconds, exact: true)
     reseeking = false
