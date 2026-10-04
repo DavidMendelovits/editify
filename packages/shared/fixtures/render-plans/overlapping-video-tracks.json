@@ -1,0 +1,186 @@
+{
+  "description": "Two video tracks overlap from 1 s to 2 s: the cutaway on track 1 stacks above the main clip (z 1 over z 0), and both keep their sound.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 12,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 3,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 1,
+          "layers": [
+            {
+              "clipId": "main",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        },
+        {
+          "start": 1,
+          "end": 2,
+          "layers": [
+            {
+              "clipId": "main",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 1,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 1,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            },
+            {
+              "clipId": "cutaway",
+              "trackIndex": 1,
+              "z": 1,
+              "assetRef": {
+                "id": "asset-cutaway",
+                "kind": "video"
+              },
+              "srcStart": 4,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 1,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        },
+        {
+          "start": 2,
+          "end": 3,
+          "layers": [
+            {
+              "clipId": "main",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 2,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 2,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": [
+      {
+        "id": "main",
+        "clipId": "main",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 3,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      },
+      {
+        "id": "cutaway",
+        "clipId": "cutaway",
+        "assetRef": {
+          "id": "asset-cutaway",
+          "kind": "video"
+        },
+        "at": 1,
+        "in": 4,
+        "out": 5,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 1,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

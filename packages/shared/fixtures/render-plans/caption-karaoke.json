@@ -1,0 +1,157 @@
+{
+  "description": "A two-line karaoke caption: words light in the emphasis colour at their absolute timeline start (document words were relative to words[0].s = 10.2 at clip.start 0.5).",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 10,
+    "buildSeq": 1,
+    "size": {
+      "w": 1080,
+      "h": 1920
+    },
+    "fps": 30,
+    "duration": 3,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 3,
+          "layers": [
+            {
+              "clipId": "talk",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [
+      {
+        "id": "cap-k",
+        "rev": "r-cap-k-a1",
+        "start": 0.5,
+        "end": 2.9,
+        "lane": 0,
+        "font": "Montserrat-Bold",
+        "sizePx": 64,
+        "color": "#FFFFFF",
+        "strokeColor": "#000000",
+        "strokePx": 3,
+        "emphasisColor": "#FACC15",
+        "shadow": {
+          "color": "#000000",
+          "opacity": 0.61,
+          "offsetPx": 1
+        },
+        "align": "center",
+        "lines": [
+          {
+            "text": "HOW ARE YOU",
+            "x": 307.7,
+            "y": 1597,
+            "width": 464.6,
+            "words": [
+              {
+                "w": "HOW",
+                "s": 0.5,
+                "e": 0.8,
+                "x": 307.7
+              },
+              {
+                "w": "ARE",
+                "s": 0.8,
+                "e": 1.1,
+                "x": 476.7
+              },
+              {
+                "w": "YOU",
+                "s": 1.1,
+                "e": 1.4,
+                "x": 645.6
+              }
+            ]
+          },
+          {
+            "text": "DOING TODAY",
+            "x": 307.7,
+            "y": 1673,
+            "width": 464.6,
+            "words": [
+              {
+                "w": "DOING",
+                "s": 1.5,
+                "e": 1.9,
+                "x": 307.7
+              },
+              {
+                "w": "TODAY",
+                "s": 2.0,
+                "e": 2.6,
+                "x": 561.1
+              }
+            ]
+          }
+        ],
+        "fitted": {
+          "shrunk": false,
+          "scale": 1
+        }
+      }
+    ],
+    "audio": [
+      {
+        "id": "talk",
+        "clipId": "talk",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 3,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}

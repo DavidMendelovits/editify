@@ -1,0 +1,177 @@
+{
+  "description": "A voiceover from 2 s to 4 s ducks everything else to 30% with 0.12 s linear ramps (the clip sound at volume 1 and a music bed at 0.5), and the master is normalized to -16 LUFS (0.5 LU deadband, silent below -60 LUFS) through a -1.5 dB limiter ceiling, with -1 dBTP as the true-peak acceptance limit.",
+  "plan": {
+    "version": 1,
+    "requires": [],
+    "revision": 14,
+    "buildSeq": 1,
+    "size": {
+      "w": 360,
+      "h": 640
+    },
+    "fps": 30,
+    "duration": 6,
+    "color": "sdr",
+    "background": "#0B0B0F",
+    "loudness": {
+      "targetLufs": -16,
+      "deadbandLu": 0.5,
+      "silentBelowLufs": -60,
+      "limiterCeilingDb": -1.5,
+      "truePeakLimitDb": -1
+    },
+    "video": {
+      "segments": [
+        {
+          "start": 0,
+          "end": 6,
+          "layers": [
+            {
+              "clipId": "talk",
+              "trackIndex": 0,
+              "z": 0,
+              "assetRef": {
+                "id": "asset-talk",
+                "kind": "video"
+              },
+              "srcStart": 0,
+              "speed": 1,
+              "cropKeys": [
+                {
+                  "t": 0,
+                  "scale": 1,
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "opacityKeys": [],
+              "dimKeys": []
+            }
+          ]
+        }
+      ]
+    },
+    "overlays": [],
+    "captions": [],
+    "audio": [
+      {
+        "id": "talk",
+        "clipId": "talk",
+        "assetRef": {
+          "id": "asset-talk",
+          "kind": "video"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 6,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 1
+          },
+          {
+            "t": 1.88,
+            "gain": 1
+          },
+          {
+            "t": 2,
+            "gain": 0.3
+          },
+          {
+            "t": 4,
+            "gain": 0.3
+          },
+          {
+            "t": 4.12,
+            "gain": 1
+          },
+          {
+            "t": 6,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      },
+      {
+        "id": "bed",
+        "clipId": "bed",
+        "assetRef": {
+          "id": "asset-music",
+          "kind": "audio"
+        },
+        "at": 0,
+        "in": 0,
+        "out": 6,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 0,
+            "gain": 0.5
+          },
+          {
+            "t": 1.88,
+            "gain": 0.5
+          },
+          {
+            "t": 2,
+            "gain": 0.15
+          },
+          {
+            "t": 4,
+            "gain": 0.15
+          },
+          {
+            "t": 4.12,
+            "gain": 0.5
+          },
+          {
+            "t": 6,
+            "gain": 0.5
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      },
+      {
+        "id": "vo",
+        "clipId": "vo",
+        "assetRef": {
+          "id": "asset-voice",
+          "kind": "audio"
+        },
+        "at": 2,
+        "in": 0,
+        "out": 2,
+        "speed": 1,
+        "gainKeys": [
+          {
+            "t": 2,
+            "gain": 1
+          }
+        ],
+        "fadeIn": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        },
+        "fadeOut": {
+          "duration": 0.008,
+          "curve": "halfSine"
+        }
+      }
+    ]
+  }
+}
