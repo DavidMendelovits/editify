@@ -144,8 +144,12 @@ jobs:
           # podspecs or module config, the config plugins, app.json's plugins or ios block, the
           # mobile app's dependencies, or the engine's file layout (a Swift file added, removed or
           # moved between the Core and Engine pods; edits inside a file are the engine job's).
+          # Also any edit to the two Swift files typecheck-engine.sh skips (they import
+          # ExpoModulesCore, so only the app build compiles them), the root patches/ (patch-package
+          # rewrites native dependencies) and package-lock.json (a native dependency's version can
+          # move there without package.json changing; any lockfile change, not a precise check).
           app=false
-          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/(ios/[^/]+\.podspec|expo-module\.config\.json)|apps/mobile/plugins/|\.github/workflows/ci\.yml)'; then app=true; fi
+          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/(ios/[^/]+\.podspec|expo-module\.config\.json|ios/Engine/(EditifyEngineModule|EditifyPlayerView)\.swift)|apps/mobile/plugins/|patches/|package-lock\.json|\.github/workflows/ci\.yml)'; then app=true; fi
           if git diff --name-status "$base" HEAD -- apps/mobile/modules/editify-engine/ios | grep -qE '^[ADRC]'; then app=true; fi
           for file in apps/mobile/app.json apps/mobile/package.json; do
             if ! git diff --quiet "$base" HEAD -- "$file"; then
