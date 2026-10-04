@@ -302,12 +302,13 @@ jobs:
         working-directory: apps/mobile/ios
         run: pod install
       # Xcode's compilation cache is keyed by content, not timestamps, so it survives a fresh
-      # checkout (DerivedData's own build products don't). Saved under a new key every run.
+      # checkout (DerivedData's own build products don't). ~430 MB, saved once per set of pods
+      # (the bulk of the build); the engine's own files are small and compile fresh.
       - uses: actions/cache@v4
         if: needs.changes.outputs.app == 'true'
         with:
           path: ${{ runner.temp }}/DerivedData/CompilationCache.noindex
-          key: xcode-compilation-cache-xcode26.6-${{ github.run_id }}-${{ github.run_attempt }}
+          key: xcode-compilation-cache-xcode26.6-${{ hashFiles('package-lock.json', 'apps/mobile/app.json', 'apps/mobile/ios/Podfile.lock', 'apps/mobile/modules/editify-engine/ios/*.podspec') }}
           restore-keys: xcode-compilation-cache-xcode26.6-
       - name: Release build for the simulator (arm64, unsigned)
         if: needs.changes.outputs.app == 'true'
