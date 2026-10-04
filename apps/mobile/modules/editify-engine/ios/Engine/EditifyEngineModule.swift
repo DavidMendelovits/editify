@@ -78,7 +78,7 @@ public class EditifyEngineModule: Module {
     // MARK: Analyzers, called directly (no queue)
 
     /// Each part's current analyzer version; `words` is the best adapter's in this set (w-sa1
-    /// on iOS 26, w-sf1 on 18). capabilities().transcriber has the whole words rule.
+    /// on iOS 26, w-sf2 on 18). capabilities().transcriber has the whole words rule.
     Function("analyzerVersions") { () -> [String: String] in
       AnalyzerVersion.all.merging(["words": self.adapters.transcriber.bestVersion]) { current, _ in current }
     }

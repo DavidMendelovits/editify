@@ -30,6 +30,7 @@
 - **What:** An audio-only upload transcriber behind the Transcriber chain, used when on-device SFSpeechRecognizer isn't good enough.
 - **Why:** iOS 18 has no SpeechAnalyzer, and SFSpeech accuracy on long or noisy audio may not hold up.
 - **Context:** Needs a consent step, and the `NSSpeechRecognitionUsageDescription` copy changes, since it currently says transcription happens "on this iPhone".
+- **Evidence (T10):** `docs/transcriber-score-1.1.md`. On the stand-up memo SFSpeech scored 51.7% WER vs SpeechAnalyzer's 14.6%, with a start error p95 of 4.4 s, so both promote thresholds trip. The doc recommends promoting this TODO.
 - **Blocked by:** the T10 SFSpeech vs SpeechAnalyzer score. Only build it if SFSpeech scores poorly.
 
 ## Self-healing media
