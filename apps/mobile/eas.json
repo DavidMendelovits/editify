@@ -44,7 +44,8 @@
       "channel": "preview-1.1",
       "environment": "preview",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://editify-v11.fly.dev"
+        "EXPO_PUBLIC_API_URL": "https://editify-v11.fly.dev",
+        "EXPO_PUBLIC_NATIVE_PREVIEW": "1"
       },
       "ios": {
         "simulator": false
