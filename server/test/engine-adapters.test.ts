@@ -11,8 +11,9 @@ import { ADAPTER_FLAGS, ADAPTER_RUNS } from './helpers/engine-adapters.js';
  * Decision D24: the adapters harness (apps/mobile/modules/editify-engine/parity/adapters). The
  * composition root's choice (AdapterSelection) and the policies behind the ports, against stubs:
  * export admission with a stub scheduler; the RAM tier (TierPolicy over 3/4/6/8 GB and the sizes
- * iPhones report, the low tier's caps, the EDITIFY_TIER override, the chunked energy stream equal
- * to the whole-file one); the Transcriber chain (fallthrough, the four speech permission states
+ * iPhones report, the marketing size each reads as, the low tier's caps, the EDITIFY_TIER override,
+ * the chunked energy stream equal to the whole-file one); the heavy lane's gate (Low Power Mode
+ * holds it and lifting it resumes a held analyzer, via a stub DeviceProfile); the Transcriber chain (fallthrough, the four speech permission states
  * with no prompt from the words run, the sheet's grant and decline, the C25
  * one-re-run-per-trigger rule with a failing model install); the
  * SFSpeech chunk plan, merge (rebase + overlap dedupe that keeps a genuine repeat) and
@@ -124,10 +125,25 @@ describe.skipIf(!swiftAvailable)('engine adapters (composition root and port pol
       'tier: 12 Pro 6 GB reports 5.65 GiB → full', 'tier: 15 Pro 8 GB reports 7.47 GiB → full',
       'tier: provisional thresholds are full ≥ 6, standard ≥ 4',
     ]);
+    expect(group('nominal: ')).toEqual([
+      'nominal: 2.79 GiB (XR) reads as 3 GB', 'nominal: 3.70 GiB (iPhone 11) reads as 4 GB', 'nominal: 5.65 GiB (12 Pro) reads as 6 GB',
+      'nominal: 7.47 GiB (15 Pro) reads as 8 GB', 'nominal: exactly 8 GiB reads as 8 GB', 'nominal: exactly 4 GiB reads as 4 GB',
+    ]);
     expect(group('tier caps: ')).toHaveLength(2);
     expect(names(flagged.modern)).toContain('tier override: read from the environment and simctl\'s -KEY value form');
     expect(names(unflagged)).toContain('tier override: absent without -D EDITIFY_TEST_ADAPTERS');
     expect(names(flagged.modern)).toContain('energy stream: chunked levels equal the whole-file levels (with the trailing partial cell)');
+  });
+
+  it('holds the heavy lane under Low Power Mode and resumes when it turns off (stub DeviceProfile)', () => {
+    expect(group('heavy gate: ')).toEqual([
+      'heavy gate: nominal, no playback, Low Power Mode off → runs',
+      'heavy gate: Low Power Mode on → held, and the power-state observer hears it',
+      'heavy gate: Low Power Mode off again → a held analyzer resumes',
+      'heavy gate: a part cancelled under Low Power Mode stops (the gate answers false)',
+      'heavy gate: playback or an export → held',
+      'heavy gate: thermal .fair runs, .serious holds',
+    ]);
   });
 
   it('handles the four speech permission states without prompting from the words run (D21, C15)', () => {

@@ -1,6 +1,7 @@
 // Adapters harness (decision D24): the composition root's choice and the policies behind the
 // ports, run on macOS against stubs: export admission, the RAM tier (TierPolicy, its caps, the
-// EDITIFY_TIER override, the chunked energy stream), the Transcriber chain (fallthrough,
+// EDITIFY_TIER override, the chunked energy stream), the heavy lane's gate (Low Power Mode through
+// a stub DeviceProfile), the Transcriber chain (fallthrough,
 // speech permission with no prompt from the words run, the C25 re-run trigger), the SFSpeech chunk plan, merge and retry
 // policy, TranscriptAssembler parity, and the decoder's PTS origin on a synthesized clip. server/test/engine-adapters.test.ts builds it twice (with
 // and without -D EDITIFY_TEST_ADAPTERS) and asserts on the JSON it prints:
@@ -139,6 +140,16 @@ do {
     let tier = policy.tier(physicalMemory: bytes)
     check("tier: \(label) → \(expected.rawValue)", tier == expected, tier)
   }
+  // The marketing size each reads as: rounded up past a 0.4 GiB margin, not to the nearest GiB
+  // (which read the 15 Pro as 7).
+  let nominal: [(String, UInt64, Int)] = [
+    ("2.79 GiB (XR)", 2_994_733_056, 3), ("3.70 GiB (iPhone 11)", 3_971_710_976, 4), ("5.65 GiB (12 Pro)", 6_069_059_584, 6),
+    ("7.47 GiB (15 Pro)", 8_022_294_528, 8), ("exactly 8 GiB", 8 * gib, 8), ("exactly 4 GiB", 4 * gib, 4),
+  ]
+  for (label, bytes, expected) in nominal {
+    let gb = TierPolicy.nominalGB(bytes)
+    check("nominal: \(label) reads as \(expected) GB", gb == expected, gb)
+  }
   check("tier: provisional thresholds are full ≥ 6, standard ≥ 4", policy == TierPolicy(fullMinGB: 6, standardMinGB: 4))
   let low = TierCaps.of(.low), full = TierCaps.of(.full)
   check("tier caps: low exports on the server, proxy 540, preview 720 x 1280, no PCM cache, streamed decode",
@@ -177,6 +188,91 @@ do {
   var empty = AnalysisMath.EnergyStream(sampleRate: 8000)
   check("energy stream: no audio, no levels", empty.finish().isEmpty)
   check("pcm cache: a zero budget keeps only the newest decode", AnalysisPolicy.pcmEvictions(order: ["a", "b"], counts: ["a": 10, "b": 10], budget: 0) == ["a"])
+}
+
+// MARK: - The heavy lane's gate (8A): playback/export, thermal, Low Power Mode
+
+/// A stub DeviceProfile: Low Power Mode and thermal state set by the test, and the power-state
+/// observer fired the way NSProcessInfoPowerStateDidChange would on a real phone.
+final class StubDeviceProfile: DeviceProfile, @unchecked Sendable {
+  private let lock = NSLock()
+  private var lowPower = false
+  private var thermal = ProcessInfo.ThermalState.nominal
+  private var powerHandlers: [@Sendable () -> Void] = []
+
+  var name: String { "stub" }
+  var thermalState: ProcessInfo.ThermalState { lock.withLock { thermal } }
+  var thermalName: String { ["nominal", "fair", "serious", "critical"][thermalState.rawValue] }
+  var isLowPowerModeEnabled: Bool { lock.withLock { lowPower } }
+  var physicalMemoryBytes: UInt64 { 6 << 30 }
+  var tier: DeviceTier { .full }
+  var osVersion: String { "26.0" }
+  var model: String { "iPhone17,1" }
+  func observeThermalState(_ handler: @escaping @Sendable () -> Void) -> AnyObject { NSObject() }
+  func observePowerState(_ handler: @escaping @Sendable () -> Void) -> AnyObject {
+    lock.withLock { powerHandlers.append(handler) }
+    return NSObject()
+  }
+
+  func setLowPower(_ on: Bool) {
+    let handlers = lock.withLock { () -> [@Sendable () -> Void] in
+      lowPower = on
+      return powerHandlers
+    }
+    for handler in handlers { handler() }
+  }
+
+  func setThermal(_ state: ProcessInfo.ThermalState) { lock.withLock { thermal = state } }
+}
+
+/// Counts what the observer reported, from any thread.
+final class Counter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+  func bump() { lock.withLock { value += 1 } }
+  var count: Int { lock.withLock { value } }
+}
+
+do {
+  let device = StubDeviceProfile()
+  let changes = Counter()
+  let token = device.observePowerState { changes.bump() }
+  check("heavy gate: nominal, no playback, Low Power Mode off → runs", !AnalysisPolicy.heavyPaused(proxyBlocked: false, device: device))
+  device.setLowPower(true)
+  check("heavy gate: Low Power Mode on → held, and the power-state observer hears it",
+        AnalysisPolicy.heavyPaused(proxyBlocked: false, device: device) && changes.count == 1, changes.count)
+
+  // A heavy analyzer waiting at the gate stays held while Low Power Mode is on, and goes on
+  // by itself once it turns off (the gate is read again every poll).
+  let held = CancelFlag()
+  let waiter = Task { await AnalysisPolicy.waitWhilePaused({ AnalysisPolicy.heavyPaused(proxyBlocked: false, device: device) }, stop: held, poll: .milliseconds(5)) }
+  try? await Task.sleep(for: .milliseconds(60))
+  let resumed = Counter()
+  let early = Task { if await waiter.value { resumed.bump() } }
+  try? await Task.sleep(for: .milliseconds(30))
+  let stillHeld = resumed.count == 0
+  device.setLowPower(false)
+  await early.value
+  check("heavy gate: Low Power Mode off again → a held analyzer resumes",
+        stillHeld && resumed.count == 1 && !AnalysisPolicy.heavyPaused(proxyBlocked: false, device: device) && changes.count == 2,
+        [stillHeld, resumed.count == 1, changes.count == 2] as [Any])
+
+  // A part cancelled while Low Power Mode holds it stops instead of waiting for the charger.
+  device.setLowPower(true)
+  let cancelled = CancelFlag()
+  let stopped = Task { await AnalysisPolicy.waitWhilePaused({ AnalysisPolicy.heavyPaused(proxyBlocked: false, device: device) }, stop: cancelled, poll: .milliseconds(5)) }
+  try? await Task.sleep(for: .milliseconds(20))
+  cancelled.set()
+  check("heavy gate: a part cancelled under Low Power Mode stops (the gate answers false)", await stopped.value == false)
+  device.setLowPower(false)
+
+  // The existing gates are unchanged.
+  check("heavy gate: playback or an export → held", AnalysisPolicy.heavyPaused(proxyBlocked: true, device: device))
+  device.setThermal(.fair)
+  let fair = AnalysisPolicy.heavyPaused(proxyBlocked: false, device: device)
+  device.setThermal(.serious)
+  check("heavy gate: thermal .fair runs, .serious holds", !fair && AnalysisPolicy.heavyPaused(proxyBlocked: false, device: device))
+  withExtendedLifetime(token) {}
 }
 
 // MARK: - The Transcriber chain and the decoder (SpeechChecks.swift)

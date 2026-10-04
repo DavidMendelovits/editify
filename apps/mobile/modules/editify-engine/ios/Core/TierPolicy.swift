@@ -12,9 +12,11 @@ import Foundation
 ///   standard   on device     1080                 1080 x 1920                     8 kHz cache (32 MB budget)
 ///   low        server (JS)   540                  720 x 1280                      streamed, nothing cached
 ///
-/// iOS reports a little less than the marketing size (a 4 GB iPhone 11 reports ~3.7 GiB, a 3 GB
-/// XR ~2.8 GiB, a 6 GB 13 Pro ~5.65 GiB), so the bytes round to the nearest GiB first: comparing
-/// raw bytes against 4 GB would put every 4 GB phone in `low`.
+/// iOS reports a little less than the marketing size (a 3 GB XR reports ~2.79 GiB, a 4 GB
+/// iPhone 11 ~3.7 GiB, a 6 GB 12 Pro ~5.65 GiB, an 8 GB 15 Pro ~7.47 GiB), so the bytes become
+/// the marketing size first: rounded up to the next whole GB once past a 0.4 GiB margin under
+/// it. Comparing raw bytes against 4 GB would put every 4 GB phone in `low`, and rounding to
+/// the nearest GiB reads an 8 GB phone as 7.
 public enum DeviceTier: String, Sendable, CaseIterable {
   case full, standard, low
 }
@@ -34,9 +36,13 @@ public struct TierPolicy: Equatable, Sendable {
   /// low-memory iPhone" replaces them with numbers from an A12 phone or 1.1 crash data by tier.
   public static let provisional = TierPolicy(fullMinGB: 6, standardMinGB: 4)
 
-  /// Bytes rounded to the nearest GiB (the size the phone is sold with).
+  /// How far under its marketing size a phone may report and still count as that size.
+  public static let reportedMarginGiB = 0.4
+
+  /// The size the phone is sold with: the reported GiB, less the margin, rounded up
+  /// (7.47 ─▶ 8, 5.65 ─▶ 6, 3.70 ─▶ 4, 2.79 ─▶ 3, exactly 8 ─▶ 8).
   public static func nominalGB(_ physicalMemory: UInt64) -> Int {
-    Int((Double(physicalMemory) / Double(1 << 30)).rounded())
+    Int((Double(physicalMemory) / Double(1 << 30) - reportedMarginGiB).rounded(.up))
   }
 
   public func tier(physicalMemory: UInt64) -> DeviceTier {

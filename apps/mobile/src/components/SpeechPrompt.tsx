@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Linking, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { deviceWords } from '../lib/device-runtime';
+import { deferredVisible, useOtherModalBusy } from '../lib/modal-presence';
 import { SPEECH_OFF_DETAIL, SPEECH_OFF_TEXT, SPEECH_PROMPT_TEXT, SPEECH_PROMPT_TITLE, type WordsView } from '../lib/device-words';
 import { track } from '../lib/telemetry';
 import { colors, fonts, radius, space, type } from '../lib/theme';
@@ -15,17 +16,20 @@ function useWordsView(): WordsView {
 
 /**
  * The speech pre-prompt (C15) and the speech-off receipt (D21), over whatever screen is up.
- * The sheet comes after an import on iPhones that transcribe with SFSpeech while the speech
- * question is unanswered; Continue shows the system alert, Not now asks again next import.
+ * The sheet comes after an import whose words came back not asked while the speech question
+ * is unanswered; Continue shows the system alert, Not now asks again next import. It waits
+ * while ImportSheet or SoundSheet is up (modal-presence): iOS won't present it over them.
  */
 export function SpeechPrompt() {
   const view = useWordsView();
+  const otherModalBusy = useOtherModalBusy();
+  const prompt = deferredVisible(view.prompt, otherModalBusy);
   const insets = useSafeAreaInsets();
   const words = deviceWords;
   if (!words) return null;
   return (
     <>
-      <Modal visible={view.prompt} transparent animationType="slide" onRequestClose={() => words.notNow()}>
+      <Modal visible={prompt} transparent animationType="slide" onRequestClose={() => words.notNow()}>
         <View style={styles.backdrop}>
           <View testID="speech-prompt" accessibilityViewIsModal style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }]}>
             <Text style={styles.kicker}>CAPTIONS</Text>

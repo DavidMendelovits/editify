@@ -118,7 +118,7 @@ export type AnalysisStatusEvent =
   | { assetId: string; part: NativeAnalysisPart; revision?: number; status: AnalysisPartStatus; analyzerVersion: string; error?: string; code?: string; trigger?: string; removed?: undefined }
   | { assetId: string; part: NativeAnalysisPart; revision?: number; removed: true };
 export interface SpeechAuthorizationEvent { status: SpeechAuthorizationStatus; previous: SpeechAuthorizationStatus | null }
-export interface AnalysisStateEvent { playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean }
+export interface AnalysisStateEvent { playbackActive: boolean; exportActive: boolean; thermal: string; lowPowerMode?: boolean; heavyPaused: boolean }
 
 /**
  * On-device export (plan P4). States follow the plan's export state machine: `queued`
@@ -252,7 +252,7 @@ export interface EditifyEngineNative {
   setFocusAsset(assetId: string | null): Promise<void>;
   cancelAnalysis(assetId: string): Promise<void>;
   getAnalysis(assetId: string): Promise<NativeAssetAnalysis>;
-  schedulerState(): Promise<{ playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean; queued: unknown[]; running: unknown[]; focus: string | null }>;
+  schedulerState(): Promise<{ playbackActive: boolean; exportActive: boolean; thermal: string; lowPowerMode?: boolean; heavyPaused: boolean; queued: unknown[]; running: unknown[]; focus: string | null }>;
   /** True while an export renders: a running proxy is cancelled (restarted after), words and faces pause. */
   setExportActive(active: boolean, seq?: number | null): Promise<void>;
 
