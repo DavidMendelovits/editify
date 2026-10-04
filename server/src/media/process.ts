@@ -61,6 +61,30 @@ export async function probeMedia(path: string): Promise<ProbeResult> {
   };
 }
 
+/**
+ * The proxy's -vf chain. Scale FIRST: the HLG->SDR tonemap converts frames to
+ * float RGB, and doing that at 3840x2160 instead of 540p was most of a 4K
+ * import's wait (stand-up clip, M4 Max: 212s -> 69s software, 26s with
+ * hardware decode; scripts/bench-proxy.ts, SSIM 0.98 vs the old order).
+ */
+export function proxyVideoFilter(normalize: string): string {
+  return `scale=540:540:force_original_aspect_ratio=decrease:force_divisible_by=2,${normalize},${outputColorFilter('sdr', false)}`;
+}
+
+let hwDecode: Promise<string[]> | undefined;
+
+/**
+ * Hardware decode where this ffmpeg has it (VideoToolbox on macOS: 4K HEVC
+ * 10-bit is the other big cost). Probed once; empty on hosts without it, such
+ * as Fly's Linux machines, where decode stays in software.
+ */
+export async function hwDecodeArgs(): Promise<string[]> {
+  hwDecode ??= runProcess('ffmpeg', ['-hide_banner', '-hwaccels'])
+    .then(({ stdout }) => (/\bvideotoolbox\b/.test(stdout) ? ['-hwaccel', 'videotoolbox'] : []))
+    .catch(() => []);
+  return await hwDecode;
+}
+
 export async function createProxyAndThumbnail(
   sourcePath: string,
   destinationDirectory: string,
@@ -75,8 +99,8 @@ export async function createProxyAndThumbnail(
     const color = await probeColor(sourcePath);
     const normalize = normalizeFilter(color, 'sdr', { zscale: await zscaleAvailable() });
     await runProcess('ffmpeg', [
-      '-y', '-i', sourcePath,
-      '-vf', `${normalize},scale=540:540:force_original_aspect_ratio=decrease:force_divisible_by=2,${outputColorFilter('sdr', false)}`,
+      '-y', ...await hwDecodeArgs(), '-i', sourcePath,
+      '-vf', proxyVideoFilter(normalize),
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27',
       // A keyframe every second: x264's default ~250-frame GOP makes every
       // preview seek decode seconds of video. Costs little at CRF 27.
@@ -108,7 +132,7 @@ async function renderThumbnail(
 ): Promise<void> {
   await runProcess('ffmpeg', [
     '-y', '-ss', String(Math.max(0, Math.min(probe.duration * 0.1, 2))),
-    '-i', sourcePath, '-frames:v', '1', '-vf', `${normalize},scale=720:-2`, '-q:v', '3', thumbnailPath,
+    '-i', sourcePath, '-frames:v', '1', '-vf', `scale=720:-2,${normalize}`, '-q:v', '3', thumbnailPath,
   ]);
 }
 
