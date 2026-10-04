@@ -51,3 +51,9 @@
 - **Cons:** Every animation needs a matching ASS form (`\t`, `\fscx`) for the server fallback, or the server has to render those captions as images. The CaptionRenderer's bitmap cache grows with each animation phase.
 - **Context:** Start from `captionStyleSchema` (`packages/shared/src/index.ts`) and the render plan's caption entries (`packages/shared/src/render-plan-schema.ts`: `words[].s/e` are already absolute timeline seconds, and `e` is unused in v1). CaptionRenderer caches per caption and animation phase, so the cache key grows from (id, rev, sung-word count, scale) to include the phase. Out of scope in `~/.claude/plans/on-device-export.md`.
 - **Depends on:** P2 render plan (`buildRenderPlan`) + P3 CaptionRenderer.
+
+## decodeMono drops leading silence when a clip's audio starts late
+- **Priority:** P2, before sync/energy results from 1.1 are trusted on such clips.
+- **What:** `Analyzers.decodeMono` (`apps/mobile/modules/editify-engine/ios/Engine/Analyzers.swift`, the `while let (chunk, position) = try chunks.next()` loop) appends each chunk and ignores `position`. When the first audio buffer starts after 0 (an edit list's empty edit, a track that starts 1.5 s in), the samples begin at the first sound, not at the recording's 0, so sync offsets and energy cells shift by the gap. Pad zeros up to `position - startSeconds * rate` before appending (and across any gap), then bump `AnalyzerVersion.decode`, `.sync` and `.energy` in `Core/Analysis.swift` and add a fixture with late-starting audio (the render-golden `asset-edit` spec, `editStart`, already makes one).
+- **Why:** `PCMChunks` already reports positions from the recording's start (D19) and words/laughter use them; sync and energy are the parts still off.
+- **Context:** Found in the T8 backlog; left out of T8 because the fix touches Core's analyzer versions, which T6/T7 own.

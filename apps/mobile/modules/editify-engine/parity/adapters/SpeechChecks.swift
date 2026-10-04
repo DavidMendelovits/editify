@@ -188,6 +188,11 @@ func speechChecks() async {
     let asking = TranscriberChain<String>([foregroundSF], authorization: foreground, trigger: { "os=18.0;sa=0" }, asksForSpeech: true)
     let asked = await asking.words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
     check("auth: asksForSpeech (a foreground caller) asks once, then transcribes", asked.status == "ready" && foreground.requests == 1, asked.dictionary)
+    let noModel = StubTranscriber("sfspeech", version: "w-sf1", auth: true, eligible: .ineligible("On-device speech recognition is not available for en_US"),
+                                  outcome: .results(sample))
+    let deniedNoModel = await chain([noModel], auth: StubAuthorization(.denied)).words("clip", locale: .current, allowModelDownload: true, progress: nil, gate: nil)
+    check("auth: denied before eligibility, so a phone without the on-device model still gets the Settings code",
+          deniedNoModel.status == "unavailable" && deniedNoModel.code == "speechRecognitionOff", deniedNoModel.dictionary)
     check("auth: granted from the sheet → the re-queued run transcribes",
           first.code == "speechRecognitionNotAsked" && requeued.status == "ready" && granting.requests == 1 && sf.runs == 1, requeued.dictionary)
     // SpeechAnalyzer needs no speech permission: a denied user still gets words on 26.
