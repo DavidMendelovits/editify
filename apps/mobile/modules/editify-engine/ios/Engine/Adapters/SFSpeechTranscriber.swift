@@ -6,7 +6,7 @@ import Speech
 ///
 ///   asset ─ SpeechChunks.plan (50 s, 2 s overlap) ─▶ ChunkRunner (gate, timeout, 2 retries)
 ///     each chunk: PCMChunks over its time range (16 kHz mono) ─▶ SFSpeechAudioBufferRecognitionRequest
-///                 ─▶ final result's segments (times relative to the chunk's first sample)
+///                 ─▶ every utterance's segments, joined (times relative to the chunk's first sample)
 ///   ─▶ SpeechChunks.merge (rebase by each chunk's decoded origin, cut overlaps, dedupe the seam)
 ///   ─▶ SpeechChunks.phrases ─▶ FinalResult[] ─▶ TranscriptAssembler (in the chain)
 ///
@@ -78,15 +78,20 @@ struct SFSpeechTranscriber: Transcriber {
     }
     // RecognitionRun answers once: the final result, an error, or a cancel (the chunk timeout
     // or the caller), which resumes the wait itself instead of trusting the recognizer to call
-    // back after task.cancel().
+    // back after task.cancel(). Each utterance arrives as its own result with metadata, and the
+    // final one holds only the last utterance, so every one is kept and joined (T10).
+    let heard = Utterances()
     let words = try await RecognitionRun<[TimedWord]>().run { run in
       let task = recognizer.recognitionTask(with: request) { result, error in
-        if let result, result.isFinal {
-          run.finish(.success(result.bestTranscription.segments.map {
+        if let result, result.isFinal || result.speechRecognitionMetadata != nil {
+          heard.append(result.bestTranscription.segments.map {
             TimedWord(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
-          }))
+          })
+        }
+        if let result, result.isFinal {
+          run.finish(.success(heard.joined))
         } else if let error {
-          run.finish(Self.isNoSpeech(error) ? .success([]) : .failure(error))
+          run.finish(Self.isNoSpeech(error) ? .success(heard.joined) : .failure(error))
         }
       }
       return { task.cancel() }
@@ -99,6 +104,15 @@ struct SFSpeechTranscriber: Transcriber {
     let ns = error as NSError
     return ns.code == 1110 && ns.domain.contains("AFAssistant") || ns.localizedDescription.localizedCaseInsensitiveContains("no speech detected")
   }
+}
+
+/// The utterances one request reported so far (its handler runs on the recognizer's queue).
+private final class Utterances: @unchecked Sendable {
+  private let lock = NSLock()
+  private var heard: [[TimedWord]] = []
+
+  func append(_ words: [TimedWord]) { lock.withLock { heard.append(words) } }
+  var joined: [TimedWord] { SpeechChunks.joinUtterances(lock.withLock { heard }) }
 }
 
 /// SpeechAuthorization adapter: SFSpeechRecognizer's permission.
