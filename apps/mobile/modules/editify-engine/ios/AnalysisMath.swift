@@ -134,4 +134,53 @@ enum AnalysisMath {
     let even = { (value: CGFloat) in max(2, (value * factor / 2).rounded() * 2) }
     return CGSize(width: even(size.width), height: even(size.height))
   }
+
+  /// The device preview proxy's frame (decision 10B): scaled so the short side is at most
+  /// `maxShortSide`, aspect kept, never upscaled, both sides even (4:2:0 chroma).
+  static func previewProxySize(for size: CGSize, maxShortSide: CGFloat = 1080) -> CGSize {
+    let short = min(abs(size.width), abs(size.height))
+    guard short > 0 else { return .zero }
+    let factor = min(1, maxShortSide / short)
+    let even = { (value: CGFloat) in max(2, (abs(value) * factor / 2).rounded() * 2) }
+    return CGSize(width: even(size.width), height: even(size.height))
+  }
+
+  /// A track transform for a frame of `size`: the source's rotation/flip, translated so
+  /// the upright frame starts at the origin. Rebuilt rather than scaled, so a frame whose
+  /// sides were rounded independently still lands exactly in the positive quadrant.
+  static func uprightTransform(_ transform: CGAffineTransform, size: CGSize) -> CGAffineTransform {
+    let rotation = CGAffineTransform(a: transform.a, b: transform.b, c: transform.c, d: transform.d, tx: 0, ty: 0)
+    let rect = CGRect(origin: .zero, size: size).applying(rotation)
+    return rotation.concatenating(CGAffineTransform(translationX: -rect.minX, y: -rect.minY))
+  }
+
+  /// Version tag of `envelopeHash`; packages/shared-side matching (local-media.ts) refuses
+  /// to compare hashes with different tags.
+  static let envelopeHashVersion = "e1"
+  /// Rises smaller than this (dB) count as flat, so a re-encode's rounding noise on a
+  /// steady passage doesn't flip bits.
+  static let envelopeDeadbandDb = 0.5
+
+  /// A coarse fingerprint of an energy curve (50 ms RMS cells, `energy`): one bit per
+  /// cell, set when the level rose by more than the deadband since the previous cell,
+  /// as hex after a version tag ("e1:9f3c…"). The same audio decodes to the same
+  /// string; a copy trimmed at the front shifts every cell and scrambles about half
+  /// the bits. local-media.ts compares two of these by Hamming distance.
+  static func envelopeHash(_ rmsDb: [Double]) -> String {
+    guard rmsDb.count > 1 else { return "\(envelopeHashVersion):" }
+    var hex = ""
+    var nibble = 0
+    var filled = 0
+    for index in 1..<rmsDb.count {
+      nibble = (nibble << 1) | (rmsDb[index] - rmsDb[index - 1] > envelopeDeadbandDb ? 1 : 0)
+      filled += 1
+      if filled == 4 {
+        hex.append(String(nibble, radix: 16))
+        nibble = 0
+        filled = 0
+      }
+    }
+    if filled > 0 { hex.append(String(nibble << (4 - filled), radix: 16)) }
+    return "\(envelopeHashVersion):\(hex)"
+  }
 }

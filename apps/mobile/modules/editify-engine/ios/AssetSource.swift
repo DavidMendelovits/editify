@@ -3,6 +3,11 @@ import Photos
 
 /// Resolves a lab asset ref to an AVAsset: `file://…` (Files/share imports) or a
 /// PHAsset localIdentifier (decision D5: Photos clips are referenced, never copied).
+///
+/// Photos loads ask for `.original` (decision 3A + OV2): an edit made in Photos after
+/// import never changes what the project was cut against. The registry fingerprints
+/// the uploaded file and compares it with this original, so a clip that was already
+/// edited when it was picked shows up as "changed in Photos" instead of shifting cuts.
 enum AssetSource {
   struct NotFound: Error, LocalizedError {
     let ref: String
@@ -28,11 +33,14 @@ enum AssetSource {
   /// Cancelling the calling task cancels the Photos request.
   static func load(_ ref: String, allowNetwork: Bool = true, onDownload: (@Sendable (Double) -> Void)? = nil) async throws -> AVAsset {
     if ref.hasPrefix("file://"), let url = URL(string: ref) { return AVURLAsset(url: url) }
+    // Without access, PhotoKit isn't touched at all (fetching would only fail, and some
+    // calls log or prompt); the ref is simply not reachable from here.
+    guard hasPhotosAccess() else { throw NotFound(ref: ref) }
     guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [ref], options: nil).firstObject else { throw NotFound(ref: ref) }
     let options = PHVideoRequestOptions()
     options.isNetworkAccessAllowed = allowNetwork
     options.deliveryMode = .highQualityFormat
-    options.version = .current
+    options.version = .original
     if let onDownload {
       options.progressHandler = { value, _, _, _ in onDownload(value) }
     }
@@ -58,6 +66,33 @@ enum AssetSource {
     } onCancel: {
       request.cancel()
     }
+  }
+
+  /// Photos library access as the registry names it, read without prompting:
+  /// 'all' | 'limited' | 'denied' | 'undetermined'. Only 'all' can load an arbitrary
+  /// picked PHAsset later; the app never asks (the system picker needs no permission).
+  static func photosAccess() -> String {
+    switch PHPhotoLibrary.authorizationStatus(for: .readWrite) {
+    case .authorized: return "all"
+    case .limited: return "limited"
+    case .notDetermined: return "undetermined"
+    default: return "denied"
+    }
+  }
+
+  /// Full or limited access: the only states in which PhotoKit may be asked for an asset.
+  static func hasPhotosAccess() -> Bool {
+    let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    return status == .authorized || status == .limited
+  }
+
+  /// Shows the system Photos prompt when access was never asked for, and answers the
+  /// resulting `photosAccess()`. Once asked, iOS never shows it again; this then just reads.
+  static func requestPhotosAccess() async -> String {
+    if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .notDetermined {
+      _ = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+    }
+    return photosAccess()
   }
 
   private static func isNetworkError(_ error: Error) -> Bool {
@@ -117,5 +152,37 @@ private final class PhotosRequest: @unchecked Sendable {
     }
     waiting?.resume(throwing: CancellationError())
     if let id { PHImageManager.default().cancelImageRequest(id) }
+  }
+}
+
+extension AssetSource {
+  /// The native half of the media ladder (local-media.ts `resolveMedia`): loads `ref`
+  /// and fingerprints what it finds. Never throws; the outcome is one of
+  ///   {status: 'ok', fingerprint}            the original is on the device
+  ///   {status: 'icloud'}                     offloaded, and `allowNetwork` was false
+  ///   {status: 'unreachable', error}         in iCloud and the download failed (offline)
+  ///   {status: 'missing', access}            deleted, outside a Limited selection, or no access
+  ///   {status: 'failed', error}              anything else (an unreadable file)
+  /// A cancel of the calling task cancels the Photos request and rejects with CancellationError.
+  static func probe(_ ref: String, allowNetwork: Bool, onDownload: (@Sendable (Double) -> Void)? = nil) async throws -> [String: Any] {
+    if ref.hasPrefix("file://") {
+      guard let url = URL(string: ref), FileManager.default.fileExists(atPath: url.path) else {
+        return ["status": "missing", "access": "all"]
+      }
+    }
+    do {
+      let asset = try await load(ref, allowNetwork: allowNetwork, onDownload: onDownload)
+      return ["status": "ok", "fingerprint": try await MediaFingerprint.compute(asset)]
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch is NotFound {
+      return ["status": "missing", "access": photosAccess()]
+    } catch is InCloud {
+      return ["status": "icloud"]
+    } catch let error as Unreachable {
+      return ["status": "unreachable", "error": error.localizedDescription]
+    } catch {
+      return ["status": "failed", "error": error.localizedDescription]
+    }
   }
 }

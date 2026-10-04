@@ -5,7 +5,7 @@ import {
   RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder,
 } from 'expo-audio';
 import type { AssetMetadata } from '@editify/shared';
-import { uploadAsset } from '../../lib/api';
+import { uploadMediaFile } from '../../lib/pick';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 
 interface Props {
@@ -82,12 +82,11 @@ export function VoiceSheet({ projectId, visible, onClose, onRecorded }: Props) {
       return;
     }
     try {
-      const asset = await uploadAsset({
+      const asset = await uploadMediaFile(projectId, {
         uri,
         name: `voiceover-${Date.now()}.${CAPTURE.extension}`,
         mimeType: CAPTURE.mimeType,
-        projectId,
-      });
+      }, { kind: 'audio', origin: 'capture' });
       setStage('idle');
       setElapsed(0);
       onRecorded(asset);

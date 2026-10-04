@@ -22,6 +22,7 @@ import { ReportModal } from '../../src/components/ReportModal';
 import { Timeline } from '../../src/components/editor/Timeline';
 import type { SyncState } from '../../src/components/editor/Inspector';
 import { usePlayback } from '../../src/components/editor/usePlayback';
+import { useEngineActivity } from '../../src/lib/engine-activity';
 import { api } from '../../src/lib/api';
 import { OptimisticLedger } from '../../src/lib/optimistic';
 import { captureScreen, type Screenshot } from '../../src/lib/capture';
@@ -136,6 +137,8 @@ export default function EditorScreen() {
   // only the components that draw it subscribe, so this screen does not
   // re-render during playback.
   const { clock, playing, seek, toggle, stop } = usePlayback(project?.duration ?? 0);
+  // Proxy encodes and heavy analyzers yield to playback and scrubbing.
+  useEngineActivity('playback', playing || scrubbing);
   const lastAssistantId = useMemo(
     () => chatQuery.data?.filter((message) => message.role === 'assistant').at(-1)?.id,
     [chatQuery.data],
