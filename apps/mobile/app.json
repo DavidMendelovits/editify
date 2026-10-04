@@ -72,6 +72,14 @@
         }
       ],
       [
+        "expo-media-library",
+        {
+          "photosPermission": "Editify adds clips from your photo library to the timeline.",
+          "savePhotosPermission": "Editify saves your finished videos and clips to your photo library.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
         "expo-share-intent",
         {
           "iosActivationRules": "SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO \"public.movie\" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO \"public.audio\").@count >= 1).@count >= 1",

@@ -83,6 +83,9 @@ jobs:
           done
       - run: npm ci
       - run: npm run lint:copy
+      # Plan C9: fly.v11.toml may differ from fly.toml only in app, PUBLIC_BASE_URL,
+      # LINE, the mount source and DATABASE_SCHEMA. Passes when there is no fly.v11.toml.
+      - run: node scripts/check-fly-drift.mjs && node --test scripts/check-fly-drift.test.mjs
       - run: npm run build -w @editify/shared
       - run: npm run typecheck
       - run: npm test -w @editify/server
