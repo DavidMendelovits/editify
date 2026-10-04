@@ -5,17 +5,21 @@
 //   node build-review.mjs --video flow.mp4 --moments moments.json \
 //     [--title "Stand-up sync"] [--slug standup-sync] [--offset 0.6] \
 //     [--meta "branch=mobile-capability-lab" --meta "device=iPhone 17 Pro Max"] \
-//     [--summary "one paragraph"] [--root ~/editify-reviews]
+//     [--summary "one paragraph"] [--root ~/editify-reviews] [--profile profile.json]
+//
+//   --profile adds a "Profile" section (profile.mjs output: time split, user
+//   waits vs server jobs, timeline, render speed, agent stats, request stats).
 //
 //   <root>/
 //     index.html                  every review, newest first (regenerated)
 //     <date>-<slug>/
 //       index.html                player + moment list (data inlined)
-//       video.mp4  review.json  thumbs/NN.jpg
+//       video.mp4  review.json  thumbs/NN.jpg  [profile.json]
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, extname, join, resolve } from 'node:path';
+import { PROFILE_CSS, profileChips, profileSection } from './profile-view.mjs';
 
 const args = process.argv.slice(2);
 const one = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -56,10 +60,15 @@ try {
   run('ffmpeg', ['-v', 'error', '-y', '-ss', String(Math.min(duration / 3, 5)), '-i', join(dir, videoFile), '-frames:v', '1', '-vf', 'scale=-2:480', join(dir, 'poster.jpg')]);
 } catch { /* poster is decoration */ }
 
+const profilePath = one('profile');
+if (profilePath && !existsSync(profilePath)) fail(`--profile ${profilePath} does not exist`);
+const profile = profilePath ? JSON.parse(readFileSync(profilePath, 'utf8')) : null;
+if (profilePath) copyFileSync(profilePath, join(dir, 'profile.json'));
+
 const meta = Object.fromEntries(many('meta').map((pair) => { const i = pair.indexOf('='); return [pair.slice(0, i), pair.slice(i + 1)]; }));
 const review = {
   title, slug, recordedAt: recordedAt.toISOString(), duration, video: videoFile,
-  summary: one('summary') ?? null, meta, moments,
+  summary: one('summary') ?? null, meta, moments, profile,
   counts: { step: moments.filter((m) => m.kind === 'step').length, check: moments.filter((m) => m.kind === 'check').length, issue: moments.filter((m) => m.kind === 'issue').length },
 };
 
@@ -86,7 +95,7 @@ h1{font-size:18px;margin:0}.muted{color:var(--muted)}
 function reviewPage(r) {
   const metaRows = Object.entries(r.meta).map(([k, v]) => `<span class="chip">${esc(k)}: ${esc(v)}</span>`).join(' ');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(r.title)}</title><style>${BASE_CSS}
+<title>${esc(r.title)}</title><style>${BASE_CSS}${r.profile ? PROFILE_CSS : ''}
 main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:0;height:calc(100vh - 58px)}
 .stage{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:16px;gap:12px;min-width:0}
 video{max-width:100%;max-height:calc(100vh - 170px);background:#000;border-radius:8px}
@@ -112,9 +121,10 @@ li img{width:96px;height:64px;object-fit:cover;border-radius:4px;background:#000
 <video id="v" src="${esc(r.video)}" controls playsinline preload="metadata"${existsSync(join(dir, 'poster.jpg')) ? ' poster="poster.jpg"' : ''}></video>
 <div class="timeline" id="tl" title="Click to seek"><div class="head" id="head"></div></div>
 <div class="keys">j / k: previous / next moment &middot; space: play / pause &middot; links like #t=12.5 open at a moment</div>
-</section><aside>${r.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}<ol id="list"></ol></aside></main>
+</section><aside>${r.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}${r.profile ? '<div class="summary"><a href="#profile">Profile: where the time went &darr;</a></div>' : ''}<ol id="list"></ol></aside></main>
+${profileSection(r.profile)}
 <script>
-const review = ${JSON.stringify(r).replace(/</g, '\\u003c')};
+const review = ${JSON.stringify({ ...r, profile: undefined }).replace(/</g, '\\u003c')};
 const v = document.getElementById('v'), list = document.getElementById('list'), tl = document.getElementById('tl'), head = document.getElementById('head');
 const clock = (s) => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
@@ -163,7 +173,7 @@ function homePage(reviewsRoot) {
   const cards = reviews.map((r) => `<a class="card" href="${esc(r.dir)}/">
 <img loading="lazy" src="${esc(r.dir)}/poster.jpg" alt="" onerror="this.style.visibility='hidden'">
 <div><div class="t">${esc(r.title)}</div><div class="muted">${esc(new Date(r.recordedAt).toLocaleString())} &middot; ${clock(r.duration)}</div>
-<div class="row"><span class="chip">${r.moments.length} moments</span>${r.counts.issue ? `<span class="chip kind issue">${r.counts.issue} issues</span>` : '<span class="chip kind check">no issues</span>'}${r.meta.branch ? `<span class="chip">${esc(r.meta.branch)}</span>` : ''}</div></div></a>`).join('\n');
+<div class="row"><span class="chip">${r.moments.length} moments</span>${r.counts.issue ? `<span class="chip kind issue">${r.counts.issue} issues</span>` : '<span class="chip kind check">no issues</span>'}${profileChips(r.profile)}${r.meta.branch ? `<span class="chip">${esc(r.meta.branch)}</span>` : ''}</div></div></a>`).join('\n');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mobile reviews</title><style>${BASE_CSS}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;padding:16px}
