@@ -107,6 +107,8 @@ export class RenderQueue {
                 notes: result.notes,
               };
               loudnessDone = true;
+              // The counterpart of the fallback's warning below: which path rendered this export shows in the logs.
+              console.info('[render] rendered from the plan', { renderId: id, notes: result.notes.length });
               return result.outputPath;
             } catch (error) {
               // This server cannot run the plan render (an ffmpeg without a filter it needs, or a plan over the
