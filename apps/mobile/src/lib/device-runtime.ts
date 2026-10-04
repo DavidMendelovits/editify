@@ -38,6 +38,14 @@ function register(current: Capabilities): void {
   void posthog?.register({ ...superProperties(current, { appVersion: version, platformVersion: Platform.Version }) });
 }
 
+/**
+ * Tags PostHog again with the current capabilities. posthog.reset() (sign-out, or a launch
+ * signed out) drops every registered property, so the root layout calls this right after it.
+ */
+export function registerSuperProperties(): void {
+  register(capabilities.current());
+}
+
 let started = false;
 
 /**
