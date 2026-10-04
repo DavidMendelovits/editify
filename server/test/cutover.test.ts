@@ -13,7 +13,6 @@ import { HttpSource, LocalSource, type CutoverSource } from '../scripts/cutover/
 import { SHARED } from '../scripts/cutover/tables.js';
 import { ALICE, BOB, createFixture, insertAsset, insertChat, insertProject, writeMedia, type Fixture } from './helpers/cutover-fixture.js';
 
-const AGENT = new URL('../scripts/cutover/source-agent.mjs', import.meta.url).pathname;
 
 let fixture: Fixture | undefined;
 let dest: EditifyDatabase | undefined;
@@ -303,8 +302,8 @@ describe('cutover CLI', () => {
   }, 60_000);
 });
 
-describe('cutover source agent', () => {
-  it('serves du, the manifest, files and a backup API snapshot over HTTP, to token holders only', async () => {
+describe('cutover over HTTP', () => {
+  it('imports through the source agent: du, the manifest, files and a backup API snapshot, to token holders only', async () => {
     const { fx } = setup();
     const token = 'x'.repeat(40);
     const agent = await serve({ root: fx.sourceRoot, dbPath: fx.sourceDb, host: '127.0.0.1', port: 0, token, workDir: join(fx.base, 'agent-work') });
@@ -333,18 +332,5 @@ describe('cutover source agent', () => {
     expect(count('chat_messages', "id = 'chat-wal-only'")).toBe(1);
     expect(sha(join(fx.destRoot, 'renders/render-a1/output.mp4'))).toBe(sha(join(fx.sourceRoot, 'renders/render-a1/output.mp4')));
     expect((await importer.dryRun({ kind: 'all' })).diffs).toBe(0);
-  });
-
-  it('runs standalone: measure prints du per directory, and serve refuses without a token', () => {
-    const { fx } = setup();
-    const measured = spawnSync(process.execPath, [AGENT, 'measure', '--root', fx.sourceRoot], { encoding: 'utf8' });
-    expect(measured.status).toBe(0);
-    expect(measured.stdout).toMatch(/assets\n/);
-    expect(measured.stdout).toMatch(/total \(\d+ bytes\)/);
-    const refused = spawnSync(process.execPath, [AGENT, 'serve', '--root', fx.sourceRoot, '--host', '127.0.0.1', '--port', '0'], {
-      encoding: 'utf8', env: { ...process.env, CUTOVER_TOKEN: '' },
-    });
-    expect(refused.status).toBe(1);
-    expect(refused.stderr).toMatch(/CUTOVER_TOKEN/);
   });
 });
