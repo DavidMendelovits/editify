@@ -132,14 +132,32 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       engine: ${{ steps.diff.outputs.engine }}
+      app: ${{ steps.diff.outputs.app }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - id: diff
         run: |
           base="${{ github.event.pull_request.base.sha || github.event.before }}"
-          if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then echo "engine=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/(sync\.ts|render-plan|caption-)|packages/shared/fixtures/render-plans/|server/fonts/|server/src/media/|server/test/(sync-parity\.test\.ts|render-golden\.test\.ts|device-export\.test\.ts|native-preview\.test\.ts|engine-adapters\.test\.ts|helpers/sync-fixtures\.ts|helpers/rotated-plan\.ts|helpers/engine-adapters\.ts|media-pipeline\.test\.ts)|scripts/check-core-imports\.mjs|\.github/workflows/ci\.yml)'; then
+          if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then { echo "engine=true"; echo "app=true"; } >> "$GITHUB_OUTPUT"; exit 0; fi
+          # D23: the app build, when what CocoaPods and the prebuild see could change: the engine
+          # podspecs or module config, the config plugins, app.json's plugins or ios block, the
+          # mobile app's dependencies, or the engine's file layout (a Swift file added, removed or
+          # moved between the Core and Engine pods; edits inside a file are the engine job's).
+          app=false
+          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/(ios/[^/]+\.podspec|expo-module\.config\.json)|apps/mobile/plugins/|\.github/workflows/ci\.yml)'; then app=true; fi
+          if git diff --name-status "$base" HEAD -- apps/mobile/modules/editify-engine/ios | grep -qE '^[ADRC]'; then app=true; fi
+          for file in apps/mobile/app.json apps/mobile/package.json; do
+            if ! git diff --quiet "$base" HEAD -- "$file"; then
+              changed=$(BEFORE="$(git show "$base:$file" 2>/dev/null || echo '{}')" AFTER="$(cat "$file")" node -e '
+                const pick = (text) => { const json = JSON.parse(text); return JSON.stringify([json.expo?.plugins, json.expo?.ios, json.dependencies]); };
+                console.log(pick(process.env.BEFORE) !== pick(process.env.AFTER));')
+              if [ "$changed" = true ]; then app=true; fi
+            fi
+          done
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "App build needed: $app" | tee -a "$GITHUB_STEP_SUMMARY"
+          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/(sync\.ts|render-plan|caption-)|packages/shared/fixtures/render-plans/|server/fonts/|server/src/media/|server/test/(sync-parity\.test\.ts|render-golden\.test\.ts|device-export\.test\.ts|native-preview\.test\.ts|engine-adapters\.test\.ts|helpers/sync-fixtures\.ts|helpers/rotated-plan\.ts|helpers/engine-adapters\.ts|media-pipeline\.test\.ts|analyzer-math\.test\.ts)|scripts/(check-core-imports(\.test)?\.mjs|typecheck-engine\.sh)|\.github/workflows/ci\.yml)'; then
             echo "engine=true" >> "$GITHUB_OUTPUT"; else echo "engine=false" >> "$GITHUB_OUTPUT"; fi
   # Always runs, so deploy and preview can depend on it: a change that touches
   # none of the engine paths reports success without spinning up macOS.
@@ -164,7 +182,15 @@ jobs:
       # Vision, BackgroundTasks, Photos, UIKit, Metal, VideoToolbox or ExpoModulesCore.
       - name: EditifyCore import allowlist
         if: needs.changes.outputs.engine == 'true'
-        run: node scripts/check-core-imports.mjs
+        run: node scripts/check-core-imports.mjs && node --test scripts/check-core-imports.test.mjs
+      # D11: both pods typecheck against the iOS SDK at the release floor (18.0) and at the SDK's
+      # own version, so an iOS 26-only API outside an #available adapter fails here.
+      - name: Engine typechecks at iOS 18.0
+        if: needs.changes.outputs.engine == 'true'
+        run: scripts/typecheck-engine.sh arm64-apple-ios18.0
+      - name: Engine typechecks at the SDK's iOS version
+        if: needs.changes.outputs.engine == 'true'
+        run: scripts/typecheck-engine.sh "arm64-apple-ios$(xcrun --sdk iphoneos --show-sdk-version)"
       - run: npm ci
         if: needs.changes.outputs.engine == 'true'
       - run: npm run build -w @editify/shared
@@ -173,6 +199,12 @@ jobs:
         if: needs.changes.outputs.engine == 'true'
         run: npx vitest run test/sync-parity.test.ts
         working-directory: server
+      - name: AnalysisMath smoke checks
+        if: needs.changes.outputs.engine == 'true'
+        run: npx vitest run test/analyzer-math.test.ts
+        working-directory: server
+        env:
+          REQUIRE_SWIFT: '1'
       # The device proxy writer and media fingerprint (plan P1) on ffmpeg-made HDR/SDR clips.
       - name: ffmpeg (with x265) for the media pipeline clips
         if: needs.changes.outputs.engine == 'true'
@@ -223,8 +255,81 @@ jobs:
           name: render-goldens
           path: ${{ runner.temp }}/render-goldens
           if-no-files-found: ignore
+  # D23: the app itself, built the way EAS builds it (prebuild, pod install, Release), for the
+  # simulator with no signing. The harnesses compile Core and Engine as one module, so a type
+  # that is not public across the pod boundary, a podspec that misses a file, or a config plugin
+  # that breaks the project only shows up here. Path-filtered by `changes` (app=true); otherwise
+  # it reports success on Linux. EDITIFY_SKIP_POSTHOG_UPLOAD=1 skips the PostHog source map and
+  # dSYM uploads (plugins/with-posthog-upload-switch.js): CI has no PostHog credentials.
+  # SKIP_BUNDLING: the JS bundle is the check job's; this build is about the native side.
+  app:
+    needs: changes
+    runs-on: ${{ needs.changes.outputs.app == 'true' && 'macos-26' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    env:
+      LANG: en_US.UTF-8
+      EDITIFY_SKIP_POSTHOG_UPLOAD: '1'
+      SKIP_BUNDLING: '1'
+    steps:
+      - name: No native configuration change
+        if: needs.changes.outputs.app != 'true'
+        run: echo "No podspec, module config, config plugin, app.json native config or engine file layout change; app build skipped."
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.app == 'true'
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: needs.changes.outputs.app == 'true'
+        with: { xcode-version: '26.6' }
+      - uses: actions/setup-node@v4
+        if: needs.changes.outputs.app == 'true'
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+        if: needs.changes.outputs.app == 'true'
+      - name: expo prebuild (clean, iOS)
+        if: needs.changes.outputs.app == 'true'
+        working-directory: apps/mobile
+        run: CI=1 npx expo prebuild --platform ios --no-install --clean
+      # Pods (sources, the Hermes and React Native prebuilts) keyed on what decides them.
+      - uses: actions/cache@v4
+        if: needs.changes.outputs.app == 'true'
+        with:
+          path: |
+            apps/mobile/ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-xcode26.6-${{ hashFiles('package-lock.json', 'apps/mobile/app.json', 'apps/mobile/ios/Podfile', 'apps/mobile/ios/Podfile.properties.json', 'apps/mobile/modules/editify-engine/ios/*.podspec') }}
+          restore-keys: pods-${{ runner.os }}-xcode26.6-
+      - name: pod install
+        if: needs.changes.outputs.app == 'true'
+        working-directory: apps/mobile/ios
+        run: pod install
+      # Xcode's compilation cache is keyed by content, not timestamps, so it survives a fresh
+      # checkout (DerivedData's own build products don't). ~430 MB, saved once per set of pods
+      # (the bulk of the build); the engine's own files are small and compile fresh.
+      - uses: actions/cache@v4
+        if: needs.changes.outputs.app == 'true'
+        with:
+          path: ${{ runner.temp }}/DerivedData/CompilationCache.noindex
+          key: xcode-compilation-cache-xcode26.6-${{ hashFiles('package-lock.json', 'apps/mobile/app.json', 'apps/mobile/ios/Podfile.lock', 'apps/mobile/modules/editify-engine/ios/*.podspec') }}
+          restore-keys: xcode-compilation-cache-xcode26.6-
+      - name: Release build for the simulator (arm64, unsigned)
+        if: needs.changes.outputs.app == 'true'
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild -workspace Editify.xcworkspace -scheme Editify -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO COMPILATION_CACHE_ENABLE_CACHING=YES \
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E '(error|warning: .*EditifyEngine|\*\* BUILD)' || true
+          grep -q '\*\* BUILD SUCCEEDED \*\*' "$RUNNER_TEMP/xcodebuild.log"
+      - name: Upload the build log
+        if: failure() && needs.changes.outputs.app == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
   deploy:
-    needs: [check, engine, plan-render-runtime, target]
+    needs: [check, engine, app, plan-render-runtime, target]
     if: github.event_name == 'push' && needs.target.outputs.deploys == 'true'
     runs-on: ubuntu-latest
     concurrency: { group: "fly-deploy-${{ needs.target.outputs.app }}", cancel-in-progress: false }
@@ -265,7 +370,7 @@ jobs:
   # the profile's eas.json env (API URL, Google client ids) before the update,
   # and every update carries its line's server.
   preview:
-    needs: [check, engine, target]
+    needs: [check, engine, app, target]
     if: github.event_name == 'push' && needs.target.outputs.deploys == 'true'
     runs-on: ubuntu-latest
     concurrency: { group: "eas-${{ needs.target.outputs.profile }}", cancel-in-progress: false }
