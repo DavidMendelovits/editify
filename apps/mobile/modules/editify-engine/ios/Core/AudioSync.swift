@@ -8,46 +8,46 @@ import Foundation
 ///
 ///   onset envelopes (10 ms cells) ──▶ coarse lag over every offset (FFT xcorr)
 ///        └─▶ GCC-PHAT on raw samples ±50 ms, early + late windows ──▶ lag, drift → rate
-enum AudioSync {
-  static let sampleRate = 8000
-  static let hop = 80
-  static let envelopeRate = sampleRate / hop
-  static let fineSearchSamples = 400
-  static let maxFineWindow = 1 << 17
-  static let minFineWindow = 1 << 12
-  static let strongCoarseRatio = 2.0
-  static let minCoarseOverlapSeconds = 5
-  static let minCoarseRatio = 1.1
-  static let minFineScore = 8.0
-  static let fineLockScore = 4.0
-  static let fineLockDistance = 0.02
-  static let maxDriftRate = 500e-6
+public enum AudioSync {
+  public static let sampleRate = 8000
+  public static let hop = 80
+  public static let envelopeRate = sampleRate / hop
+  public static let fineSearchSamples = 400
+  public static let maxFineWindow = 1 << 17
+  public static let minFineWindow = 1 << 12
+  public static let strongCoarseRatio = 2.0
+  public static let minCoarseOverlapSeconds = 5
+  public static let minCoarseRatio = 1.1
+  public static let minFineScore = 8.0
+  public static let fineLockScore = 4.0
+  public static let fineLockDistance = 0.02
+  public static let maxDriftRate = 500e-6
 
-  struct FineMatch { let at: Double; let lag: Double; let score: Double }
+  public struct FineMatch { public let at: Double; public let lag: Double; public let score: Double }
 
-  struct Measurement {
+  public struct Measurement {
     /// Video seconds at which memo second 0 plays (at `anchor` when drift is corrected).
-    let lag: Double
-    let anchor: Double
+    public let lag: Double
+    public let anchor: Double
     /// Memo seconds per video second.
-    let rate: Double
-    let coarseRatio: Double
-    let fineScore: Double
-    let confident: Bool
-    let driftSec: Double?
-    let overlapSec: Double
-    let windows: [FineMatch]
+    public let rate: Double
+    public let coarseRatio: Double
+    public let fineScore: Double
+    public let confident: Bool
+    public let driftSec: Double?
+    public let overlapSec: Double
+    public let windows: [FineMatch]
     /// Whether the fine stage replaced the 10 ms coarse lag (not in sync.ts's result; the
     /// lab uses it to know how close two measurements of the same pair should agree).
-    let fineLocked: Bool
+    public let fineLocked: Bool
   }
 
-  struct Silent: Error, LocalizedError {
-    var errorDescription: String? { "One of the recordings is silent, so there is nothing to line up" }
+  public struct Silent: Error, LocalizedError {
+    public var errorDescription: String? { "One of the recordings is silent, so there is nothing to line up" }
   }
 
   /// Align `memo` against `video`, both mono PCM at `sampleRate`.
-  static func measure(video: [Float], memo: [Float]) throws -> Measurement {
+  public static func measure(video: [Float], memo: [Float]) throws -> Measurement {
     guard let videoEnvelope = onsetEnvelope(video), let memoEnvelope = onsetEnvelope(memo) else { throw Silent() }
     let coarse = coarseLag(video: videoEnvelope, memo: memoEnvelope)
     let coarseLagSamples = coarse.lagCells * hop
@@ -92,7 +92,7 @@ enum AudioSync {
   }
 
   /// Half-wave-rectified change in log energy per 10 ms cell, z-normalised.
-  static func onsetEnvelope(_ samples: [Float]) -> [Double]? {
+  public static func onsetEnvelope(_ samples: [Float]) -> [Double]? {
     let cells = samples.count / hop
     guard cells >= 2 else { return nil }
     var envelope = [Double](repeating: 0, count: cells)
@@ -114,7 +114,7 @@ enum AudioSync {
     return envelope.map { ($0 - mean) / deviation }
   }
 
-  static func coarseLag(video: [Double], memo: [Double]) -> (lagCells: Int, ratio: Double) {
+  public static func coarseLag(video: [Double], memo: [Double]) -> (lagCells: Int, ratio: Double) {
     let correlation = crossCorrelate(video, memo, phat: false)
     let size = correlation.count
     let minOverlap = max(1, min(10 * envelopeRate, Int((0.5 * Double(min(video.count, memo.count))).rounded(.down))))
@@ -129,7 +129,7 @@ enum AudioSync {
     return (best, peakRatio(at(best), second))
   }
 
-  static func fineLag(video: [Float], memo: [Float], start: Int, window: Int, coarseLagSamples: Int) -> FineMatch {
+  public static func fineLag(video: [Float], memo: [Float], start: Int, window: Int, coarseLagSamples: Int) -> FineMatch {
     let videoWindow = video[start..<(start + window)].map(Double.init)
     let memoStart = start - coarseLagSamples
     let memoWindow = memo[memoStart..<(memoStart + window)].map(Double.init)
@@ -152,7 +152,7 @@ enum AudioSync {
       score: (at(best) - mean) / deviation)
   }
 
-  static func peakRatio(_ best: Double, _ second: Double) -> Double {
+  public static func peakRatio(_ best: Double, _ second: Double) -> Double {
     guard best > 0 else { return 0 }
     if second == -.infinity { return 0 }
     return second > 0 ? best / second : .infinity
@@ -161,7 +161,7 @@ enum AudioSync {
   /// Circular cross-correlation over a zero-padded FFT: index `lag` (mod size)
   /// holds Σ a[k + lag]·b[k]. With `phat`, every bin is normalised to unit
   /// magnitude first (GCC-PHAT), leaving only the timing to agree on.
-  static func crossCorrelate(_ a: [Double], _ b: [Double], phat: Bool) -> [Double] {
+  public static func crossCorrelate(_ a: [Double], _ b: [Double], phat: Bool) -> [Double] {
     let size = ceilPowerOfTwo(a.count + b.count)
     let log2n = vDSP_Length(size.trailingZeroBitCount)
     var aRe = [Double](repeating: 0, count: size), aIm = [Double](repeating: 0, count: size)
@@ -195,13 +195,13 @@ enum AudioSync {
     }
   }
 
-  static func ceilPowerOfTwo(_ value: Int) -> Int {
+  public static func ceilPowerOfTwo(_ value: Int) -> Int {
     var size = 1
     while size < value { size <<= 1 }
     return size
   }
 
-  static func floorPowerOfTwo(_ value: Int) -> Int {
+  public static func floorPowerOfTwo(_ value: Int) -> Int {
     guard value >= 1 else { return 0 }
     var size = 1
     while size * 2 <= value { size <<= 1 }

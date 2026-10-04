@@ -13,9 +13,9 @@ import Foundation
 /// stereo 48 kHz): no AVFoundation, so the macOS parity harness runs it unchanged.
 
 /// The plan's gain rule (render-qa.ts's, with the limiter decoupled from it).
-enum LoudnessRules {
+public enum LoudnessRules {
   /// dB of master gain for a mix measured at `measured` LUFS (nil: every block gated, silence).
-  static func gainDb(measured: Double?, _ loudness: RenderPlan.Loudness) -> Double {
+  public static func gainDb(measured: Double?, _ loudness: RenderPlan.Loudness) -> Double {
     guard let target = loudness.targetLufs, let measured, measured.isFinite else { return 0 }
     guard measured > loudness.silentBelowLufs else { return 0 }
     guard abs(measured - target) > loudness.deadbandLu else { return 0 }
@@ -23,7 +23,7 @@ enum LoudnessRules {
   }
 
   /// The limiter runs whenever the plan normalizes at all.
-  static func limiterOn(_ loudness: RenderPlan.Loudness) -> Bool { loudness.targetLufs != nil }
+  public static func limiterOn(_ loudness: RenderPlan.Loudness) -> Bool { loudness.targetLufs != nil }
 }
 
 /// Oversampling interpolator for true peak. Windowed sinc (Kaiser, beta 8), `taps` input
@@ -36,21 +36,21 @@ enum LoudnessRules {
 /// catch what a 4x detector misses between its points on dense, hot, broadband material
 /// (a reviewer's stress test: noise driven 12 dB over full scale read -1.5 dBTP at 4x
 /// but +0.4 at 32x).
-struct TruePeakFilter {
-  let factor: Int
-  let taps: Int
-  let phases: [[Float]]
+public struct TruePeakFilter {
+  public let factor: Int
+  public let taps: Int
+  public let phases: [[Float]]
 
-  static let meter = TruePeakFilter(factor: 4, taps: 16)
-  static let limiter = TruePeakFilter(factor: 8, taps: 32)
+  public static let meter = TruePeakFilter(factor: 4, taps: 16)
+  public static let limiter = TruePeakFilter(factor: 8, taps: 32)
 
-  init(factor: Int, taps: Int) {
+  public init(factor: Int, taps: Int) {
     self.factor = factor
     self.taps = taps
     phases = (1..<factor).map { TruePeakFilter.kernel(fraction: Double($0) / Double(factor), taps: taps) }
   }
 
-  static func kernel(fraction: Double, taps: Int) -> [Float] {
+  public static func kernel(fraction: Double, taps: Int) -> [Float] {
     let half = Double(taps / 2)
     let beta = 8.0
     let norm = besselI0(beta)
@@ -79,7 +79,7 @@ struct TruePeakFilter {
 
   /// Interval peaks: out[i] = max |x(m + f/factor)| over the phases, for the interval
   /// m → m + 1 with m = i + taps/2 - 1 in `samples` coordinates. `samples.count - taps + 1` values.
-  func intervalPeaks(_ samples: [Float]) -> [Float] {
+  public func intervalPeaks(_ samples: [Float]) -> [Float] {
     let count = samples.count - taps + 1
     guard count > 0 else { return [] }
     var peak = [Float](repeating: 0, count: count)
@@ -100,9 +100,9 @@ struct TruePeakFilter {
 /// Streaming integrated loudness (BS.1770-4: K-weighting, 400 ms blocks with 75% overlap,
 /// absolute gate -70 LUFS, relative gate -10 LU) and true peak (4x oversampled), in vDSP.
 /// Feed interleaved stereo in any chunk sizes; read `integrated` / `truePeakDb` at the end.
-final class LoudnessMeter {
-  let rate: Double
-  let channels: Int
+public final class LoudnessMeter {
+  public let rate: Double
+  public let channels: Int
   /// 100 ms of samples per channel: blocks are 4 of these.
   private let hop: Int
   private var biquad: vDSP_biquad_SetupD
@@ -113,15 +113,15 @@ final class LoudnessMeter {
   private var currentSum: [Double]
   private var currentCount = 0
   /// Mean-square energy of every complete 400 ms block (gating input).
-  private(set) var blockEnergy: [Double] = []
+  public private(set) var blockEnergy: [Double] = []
   /// True peak (linear) across all channels; sample peak too.
-  private(set) var truePeak: Float = 0
-  private(set) var samplePeak: Float = 0
+  public private(set) var truePeak: Float = 0
+  public private(set) var samplePeak: Float = 0
   /// The last taps - 1 samples per channel, for the interpolator's history.
   private var history: [[Float]]
-  private(set) var frames = 0
+  public private(set) var frames = 0
 
-  init(rate: Double = 48_000, channels: Int = 2) {
+  public init(rate: Double = 48_000, channels: Int = 2) {
     self.rate = rate
     self.channels = channels
     hop = Int((rate / 10).rounded())
@@ -136,7 +136,7 @@ final class LoudnessMeter {
 
   /// BS.1770-4 pre-filter and RLB filter for any rate (the libebur128 derivation; at 48 kHz
   /// it reproduces the standard's table). vDSP order: b0 b1 b2 a1 a2 per section.
-  static func kWeighting(rate: Double) -> [Double] {
+  public static func kWeighting(rate: Double) -> [Double] {
     var f0 = 1681.974450955533, q = 0.7071752369554196
     let gain = 3.999843853973347
     var k = tan(Double.pi * f0 / rate)
@@ -153,7 +153,7 @@ final class LoudnessMeter {
     return shelf + highPass
   }
 
-  func add(interleaved samples: UnsafeBufferPointer<Float>) {
+  public func add(interleaved samples: UnsafeBufferPointer<Float>) {
     let count = samples.count / channels
     guard count > 0, let base = samples.baseAddress else { return }
     frames += count
@@ -205,12 +205,12 @@ final class LoudnessMeter {
     }
   }
 
-  func add(_ samples: [Float]) { samples.withUnsafeBufferPointer { add(interleaved: $0) } }
+  public func add(_ samples: [Float]) { samples.withUnsafeBufferPointer { add(interleaved: $0) } }
 
-  static func loudness(_ energy: Double) -> Double { -0.691 + 10 * log10(energy) }
+  public static func loudness(_ energy: Double) -> Double { -0.691 + 10 * log10(energy) }
 
   /// Integrated loudness in LUFS; nil when no block passes the absolute gate (silence).
-  var integrated: Double? {
+  public var integrated: Double? {
     let absolute = blockEnergy.filter { $0 > 0 && LoudnessMeter.loudness($0) > -70 }
     guard !absolute.isEmpty else { return nil }
     let relativeGate = LoudnessMeter.loudness(absolute.reduce(0, +) / Double(absolute.count)) - 10
@@ -220,8 +220,8 @@ final class LoudnessMeter {
   }
 
   /// True peak in dBTP; nil for digital silence.
-  var truePeakDb: Double? { truePeak > 0 ? 20 * log10(Double(truePeak)) : nil }
-  var samplePeakDb: Double? { samplePeak > 0 ? 20 * log10(Double(samplePeak)) : nil }
+  public var truePeakDb: Double? { truePeak > 0 ? 20 * log10(Double(truePeak)) : nil }
+  public var samplePeakDb: Double? { samplePeak > 0 ? 20 * log10(Double(samplePeak)) : nil }
 }
 
 /// Look-ahead true-peak limiter on interleaved stereo.
@@ -242,10 +242,10 @@ final class LoudnessMeter {
 /// gain), the first `latency` outputs (pre-roll) are dropped, and `flush()` feeds
 /// `latency` zeros to release the tail. Output sample k is input sample k: the audio
 /// keeps its timestamps, so A/V stay in sync with no video delay at all.
-final class TruePeakLimiter {
-  let ceiling: Float
-  let lookAhead: Int
-  let latency: Int
+public final class TruePeakLimiter {
+  public let ceiling: Float
+  public let lookAhead: Int
+  public let latency: Int
   private let filter = TruePeakFilter.limiter
   private let releaseCoefficient: Float
   private let channels = 2
@@ -269,11 +269,11 @@ final class TruePeakLimiter {
   private var smoothed: Float = 1
   private var emitted = 0
   /// Frames in minus frames out after the pre-roll: equals `latency` in steady state.
-  private(set) var framesIn = 0
+  public private(set) var framesIn = 0
   /// The lowest gain applied (1 = never engaged).
-  private(set) var minimumGain: Float = 1
+  public private(set) var minimumGain: Float = 1
 
-  init(ceilingDb: Double, rate: Double = 48_000, lookAheadSeconds: Double = 0.005, releaseSeconds: Double = 0.05) {
+  public init(ceilingDb: Double, rate: Double = 48_000, lookAheadSeconds: Double = 0.005, releaseSeconds: Double = 0.05) {
     ceiling = Float(pow(10, ceilingDb / 20))
     lookAhead = max(1, Int((lookAheadSeconds * rate).rounded()))
     latency = lookAhead - 1 + filter.taps / 2
@@ -284,11 +284,11 @@ final class TruePeakLimiter {
     boxSum = Float(lookAhead)
   }
 
-  var maxReductionDb: Double { minimumGain < 1 ? -20 * log10(Double(minimumGain)) : 0 }
+  public var maxReductionDb: Double { minimumGain < 1 ? -20 * log10(Double(minimumGain)) : 0 }
 
   /// Processes interleaved stereo; returns the interleaved output now available (the
   /// input delayed by `latency`, with the pre-roll already dropped).
-  func process(_ interleaved: [Float]) -> [Float] {
+  public func process(_ interleaved: [Float]) -> [Float] {
     let count = interleaved.count / channels
     guard count > 0 else { return [] }
     framesIn += count
@@ -354,7 +354,7 @@ final class TruePeakLimiter {
   }
 
   /// Releases the last `latency` frames (feeds zeros); after it, frames out == frames in.
-  func flush() -> [Float] {
+  public func flush() -> [Float] {
     let real = framesIn
     let tail = process([Float](repeating: 0, count: latency * channels))
     framesIn = real

@@ -1,6 +1,6 @@
 // Parity runner for AudioSync.swift (decision 1A). Not part of the app: the
 // podspec compiles ios/ only. server/test/sync-parity.test.ts builds this with
-//   swiftc -O ../ios/AudioSync.swift main.swift
+//   swiftc -O ../ios/Core/AudioSync.swift main.swift
 // and compares its JSON with measureSync from packages/shared/src/sync.ts.
 //
 //   usage: sync-parity <video.f32> <memo.f32>   (mono float32 LE at 8 kHz)

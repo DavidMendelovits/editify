@@ -1,6 +1,4 @@
 import AVFoundation
-import BackgroundTasks
-import Photos
 import UIKit
 import UniformTypeIdentifiers
 
@@ -43,6 +41,9 @@ import UniformTypeIdentifiers
 ///      merge starts a preview build; then check a background export on a phone that
 ///      reports .gpu.
 ///
+/// Ports: the background task goes through BackgroundExecution, the render through
+/// VideoExport, the save through PhotoLibrary, media through MediaSource (EngineAdapters).
+///
 /// Events (`exportState`): {id, state, progress, error?, notice?, mode?, fileUri?,
 /// savedToPhotos?, stats?}. `progress` is the current state's own 0...1 (writing:
 /// presented video time / duration). Sent on every state change and otherwise at most
@@ -51,6 +52,12 @@ import UniformTypeIdentifiers
 /// the next launch's sweep.
 final class ExportCenter: @unchecked Sendable {
   static let shared = ExportCenter()
+  private let adapters: EngineAdapters
+
+  init(adapters: EngineAdapters = .current) {
+    self.adapters = adapters
+  }
+
   static let filePrefix = TempFiles.exportPrefix
   typealias Emit = @Sendable ([String: Any]) -> Void
 
@@ -84,7 +91,7 @@ final class ExportCenter: @unchecked Sendable {
     var finished = false
     /// Why the run was stopped from outside (expiry, the app went to the background).
     var stopReason: String?
-    var task: BGContinuedProcessingTask?
+    var task: (any BackgroundTask)?
     var taskIdentifier: String?
     var mode = "foreground"
     var notice: String?
@@ -123,7 +130,7 @@ final class ExportCenter: @unchecked Sendable {
 
   /// What JS can know before it asks: background GPU support on this phone.
   static func capabilities() -> [String: Any] {
-    ["backgroundGPU": BGTaskScheduler.supportedResources.contains(.gpu)]
+    ["backgroundGPU": EngineAdapters.current.backgroundExecution.supportsBackgroundGPU]
   }
 
   /// Validates everything JS sent, then starts. Throws (rejecting the JS promise) for bad
@@ -175,9 +182,7 @@ final class ExportCenter: @unchecked Sendable {
     // The previous export's file (kept for its share sheet) and its still copies go now.
     Self.removeExportFiles()
     // Photos asks now, while the app is in front: a background task cannot show the prompt.
-    if destination == .photos, PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
-      _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-    }
+    if destination == .photos { await adapters.photoLibrary.requestAddAccessIfUndetermined() }
     await admit(job)
     return id
   }
@@ -188,7 +193,7 @@ final class ExportCenter: @unchecked Sendable {
     job.control.cancel()
     // Queued and never started: withdraw the request and say so.
     if !job.isStarted, job.claimStart() {
-      if let identifier = job.taskIdentifier { BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier) }
+      if let identifier = job.taskIdentifier { adapters.backgroundExecution.cancel(identifier) }
       finish(job, state: "cancelled", extra: [:])
     }
   }
@@ -214,14 +219,15 @@ final class ExportCenter: @unchecked Sendable {
   private func admit(_ job: Job) {
     let bundle = Bundle.main.bundleIdentifier ?? "com.editify.app"
     let identifier = "\(bundle).export.\(job.id)"
-    guard BGTaskScheduler.supportedResources.contains(.gpu) else {
+    let background = adapters.backgroundExecution
+    guard background.supportsBackgroundGPU else {
       return runInForeground(job, notice: "Keep Editify open until the export finishes.")
     }
     // Each identifier is registered once (iOS kills an app that registers one twice); export
     // ids are unique per run, so this only guards against a repeated admit.
     let fresh = lock.withLock { registered.insert(identifier).inserted }
-    let didRegister = fresh && BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { [weak self] task in
-      guard let self, let task = task as? BGContinuedProcessingTask else {
+    let didRegister = fresh && background.register(identifier) { [weak self] task in
+      guard let self else {
         task.setTaskCompleted(success: false)
         return
       }
@@ -230,9 +236,6 @@ final class ExportCenter: @unchecked Sendable {
     guard didRegister else {
       return runInForeground(job, notice: "Keep Editify open until the export finishes.")
     }
-    let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Exporting video", subtitle: "Starting")
-    request.strategy = .queue
-    request.requiredResources = .gpu
     // Set before submitting: the launch handler can run before submit returns.
     job.lock.withLock {
       job.taskIdentifier = identifier
@@ -240,7 +243,7 @@ final class ExportCenter: @unchecked Sendable {
       job.queuedAt = Date()
     }
     do {
-      try BGTaskScheduler.shared.submit(request)
+      try background.submit(identifier, title: "Exporting video", subtitle: "Starting")
     } catch {
       // Includes "not permitted" while the GPU entitlement is off (see the type's comment).
       job.lock.withLock { job.taskIdentifier = nil; job.mode = "foreground"; job.queuedAt = nil }
@@ -264,7 +267,7 @@ final class ExportCenter: @unchecked Sendable {
   private func fallBackIfQueuedTooLong(_ job: Job, identifier: String) {
     guard !job.isStarted, !job.control.isCancelled, UIApplication.shared.applicationState == .active,
           let queuedAt = job.lock.withLock({ job.queuedAt }), Date().timeIntervalSince(queuedAt) >= Self.queueFallbackSeconds - 0.05 else { return }
-    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+    adapters.backgroundExecution.cancel(identifier)
     runInForeground(job, notice: "iOS is busy, so this export runs while Editify stays open.")
   }
 
@@ -305,15 +308,15 @@ final class ExportCenter: @unchecked Sendable {
     }
   }
 
-  private func launched(_ job: Job, task: BGContinuedProcessingTask) {
+  private func launched(_ job: Job, task: any BackgroundTask) {
     guard job.claimStart() else {
       // Cancelled while queued, or already running in the foreground.
       task.setTaskCompleted(success: false)
       return
     }
     job.lock.withLock { job.task = task }
-    task.progress.totalUnitCount = 1000
-    task.expirationHandler = { job.stop(Self.expiredMessage) }
+    task.setProgress(completed: 0, total: 1000)
+    task.setExpirationHandler { job.stop(Self.expiredMessage) }
     Task.detached { [weak self] in await self?.run(job) }
   }
 
@@ -329,14 +332,14 @@ final class ExportCenter: @unchecked Sendable {
     send(job, state: "resolving", progress: 0)
     do {
       // Saving to Photos copies the file: room for one more of it.
-      let stats = try await PlanExporter.export(request.plan, resolver: resolver, to: output, options: request.options, control: job.control,
-                                                 extraCopies: request.destination == .photos ? 1 : 0,
-                                                 progress: { [weak self] phase, value in self?.send(job, state: phase.rawValue, progress: value) })
+      let stats = try await adapters.videoExport.export(request.plan, resolver: resolver, to: output, options: request.options, control: job.control,
+                                                        extraCopies: request.destination == .photos ? 1 : 0,
+                                                        progress: { [weak self] phase, value in self?.send(job, state: phase.rawValue, progress: value) })
       var saved = false
       if request.destination == .photos {
         if job.control.isCancelled { throw PlanExportError.cancelled }
         send(job, state: "saving", progress: 0)
-        saved = await Self.saveToPhotos(output)
+        saved = await adapters.photoLibrary.saveVideo(output)
       }
       finish(job, state: "done", extra: ["fileUri": output.absoluteString, "savedToPhotos": saved, "stats": stats.dictionary])
     } catch {
@@ -381,7 +384,7 @@ final class ExportCenter: @unchecked Sendable {
   private func send(_ job: Job, state: String, progress: Double) {
     let clamped = min(1, max(0, progress))
     let now = Date()
-    let (go, mode, notice, task) = job.lock.withLock { () -> (Bool, String, String?, BGContinuedProcessingTask?) in
+    let (go, mode, notice, task) = job.lock.withLock { () -> (Bool, String, String?, (any BackgroundTask)?) in
       guard !job.finished, ExportThrottle.shouldSend(state: state, progress: clamped, lastState: job.lastState, lastProgress: job.lastProgress,
                                            sinceLast: now.timeIntervalSince(job.lastSent)) else { return (false, job.mode, nil, nil) }
       job.lastState = state
@@ -394,7 +397,7 @@ final class ExportCenter: @unchecked Sendable {
     if let notice { body["notice"] = notice }
     job.emit(body)
     if let task {
-      task.progress.completedUnitCount = Int64(Self.overall(state, clamped) * 1000)
+      task.setProgress(completed: Int64(Self.overall(state, clamped) * 1000), total: 1000)
       let subtitle = switch state {
       case "resolving": "Preparing clips"
       case "measuring": "Measuring loudness"
@@ -418,7 +421,7 @@ final class ExportCenter: @unchecked Sendable {
     for (key, value) in extra { body[key] = value }
     job.emit(body)
     if let task = job.lock.withLock({ job.task }) {
-      if state == "done" { task.progress.completedUnitCount = 1000 }
+      if state == "done" { task.setProgress(completed: 1000, total: 1000) }
       task.setTaskCompleted(success: state == "done")
     }
     Task { @MainActor [weak self] in self?.endGrace(job) }
@@ -451,7 +454,7 @@ final class ExportCenter: @unchecked Sendable {
       guard let url = containedFileURL(ref) else { throw AssetSource.NotFound(ref: id) }
       return AVURLAsset(url: url, options: precise)
     }
-    let loaded = try await AssetSource.load(ref, allowNetwork: false)
+    let loaded = try await EngineAdapters.current.mediaSource.load(ref, allowNetwork: false, onDownload: nil)
     // Photos hands back an AVURLAsset on a file it opened for us; reopen it with precise
     // timing, keeping Photos' asset when the reopened one can't be read.
     if let urlAsset = loaded as? AVURLAsset {
@@ -474,20 +477,5 @@ final class ExportCenter: @unchecked Sendable {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)still-\(UUID().uuidString).\(ext)")
     try data.write(to: url)
     return url
-  }
-
-  /// Add-only: the app never reads the library to save. False when access was refused or
-  /// the save failed; the file stays for the share sheet either way.
-  static func saveToPhotos(_ url: URL) async -> Bool {
-    let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-    guard status == .authorized || status == .limited else { return false }
-    do {
-      try await PHPhotoLibrary.shared().performChanges {
-        PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: url, options: nil)
-      }
-      return true
-    } catch {
-      return false
-    }
   }
 }

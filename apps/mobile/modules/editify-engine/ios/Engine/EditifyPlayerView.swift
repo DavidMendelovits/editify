@@ -42,7 +42,8 @@ final class EditifyPlayerView: ExpoView {
   required init(appContext: AppContext? = nil) {
     let temps = PreviewTempFiles()
     self.temps = temps
-    core = PlanPlayer(resolver: { media in PreviewMedia.resolver(media, temps: temps) })
+    // The Playback port: EngineAdapters picks the player (and the VideoComposition it builds with).
+    core = EngineAdapters.current.playback.makePlayer(resolver: { media in PreviewMedia.resolver(media, temps: temps) })
     super.init(appContext: appContext)
     clipsToBounds = true
     backgroundColor = .black

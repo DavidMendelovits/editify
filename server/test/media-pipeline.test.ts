@@ -68,7 +68,8 @@ describe.skipIf(!required && (!hasSwift || !hasFfmpeg))('device proxy pipeline a
     ffmpeg(['-ss', '1.5', '-i', join(clips, 'audio.m4a'), '-c:a', 'aac', '-b:a', '128k', join(clips, 'audio-trim.m4a')]);
 
     const binary = join(dir, 'media-pipeline');
-    const sources = ['AnalysisMath', 'AudioDecode', 'AudioSync', 'MediaFingerprint', 'MediaStore', 'ProxyPipeline'].map((name) => join(engine, `ios/${name}.swift`));
+    const sources = ['Core/AnalysisMath', 'Engine/AudioDecode', 'Core/AnalysisSupport', 'Core/AudioSync', 'Engine/MediaFingerprint', 'Core/MediaStore', 'Engine/ProxyPipeline']
+      .map((name) => join(engine, `ios/${name}.swift`));
     // macOS 15: the log-transfer and async AVFoundation APIs the engine (iOS 26 floor) uses.
     const target = `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macos15.0`;
     execFileSync('xcrun', ['swiftc', '-O', '-target', target, ...sources, join(engine, 'parity/media-pipeline/main.swift'), '-o', binary]);

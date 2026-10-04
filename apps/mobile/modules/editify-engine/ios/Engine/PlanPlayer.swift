@@ -153,6 +153,7 @@ final class PlanPlayer {
   private let cache = PlanMediaCache()
   let graphics = OverlayBitmapCache()
   private let resolver: ([String: String]) -> PlanAssetResolver
+  private let videoComposition: PlanVideoComposition
   private var audioKey: String?
   private var audioSwapWork: DispatchWorkItem?
   private var wantsPlay = false
@@ -178,9 +179,12 @@ final class PlanPlayer {
   private var timeObserver: Any?
   private var readyItem: ObjectIdentifier?
 
-  init(fonts: PlanFonts = .shared, resolver: @escaping ([String: String]) -> PlanAssetResolver) {
+  /// `videoComposition`: the VideoComposition port's adapter every build uses (the Playback adapter passes EngineAdapters').
+  init(fonts: PlanFonts = .shared, resolver: @escaping ([String: String]) -> PlanAssetResolver,
+       videoComposition: PlanVideoComposition = ConfigurationVideoComposition()) {
     self.fonts = fonts
     self.resolver = resolver
+    self.videoComposition = videoComposition
     captions = CaptionRenderer(fonts: fonts)
     // Local files and proxies start at once; remote sources (setPlan decides) wait to minimize stalls.
     player.automaticallyWaitsToMinimizeStalling = false
@@ -289,6 +293,7 @@ final class PlanPlayer {
     if mediaRetry { changed.formUnion(refs.filter { Self.isRemote($0.value) }.map(\.key)) }
     var options = PlanBuildOptions(renderScale: renderScale(for: plan), fonts: fonts, captions: captions, media: cache)
     options.graphics = graphics
+    options.videoComposition = videoComposition
     let elapsed = { Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6 }
     do {
       let media = try await PlanBuilder.prepare(plan, resolver: resolver(refs), reusing: built?.media, invalidating: changed, cache: cache)

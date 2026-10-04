@@ -129,7 +129,9 @@ beforeAll(async () => {
   if (!swiftAvailable) return;
   dir = mkdtempSync(join(tmpdir(), 'editify-device-export-'));
   const binary = join(dir, 'export-harness');
-  const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath', 'Loudness', 'PlanExporter']
+  // As render-golden.test.ts, plus the exporter and its Core types.
+  const sources = ['Core/RenderPlan', 'Engine/PlanBuilder', 'Engine/EditifyCompositor', 'Core/CaptionRenderer', 'Core/OverlayGraphics', 'Core/AnalysisMath',
+    'Core/Loudness', 'Engine/PlanExporter', 'Core/PlanExport', 'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/Adapters/ConfigurationVideoComposition']
     .map((name) => join(engine, 'ios', `${name}.swift`));
   const harness = [join(engine, 'parity/render-golden/HarnessMedia.swift'), join(engine, 'parity/export/main.swift')];
   // Async: the build and the exports take a while on a CI runner (see render-golden.test.ts).

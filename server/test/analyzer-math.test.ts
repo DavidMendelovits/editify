@@ -22,7 +22,7 @@ describe.skipIf(!hasSwift)('AnalysisMath.swift smoke checks', () => {
   it('passes every check', () => {
     dir = mkdtempSync(join(tmpdir(), 'editify-analyzer-math-'));
     const binary = join(dir, 'analyzer-math');
-    execFileSync('xcrun', ['swiftc', '-O', join(engine, 'ios/AnalysisMath.swift'), join(engine, 'parity/analyzer-math/main.swift'), '-o', binary]);
+    execFileSync('xcrun', ['swiftc', '-O', join(engine, 'ios/Core/AnalysisMath.swift'), join(engine, 'parity/analyzer-math/main.swift'), '-o', binary]);
     const run = spawnSync(binary, { encoding: 'utf8' });
     expect(run.stderr).toBe('');
     expect(run.stdout.trim()).toBe('ok');

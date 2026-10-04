@@ -10,206 +10,206 @@ import Foundation
 /// requires. `RenderPlan.decode` refuses a wrong `version`, any `requires`
 /// feature this executor does not draw, anything over PLAN_LIMITS, and the
 /// structural rules the executor leans on (segment tiling, key order, spans).
-struct RenderPlan: Decodable, Sendable {
+public struct RenderPlan: Decodable, Sendable {
   /// The schema version this executor implements (RENDER_PLAN_VERSION).
-  static let version = 1
+  public static let version = 1
   /// Critical features beyond v1 this executor draws (RENDER_PLAN_FEATURES on the TS side). Empty for v1.
-  static let supportedFeatures: [String] = []
+  public static let supportedFeatures: [String] = []
   /// RENDER_PLAN_EPSILON: float slack for builder-computed times.
-  static let epsilon = 1e-6
+  public static let epsilon = 1e-6
 
-  let version: Int
-  let requires: [String]
-  let revision: Int
-  let buildSeq: Int
-  let size: Size
-  let fps: Int
-  let duration: Double
-  let color: OutputColor
-  let background: PlanColor
-  let loudness: Loudness
-  let video: Video
-  let overlays: [Overlay]
-  let captions: [Caption]
-  let audio: [AudioEntry]
+  public let version: Int
+  public let requires: [String]
+  public let revision: Int
+  public let buildSeq: Int
+  public let size: Size
+  public let fps: Int
+  public let duration: Double
+  public let color: OutputColor
+  public let background: PlanColor
+  public let loudness: Loudness
+  public let video: Video
+  public let overlays: [Overlay]
+  public let captions: [Caption]
+  public let audio: [AudioEntry]
 
-  struct Size: Decodable, Sendable { let w: Int; let h: Int }
+  public struct Size: Decodable, Sendable { public let w: Int; public let h: Int }
 
-  enum OutputColor: String, Decodable, Sendable { case sdr, hlg }
+  public enum OutputColor: String, Decodable, Sendable { case sdr, hlg }
 
-  struct Loudness: Decodable, Sendable {
-    let targetLufs: Double?
-    let deadbandLu: Double
-    let silentBelowLufs: Double
-    let limiterCeilingDb: Double
-    let truePeakLimitDb: Double
+  public struct Loudness: Decodable, Sendable {
+    public let targetLufs: Double?
+    public let deadbandLu: Double
+    public let silentBelowLufs: Double
+    public let limiterCeilingDb: Double
+    public let truePeakLimitDb: Double
   }
 
-  struct Video: Decodable, Sendable { let segments: [Segment] }
+  public struct Video: Decodable, Sendable { public let segments: [Segment] }
 
-  struct AssetRef: Decodable, Sendable, Hashable {
-    enum Kind: String, Decodable, Sendable { case video, audio, image }
-    let id: String
-    let kind: Kind
+  public struct AssetRef: Decodable, Sendable, Hashable {
+    public enum Kind: String, Decodable, Sendable { case video, audio, image }
+    public let id: String
+    public let kind: Kind
   }
 
   /// One crop/zoom pose; the convention is the schema's (AnalysisMath.cropPlacement implements it).
-  struct CropKey: Decodable, Sendable { let t: Double; let scale: Double; let x: Double; let y: Double }
-  struct UnitKey: Decodable, Sendable { let t: Double; let value: Double }
-  struct Hold: Decodable, Sendable { let frameAt: Double }
+  public struct CropKey: Decodable, Sendable { public let t: Double; public let scale: Double; public let x: Double; public let y: Double }
+  public struct UnitKey: Decodable, Sendable { public let t: Double; public let value: Double }
+  public struct Hold: Decodable, Sendable { public let frameAt: Double }
 
-  struct Layer: Decodable, Sendable {
-    let clipId: String
-    let trackIndex: Int
-    let z: Int
-    let assetRef: AssetRef
-    let srcStart: Double
-    let speed: Double
-    let cropKeys: [CropKey]
-    let opacityKeys: [UnitKey]
-    let dimKeys: [UnitKey]
-    let hold: Hold?
+  public struct Layer: Decodable, Sendable {
+    public let clipId: String
+    public let trackIndex: Int
+    public let z: Int
+    public let assetRef: AssetRef
+    public let srcStart: Double
+    public let speed: Double
+    public let cropKeys: [CropKey]
+    public let opacityKeys: [UnitKey]
+    public let dimKeys: [UnitKey]
+    public let hold: Hold?
   }
 
-  struct Segment: Decodable, Sendable {
-    let start: Double
-    let end: Double
-    let layers: [Layer]
+  public struct Segment: Decodable, Sendable {
+    public let start: Double
+    public let end: Double
+    public let layers: [Layer]
   }
 
-  struct Box: Decodable, Sendable { let x: Double; let y: Double; let w: Double; let h: Double; let rotationDeg: Double }
+  public struct Box: Decodable, Sendable { public let x: Double; public let y: Double; public let w: Double; public let h: Double; public let rotationDeg: Double }
 
-  struct OverlayMedia: Decodable, Sendable {
-    let assetRef: AssetRef
-    let srcStart: Double
-    let speed: Double
-    let loop: Bool?
+  public struct OverlayMedia: Decodable, Sendable {
+    public let assetRef: AssetRef
+    public let srcStart: Double
+    public let speed: Double
+    public let loop: Bool?
   }
 
-  struct Emoji: Decodable, Sendable {
-    let text: String
-    let sizePx: Double
-    let x: Double
-    let y: Double
-    let width: Double
+  public struct Emoji: Decodable, Sendable {
+    public let text: String
+    public let sizePx: Double
+    public let x: Double
+    public let y: Double
+    public let width: Double
   }
 
-  struct Callout: Decodable, Sendable {
-    enum Variant: String, Decodable, Sendable { case check, x, card }
-    struct Card: Decodable, Sendable { let x: Double; let y: Double; let w: Double; let h: Double; let radiusPx: Double; let color: PlanColor }
-    struct Glyph: Decodable, Sendable {
-      enum Shape: String, Decodable, Sendable { case check, cross }
-      let shape: Shape
-      let x: Double; let y: Double; let w: Double; let h: Double
-      let strokePx: Double
-      let color: PlanColor
+  public struct Callout: Decodable, Sendable {
+    public enum Variant: String, Decodable, Sendable { case check, x, card }
+    public struct Card: Decodable, Sendable { public let x: Double; public let y: Double; public let w: Double; public let h: Double; public let radiusPx: Double; public let color: PlanColor }
+    public struct Glyph: Decodable, Sendable {
+      public enum Shape: String, Decodable, Sendable { case check, cross }
+      public let shape: Shape
+      public let x: Double; public let y: Double; public let w: Double; public let h: Double
+      public let strokePx: Double
+      public let color: PlanColor
     }
-    struct Label: Decodable, Sendable {
-      let text: String
-      let font: PlanFontFace
-      let sizePx: Double
-      let x: Double
-      let y: Double
-      let width: Double
-      let color: PlanColor
+    public struct Label: Decodable, Sendable {
+      public let text: String
+      public let font: PlanFontFace
+      public let sizePx: Double
+      public let x: Double
+      public let y: Double
+      public let width: Double
+      public let color: PlanColor
     }
-    let variant: Variant
-    let card: Card
-    let glyph: Glyph?
-    let label: Label
+    public let variant: Variant
+    public let card: Card
+    public let glyph: Glyph?
+    public let label: Label
   }
 
-  struct Overlay: Decodable, Sendable {
-    enum Kind: String, Decodable, Sendable { case image, gif, emoji, callout, broll }
-    let id: String
-    let kind: Kind
-    let z: Int
-    let start: Double
-    let end: Double
-    let box: Box
-    let media: OverlayMedia?
-    let emoji: Emoji?
-    let callout: Callout?
+  public struct Overlay: Decodable, Sendable {
+    public enum Kind: String, Decodable, Sendable { case image, gif, emoji, callout, broll }
+    public let id: String
+    public let kind: Kind
+    public let z: Int
+    public let start: Double
+    public let end: Double
+    public let box: Box
+    public let media: OverlayMedia?
+    public let emoji: Emoji?
+    public let callout: Callout?
     /// For executors that cannot draw the payload. This one draws it, so the raster is never resolved.
-    let raster: AssetRef?
+    public let raster: AssetRef?
   }
 
-  struct Word: Decodable, Sendable { let w: String; let s: Double; let e: Double; let x: Double }
+  public struct Word: Decodable, Sendable { public let w: String; public let s: Double; public let e: Double; public let x: Double }
 
-  struct Line: Decodable, Sendable {
-    let text: String
-    let x: Double
-    let y: Double
-    let width: Double
-    let words: [Word]?
+  public struct Line: Decodable, Sendable {
+    public let text: String
+    public let x: Double
+    public let y: Double
+    public let width: Double
+    public let words: [Word]?
   }
 
-  struct Shadow: Decodable, Sendable { let color: PlanColor; let opacity: Double; let offsetPx: Double }
-  struct CaptionBox: Decodable, Sendable { let color: PlanColor; let opacity: Double; let padPx: Double; let radiusPx: Double }
-  struct Fitted: Decodable, Sendable { let shrunk: Bool; let scale: Double }
+  public struct Shadow: Decodable, Sendable { public let color: PlanColor; public let opacity: Double; public let offsetPx: Double }
+  public struct CaptionBox: Decodable, Sendable { public let color: PlanColor; public let opacity: Double; public let padPx: Double; public let radiusPx: Double }
+  public struct Fitted: Decodable, Sendable { public let shrunk: Bool; public let scale: Double }
 
-  struct Caption: Decodable, Sendable {
-    enum Align: String, Decodable, Sendable { case left, center, right }
-    let id: String
-    let rev: String
-    let start: Double
-    let end: Double
-    let lane: Int
-    let font: PlanFontFace
-    let sizePx: Double
-    let color: PlanColor
-    let strokeColor: PlanColor
-    let strokePx: Double
-    let emphasisColor: PlanColor
-    let shadow: Shadow?
-    let box: CaptionBox?
-    let align: Align
-    let lines: [Line]
-    let fitted: Fitted
+  public struct Caption: Decodable, Sendable {
+    public enum Align: String, Decodable, Sendable { case left, center, right }
+    public let id: String
+    public let rev: String
+    public let start: Double
+    public let end: Double
+    public let lane: Int
+    public let font: PlanFontFace
+    public let sizePx: Double
+    public let color: PlanColor
+    public let strokeColor: PlanColor
+    public let strokePx: Double
+    public let emphasisColor: PlanColor
+    public let shadow: Shadow?
+    public let box: CaptionBox?
+    public let align: Align
+    public let lines: [Line]
+    public let fitted: Fitted
   }
 
-  struct Fade: Decodable, Sendable {
-    enum Curve: String, Decodable, Sendable { case linear, halfSine }
-    let duration: Double
-    let curve: Curve
+  public struct Fade: Decodable, Sendable {
+    public enum Curve: String, Decodable, Sendable { case linear, halfSine }
+    public let duration: Double
+    public let curve: Curve
   }
 
-  struct GainKey: Decodable, Sendable { let t: Double; let gain: Double }
+  public struct GainKey: Decodable, Sendable { public let t: Double; public let gain: Double }
 
-  struct AudioEntry: Decodable, Sendable {
-    let id: String
-    let clipId: String
-    let assetRef: AssetRef
-    let at: Double
-    let `in`: Double
-    let out: Double
-    let speed: Double
-    let gainKeys: [GainKey]
-    let fadeIn: Fade
-    let fadeOut: Fade
+  public struct AudioEntry: Decodable, Sendable {
+    public let id: String
+    public let clipId: String
+    public let assetRef: AssetRef
+    public let at: Double
+    public let `in`: Double
+    public let out: Double
+    public let speed: Double
+    public let gainKeys: [GainKey]
+    public let fadeIn: Fade
+    public let fadeOut: Fade
 
     /// Timeline second the entry stops playing (audioEntryEnd).
-    var end: Double { at + (out - `in`) / speed }
+    public var end: Double { at + (out - `in`) / speed }
   }
 }
 
 /// PLAN_FONT_FACES: the PostScript names of the bundled font files.
-enum PlanFontFace: String, Decodable, Sendable, CaseIterable {
+public enum PlanFontFace: String, Decodable, Sendable, CaseIterable {
   case montserratBold = "Montserrat-Bold"
 }
 
 /// A `#RRGGBB` or `#RRGGBBAA` colour, sRGB-encoded (BT.709 primaries, sRGB transfer).
-struct PlanColor: Decodable, Sendable, Hashable {
-  let red: CGFloat
-  let green: CGFloat
-  let blue: CGFloat
-  let alpha: CGFloat
+public struct PlanColor: Decodable, Sendable, Hashable {
+  public let red: CGFloat
+  public let green: CGFloat
+  public let blue: CGFloat
+  public let alpha: CGFloat
 
-  init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat = 1) {
+  public init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat = 1) {
     self.red = red; self.green = green; self.blue = blue; self.alpha = alpha
   }
 
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let text = try decoder.singleValueContainer().decode(String.self)
     guard let parsed = PlanColor(hex: text) else {
       throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "expected a #RRGGBB or #RRGGBBAA colour"))
@@ -217,7 +217,7 @@ struct PlanColor: Decodable, Sendable, Hashable {
     self = parsed
   }
 
-  init?(hex: String) {
+  public init?(hex: String) {
     let digits = Array(hex.utf8)
     guard digits.first == UInt8(ascii: "#"), digits.count == 7 || digits.count == 9 else { return nil }
     var bytes: [CGFloat] = []
@@ -231,34 +231,34 @@ struct PlanColor: Decodable, Sendable, Hashable {
   }
 
   /// The colour in sRGB, for Core Graphics drawing.
-  var cgColor: CGColor {
+  public var cgColor: CGColor {
     CGColor(colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, components: [red, green, blue, alpha])!
   }
 }
 
 /// PLAN_LIMITS from render-plan-schema.ts: hard caps on hostile input.
-enum PlanLimits {
-  static let longSidePx = 3840
-  static let shortSidePx = 2160
-  static let durationSec = 4.0 * 60 * 60
-  static let textChars = 500
-  static let idChars = 128
-  static let requires = 32
-  static let segments = 20_000
-  static let layersPerSegment = 32
-  static let keys = 50_000
-  static let overlays = 2_000
-  static let captions = 10_000
-  static let linesPerCaption = 12
-  static let wordsPerLine = 200
-  static let audio = 2_000
+public enum PlanLimits {
+  public static let longSidePx = 3840
+  public static let shortSidePx = 2160
+  public static let durationSec = 4.0 * 60 * 60
+  public static let textChars = 500
+  public static let idChars = 128
+  public static let requires = 32
+  public static let segments = 20_000
+  public static let layersPerSegment = 32
+  public static let keys = 50_000
+  public static let overlays = 2_000
+  public static let captions = 10_000
+  public static let linesPerCaption = 12
+  public static let wordsPerLine = 200
+  public static let audio = 2_000
   /// Not in PLAN_LIMITS: a byte cap checked before JSON parsing, so a hostile
   /// payload is refused before it is materialised. A plan at every array cap
   /// is far smaller than this.
-  static let planBytes = 64 << 20
+  public static let planBytes = 64 << 20
 }
 
-enum RenderPlanError: Error, LocalizedError, Equatable {
+public enum RenderPlanError: Error, LocalizedError, Equatable {
   case unsupportedVersion(Int)
   /// The plan requires features this executor does not draw (bounded list, names truncated).
   case unsupportedFeatures([String])
@@ -266,7 +266,7 @@ enum RenderPlanError: Error, LocalizedError, Equatable {
   case invalid(String)
   case tooLarge(Int)
 
-  var errorDescription: String? {
+  public var errorDescription: String? {
     switch self {
     case .unsupportedVersion(let version): return "Render plan version \(version) is not supported (this renderer draws v\(RenderPlan.version))"
     case .unsupportedFeatures(let names): return "This renderer cannot draw a plan that requires: \(names.joined(separator: ", "))"
@@ -280,7 +280,7 @@ enum RenderPlanError: Error, LocalizedError, Equatable {
 extension RenderPlan {
   /// The executor's parse: byte cap, version, `requires`, then the full decode
   /// (unknown keys ignored) and validation.
-  static func decode(_ data: Data, supported: [String] = RenderPlan.supportedFeatures) throws -> RenderPlan {
+  public static func decode(_ data: Data, supported: [String] = RenderPlan.supportedFeatures) throws -> RenderPlan {
     guard data.count <= PlanLimits.planBytes else { throw RenderPlanError.tooLarge(data.count) }
     struct Head: Decodable { let version: Int?; let requires: [String]? }
     let head: Head
@@ -300,15 +300,15 @@ extension RenderPlan {
   }
 
   /// Output frames: ceil(duration * fps - 1e-6) (planFrameCount).
-  var frameCount: Int { max(0, Int((duration * Double(fps) - RenderPlan.epsilon).rounded(.up))) }
+  public var frameCount: Int { max(0, Int((duration * Double(fps) - RenderPlan.epsilon).rounded(.up))) }
 
   /// The frame index of a time already on the 1/fps grid (segment edges).
-  func gridFrame(_ t: Double) -> Int64 { Int64((t * Double(fps)).rounded()) }
+  public func gridFrame(_ t: Double) -> Int64 { Int64((t * Double(fps)).rounded()) }
 
   // MARK: Validation
 
   // swiftlint:disable:next cyclomatic_complexity function_body_length
-  func validate() throws {
+  public func validate() throws {
     func limit(_ ok: Bool, _ what: @autoclosure () -> String) throws { if !ok { throw RenderPlanError.overLimit(what()) } }
     func check(_ ok: Bool, _ what: @autoclosure () -> String) throws { if !ok { throw RenderPlanError.invalid(what()) } }
     func id(_ value: String, _ what: String) throws {
@@ -498,8 +498,8 @@ extension RenderPlan {
 
 /// Keyframe lookup shared by the compositor and the audio mix: linear between
 /// neighbours, first/last value held outside the keys (schema: Keyframes).
-enum PlanKeys {
-  static func value(at t: Double, times: [Double], values: [Double], empty: Double) -> Double {
+public enum PlanKeys {
+  public static func value(at t: Double, times: [Double], values: [Double], empty: Double) -> Double {
     guard let first = times.first, let last = times.last else { return empty }
     if t <= first { return values[0] }
     if t >= last { return values[values.count - 1] }
@@ -514,11 +514,11 @@ enum PlanKeys {
     return values[low] + (values[high] - values[low]) * p
   }
 
-  static func unit(_ keys: [RenderPlan.UnitKey], at t: Double, empty: Double) -> Double {
+  public static func unit(_ keys: [RenderPlan.UnitKey], at t: Double, empty: Double) -> Double {
     value(at: t, times: keys.map(\.t), values: keys.map(\.value), empty: empty)
   }
 
-  static func crop(_ keys: [RenderPlan.CropKey], at t: Double) -> (scale: Double, x: Double, y: Double) {
+  public static func crop(_ keys: [RenderPlan.CropKey], at t: Double) -> (scale: Double, x: Double, y: Double) {
     let times = keys.map(\.t)
     return (value(at: t, times: times, values: keys.map(\.scale), empty: 1),
             value(at: t, times: times, values: keys.map(\.x), empty: 0),
@@ -530,11 +530,13 @@ enum PlanKeys {
 /// order by (revision, buildSeq), and anything not strictly newer than the
 /// last accepted plan is dropped. buildSeq is per JS session, so a new
 /// receiver starts fresh and accepts its first plan whatever it carries.
-struct PlanOrdering {
-  private(set) var latest: (revision: Int, buildSeq: Int)?
+public struct PlanOrdering {
+  public private(set) var latest: (revision: Int, buildSeq: Int)?
+
+  public init() {}
 
   /// True when `plan` should replace the current one (and records it).
-  mutating func accept(revision: Int, buildSeq: Int) -> Bool {
+  public mutating func accept(revision: Int, buildSeq: Int) -> Bool {
     if let latest, (revision, buildSeq) <= latest { return false }
     latest = (revision, buildSeq)
     return true

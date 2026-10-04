@@ -4,19 +4,19 @@ import CoreText
 import Foundation
 import ImageIO
 
-struct PlanImageUnreadable: Error, LocalizedError {
-  let name: String
-  var errorDescription: String? { "Image \(name) could not be read" }
+public struct PlanImageUnreadable: Error, LocalizedError {
+  public let name: String
+  public var errorDescription: String? { "Image \(name) could not be read" }
 }
 
 /// An image file's upright size (EXIF orientation applied), read from its
 /// properties without decoding pixels.
-struct PlanImageInfo {
-  let uprightWidth: Int
-  let uprightHeight: Int
-  let frameCount: Int
+public struct PlanImageInfo {
+  public let uprightWidth: Int
+  public let uprightHeight: Int
+  public let frameCount: Int
 
-  static func read(_ source: CGImageSource, name: String) throws -> PlanImageInfo {
+  public static func read(_ source: CGImageSource, name: String) throws -> PlanImageInfo {
     guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
           let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
           let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, width > 0, height > 0 else {
@@ -30,7 +30,7 @@ struct PlanImageInfo {
 
   /// The longest side to decode so a picture drawn `width` x `height` output
   /// pixels (stretched or cover-fitted) is never upscaled from a smaller decode.
-  func longSide(toCover width: CGFloat, _ height: CGFloat) -> Int {
+  public func longSide(toCover width: CGFloat, _ height: CGFloat) -> Int {
     let factor = max(width / CGFloat(uprightWidth), height / CGFloat(uprightHeight))
     return min(max(uprightWidth, uprightHeight), Int((factor * CGFloat(max(uprightWidth, uprightHeight))).rounded(.up)))
   }
@@ -38,19 +38,19 @@ struct PlanImageInfo {
 
 /// A GIF's timing (frames decode lazily through PlanMediaCache). Delays under
 /// 2 cs play as 10 cs, as browsers and ffmpeg do (schema: MEDIA).
-struct PlanGif {
-  let url: URL
+public struct PlanGif {
+  public let url: URL
   /// Kept open: every frame decodes from this one source (ImageIO reuses the
   /// previous frame when composing the next instead of re-reading the file).
-  let source: CGImageSource
-  let info: PlanImageInfo
+  public let source: CGImageSource
+  public let info: PlanImageInfo
   /// Start time of each frame within one loop, and the loop length.
-  let starts: [Double]
-  let total: Double
+  public let starts: [Double]
+  public let total: Double
 
-  static func clampedDelay(_ seconds: Double) -> Double { seconds < 0.02 - 1e-9 ? 0.1 : seconds }
+  public static func clampedDelay(_ seconds: Double) -> Double { seconds < 0.02 - 1e-9 ? 0.1 : seconds }
 
-  static func read(_ url: URL) throws -> PlanGif {
+  public static func read(_ url: URL) throws -> PlanGif {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { throw PlanImageUnreadable(name: url.lastPathComponent) }
     let info = try PlanImageInfo.read(source, name: url.lastPathComponent)
     var starts: [Double] = []
@@ -69,7 +69,7 @@ struct PlanGif {
   }
 
   /// The frame index showing at media time `time` (the latest frame starting at or before it).
-  func frameIndex(at time: Double, loop: Bool) -> Int {
+  public func frameIndex(at time: Double, loop: Bool) -> Int {
     var local = time
     if loop, total > 0 {
       local = time.truncatingRemainder(dividingBy: total)
@@ -88,20 +88,20 @@ struct PlanGif {
 /// Decoded stills and GIF frames, downsampled to the size they are drawn at
 /// and kept in a byte-budgeted LRU. A player owns one across rebuilds, so a
 /// 60 Hz edit never decodes an image twice.
-final class PlanMediaCache: @unchecked Sendable {
+public final class PlanMediaCache: @unchecked Sendable {
   private struct Key: Hashable { let path: String; let index: Int; let longSide: Int }
   private let images: ByteLRU<Key, CIImage>
   private var gifs: [String: PlanGif] = [:]
   private var infos: [String: PlanImageInfo] = [:]
   private let lock = NSLock()
 
-  init(budgetBytes: Int = 96 << 20) { images = ByteLRU(budget: budgetBytes) }
+  public init(budgetBytes: Int = 96 << 20) { images = ByteLRU(budget: budgetBytes) }
 
-  var cachedImages: Int { images.count }
-  var cachedBytes: Int { images.bytes }
-  var budgetBytes: Int { images.budget }
+  public var cachedImages: Int { images.count }
+  public var cachedBytes: Int { images.bytes }
+  public var budgetBytes: Int { images.budget }
 
-  func info(_ url: URL) throws -> PlanImageInfo {
+  public func info(_ url: URL) throws -> PlanImageInfo {
     lock.lock(); defer { lock.unlock() }
     if let cached = infos[url.path] { return cached }
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { throw PlanImageUnreadable(name: url.lastPathComponent) }
@@ -111,10 +111,10 @@ final class PlanMediaCache: @unchecked Sendable {
   }
 
   /// Memory pressure: every decoded image goes (they decode again on demand); sizes and GIF timing stay.
-  func trim() { images.removeAll() }
+  public func trim() { images.removeAll() }
 
   /// Drops everything decoded from `url` (its file changed under the same path).
-  func forget(_ url: URL) {
+  public func forget(_ url: URL) {
     lock.lock()
     infos[url.path] = nil
     gifs[url.path] = nil
@@ -122,7 +122,7 @@ final class PlanMediaCache: @unchecked Sendable {
     images.removeAll { $0.path == url.path }
   }
 
-    func gif(_ url: URL) throws -> PlanGif {
+    public func gif(_ url: URL) throws -> PlanGif {
     lock.lock()
     if let cached = gifs[url.path] { lock.unlock(); return cached }
     lock.unlock()
@@ -133,7 +133,7 @@ final class PlanMediaCache: @unchecked Sendable {
 
   /// Frame `index` of `url`, upright (EXIF applied), its longest side at most
   /// `longSide`, extent at the origin. Decoded on first use.
-  func image(_ url: URL, index: Int = 0, longSide: Int) throws -> CIImage {
+  public func image(_ url: URL, index: Int = 0, longSide: Int) throws -> CIImage {
     let key = Key(path: url.path, index: index, longSide: longSide)
     if let cached = images.value(for: key) { return cached }
     lock.lock()
@@ -158,15 +158,15 @@ final class PlanMediaCache: @unchecked Sendable {
 /// Emoji and callout payloads drawn into box-local bitmaps (box-local pixels:
 /// origin top-left of the unrotated box, y down). The bitmap carries a margin
 /// so ink past the box edge is not clipped; `margin` is in plan pixels.
-enum OverlayGraphics {
-  struct Drawn {
-    let image: CGImage
-    let margin: CGFloat
+public enum OverlayGraphics {
+  public struct Drawn {
+    public let image: CGImage
+    public let margin: CGFloat
   }
 
   /// Apple Color Emoji at sizePx, pen at (x, y) with y the baseline. The
   /// builder already fitted size and pen to the box; nothing is re-fitted here.
-  static func emoji(_ emoji: RenderPlan.Emoji, box: RenderPlan.Box, scale: CGFloat) -> Drawn? {
+  public static func emoji(_ emoji: RenderPlan.Emoji, box: RenderPlan.Box, scale: CGFloat) -> Drawn? {
     let font = CTFontCreateWithName("AppleColorEmoji" as CFString, CGFloat(emoji.sizePx) * scale, nil)
     // Emoji sequences are ligatures in the font: they stay on.
     let line = TextPainter.line(emoji.text, font: font, ligatures: true)
@@ -178,7 +178,7 @@ enum OverlayGraphics {
   }
 
   /// A callout card: rounded card, vector glyph (round caps and joins), one-line label.
-  static func callout(_ callout: RenderPlan.Callout, box: RenderPlan.Box, fonts: PlanFonts, scale: CGFloat) throws -> Drawn? {
+  public static func callout(_ callout: RenderPlan.Callout, box: RenderPlan.Box, fonts: PlanFonts, scale: CGFloat) throws -> Drawn? {
     let font = try fonts.font(callout.label.font, size: CGFloat(callout.label.sizePx) * scale)
     let label = TextPainter.line(callout.label.text, font: font)
     return draw(box: box, margin: 2, scale: scale) { context, point in
@@ -239,26 +239,26 @@ enum OverlayGraphics {
 /// Emoji and callout bitmaps by everything that draws them (payload, box size, scale). A
 /// player passes one to every build, so a parameter-only update redraws only the sticker
 /// that changed instead of every sticker each tick; export draws without it.
-final class OverlayBitmapCache: @unchecked Sendable {
+public final class OverlayBitmapCache: @unchecked Sendable {
   private let entries: ByteLRU<String, OverlayGraphics.Drawn>
   private let lock = NSLock()
   private var drawCount = 0
 
-  init(budgetBytes: Int = 32 << 20) { entries = ByteLRU(budget: budgetBytes) }
+  public init(budgetBytes: Int = 32 << 20) { entries = ByteLRU(budget: budgetBytes) }
 
   /// Bitmaps drawn (cache misses) so far.
-  var draws: Int { lock.withLock { drawCount } }
-  var count: Int { entries.count }
+  public var draws: Int { lock.withLock { drawCount } }
+  public var count: Int { entries.count }
 
-  func removeAll() { entries.removeAll() }
+  public func removeAll() { entries.removeAll() }
 
-  func emoji(_ emoji: RenderPlan.Emoji, box: RenderPlan.Box, scale: CGFloat) -> OverlayGraphics.Drawn? {
+  public func emoji(_ emoji: RenderPlan.Emoji, box: RenderPlan.Box, scale: CGFloat) -> OverlayGraphics.Drawn? {
     cached("e|\(emoji.text)|\(emoji.sizePx)|\(emoji.x)|\(emoji.y)|\(emoji.width)|\(box.w)|\(box.h)|\(scale)") {
       OverlayGraphics.emoji(emoji, box: box, scale: scale)
     }
   }
 
-  func callout(_ callout: RenderPlan.Callout, box: RenderPlan.Box, fonts: PlanFonts, scale: CGFloat) throws -> OverlayGraphics.Drawn? {
+  public func callout(_ callout: RenderPlan.Callout, box: RenderPlan.Box, fonts: PlanFonts, scale: CGFloat) throws -> OverlayGraphics.Drawn? {
     try cached("c|\(String(describing: callout))|\(box.w)|\(box.h)|\(scale)") {
       try OverlayGraphics.callout(callout, box: box, fonts: fonts, scale: scale)
     }

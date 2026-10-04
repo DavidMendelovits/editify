@@ -1,6 +1,6 @@
 {
  "goldens": "apps/mobile/modules/editify-engine/parity/goldens",
- "fonts": "apps/mobile/modules/editify-engine/ios/Fonts",
+ "fonts": "apps/mobile/modules/editify-engine/ios/Core/Fonts",
  "media": {
   "asset-talk": {
    "kind": "video",

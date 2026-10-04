@@ -35,34 +35,17 @@ import Foundation
 /// passes it with its playback/focus calls; the first call or `reset` from a newer epoch
 /// clears what an older context left (a reload mid-scrub would otherwise hold the heavy
 /// lane forever), and calls from an older epoch are ignored.
+///
+/// Ports and adapters: the decisions (part ranks, lane order, the heavy and proxy gates, the
+/// proxy key, the audio cache budget) are AnalysisPolicy in Core; the media goes through
+/// the ports EngineAdapters.current picked (MediaSource, AudioDecoder, Transcriber,
+/// SoundClassifier, FaceDetector, Proxy, DeviceProfile). This actor owns the state.
 actor AnalysisScheduler {
   static let shared = AnalysisScheduler()
 
-  enum Part: String, CaseIterable, Sendable {
-    case decode, words, proxy, laughter, energy, faces
-
-    var rank: Int { Part.allCases.firstIndex(of: self)! }
-    var heavy: Bool { self == .words || self == .proxy || self == .faces }
-    var version: String { AnalyzerVersion.all[rawValue]! }
-    /// What `analyze` queues when no parts are named: every analyzer, not the proxy.
-    static let analysisDefaults = allCases.filter { $0 != .proxy }
-  }
-
-  struct Job: Sendable {
-    let assetId: String
-    let ref: String
-    let part: Part
-    let seq: Int
-    /// The asset's generation when queued; `cancel` bumps it so a late result is dropped.
-    let generation: Int
-    let options: Options
-  }
-
-  struct Options: Sendable {
-    var facesFps = 2.0
-    var locale: String?
-    var allowModelDownload = true
-  }
+  typealias Part = AnalysisPart
+  typealias Job = AnalysisJob
+  typealias Options = AnalysisOptions
 
   typealias Emit = @Sendable (_ event: String, _ body: [String: Any]) -> Void
 
@@ -87,7 +70,7 @@ actor AnalysisScheduler {
   private var preempted: Set<Int> = []
   /// Proxies wait until then after playback/export stop (idle debounce).
   private var proxyResumeAt: ContinuousClock.Instant?
-  static let proxyResumeDelay: Duration = .seconds(4)
+  static let proxyResumeDelay = AnalysisPolicy.proxyResumeDelay
   private(set) var heavyFraction = 0.0
   /// The largest single progress step of the running heavy part (its granularity).
   private(set) var heavyStep = 0.0
@@ -97,9 +80,11 @@ actor AnalysisScheduler {
   private var emitterEpoch = 0
   private var emit: Emit?
   private var thermalObserver: NSObjectProtocol?
+  private let adapters: EngineAdapters
 
-  /// Decoded 8 kHz audio kept for sync/energy; ~32 MB is about 17 minutes of audio.
-  private static let pcmBudgetSamples = 8_000_000
+  init(adapters: EngineAdapters = .current) {
+    self.adapters = adapters
+  }
 
   /// `epoch`: the module instance's context; an older instance can't replace a newer one's emitter.
   func setEmitter(_ emit: Emit?, epoch caller: Int) {
@@ -142,8 +127,8 @@ actor AnalysisScheduler {
     let parts = requested?.compactMap(Part.init(rawValue:)) ?? Part.analysisDefaults
     let generation = generations[assetId, default: 0]
     for part in parts {
-      if !force, let done = results[assetId]?[part], done.status == "ready", done.analyzerVersion == part.version,
-         part != .proxy || ProxyStore.shared.existing(assetId) != nil { continue }
+      if !force, AnalysisPolicy.isFresh(results[assetId]?[part], part: part,
+                                        proxyOnDisk: part == .proxy && ProxyStore.shared.existing(assetId) != nil) { continue }
       if queue.contains(where: { $0.assetId == assetId && $0.part == part }) { continue }
       if running.values.contains(where: { $0.job.assetId == assetId && $0.job.part == part && $0.job.generation == generation }) { continue }
       seq += 1
@@ -209,7 +194,7 @@ actor AnalysisScheduler {
   }
 
   private var proxyMayStart: Bool {
-    !proxyBlocked && (proxyResumeAt.map { ContinuousClock.now >= $0 } ?? true)
+    AnalysisPolicy.proxyMayStart(blocked: proxyBlocked, resumeAt: proxyResumeAt)
   }
 
   /// The asset on screen jumps the queue in both lanes (it does not preempt a running part).
@@ -248,7 +233,7 @@ actor AnalysisScheduler {
     [
       "playbackActive": playbackActive,
       "exportActive": exportActive,
-      "thermal": Sampler.thermalName(),
+      "thermal": adapters.deviceProfile.thermalName,
       "heavyPaused": heavyPaused,
       "queued": queue.map { ["assetId": $0.assetId, "part": $0.part.rawValue] },
       "running": running.values.map { ["assetId": $0.job.assetId, "part": $0.job.part.rawValue] },
@@ -269,7 +254,7 @@ actor AnalysisScheduler {
       return Analyzers.sync(video: pair.0, memo: pair.1)
     } catch is NoAudio {
       return .unavailable(AnalyzerVersion.sync, NoAudio().localizedDescription)
-    } catch where AssetSource.isUnavailable(error) {
+    } catch where adapters.mediaSource.isUnavailable(error) {
       return .unavailable(AnalyzerVersion.sync, error.localizedDescription)
     } catch {
       return .failed(AnalyzerVersion.sync, error)
@@ -285,7 +270,7 @@ actor AnalysisScheduler {
   // MARK: - Gate
 
   var heavyPaused: Bool {
-    proxyBlocked || ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+    AnalysisPolicy.heavyPaused(proxyBlocked: proxyBlocked, thermal: adapters.deviceProfile.thermalState)
   }
 
   /// Awaited by heavy analyzers between chunks: holds while paused, and
@@ -315,7 +300,7 @@ actor AnalysisScheduler {
   }
 
   private func order(_ job: Job) -> (Int, Int, Int) {
-    (job.assetId == focus ? 0 : 1, job.part.rank, job.seq)
+    AnalysisPolicy.order(job, focus: focus)
   }
 
   private func isCurrent(_ job: Job) -> Bool {
@@ -387,14 +372,15 @@ actor AnalysisScheduler {
         let samples = try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress, download: download)
         return Analyzers.energy(samples: samples)
       case .laughter:
-        return await Analyzers.laughter(try await AssetSource.load(job.ref, onDownload: download), progress: progress)
+        return await adapters.soundClassifier.laughter(try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download),
+                                                       minConfidence: 0.5, progress: progress)
       case .words:
         let locale = job.options.locale.map(Locale.init(identifier:)) ?? .current
-        let asset = try await AssetSource.load(job.ref, onDownload: download)
-        return await Analyzers.words(asset, locale: locale, allowModelDownload: job.options.allowModelDownload, progress: progress, gate: gate)
+        let asset = try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download)
+        return await adapters.transcriber.words(asset, locale: locale, allowModelDownload: job.options.allowModelDownload, progress: progress, gate: gate)
       case .faces:
-        let asset = try await AssetSource.load(job.ref, onDownload: download)
-        return await Analyzers.faces(asset, fps: job.options.facesFps, progress: progress, gate: gate)
+        let asset = try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download)
+        return await adapters.faceDetector.faces(asset, fps: job.options.facesFps, progress: progress, gate: gate)
       case .proxy:
         return try await makeProxy(job, progress: progress, download: download)
       }
@@ -402,7 +388,7 @@ actor AnalysisScheduler {
       return .unavailable(version, NoAudio().localizedDescription)
     } catch is NoVideo {
       return .unavailable(version, NoVideo().localizedDescription)
-    } catch where AssetSource.isUnavailable(error) {
+    } catch where adapters.mediaSource.isUnavailable(error) {
       // Offline iCloud originals, deleted clips: retry later, not a broken analyzer.
       return .unavailable(version, error.localizedDescription)
     } catch {
@@ -421,12 +407,12 @@ actor AnalysisScheduler {
     let existing = store.existing(job.assetId)
     let asset: AVAsset
     do {
-      asset = try await AssetSource.load(job.ref, allowNetwork: false)
+      asset = try await adapters.mediaSource.load(job.ref, allowNetwork: false, onDownload: nil)
     } catch is AssetSource.InCloud {
       if let existing, existing.key?.hasPrefix("\(AnalyzerVersion.proxy)|") == true {
         return .ready(AnalyzerVersion.proxy, ["path": path, "bytes": existing.bytes, "reused": true, "keyChecked": false])
       }
-      asset = try await AssetSource.load(job.ref, onDownload: download)
+      asset = try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download)
     }
     let key = Self.proxyKey(try await MediaFingerprint.compute(asset))
     if let existing, existing.key == key {
@@ -434,7 +420,7 @@ actor AnalysisScheduler {
     }
     let partial = try store.partialURL(job.assetId)
     do {
-      var data = try await ProxyPipeline.make(asset, to: partial, progress: progress)
+      var data = try await adapters.proxy.make(asset, to: partial, progress: progress)
       _ = try store.commit(job.assetId, key: key)
       data["path"] = path
       return .ready(AnalyzerVersion.proxy, data)
@@ -444,11 +430,8 @@ actor AnalysisScheduler {
     }
   }
 
-  /// What a stored proxy must match to be reused: the proxy version and the source's fingerprint.
-  static func proxyKey(_ fingerprint: [String: Any]) -> String {
-    let audio = fingerprint["audio"] as? String ?? "none"
-    return "\(AnalyzerVersion.proxy)|\(fingerprint["duration"] ?? 0)|\(fingerprint["bytes"] ?? 0)|\(audio)"
-  }
+  /// What a stored proxy must match to be reused (AnalysisPolicy.proxyKey).
+  static func proxyKey(_ fingerprint: [String: Any]) -> String { AnalysisPolicy.proxyKey(fingerprint) }
 
   private func progress(_ job: Job, _ fraction: Double, phase: String? = nil) {
     // Progress hops here on its own task: a late tick from a finished or cancelled part is ignored.
@@ -488,7 +471,7 @@ actor AnalysisScheduler {
   }
 
   fileprivate func emitState() {
-    emit?("analysisState", ["playbackActive": playbackActive, "exportActive": exportActive, "thermal": Sampler.thermalName(), "heavyPaused": heavyPaused])
+    emit?("analysisState", ["playbackActive": playbackActive, "exportActive": exportActive, "thermal": adapters.deviceProfile.thermalName, "heavyPaused": heavyPaused])
   }
 
   // MARK: - Decoded audio cache
@@ -501,7 +484,8 @@ actor AnalysisScheduler {
     if let inFlight = decoding[key] { return try await inFlight.value }
     // Inherits the caller's priority: utility from a scheduler lane, the JS caller's for a direct syncPair.
     let task = Task {
-      try await Analyzers.decodeMono(try await AssetSource.load(ref, onDownload: download), progress: progress)
+      try await adapters.audioDecoder.decodeMono(try await adapters.mediaSource.load(ref, allowNetwork: true, onDownload: download),
+                                                 rate: Double(AudioSync.sampleRate), progress: progress)
     }
     decoding[key] = task
     let samples: [Float]
@@ -517,21 +501,10 @@ actor AnalysisScheduler {
     pcm[key] = samples
     pcmOrder.removeAll { $0 == key }
     pcmOrder.append(key)
-    var total = pcm.values.reduce(0) { $0 + $1.count }
-    while total > Self.pcmBudgetSamples, pcmOrder.count > 1 {
-      let evicted = pcmOrder.removeFirst()
-      total -= pcm[evicted]?.count ?? 0
+    for evicted in AnalysisPolicy.pcmEvictions(order: pcmOrder, counts: pcm.mapValues(\.count)) {
+      pcmOrder.removeFirst()
       pcm[evicted] = nil
     }
     return samples
   }
-}
-
-/// JS context epochs: each module instance takes one synchronously in OnCreate and sends
-/// it with its calls, so which context is newest never depends on actor-hop ordering.
-enum EngineContext {
-  private static let lock = NSLock()
-  nonisolated(unsafe) private static var value = 0
-
-  static func begin() -> Int { lock.withLock { value += 1; return value } }
 }

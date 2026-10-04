@@ -15,21 +15,21 @@ import Foundation
 /// The registry stores paths relative to the root ("media/…"): the app container's
 /// absolute path changes when the app is updated, so an absolute file:// URI saved
 /// today would point nowhere after the next update.
-enum MediaStore {
+public enum MediaStore {
   /// Tests point this at a temp directory.
-  nonisolated(unsafe) static var rootOverride: URL?
+  public nonisolated(unsafe) static var rootOverride: URL?
 
-  static var root: URL {
+  public static var root: URL {
     if let rootOverride { return rootOverride }
     let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     return support.appendingPathComponent("Editify", isDirectory: true)
   }
 
-  static let mediaFolder = "media"
-  static let proxiesFolder = "proxies"
+  public static let mediaFolder = "media"
+  public static let proxiesFolder = "proxies"
 
   /// `root/name`, created on first use and excluded from backup.
-  static func directory(_ name: String) throws -> URL {
+  public static func directory(_ name: String) throws -> URL {
     var url = root.appendingPathComponent(name, isDirectory: true)
     if !FileManager.default.fileExists(atPath: url.path) {
       try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -40,13 +40,13 @@ enum MediaStore {
     return url
   }
 
-  static func url(forRelative path: String) -> URL {
+  public static func url(forRelative path: String) -> URL {
     root.appendingPathComponent(path)
   }
 
   /// Copies `source` into media/ (a clone on APFS, so no extra space until one side
   /// changes) and returns the path relative to the root and the copy's size.
-  static func durableCopy(from source: URL, name: String) throws -> (path: String, bytes: Int64) {
+  public static func durableCopy(from source: URL, name: String) throws -> (path: String, bytes: Int64) {
     let folder = try directory(mediaFolder)
     let fileName = "\(UUID().uuidString)-\(safeName(name))"
     let target = folder.appendingPathComponent(fileName)
@@ -59,7 +59,7 @@ enum MediaStore {
 
   /// Every file in media/: its relative path, size and modification time (ms since 1970),
   /// for the registry's sweep of copies no row points at.
-  static func mediaFiles() -> [[String: Any]] {
+  public static func mediaFiles() -> [[String: Any]] {
     guard let folder = try? directory(mediaFolder) else { return [] }
     let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]
     let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys)) ?? []
@@ -75,34 +75,34 @@ enum MediaStore {
 
   /// Space iOS would free up for something the user asked for (it may purge caches to get
   /// there), in bytes; 0 when unknown.
-  static func availableBytes() -> Int64 {
+  public static func availableBytes() -> Int64 {
     let values = try? root.deletingLastPathComponent().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
     return values?.volumeAvailableCapacityForImportantUsage ?? 0
   }
 
   /// Removes a file the registry no longer points at; only paths inside the root.
-  static func remove(relative path: String) {
+  public static func remove(relative path: String) {
     guard !path.isEmpty, !path.contains(".."), !path.hasPrefix("/") else { return }
     try? FileManager.default.removeItem(at: url(forRelative: path))
   }
 
   /// A file name safe on any filesystem, keeping the extension (AVFoundation reads it).
-  static func safeName(_ name: String) -> String {
+  public static func safeName(_ name: String) -> String {
     let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
     let cleaned = String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
     let trimmed = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "."))
     return trimmed.isEmpty ? "media" : String(trimmed.suffix(120))
   }
 
-  static func fileSize(_ url: URL) -> Int64? {
+  public static func fileSize(_ url: URL) -> Int64? {
     guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]), values.isRegularFile == true else { return nil }
     return Int64(values.fileSize ?? 0)
   }
 }
 
 /// Extended attributes on a file (they travel with renames on the same volume).
-enum FileTag {
-  static func read(_ url: URL, _ name: String) -> String? {
+public enum FileTag {
+  public static func read(_ url: URL, _ name: String) -> String? {
     url.withUnsafeFileSystemRepresentation { path -> String? in
       guard let path else { return nil }
       let length = getxattr(path, name, nil, 0, 0, 0)
@@ -114,7 +114,7 @@ enum FileTag {
   }
 
   @discardableResult
-  static func write(_ url: URL, _ name: String, _ value: String) -> Bool {
+  public static func write(_ url: URL, _ name: String, _ value: String) -> Bool {
     let bytes = Array(value.utf8)
     return url.withUnsafeFileSystemRepresentation { path in
       guard let path else { return false }
@@ -131,17 +131,17 @@ enum FileTag {
 /// longest ago. A proxy is written to `<hash>.partial.mov` and renamed into place only
 /// once complete, so a cancel, a crash or a kill never leaves a half file that looks
 /// finished; `sweepPartials` clears leftovers on launch.
-final class ProxyStore: @unchecked Sendable {
-  static let defaultBudgetBytes: Int64 = 4 * 1024 * 1024 * 1024
+public final class ProxyStore: @unchecked Sendable {
+  public static let defaultBudgetBytes: Int64 = 4 * 1024 * 1024 * 1024
   /// What `budgetBytes` accepts: below 256 MB no 1080p proxy fits; above 1 TB is a typo.
-  static let budgetRange: ClosedRange<Int64> = (256 * 1024 * 1024)...(1024 * 1024 * 1024 * 1024)
-  static let shared = ProxyStore(directory: nil)
+  public static let budgetRange: ClosedRange<Int64> = (256 * 1024 * 1024)...(1024 * 1024 * 1024 * 1024)
+  public static let shared = ProxyStore(directory: nil)
 
-  static let assetIdTag = "com.editify.asset-id"
-  static let keyTag = "com.editify.proxy-key"
+  public static let assetIdTag = "com.editify.asset-id"
+  public static let keyTag = "com.editify.proxy-key"
 
-  struct InvalidId: Error, LocalizedError {
-    var errorDescription: String? { "A proxy needs a non-empty asset id" }
+  public struct InvalidId: Error, LocalizedError {
+    public var errorDescription: String? { "A proxy needs a non-empty asset id" }
   }
 
   private let lock = NSLock()
@@ -151,26 +151,26 @@ final class ProxyStore: @unchecked Sendable {
 
   /// nil: MediaStore's proxies folder (resolved on use, so `rootOverride` applies).
   /// The budget is taken as given here (tests use tiny ones); `setBudget` clamps.
-  init(directory: URL?, budgetBytes: Int64 = ProxyStore.defaultBudgetBytes) {
+  public init(directory: URL?, budgetBytes: Int64 = ProxyStore.defaultBudgetBytes) {
     fixedDirectory = directory
     budget = budgetBytes
   }
 
-  var budgetBytes: Int64 {
+  public var budgetBytes: Int64 {
     get { lock.withLock { budget } }
     set { lock.withLock { budget = max(0, newValue) } }
   }
 
   /// From JS: a non-number is ignored (false), anything else is clamped to `budgetRange`.
   @discardableResult
-  func setBudget(_ bytes: Double) -> Bool {
+  public func setBudget(_ bytes: Double) -> Bool {
     guard bytes.isFinite else { return false }
     let clamped = min(Double(Self.budgetRange.upperBound), max(Double(Self.budgetRange.lowerBound), bytes))
     budgetBytes = Int64(clamped)
     return true
   }
 
-  func directory() throws -> URL {
+  public func directory() throws -> URL {
     if let fixedDirectory {
       try FileManager.default.createDirectory(at: fixedDirectory, withIntermediateDirectories: true)
       return fixedDirectory
@@ -178,38 +178,38 @@ final class ProxyStore: @unchecked Sendable {
     return try MediaStore.directory(MediaStore.proxiesFolder)
   }
 
-  static func hashedName(_ assetId: String) throws -> String {
+  public static func hashedName(_ assetId: String) throws -> String {
     guard !assetId.isEmpty else { throw InvalidId() }
     return SHA256.hash(data: Data(assetId.utf8)).map { String(format: "%02x", $0) }.joined()
   }
 
   /// Relative to MediaStore.root, as the registry stores it.
-  static func relativePath(_ assetId: String) throws -> String { "\(MediaStore.proxiesFolder)/\(try hashedName(assetId)).mov" }
+  public static func relativePath(_ assetId: String) throws -> String { "\(MediaStore.proxiesFolder)/\(try hashedName(assetId)).mov" }
 
-  func finalURL(_ assetId: String) throws -> URL {
+  public func finalURL(_ assetId: String) throws -> URL {
     try directory().appendingPathComponent("\(try Self.hashedName(assetId)).mov")
   }
 
-  func partialURL(_ assetId: String) throws -> URL {
+  public func partialURL(_ assetId: String) throws -> URL {
     try directory().appendingPathComponent("\(try Self.hashedName(assetId)).partial.mov")
   }
 
   /// The finished proxy, its size and its key, or nil when there is none (never made, evicted, deleted).
-  func existing(_ assetId: String) -> (url: URL, bytes: Int64, key: String?)? {
+  public func existing(_ assetId: String) -> (url: URL, bytes: Int64, key: String?)? {
     guard let url = try? finalURL(assetId), let size = MediaStore.fileSize(url) else { return nil }
     return (url, size, FileTag.read(url, Self.keyTag))
   }
 
   /// Marks the proxy as just opened. False when there is no proxy to touch.
   @discardableResult
-  func touch(_ assetId: String, at date: Date = Date()) -> Bool {
+  public func touch(_ assetId: String, at date: Date = Date()) -> Bool {
     guard let url = try? finalURL(assetId), FileManager.default.fileExists(atPath: url.path) else { return false }
     return (try? FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)) != nil
   }
 
   /// Moves a finished partial file into place (replacing an older proxy), tags it with its
   /// asset id and `key`, and marks it used now.
-  func commit(_ assetId: String, key: String) throws -> URL {
+  public func commit(_ assetId: String, key: String) throws -> URL {
     let partial = try partialURL(assetId)
     let final = try finalURL(assetId)
     if FileManager.default.fileExists(atPath: final.path) {
@@ -224,18 +224,18 @@ final class ProxyStore: @unchecked Sendable {
     return final
   }
 
-  func removePartial(_ assetId: String) {
+  public func removePartial(_ assetId: String) {
     if let url = try? partialURL(assetId) { try? FileManager.default.removeItem(at: url) }
   }
 
-  func remove(_ assetId: String) {
+  public func remove(_ assetId: String) {
     if let url = try? finalURL(assetId) { try? FileManager.default.removeItem(at: url) }
   }
 
   /// Deletes least-recently-opened proxies until the total fits the budget, never the
   /// `protecting` one (the proxy just written may alone exceed a small budget). Returns
   /// the evicted asset ids, oldest first (a file without its id tag is deleted unreported).
-  func evictOverBudget(protecting: String? = nil) -> [String] {
+  public func evictOverBudget(protecting: String? = nil) -> [String] {
     guard let folder = try? directory() else { return [] }
     let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
     let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys)) ?? []
@@ -259,7 +259,7 @@ final class ProxyStore: @unchecked Sendable {
 
   /// `sweepPartials` once per process: a JS reload creates a new module instance while
   /// the scheduler (and a proxy it is writing) carries on.
-  func sweepPartialsOnce() {
+  public func sweepPartialsOnce() {
     let first = lock.withLock { () -> Bool in
       defer { swept = true }
       return !swept
@@ -268,7 +268,7 @@ final class ProxyStore: @unchecked Sendable {
   }
 
   /// Partial files left by a kill mid-write.
-  func sweepPartials() {
+  public func sweepPartials() {
     guard let folder = try? directory() else { return }
     let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
     for name in names where name.hasSuffix(".partial.mov") {
