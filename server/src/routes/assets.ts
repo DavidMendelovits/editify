@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
@@ -14,6 +14,7 @@ import { assetsRoot, mediaImportDir } from '../config.js';
 import { COLOR_PIPELINE_VERSION } from '../media/color.js';
 import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbnail, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
+import { isFile } from '../services/asset-availability.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { FaceService } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
@@ -42,6 +43,31 @@ const labelRequestSchema = z.object({ label: z.string().max(120) }).strict();
 const linkRequestSchema = z.object({ projectId: z.string().min(1) }).strict();
 const rawUploadSchema = z.string().trim().min(1).max(255);
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+/**
+ * The only spelling of an asset id that may name a folder: server ids are lowercase UUIDs
+ * (and the library's `sound-…`). Exact-case only, since SQLite compares ids byte for byte
+ * while a case-insensitive filesystem would not.
+ */
+const CANONICAL_ASSET_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
+/** A re-uploaded original may differ from the record by a remux's frame or two, never by a trim. */
+export const RESTORE_DURATION_TOLERANCE = 0.25;
+/** Pixel sizes may differ by rounding in a re-wrap, never by a resize. */
+const RESTORE_SIZE_TOLERANCE = 0.01;
+
+/**
+ * Is a re-uploaded file the original `record` describes? Same kind of media (a picture
+ * where there was one, audio where there was audio), the same duration within a frame or
+ * two, and the same pixel size either way round (a rotation flag may swap them).
+ */
+export function sameMedia(record: Pick<StoredAsset, 'mimeType' | 'duration' | 'width' | 'height' | 'hasAudio'>, probe: ProbeResult): boolean {
+  const close = (a: number, b: number): boolean => Math.abs(a - b) <= Math.max(2, Math.max(a, b) * RESTORE_SIZE_TOLERANCE);
+  const sameSize = (close(probe.width, record.width) && close(probe.height, record.height))
+    || (close(probe.width, record.height) && close(probe.height, record.width));
+  if (record.mimeType.startsWith('image/')) return probe.hasVideo && sameSize;
+  if (Math.abs(probe.duration - record.duration) > RESTORE_DURATION_TOLERANCE) return false;
+  if (record.mimeType.startsWith('audio/')) return probe.hasAudio;
+  return probe.hasVideo && probe.hasAudio === record.hasAudio && sameSize;
+}
 
 export class UploadTooLargeError extends Error {}
 
@@ -184,7 +210,7 @@ async function processAsset(
   assets: AssetStore,
   transcripts: TranscriptService,
   input: { originalName: string; mimeType: string; originalPath: string },
-  id = randomUUID(),
+  id: string = randomUUID(),
   userId?: string,
   faces?: FaceService,
 ): Promise<StoredAsset> {
@@ -358,6 +384,78 @@ export function registerAssetRoutes(
       return await reply.code(413).send({ error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
     }
     return await saveUpload(reply, body, { name: name.data, mimeType }, projectId, request.userId);
+  });
+
+  /**
+   * Puts an original back on the server under its existing asset id (plan OV1, "upload
+   * clips X"): the phone uploads only the clips a server render is missing, from its app
+   * copy or the Photos original, and the project's references keep working.
+   *
+   *   an id that isn't canonical ...... 400 (lowercase, no dots or slashes: it names a folder)
+   *   no row, or another account's .... 404, as if absent
+   *   own row, original on disk ....... 200, nothing written (a retry)
+   *   own row, original gone .......... written to a new file beside it, checked against the
+   *                                     record (kind, duration, size; 409 { code: 'mismatch' }
+   *                                     when it is another file), then renamed into place
+   *
+   * Always linked to `projectId`, which is required. The body is the raw file, as for /assets/raw.
+   * Only the incoming file this request wrote is ever removed, never a folder.
+   */
+  app.put<{ Params: { id: string }; Querystring: { projectId?: string; name?: string } }>('/assets/:id/original', async (request, reply) => {
+    const body = typeof (request.body as NodeJS.ReadableStream | undefined)?.pipe === 'function'
+      ? request.body as NodeJS.ReadableStream
+      : undefined;
+    const refuse = async (status: number, payload: unknown): Promise<FastifyReply> => {
+      body?.resume();
+      return await reply.code(status).send(payload);
+    };
+    const { id } = request.params;
+    // Case-insensitive filesystems (a Mac host) would map "ABC" onto another row's "abc"
+    // folder: only the canonical spelling ever reaches the disk.
+    if (!CANONICAL_ASSET_ID.test(id)) return await refuse(400, { error: 'Asset ids are lowercase letters, digits and dashes' });
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
+    if (projectId === null) { body?.resume(); return reply; }
+    if (!projectId) return await refuse(400, { error: 'projectId is required' });
+    const existing = assets.owned(id, request.userId);
+    if (!existing) return await refuse(404, { error: 'Asset not found' });
+    if (await isFile(existing.originalPath)) {
+      assets.link(projectId, id);
+      return await refuse(200, publicAsset(existing));
+    }
+    const name = rawUploadSchema.safeParse(request.query.name);
+    const mimeType = (request.headers['content-type'] ?? '').split(';')[0]?.trim() ?? '';
+    if (!name.success || !body || !isMediaType(mimeType)) {
+      return await refuse(!name.success ? 400 : 415, {
+        error: !name.success ? 'A file name is required' : 'Only video, audio, and image files are supported',
+      });
+    }
+    if (Number(request.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) {
+      return await refuse(413, { error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
+    }
+
+    const directory = join(assetsRoot, id);
+    // The asset's own folder (it may already hold its proxy and thumbnail).
+    await mkdir(directory, { recursive: true });
+    const extension = extname(name.data).replace(/[^.a-zA-Z0-9]/g, '').slice(0, 12) || extname(existing.originalPath) || '.media';
+    const incoming = join(directory, `incoming-${randomUUID()}${extension}`);
+    try {
+      await pipeline(body, capBytes(MAX_UPLOAD_BYTES), (await import('node:fs')).createWriteStream(incoming, { flags: 'wx' }));
+      const probe = await probeMedia(incoming).catch(() => undefined);
+      if (!probe || !sameMedia(existing, probe)) {
+        await rm(incoming, { force: true });
+        return await reply.code(409).send({ error: "That file isn't the clip this project uses", code: 'mismatch' });
+      }
+      const originalPath = join(directory, `original${extension}`);
+      // Atomic: two restores of the same clip each rename a whole file; the last one stays.
+      await rename(incoming, originalPath);
+      assets.setOriginalPath(id, originalPath);
+      assets.link(projectId, id);
+      return await reply.code(200).send(publicAsset(assets.get(id) ?? existing));
+    } catch (error) {
+      await rm(incoming, { force: true });
+      if (error instanceof UploadTooLargeError) return await reply.code(413).send({ error: error.message });
+      throw error;
+    }
   });
 
   // The media library. With `?projectId=` it is scoped to that project's own

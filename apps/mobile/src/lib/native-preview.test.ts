@@ -505,6 +505,7 @@ async function registry(probes: Record<string, MediaProbe>, files: string[], geo
     touchProxy: () => true,
     removeProxy: () => undefined,
     analyze: async () => undefined,
+    exportOriginal: async () => { throw new Error('unused'); },
   };
   return { store: createLocalMediaStore(db), native };
 }

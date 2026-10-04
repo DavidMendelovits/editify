@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AssetMetadata, Project, RenderPlan } from '@editify/shared';
+import type { AssetAvailability, AssetMetadata, PlanAssetRef, Project, RenderPlan } from '@editify/shared';
 import type { ExportProjectOptions, ExportStateEvent } from '../../modules/editify-engine';
 import {
   assetInfoOf, buildExportPlan, DEVICE_EXPORT_RESOLUTIONS, exportOnDevice, exportReducer, exportStateLabel, isTerminal, missingClipsLine,
-  planAssetRefs, routeExport, serverRouteLine, STARTING, type DeviceExportView, type ExportNative, type GeometryMap,
+  copyFileName, mimeTypeOf, planAssetRefs, projectAssetRefs, routeExport, serverRenderable, serverRouteLine, STARTING, uploadMissing,
+  type DeviceExportView, type ExportNative, type GeometryMap, type OriginalFile, type ServerCheck,
 } from './device-export';
 import {
   createLocalMediaStore, isLeased, migrate, type MediaDeps, type MediaFingerprint, type MediaGeometry, type MediaNative, type MediaProbe,
@@ -23,7 +24,10 @@ const open: Array<{ close(): void }> = [];
 afterEach(() => { for (const db of open.splice(0)) db.close(); });
 
 /** A registry where `files` exist under the media root and `probes` answer PHAsset ids. */
-async function registry(probes: Record<string, MediaProbe> = {}, files: string[] = [], geometries: Record<string, MediaGeometry> = {}, geometryCalls: string[] = []): Promise<MediaDeps> {
+async function registry(
+  probes: Record<string, MediaProbe> = {}, files: string[] = [], geometries: Record<string, MediaGeometry> = {}, geometryCalls: string[] = [],
+  overrides: Partial<MediaNative> = {},
+): Promise<MediaDeps> {
   const db = memoryDb();
   open.push(db);
   await migrate(db);
@@ -47,6 +51,8 @@ async function registry(probes: Record<string, MediaProbe> = {}, files: string[]
     touchProxy: () => false,
     removeProxy: () => undefined,
     analyze: async () => undefined,
+    exportOriginal: async (ref) => ({ uri: `file:///tmp/original-${ref}.mov`, bytes: 1000, name: `IMG_${ref}.MOV` }),
+    ...overrides,
   };
   return { store: createLocalMediaStore(db), native };
 }
@@ -360,6 +366,197 @@ describe('exportOnDevice', () => {
     const engine = fakeEngine(() => undefined);
     const outcome = await exportOnDevice({ build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined });
     expect(outcome).toEqual({ kind: 'server', route: { kind: 'server', why: 'missing', missing: [{ assetId: 'asset-b', name: 'Interview', reason: 'not on this iPhone' }] } });
+    expect(engine.calls).toHaveLength(0);
+    expect(isLeased(deps, 'asset-a')).toBe(false);
+  });
+});
+
+describe('the server fallback (OV1)', () => {
+  const refs: PlanAssetRef[] = [{ id: 'asset-a', kind: 'video' }, { id: 'asset-b', kind: 'video' }];
+  /** The availability endpoint: `statuses` per id (absent ids are missing), recording each ask. */
+  const server = (statuses: Record<string, AssetAvailability>, asked: string[][] = [], list: PlanAssetRef[] = refs): ServerCheck => ({
+    refs: list,
+    check: async (ids) => {
+      asked.push(ids);
+      return Object.fromEntries(ids.map((id) => [id, statuses[id] ?? 'missing']));
+    },
+  });
+
+  it('lists every asset the project names once, with its kind', () => {
+    const project: Project = {
+      id: 'p', title: 'T', format: '9:16', fps: 30, duration: 4, version: 1,
+      tracks: [
+        { id: 'v', kind: 'video', clips: [{ id: '1', assetId: 'asset-a', start: 0, in: 0, out: 2 }, { id: '2', assetId: 'asset-a', start: 2, in: 2, out: 4 }] },
+        { id: 'm', kind: 'audio', clips: [{ id: '3', assetId: 'asset-music', start: 0, in: 0, out: 4 }] },
+        { id: 'c', kind: 'caption', clips: [{ id: '4', start: 0, in: 0, out: 1, text: 'hi' }] },
+      ],
+    };
+    const music = { id: 'asset-music', originalName: 'bed.m4a', mimeType: 'audio/mp4' } as AssetMetadata;
+    expect(projectAssetRefs(project, [music])).toEqual([{ id: 'asset-a', kind: 'video' }, { id: 'asset-music', kind: 'audio' }]);
+  });
+
+  it('renders on the device when every clip is here, without asking the server', async () => {
+    const asked: string[][] = [];
+    const route = await routeExport(fixture('crossfade'), await bothLocal(), nameOf, '1080p', server({}, asked));
+    expect(route.kind).toBe('device');
+    expect(asked).toEqual([]);
+  });
+
+  it('renders the snapshot on the server when the clips missing here are all there', async () => {
+    const asked: string[][] = [];
+    const route = await routeExport(fixture('crossfade'), await registry(), nameOf, '1080p', server({ 'asset-a': 'present', 'asset-b': 'present' }, asked));
+    expect(route).toMatchObject({ kind: 'server', why: 'missing', server: { state: 'ready' } });
+    expect(asked).toEqual([['asset-a', 'asset-b']]);
+    expect(serverRenderable(route)).toBe(true);
+    expect(serverRouteLine(route)).toBe("Renders on the server: Intro and Interview aren't on this iPhone.");
+  });
+
+  it('explains plainly when a clip is on neither this iPhone nor the server', async () => {
+    const deps = await registry();
+    const one = await routeExport(fixture('crossfade'), deps, nameOf, '1080p', server({ 'asset-a': 'present' }));
+    expect(one).toMatchObject({ server: { state: 'blocked', clips: [{ assetId: 'asset-b', name: 'Interview', reason: 'not-here' }] } });
+    expect(serverRouteLine(one)).toBe("Interview isn't on this iPhone or the server.");
+    expect(serverRenderable(one)).toBe(false);
+    const both = await routeExport(fixture('crossfade'), deps, nameOf, '1080p', server({}));
+    expect(serverRouteLine(both)).toBe("Intro and Interview aren't on this iPhone or the server.");
+  });
+
+  it('blocks on a clip changed in Photos or from another account, naming why', async () => {
+    const deps = await registry({ 'PH-b': { status: 'ok', fingerprint: { ...PRINT, duration: 3 } } });
+    await deps.store.record({ assetId: 'asset-b', phLocalId: 'PH-b', fingerprint: PRINT });
+    const route = await routeExport(fixture('crossfade'), deps, nameOf, '1080p', server({ 'asset-a': 'forbidden' }));
+    expect(route).toMatchObject({ server: { state: 'blocked' } });
+    expect(serverRouteLine(route)).toBe("Interview changed in Photos and isn't on the server. Intro belongs to another account.");
+  });
+
+  it("blocks on a clip the server has no record of, even one this iPhone holds, and says to import it again", async () => {
+    const route = await routeExport(fixture('crossfade'), await registry({}, ['media/a.mov']), nameOf, '1080p', server({ 'asset-a': 'absent', 'asset-b': 'present' }));
+    expect(route).toMatchObject({ server: { state: 'blocked', clips: [{ assetId: 'asset-a', name: 'Intro', reason: 'absent' }] } });
+    expect(serverRouteLine(route)).toBe("Intro isn't on the server. Import it again to export.");
+    expect(serverRenderable(route)).toBe(false);
+    // Even with a local copy on hand: an upload under that id would only be refused.
+    const deps = await bothLocal();
+    const both = await routeExport(fixture('crossfade'), deps, nameOf, '4k', server({ 'asset-a': 'absent', 'asset-b': 'absent' }));
+    expect(both).toMatchObject({ server: { state: 'blocked' } });
+    expect(serverRouteLine(both)).toBe("Intro and Interview aren't on the server. Import them again to export.");
+  });
+
+  it('can still ask for the render when the check itself fails (the server rechecks the snapshot)', async () => {
+    const failing: ServerCheck = { refs, check: async () => { throw new Error('Network request failed'); } };
+    const route = await routeExport(fixture('crossfade'), await registry(), nameOf, '1080p', failing);
+    expect(route).toMatchObject({ server: { state: 'unchecked', error: 'Network request failed' } });
+    expect(serverRenderable(route)).toBe(true);
+  });
+
+  it('asks the server for 4K, then uploads only the clip it is missing and routes again to the server', async () => {
+    const deps = await bothLocal();
+    const removed: string[] = [];
+    deps.native.removeFile = (uri) => { removed.push(uri); };
+    const statuses: Record<string, AssetAvailability> = { 'asset-a': 'present', 'asset-b': 'missing' };
+    const route = await routeExport(fixture('crossfade'), deps, nameOf, '4k', server(statuses));
+    expect(route).toMatchObject({ kind: 'server', why: 'resolution', server: { state: 'upload', clips: [{ assetId: 'asset-b', kind: 'video', name: 'Interview' }] } });
+    expect(serverRouteLine(route)).toBe('Upload Interview to export.');
+    expect(serverRenderable(route)).toBe(false);
+
+    const sent: Array<OriginalFile & { leased: boolean; cancellable: boolean }> = [];
+    const progress: number[] = [];
+    const clips = route.kind === 'server' && route.server?.state === 'upload' ? route.server.clips : [];
+    const result = await uploadMissing({
+      clips, deps,
+      upload: async (file, onBytes, signal) => {
+        const { assetId } = file;
+        sent.push({ ...file, leased: isLeased(deps, assetId), cancellable: signal !== undefined });
+        onBytes(500, 1000);
+        onBytes(1000, 1000);
+        statuses[assetId] = 'present';
+      },
+      onProgress: (value) => progress.push(value.sentBytes),
+      signal: new AbortController().signal,
+    });
+    expect(result).toEqual({ uploaded: ['asset-b'], failed: [] });
+    // Only the missing clip, from a temporary copy of its Photos original, removed afterwards; leased while it went.
+    // Under Photos' own file name and its real type, never a made-up one.
+    expect(sent).toEqual([{
+      assetId: 'asset-b', uri: 'file:///tmp/original-PH-b.mov', name: 'IMG_PH-b.MOV', mimeType: 'video/quicktime', leased: true, cancellable: true,
+    }]);
+    expect(removed).toEqual(['file:///tmp/original-PH-b.mov']);
+    expect(isLeased(deps, 'asset-b')).toBe(false);
+    expect(progress.at(-1)).toBe(1000);
+
+    const again = await routeExport(fixture('crossfade'), deps, nameOf, '4k', server(statuses));
+    expect(again).toMatchObject({ kind: 'server', server: { state: 'ready' } });
+    expect(serverRenderable(again)).toBe(true);
+  });
+
+  it('uploads an app copy as it is and an iCloud original once downloaded; one failure does not stop the rest', async () => {
+    const removed: string[] = [];
+    const deps = await registry({ 'PH-b': { status: 'icloud' } }, ['media/a.mov'], {}, [], {
+      download: async () => ({ status: 'ok', fingerprint: PRINT }),
+      removeFile: (uri) => { removed.push(uri); },
+    });
+    await deps.store.record({ assetId: 'asset-a', fileUri: 'media/a.mov' });
+    await deps.store.record({ assetId: 'asset-b', phLocalId: 'PH-b', fingerprint: PRINT });
+    const route = await routeExport(fixture('crossfade'), deps, nameOf, '1080p', server({}));
+    expect(route).toMatchObject({ server: { state: 'upload' } });
+    expect(serverRouteLine(route)).toBe('Upload Intro and Interview to export.');
+
+    const sent: string[] = [];
+    const result = await uploadMissing({
+      clips: [{ assetId: 'asset-a', kind: 'video', name: 'Intro' }, { assetId: 'asset-b', kind: 'video', name: 'Interview' }],
+      deps,
+      upload: async ({ assetId, uri }) => {
+        sent.push(uri);
+        if (assetId === 'asset-b') throw new Error('Upload failed with status 500');
+      },
+    });
+    expect(sent).toEqual([`${ROOT}media/a.mov`, 'file:///tmp/original-PH-b.mov']);
+    expect(result).toEqual({ uploaded: ['asset-a'], failed: [{ assetId: 'asset-b', name: 'Interview', error: 'Upload failed with status 500' }] });
+    // The temporary original goes even though its upload failed; the app copy is never removed.
+    expect(removed).toEqual(['file:///tmp/original-PH-b.mov']);
+    expect(isLeased(deps, 'asset-a') || isLeased(deps, 'asset-b')).toBe(false);
+  });
+
+  it('names an app copy by the file it was imported as, with its type from the extension', async () => {
+    expect(copyFileName(`${ROOT}media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-Beach%20day.MP4`)).toBe('Beach day.MP4');
+    expect(copyFileName('file:///tmp/plain.mov')).toBe('plain.mov');
+    expect(mimeTypeOf('Beach day.MP4')).toBe('video/mp4');
+    expect(mimeTypeOf('memo.m4a')).toBe('audio/mp4');
+    expect(mimeTypeOf('sticker.HEIC')).toBe('image/heic');
+    expect(mimeTypeOf('mystery.xyz')).toBeUndefined();
+    const deps = await registry({}, ['media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-talk.m4a']);
+    await deps.store.record({ assetId: 'asset-talk', fileUri: 'media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-talk.m4a' });
+    const sent: OriginalFile[] = [];
+    await uploadMissing({ clips: [{ assetId: 'asset-talk', kind: 'audio', name: 'Talk' }], deps, upload: async (file) => { sent.push(file); } });
+    expect(sent).toEqual([{ assetId: 'asset-talk', uri: `${ROOT}media/0F8E1C0A-6B3D-4F7E-9A51-2C4D6E8F0A1B-talk.m4a`, name: 'talk.m4a', mimeType: 'audio/mp4' }]);
+  });
+
+  it('refuses to upload a clip that is no longer here, and skips the rest once aborted', async () => {
+    const deps = await bothLocal();
+    const controller = new AbortController();
+    const sent: string[] = [];
+    const result = await uploadMissing({
+      clips: [{ assetId: 'asset-gone', kind: 'video', name: 'Gone' }, { assetId: 'asset-a', kind: 'video', name: 'Intro' }, { assetId: 'asset-b', kind: 'video', name: 'Interview' }],
+      deps,
+      upload: async ({ assetId }) => { sent.push(assetId); controller.abort(); },
+      signal: controller.signal,
+    });
+    expect(sent).toEqual(['asset-a']);
+    expect(result.failed).toEqual([
+      { assetId: 'asset-gone', name: 'Gone', error: "It isn't on this iPhone" },
+      { assetId: 'asset-b', name: 'Interview', error: 'Cancelled' },
+    ]);
+    expect(isLeased(deps, 'asset-a')).toBe(false);
+  });
+
+  it('answers the server readiness from exportOnDevice too, and releases the lease', async () => {
+    const deps = await registry({}, ['media/a.mov']);
+    await deps.store.record({ assetId: 'asset-a', fileUri: 'media/a.mov' });
+    const engine = fakeEngine(() => undefined);
+    const outcome = await exportOnDevice({
+      build: () => fixture('crossfade'), deps, native: engine.native, nameOf, onUpdate: () => undefined,
+      server: server({ 'asset-a': 'missing', 'asset-b': 'present' }),
+    });
+    expect(outcome).toMatchObject({ kind: 'server', route: { why: 'missing', server: { state: 'upload', clips: [{ assetId: 'asset-a' }] } } });
     expect(engine.calls).toHaveLength(0);
     expect(isLeased(deps, 'asset-a')).toBe(false);
   });

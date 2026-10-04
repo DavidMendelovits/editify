@@ -85,6 +85,7 @@ function fakeNative(): Fake {
     touchProxy: (assetId) => { fake.touched.push(assetId); return true; },
     removeProxy: (assetId) => { fake.removedProxies.push(assetId); },
     analyze: async (assetId, ref) => { fake.analyzed.push([assetId, ref]); },
+    exportOriginal: async () => { throw new Error('unused'); },
   };
   return { ...fake, native };
 }

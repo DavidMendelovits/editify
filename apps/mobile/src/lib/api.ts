@@ -1,4 +1,7 @@
-import type { AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project, RenderQa, SyncAudioResult } from '@editify/shared';
+import type {
+  AssetAvailability, AssetAvailabilityResponse, AssetDissection, AssetMetadata, LibrarySound, NewProject, Operation, Project, RenderQa,
+  RenderSnapshot, SyncAudioResult,
+} from '@editify/shared';
 import { track } from './event-log';
 import type { AgentTraceStep } from './agent';
 import type { EditPreset } from './presets';
@@ -129,6 +132,8 @@ export interface RenderRecord {
   /** Post-render check: loudness, dead air, sound levels against the voice. */
   qa?: RenderQa;
   contactSheetUrl?: string;
+  /** The phone's snapshot this render takes (plan OV1), when it was sent one. */
+  snapshot?: { revision: number; hash: string };
 }
 
 export interface StyleMetric {
@@ -265,6 +270,23 @@ export function rebaseServerUrl(url: string | undefined): string | undefined {
 }
 
 /** Raw JSON error bodies are illegible in the UI; surface the message inside. */
+/** A refused request: the readable message, with the status and the server's `code` when it sent one. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+function failure(status: number, body: string): ApiError {
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    if (typeof parsed.code === 'string') code = parsed.code;
+  } catch { /* not JSON */ }
+  return new ApiError(describeFailure(status, body), status, code);
+}
+
 function describeFailure(status: number, body: string): string {
   try {
     const parsed = JSON.parse(body) as { error?: string };
@@ -283,7 +305,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...init?.headers },
   });
   if (!response.ok) {
-    throw new Error(describeFailure(response.status, await response.text()));
+    throw failure(response.status, await response.text());
   }
   return await response.json() as T;
 }
@@ -358,9 +380,19 @@ export const api = {
   /** Undo a whole agent turn in one step. */
   revertRun: (id: string, runId: string) => request<Project>(`/projects/${id}/runs/${runId}/revert`, { method: 'POST', body: '{}' }),
   getChatLive: (id: string) => request<ChatLive>(`/projects/${id}/chat/live`),
-  render: (id: string, resolution: RenderRecord['resolution'], hdr: 'sdr' | 'hdr' = 'sdr', loudness: 'normalize' | 'off' = 'normalize') => request<RenderRecord>(`/projects/${id}/render`, {
-    method: 'POST', body: JSON.stringify({ resolution, hdr, loudness }),
+  /** With `snapshot` (renderSnapshot of the screen's document), the server renders exactly that (OV1). */
+  render: (
+    id: string, resolution: RenderRecord['resolution'], hdr: 'sdr' | 'hdr' = 'sdr', loudness: 'normalize' | 'off' = 'normalize', snapshot?: RenderSnapshot,
+  ) => request<RenderRecord>(`/projects/${id}/render`, {
+    method: 'POST', body: JSON.stringify({ resolution, hdr, loudness, ...(snapshot ? { snapshot } : {}) }),
   }),
+  /** Which originals the server holds, for the server fallback (OV1). */
+  assetAvailability: async (id: string, assetIds: string[]): Promise<Record<string, AssetAvailability>> => {
+    const { assets } = await request<AssetAvailabilityResponse>(`/projects/${id}/assets/availability`, {
+      method: 'POST', body: JSON.stringify({ assetIds }),
+    });
+    return Object.fromEntries(assets.map((entry) => [entry.id, entry.status]));
+  },
   getRender: (id: string) => request<RenderRecord>(`/renders/${id}`),
   /** Measures where an audio clip lines up under the video; never edits. Apply `ops` to commit. */
   syncAudio: (id: string, audioClipId: string, videoClipId?: string) => request<SyncAudioResult>(
@@ -443,30 +475,59 @@ export async function uploadAsset(
  * (POST /assets/raw), and a background session keeps it going if the app is
  * backgrounded.
  */
-async function uploadNativeFile(asset: { uri: string; name: string; mimeType?: string; projectId?: string }, onBytes?: UploadBytes): Promise<AssetMetadata> {
+async function uploadNativeFile(
+  asset: { uri: string; name: string; mimeType?: string; projectId?: string },
+  onBytes?: UploadBytes,
+  target: { path: string; method: 'POST' | 'PUT' } = { path: '/assets/raw', method: 'POST' },
+  signal?: AbortSignal,
+): Promise<AssetMetadata> {
   // ponytail: SDK 54's File has no upload yet, and the legacy module's .ts source
   // fails this app's exactOptionalPropertyTypes, so the members used are typed here.
   // Swap for `new File(uri).createUploadTask()` once the SDK ships it.
   const { createUploadTask, FileSystemUploadType } = require('expo-file-system/legacy') as {
     createUploadTask: (url: string, fileUri: string, options: {
-      httpMethod: 'POST'; uploadType: number; headers: Record<string, string>;
+      httpMethod: 'POST' | 'PUT'; uploadType: number; headers: Record<string, string>;
     }, callback?: (progress: { totalBytesSent: number; totalBytesExpectedToSend: number }) => void) => {
       uploadAsync: () => Promise<{ status: number; body: string } | null | undefined>;
+      cancelAsync: () => Promise<void>;
     };
     FileSystemUploadType: { BINARY_CONTENT: number };
   };
   const query = new URLSearchParams({ name: asset.name, ...(asset.projectId ? { projectId: asset.projectId } : {}) });
   const started = Date.now();
-  const task = createUploadTask(`${API_URL}/assets/raw?${query.toString()}`, asset.uri, {
-    httpMethod: 'POST',
+  const task = createUploadTask(`${API_URL}${target.path}?${query.toString()}`, asset.uri, {
+    httpMethod: target.method,
     uploadType: FileSystemUploadType.BINARY_CONTENT,
     headers: { ...authHeaders(), 'Content-Type': asset.mimeType ?? 'application/octet-stream' },
   }, onBytes ? (progress) => onBytes(progress.totalBytesSent, progress.totalBytesExpectedToSend) : undefined);
-  const result = await task.uploadAsync();
-  if (!result) throw new Error('Upload was cancelled');
+  if (signal?.aborted) throw new Error('Upload was cancelled');
+  const cancel = (): void => { void task.cancelAsync().catch(() => undefined); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  let result: { status: number; body: string } | null | undefined;
+  try {
+    result = await task.uploadAsync();
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+  if (!result || signal?.aborted) throw new Error('Upload was cancelled');
   if (result.status < 200 || result.status >= 300) {
-    track('api_error', `POST /assets/raw → ${result.status} in ${Date.now() - started}ms`);
-    throw new Error(result.body || `Upload failed with status ${result.status}`);
+    track('api_error', `${target.method} ${target.path} → ${result.status} in ${Date.now() - started}ms`);
+    throw failure(result.status, result.body);
   }
   return JSON.parse(result.body) as AssetMetadata;
+}
+
+/**
+ * Puts a missing original back on the server under its own asset id (PUT
+ * /assets/:id/original, plan OV1), streamed from disk like an import. Native only:
+ * the web has no local originals to send.
+ */
+export async function uploadOriginal(
+  assetId: string,
+  projectId: string,
+  file: { uri: string; name: string; mimeType?: string },
+  onBytes?: UploadBytes,
+  signal?: AbortSignal,
+): Promise<AssetMetadata> {
+  return await uploadNativeFile({ ...file, projectId }, onBytes, { path: `/assets/${encodeURIComponent(assetId)}/original`, method: 'PUT' }, signal);
 }

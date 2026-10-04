@@ -64,6 +64,7 @@ async function open(): Promise<MediaDeps | null> {
     ensureProxy: async (assetId, ref) => { await engine.ensureProxy(assetId, ref); },
     touchProxy: (assetId) => engine.touchProxy(assetId),
     removeProxy: (assetId) => engine.removeProxy(assetId),
+    exportOriginal: async (ref) => await engine.exportOriginal(ref),
     analyze: async (assetId, ref, parts, options) => {
       await engine.analyze(assetId, ref, parts as Parameters<typeof engine.analyze>[2], options);
     },
