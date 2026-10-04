@@ -443,6 +443,7 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
         return
       }
       do {
+        let timed = CompositorTiming.isOn ? DispatchTime.now().uptimeNanoseconds : 0
         let state = instruction.state
         let t = state.timelineSeconds(request.compositionTime)
         let image = try FrameRenderer.compose(instruction, at: t) { request.sourceFrame(byTrackID: $0) }
@@ -454,6 +455,7 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
         destination.colorSpace = PlanColorPipeline.outputSpace(state.plan.color)
         let task = try Self.context.startTask(toRender: PlanColorPipeline.forOutput(image, state.plan.color), from: bounds, to: destination, at: .zero)
         _ = try task.waitUntilCompleted()
+        if timed != 0 { CompositorTiming.record(Double(DispatchTime.now().uptimeNanoseconds - timed) / 1e6) }
         request.finish(withComposedVideoFrame: output)
       } catch {
         request.finish(with: error)
@@ -468,4 +470,18 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
     composedUpTo = -1
     generationLock.unlock()
   }
+}
+
+/// Lab instrumentation (capability lab S4/S5): how long the compositor takes per frame, from
+/// the request picked up on its queue to the GPU render finished. Off (one lock read per
+/// frame) unless a spike turns it on.
+enum CompositorTiming {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var samples: [Double]?
+
+  static var isOn: Bool { lock.withLock { samples != nil } }
+  static func begin() { lock.withLock { samples = [] } }
+  static func record(_ ms: Double) { lock.withLock { samples?.append(ms) } }
+  /// Turns it off and returns the per-frame milliseconds since `begin`.
+  static func end() -> [Double] { lock.withLock { defer { samples = nil }; return samples ?? [] } }
 }

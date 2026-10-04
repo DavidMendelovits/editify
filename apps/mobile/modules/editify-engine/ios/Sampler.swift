@@ -64,6 +64,11 @@ final class Sampler {
     }
   }
 
+  /// A peak measured elsewhere (the exporter samples every 15 frames) counts too.
+  func note(memMB: Double) {
+    queue.async { [self] in memPeakMB = max(memPeakMB, memMB) }
+  }
+
   func finish(status: String, metrics: [String: Any], note: String? = nil) async -> [String: Any] {
     timer?.cancel()
     sample()

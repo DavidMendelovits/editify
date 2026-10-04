@@ -66,10 +66,13 @@ func naturalSize(of asset: AVAsset) async throws -> CGSize {
 
 /// S1: sustained preview fps through the compositor.
 /// variant: render{720,1080,native}-{source,proxy}[-analysis]; params: asset, proxy (when the variant names it), seconds (default 600).
+/// variant render1080-plan: PlanPreviewSpike on the lab plan (params: plan, media, seconds).
 /// `-analysis` previews while the 8A scheduler analyzes the same clip with playback
 /// active, so the light lane runs and the heavy lane is held (plan: "S1 under analysis load").
 struct PreviewSpike: Spike {
   @MainActor func run(variant: String, params: [String: Any], sampler: Sampler, progress: @escaping (Double) -> Void) async throws -> [String: Any] {
+    // `render1080-plan`: the finished renderer (PlanPlayer + EditifyCompositor) on the lab's stand-up cut.
+    if variant.hasSuffix("-plan") { return try await PlanPreviewSpike().run(variant: variant, params: params, sampler: sampler, progress: progress) }
     let key = variant.contains("-proxy") ? "proxy" : "asset"
     guard let ref = params[key] as? String else { throw SpikeError(message: "S1 \(variant) needs params.\(key)") }
     let seconds = params["seconds"] as? Double ?? 600
