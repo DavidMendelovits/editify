@@ -107,6 +107,8 @@ describe('READ_ONLY=1', () => {
 
     const reads: Array<[string, number]> = [
       ['/health', 200],
+      ['/client-config', 200],
+      ['/renders', 200],
       ['/presets', 200],
       ['/sounds', 200],
       ['/projects', 200],
@@ -142,6 +144,8 @@ describe('READ_ONLY=1', () => {
         .toEqual({ url, status, body: '' });
     }
 
+    // The update gate still reaches phones with no credentials at all.
+    expect((await app.inject({ method: 'GET', url: '/client-config' })).json()).toMatchObject({ minVersion: expect.any(String) });
     const health = (await app.inject({ method: 'GET', url: '/health' })).json();
     expect(health).toMatchObject({ ok: true, readOnly: true, jobs: { renders: 1, imports: 0, media: 0 } });
     // Recovery skipped: the stranded render was not re-queued (or run).
