@@ -21,7 +21,7 @@ import Foundation
 ///     └─ unavailable(the reasons each adapter gave)                                     │
 ///                                                                                       ▼
 ///   TranscriptAssembler(FinalResult[]) ─▶ transcriptResultSchema data, ready under the version
-///   of the adapter that ran (w-sa1 / w-sf1); every result carries the current re-run trigger
+///   of the adapter that ran (w-sa1 / w-sf2); every result carries the current re-run trigger
 ///
 /// The re-run rule (C25, WordsFreshness): a result from the best adapter (the first in the
 /// chain) stays fresh; one from a fallback stays fresh until the trigger moves (the OS

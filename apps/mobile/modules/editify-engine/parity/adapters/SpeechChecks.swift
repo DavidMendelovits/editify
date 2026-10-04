@@ -115,8 +115,8 @@ func speechChecks() async {
   let viaSF = await chain([sfLink]).words("clip", locale: Locale(identifier: "en_US"), allowModelDownload: true, progress: nil, gate: nil)
   check("assembler parity: SpeechAnalyzer and SFSpeech results give identical transcript data",
         viaSA.status == "ready" && viaSF.status == "ready" && json(viaSA.data ?? [:]) == json(viaSF.data ?? [:]))
-  check("versions: the result records the adapter that ran (w-sa1 / w-sf1)",
-        viaSA.analyzerVersion == "w-sa1" && viaSF.analyzerVersion == "w-sf1", [viaSA.analyzerVersion, viaSF.analyzerVersion])
+  check("versions: the result records the adapter that ran (w-sa1 / w-sf2)",
+        viaSA.analyzerVersion == "w-sa1" && viaSF.analyzerVersion == "w-sf2", [viaSA.analyzerVersion, viaSF.analyzerVersion])
 
   // MARK: Chain fallthrough (D20, C25)
   do {
@@ -250,6 +250,15 @@ func speechChecks() async {
     check("merge: the same word said twice, apart in time, stays twice", repeated.map(\.text) == ["no", "no"])
     let phrases = SpeechChunks.phrases([TimedWord(text: "Hi", start: 0, end: 0.2), TimedWord(text: "there.", start: 0.3, end: 0.6),
                                         TimedWord(text: "Next", start: 0.7, end: 0.9), TimedWord(text: "bit", start: 2.5, end: 2.8)])
+    // T10: a request reports each utterance on its own, then a final result repeating the last.
+    func ws(_ start: Double, _ texts: String...) -> [TimedWord] {
+      texts.enumerated().map { TimedWord(text: $1, start: start + Double($0) * 0.3, end: start + Double($0) * 0.3 + 0.25) }
+    }
+    let joined = SpeechChunks.joinUtterances([ws(0, "You", "guys"), ws(6.9, "I", "had"), [], ws(46.32, "ready"), ws(46.32, "ready.")])
+    check("utterances: every utterance kept, the final repeat of the last one replaces it",
+          joined.map(\.text) == ["You", "guys", "I", "had", "ready."], joined.map(\.text))
+    let cumulative = SpeechChunks.joinUtterances([ws(0, "one"), ws(0, "one", "two"), ws(0, "one", "two", "three")])
+    check("utterances: a cumulative report keeps only its latest version", cumulative.map(\.text) == ["one", "two", "three"], cumulative.map(\.text))
     check("phrases: split after sentence punctuation and before long pauses",
           phrases.map(\.text) == ["Hi there.", "Next", "bit"] && phrases[0].start == 0 && phrases[0].end == 0.6, phrases.map(\.text))
   }

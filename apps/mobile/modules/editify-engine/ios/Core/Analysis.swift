@@ -17,7 +17,8 @@ public enum AnalyzerVersion {
   // which moved word times on recordings whose audio doesn't start at zero; that is the bump
   // from "speechanalyzer-ios26-2". Which one a part needs: TranscriberChain / WordsFreshness.
   public static let wordsSpeechAnalyzer = "w-sa1"
-  public static let wordsSFSpeech = "w-sf1"
+  // w-sf2: an SFSpeech request keeps every utterance it reports, not only the last one (T10).
+  public static let wordsSFSpeech = "w-sf2"
   // -3: laughter windows are timed from the audio's start in the recording (D19 PTS fix).
   public static let laughter = "soundanalysis-v1-3"
   public static let energy = "energy-rms-50ms-2"

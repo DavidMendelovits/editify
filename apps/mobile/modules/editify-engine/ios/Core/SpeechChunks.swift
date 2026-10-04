@@ -92,6 +92,24 @@ public enum SpeechChunks {
     return merged
   }
 
+  /// One request's words from the utterances its recognition task reported, in order. On
+  /// macOS 26+ a request reports each utterance on its own (after a pause) and the final
+  /// result holds only the last one (T10), so the adapter keeps every result that carries
+  /// utterance metadata. A result starting at or before a kept utterance is a revision (the
+  /// final result repeating the last utterance, or a recognizer that reports cumulatively):
+  /// it replaces that utterance and everything after it.
+  public static func joinUtterances(_ utterances: [[TimedWord]], tolerance: Double = 0.05) -> [TimedWord] {
+    var kept: [[TimedWord]] = []
+    for words in utterances {
+      guard let first = words.first else { continue }
+      while let last = kept.last, let lastStart = last.first?.start, lastStart >= first.start - tolerance {
+        kept.removeLast()
+      }
+      kept.append(words)
+    }
+    return kept.flatMap { $0 }
+  }
+
   static func sameWord(_ a: TimedWord, _ b: TimedWord) -> Bool {
     normalized(a.text) == normalized(b.text) && abs(a.start - b.start) <= seamTolerance
   }

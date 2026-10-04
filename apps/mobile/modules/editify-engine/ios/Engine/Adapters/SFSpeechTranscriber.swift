@@ -6,7 +6,7 @@ import Speech
 ///
 ///   asset ─ SpeechChunks.plan (50 s, 2 s overlap) ─▶ ChunkRunner (gate, timeout, 2 retries)
 ///     each chunk: PCMChunks over its time range (16 kHz mono) ─▶ SFSpeechAudioBufferRecognitionRequest
-///                 ─▶ final result's segments (times relative to the chunk's first sample)
+///                 ─▶ every utterance's segments, joined (times relative to the chunk's first sample)
 ///   ─▶ SpeechChunks.merge (rebase by each chunk's decoded origin, cut overlaps, dedupe the seam)
 ///   ─▶ SpeechChunks.phrases ─▶ FinalResult[] ─▶ TranscriptAssembler (in the chain)
 ///
@@ -80,14 +80,19 @@ struct SFSpeechTranscriber: Transcriber {
     let words: [TimedWord] = try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
         box.start(recognizer.recognitionTask(with: request) { result, error in
-          if let result, result.isFinal {
-            let words = result.bestTranscription.segments.map {
+          // Each utterance arrives as its own result with metadata, and the final one holds only
+          // the last utterance, so every one is kept and joined (SpeechChunks.joinUtterances).
+          if let result, result.isFinal || result.speechRecognitionMetadata != nil {
+            box.heard(result.bestTranscription.segments.map {
               TimedWord(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
-            }
-            box.finish { continuation.resume(returning: words) }
+            })
+          }
+          if let result, result.isFinal {
+            box.finish { continuation.resume(returning: SpeechChunks.joinUtterances(box.utterances)) }
           } else if let error {
             box.finish {
-              if Self.isNoSpeech(error) { continuation.resume(returning: []) } else { continuation.resume(throwing: error) }
+              if Self.isNoSpeech(error) { continuation.resume(returning: SpeechChunks.joinUtterances(box.utterances)) }
+              else { continuation.resume(throwing: error) }
             }
           }
         })
@@ -112,6 +117,14 @@ private final class RecognitionBox: @unchecked Sendable {
   private var task: SFSpeechRecognitionTask?
   private var done = false
   private var cancelled = false
+  private var heardSoFar: [[TimedWord]] = []
+
+  /// The utterances reported so far, in order.
+  var utterances: [[TimedWord]] { lock.withLock { heardSoFar } }
+
+  func heard(_ words: [TimedWord]) {
+    lock.withLock { heardSoFar.append(words) }
+  }
 
   func start(_ task: SFSpeechRecognitionTask) {
     let cancelNow = lock.withLock { () -> Bool in
