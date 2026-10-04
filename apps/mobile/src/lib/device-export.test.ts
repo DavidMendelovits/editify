@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AssetAvailability, AssetMetadata, PlanAssetRef, Project, RenderPlan } from '@editify/shared';
+import { renderSnapshot, type AssetAvailability, type AssetMetadata, type PlanAssetRef, type Project, type RenderPlan, type RenderSnapshot } from '@editify/shared';
 import type { ExportProjectOptions, ExportStateEvent } from '../../modules/editify-engine';
 import {
-  assetInfoOf, buildExportPlan, DEVICE_EXPORT_RESOLUTIONS, exportOnDevice, exportReducer, exportStateLabel, isTerminal, missingClipsLine,
-  copyFileName, mimeTypeOf, planAssetRefs, projectAssetRefs, routeExport, serverRenderable, serverRouteLine, STARTING, uploadMissing,
-  type DeviceExportView, type ExportNative, type GeometryMap, type OriginalFile, type ServerCheck,
+  assetInfoOf, buildExportPlan, canFinishOnServer, DEVICE_EXPORT_RESOLUTIONS, exportOnDevice, exportReducer, exportStateLabel, finishOnServer,
+  finishOnServerOnce, isTerminal, missingClipsLine, copyFileName, mimeTypeOf, OFFLINE_LINE, planAssetRefs, projectAssetRefs, routeExport,
+  serverRenderable, serverRouteLine, STARTING, uploadMissing,
+  type DeviceExportView, type ExportNative, type FinishOnServerArgs, type GeometryMap, type OriginalFile, type ServerCheck,
 } from './device-export';
 import {
   createLocalMediaStore, isLeased, migrate, type MediaDeps, type MediaFingerprint, type MediaGeometry, type MediaNative, type MediaProbe,
@@ -559,5 +560,140 @@ describe('the server fallback (OV1)', () => {
     expect(outcome).toMatchObject({ kind: 'server', route: { why: 'missing', server: { state: 'upload', clips: [{ assetId: 'asset-a' }] } } });
     expect(engine.calls).toHaveLength(0);
     expect(isLeased(deps, 'asset-a')).toBe(false);
+  });
+});
+
+describe('finish on server (D26)', () => {
+  const BACKGROUNDED = 'Export stopped: Editify went to the background. Keep it open while exporting.';
+  const failedWith = (extra: Partial<ExportStateEvent>): DeviceExportView =>
+    ([{ id: 'x', state: 'writing', progress: 0.4 }, { id: 'x', state: 'failed', progress: 0, ...extra }] as ExportStateEvent[]).reduce(exportReducer, STARTING);
+
+  const media = (id: string): AssetMetadata => ({
+    id, originalName: `${id}.mov`, mimeType: 'video/quicktime', duration: 4, width: 1080, height: 1920, fps: 30, hasAudio: true,
+    status: 'ready', originalUrl: '', proxyUrl: '', thumbnailUrl: '', filmstripUrl: '', createdAt: '',
+  });
+  const assets = [media('asset-a'), media('asset-b')];
+  const project = (version: number, out = 2): Project => ({
+    id: 'p', title: 'Finish', format: '9:16', fps: 30, duration: 4, version,
+    tracks: [{ id: 'v', kind: 'video', clips: [
+      { id: '1', assetId: 'asset-a', start: 0, in: 0, out },
+      { id: '2', assetId: 'asset-b', start: out, in: 0, out: 2 },
+    ] }],
+  });
+
+  /** A server that holds `statuses`, renders snapshots into `renders`, and answers ids r1, r2, ... */
+  function serverFake(statuses: Record<string, AssetAvailability>) {
+    const renders: RenderSnapshot[] = [];
+    const asked: string[][] = [];
+    return {
+      renders, asked, statuses,
+      check: async (ids: string[]) => { asked.push(ids); return Object.fromEntries(ids.map((id) => [id, statuses[id] ?? 'missing'])) as Record<string, AssetAvailability>; },
+      render: async (snapshot: RenderSnapshot) => { renders.push(snapshot); return { id: `r${renders.length}` }; },
+    };
+  }
+  const args = async (fake: ReturnType<typeof serverFake>, overrides: Partial<FinishOnServerArgs> = {}): Promise<FinishOnServerArgs> => ({
+    current: async () => ({ project: project(3), assets }),
+    deps: await registry(),
+    check: fake.check,
+    nameOf,
+    upload: async () => { throw new Error('unexpected upload'); },
+    render: fake.render,
+    ...overrides,
+  });
+
+  it('is offered only for a device export stopped by backgrounding, by its code and not its text', () => {
+    const backgrounded = failedWith({ error: BACKGROUNDED, reason: 'backgrounded' });
+    expect(backgrounded).toMatchObject({ state: 'failed', error: BACKGROUNDED, reason: 'backgrounded' });
+    expect(canFinishOnServer(backgrounded)).toBe(true);
+    // Other failures, even one whose text reads the same, offer only "try again".
+    expect(canFinishOnServer(failedWith({ error: 'Not enough space' }))).toBe(false);
+    expect(canFinishOnServer(failedWith({ error: BACKGROUNDED }))).toBe(false);
+    expect(canFinishOnServer(failedWith({ error: 'iOS stopped the export' }))).toBe(false);
+    expect(canFinishOnServer(exportReducer(STARTING, { id: 'x', state: 'cancelled', progress: 0 }))).toBe(false);
+    expect(canFinishOnServer(undefined)).toBe(false);
+  });
+
+  it('routes a backgrounded export to the server: checks every asset, renders the snapshot', async () => {
+    const fake = serverFake({ 'asset-a': 'present', 'asset-b': 'present' });
+    const result = await finishOnServer(await args(fake));
+    expect(result).toEqual({ kind: 'rendering', renderId: 'r1' });
+    expect(fake.asked).toEqual([['asset-a', 'asset-b']]);
+    expect(fake.renders).toHaveLength(1);
+    expect(fake.renders[0]!.revision).toBe(3);
+  });
+
+  it('uploads only the clips the server is missing, checks again, then renders', async () => {
+    const fake = serverFake({ 'asset-a': 'present', 'asset-b': 'missing' });
+    const deps = await bothLocal();
+    const sent: string[] = [];
+    const result = await finishOnServer(await args(fake, {
+      deps,
+      upload: async (file) => { sent.push(file.assetId); fake.statuses[file.assetId] = 'present'; },
+    }));
+    expect(result).toEqual({ kind: 'rendering', renderId: 'r1' });
+    expect(sent).toEqual(['asset-b']);
+    expect(fake.asked).toHaveLength(2);
+    expect(fake.renders).toHaveLength(1);
+  });
+
+  it('names a clip neither here nor on the server, and renders nothing', async () => {
+    const fake = serverFake({ 'asset-a': 'present' });
+    const result = await finishOnServer(await args(fake));
+    expect(result).toEqual({ kind: 'blocked', message: "Interview isn't on this iPhone or the server." });
+    expect(fake.renders).toHaveLength(0);
+  });
+
+  it('says plainly when the server cannot be reached, and passes on what an answering server says', async () => {
+    const offline = new TypeError('Network request failed');
+    const fake = serverFake({});
+    const result = await finishOnServer(await args(fake, {
+      check: async () => { throw offline; },
+      render: async () => { throw offline; },
+    }));
+    expect(result).toEqual({ kind: 'failed', message: OFFLINE_LINE });
+    const refused = Object.assign(new Error('Rendering is paused for maintenance'), { status: 503 });
+    const answered = await finishOnServer(await args(serverFake({ 'asset-a': 'present', 'asset-b': 'present' }), {
+      render: async () => { throw refused; },
+    }));
+    expect(answered).toEqual({ kind: 'failed', message: 'Rendering is paused for maintenance' });
+  });
+
+  it('starts one server render however often it is tapped', async () => {
+    const fake = serverFake({ 'asset-a': 'present', 'asset-b': 'present' });
+    const finish = finishOnServerOnce();
+    const input = await args(fake);
+    const [first, second] = await Promise.all([finish(input), finish(input)]);
+    expect(first).toEqual({ kind: 'rendering', renderId: 'r1' });
+    expect(second).toBe(first);
+    // Tapped again after it started: the same render, not a second one.
+    expect(await finish(input)).toBe(first);
+    expect(fake.renders).toHaveLength(1);
+  });
+
+  it('can be tapped again after a run that rendered nothing (offline)', async () => {
+    const fake = serverFake({ 'asset-a': 'present', 'asset-b': 'present' });
+    let online = false;
+    const finish = finishOnServerOnce();
+    const input = await args(fake, {
+      render: async (snapshot) => { if (!online) throw new TypeError('Network request failed'); return await fake.render(snapshot); },
+    });
+    expect(await finish(input)).toEqual({ kind: 'failed', message: OFFLINE_LINE });
+    online = true;
+    expect(await finish(input)).toEqual({ kind: 'rendering', renderId: 'r1' });
+    expect(fake.renders).toHaveLength(1);
+  });
+
+  it('renders the project as it is now when it changed since the failed export', async () => {
+    const fake = serverFake({ 'asset-a': 'present', 'asset-b': 'present' });
+    // The failed run exported version 3; the user trimmed a clip (version 4) before tapping.
+    let now = project(3);
+    const input = await args(fake, { current: async () => ({ project: now, assets }) });
+    now = project(4, 1.5);
+    await finishOnServer(input);
+    expect(fake.renders).toHaveLength(1);
+    const sent = fake.renders[0]!;
+    expect(sent).toEqual(renderSnapshot(now));
+    expect(sent.revision).toBe(4);
+    expect(sent.project.tracks[0]!.clips[0]!.out).toBe(1.5);
   });
 });

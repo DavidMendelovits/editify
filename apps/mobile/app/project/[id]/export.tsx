@@ -10,8 +10,9 @@ import { EditifyEngine } from '../../../modules/editify-engine';
 import { renderSnapshot, type RenderSnapshot } from '@editify/shared';
 import { api, ApiError, IS_LOCAL_API, rebaseServerUrl, uploadOriginal, type RenderRecord } from '../../../src/lib/api';
 import {
-  buildExportPlan, exportOnDevice, exportStateLabel, isTerminal, projectAssetRefs, routeExport, serverRenderable, serverRouteLine, STARTING,
-  uploadMissing, type DeviceExportView, type ExportChoices, type ExportRoute, type ServerCheck, type UploadClip, type UploadOriginal,
+  buildExportPlan, canFinishOnServer, exportOnDevice, exportStateLabel, finishOnServerOnce, isTerminal, projectAssetRefs, routeExport,
+  serverRenderable, serverRouteLine, STARTING, uploadMissing,
+  type DeviceExportView, type ExportChoices, type ExportRoute, type ServerCheck, type UploadClip, type UploadOriginal,
 } from '../../../src/lib/device-export';
 import { describeImport, type ImportProgress } from '../../../src/lib/upload-progress';
 import { useEngineActivity } from '../../../src/lib/engine-activity';
@@ -56,6 +57,7 @@ export default function ExportScreen() {
     mutationFn: (snapshot?: RenderSnapshot) => api.render(id, resolution, hdr, loudness, snapshot),
     onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
   });
+  const [finishing, setFinishing] = useState(false);
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
 
   // On-device export (plan P4): at 720p and 1080p, when every clip of the plan is on this
@@ -167,6 +169,51 @@ export default function ExportScreen() {
     }
     busy.current = false;
   };
+  // Finish on server (D26): a device export stopped by backgrounding goes to the server in one
+  // tap, with the project as it is now. finishOnServerOnce makes repeat taps join one render.
+  const finishOnce = useRef(finishOnServerOnce());
+  const finishOnServer = async (): Promise<void> => {
+    if (busy.current) return;
+    busy.current = true;
+    const controller = new AbortController();
+    abort.current = controller;
+    setFinishing(true);
+    setServerError(null);
+    track('export_finish_on_server', resolution);
+    try {
+      const result = await finishOnce.current({
+        // Fetched again at tap time: an edit made since the failed run is what renders.
+        current: async () => {
+          const [fresh, list] = await Promise.all([project.refetch(), assets.refetch()]);
+          const doc = fresh.data ?? project.data;
+          if (!doc) throw new Error('The project could not be loaded');
+          return { project: doc, assets: list.data ?? assets.data ?? [] };
+        },
+        deps: await localMedia(),
+        check: async (ids) => await api.assetAvailability(id, ids),
+        nameOf,
+        upload: sendOriginal,
+        render: async (snapshot) => await api.render(id, resolution, hdr, loudness, snapshot),
+        onUploadProgress: setUploading,
+        signal: controller.signal,
+      });
+      if (result.kind === 'rendering') {
+        track('render_started', resolution);
+        setDevice(undefined);
+        setServerNote('Finishing on the server: it keeps going if you leave Editify.');
+        setRenderId(result.renderId);
+      } else {
+        setServerError(result.message);
+      }
+    } catch (error) {
+      setServerError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (abort.current === controller) abort.current = null;
+      setUploading(undefined);
+      setFinishing(false);
+      busy.current = false;
+    }
+  };
   const exportHere = async (): Promise<void> => {
     const deps = await localMedia();
     const current = project.data;
@@ -261,7 +308,7 @@ export default function ExportScreen() {
       {!renderId && !device && (serverNote ?? routeLine) && <Text testID="export-route" style={styles.note}>{serverNote ?? routeLine}</Text>}
       {uploading && <Button secondary style={styles.downloadButton} onPress={() => abort.current?.abort()}>cancel upload</Button>}
       {serverError && <Text style={styles.error}>{serverError}</Text>}
-      {device && <DeviceExportCard view={device} onCancel={() => abort.current?.abort()} onRetry={() => setDevice(undefined)} />}
+      {device && <DeviceExportCard view={device} finishing={finishing} onCancel={() => abort.current?.abort()} onRetry={() => { setServerError(null); setDevice(undefined); }} onFinishOnServer={() => { void finishOnServer(); }} />}
       {renderId && serverNote && <Text style={styles.note}>{serverNote}</Text>}
       {status && (
         <View style={[styles.statusCard, status === 'done' && styles.doneCard, status === 'error' && styles.errorCard]}>
@@ -283,7 +330,10 @@ export default function ExportScreen() {
 }
 
 /** The on-device export's progress, result and controls. */
-function DeviceExportCard({ view, onCancel, onRetry }: { view: DeviceExportView; onCancel: () => void; onRetry: () => void }) {
+function DeviceExportCard({ view, finishing, onCancel, onRetry, onFinishOnServer }: {
+  view: DeviceExportView; finishing: boolean; onCancel: () => void; onRetry: () => void; onFinishOnServer: () => void;
+}) {
+  const canFinish = canFinishOnServer(view);
   const running = !isTerminal(view.state);
   const stats = view.stats;
   return (
@@ -297,7 +347,9 @@ function DeviceExportCard({ view, onCancel, onRetry }: { view: DeviceExportView;
         <Text style={styles.qaLine}>{`${stats.lufsOut === null ? 'SILENT' : `${stats.lufsOut.toFixed(1)} LUFS`}${stats.truePeakPreEncode === null ? '' : ` · PEAK ${stats.truePeakPreEncode.toFixed(1)} dBTP PRE-ENCODE`} · ${stats.xRealtime.toFixed(1)}x REALTIME`}</Text>
       )}
       {view.state === 'failed' && <Text style={styles.error}>{view.error}</Text>}
-      {(view.state === 'failed' || view.state === 'cancelled') && <Button secondary style={styles.downloadButton} onPress={onRetry}>try again</Button>}
+      {canFinish && <Text style={styles.qaDetail}>The server can finish it instead, and it keeps going if you leave Editify.</Text>}
+      {canFinish && <Button style={styles.downloadButton} disabled={finishing} accessibilityLabel="finish on server" onPress={onFinishOnServer}>{finishing ? 'sending to the server…' : 'finish on server'}</Button>}
+      {(view.state === 'failed' || view.state === 'cancelled') && <Button secondary style={styles.downloadButton} disabled={finishing} onPress={onRetry}>try again</Button>}
     </View>
   );
 }
