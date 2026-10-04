@@ -200,11 +200,12 @@ describe.skipIf(!swiftAvailable)('render goldens: both adapter sets (D22, D24)',
       }
     }
     // What doesn't depend on GPU timing is identical: colour tags, decoded frame codes, the
-    // instruction count, durations, the mix.
+    // instruction count, durations, the mix. Not how many samples the reader handed back past
+    // the end (its buffer sizes vary run to run).
     const structure = (value: Report) => value.renders.map((item) => ({
       name: item.name, emptyPlanRefused: item.emptyPlanRefused, instructions: item.instructions, durationSeconds: item.durationSeconds,
       frames: (item.frames ?? []).map((f) => ({ k: f.k, code: f.code, tags: f.tags })), sequentialCodes: item.sequentialCodes,
-      audioEdits: item.audioEdits, audio: item.audio,
+      audioEdits: item.audioEdits, audio: item.audio && { ...item.audio, overshootDropped: undefined },
     }));
     expect(structure(legacyReport)).toEqual(structure(report));
   });
