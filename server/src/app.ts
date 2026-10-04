@@ -28,6 +28,7 @@ import { registerProjectRoutes } from './routes/projects.js';
 import { registerRenderRoutes } from './routes/renders.js';
 import { registerStyleRoutes } from './routes/style.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
+import { registerWebhookRoutes } from './routes/webhooks.js';
 import { ensureSoundLibrary } from './media/sound-library.js';
 import { RenderQueue } from './services/render-queue.js';
 import { DissectService } from './services/dissect-service.js';
@@ -136,6 +137,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   registerLegalRoutes(app);
   registerClientConfigRoutes(app);
   registerAccountRoutes(app, database, styles);
+  await registerWebhookRoutes(app, database, styles);
   registerProjectRoutes(app, projects, renderQueue, assets, transcripts, syncs);
   registerAssetRoutes(app, assets, projects, transcripts, insights, dissections, database, faces);
   registerRenderRoutes(app, renders);
