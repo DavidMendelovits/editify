@@ -10,7 +10,8 @@ public enum AnalysisPart: String, CaseIterable, Sendable {
 
   public var rank: Int { AnalysisPart.allCases.firstIndex(of: self)! }
   public var heavy: Bool { self == .words || self == .proxy || self == .faces }
-  public var version: String { AnalyzerVersion.all[rawValue]! }
+  /// The version a result of this part carries. `words`: the chain's best adapter's.
+  public func version(words: String) -> String { self == .words ? words : AnalyzerVersion.all[rawValue]! }
   /// What `analyze` queues when no parts are named: every analyzer, not the proxy.
   public static let analysisDefaults = allCases.filter { $0 != .proxy }
 }
@@ -51,9 +52,11 @@ public enum AnalysisPolicy {
   public static let pcmBudgetSamples = 8_000_000
 
   /// A part already `ready` from the current analyzer version is skipped (unless forced);
-  /// a proxy only while its file is still on disk.
-  public static func isFresh(_ done: PartResult?, part: AnalysisPart, proxyOnDisk: Bool) -> Bool {
-    guard let done, done.status == "ready", done.analyzerVersion == part.version else { return false }
+  /// a proxy only while its file is still on disk; words by the C25 rule (WordsFreshness).
+  public static func isFresh(_ done: PartResult?, part: AnalysisPart, proxyOnDisk: Bool, words: WordsFreshness) -> Bool {
+    guard let done, done.status == "ready" else { return false }
+    if part == .words { return words.isCurrent(version: done.analyzerVersion, trigger: done.trigger) }
+    guard done.analyzerVersion == part.version(words: words.best) else { return false }
     return part != .proxy || proxyOnDisk
   }
 

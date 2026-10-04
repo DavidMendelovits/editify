@@ -117,6 +117,7 @@ export type ProgressEvent =
 export type AnalysisStatusEvent =
   | { assetId: string; part: NativeAnalysisPart; revision?: number; status: AnalysisPartStatus; analyzerVersion: string; error?: string; code?: string; trigger?: string; removed?: undefined }
   | { assetId: string; part: NativeAnalysisPart; revision?: number; removed: true };
+export interface SpeechAuthorizationEvent { status: SpeechAuthorizationStatus; previous: SpeechAuthorizationStatus | null }
 export interface AnalysisStateEvent { playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean }
 
 /**
@@ -184,11 +185,28 @@ export interface ExportProjectOptions {
  * BackgroundExecution adapter (`foreground` means every export runs with Editify open).
  * `composition`: the VideoComposition adapter. `tier` is reserved for the RAM tier (T7).
  */
+export type TranscriberName = 'speech-analyzer' | 'sfspeech';
+export type SpeechAuthorizationStatus = 'notDetermined' | 'denied' | 'restricted' | 'authorized';
+
 export interface EngineCapabilities {
   /** "18.0.0" */
   os: string;
   adapterSet: 'modern' | 'legacy';
-  transcriber: string;
+  /**
+   * The words Transcriber chain (D20). `order`: tried in this order (modern: speech-analyzer,
+   * sfspeech; legacy: sfspeech). `lastRan`: the adapter whose words were last ready, kept across
+   * launches (null before any). `best`, `versions`, `trigger`: the C25 re-run rule, pass them to
+   * `markStale` as its WordsFreshness (`{best, versions: Object.values(versions), trigger}`).
+   */
+  transcriber: {
+    order: TranscriberName[];
+    lastRan: TranscriberName | null;
+    best: string;
+    versions: Partial<Record<TranscriberName, string>>;
+    trigger: string;
+  };
+  /** The speech-recognition permission now (SFSpeech needs it; SpeechAnalyzer doesn't). */
+  speechAuthorization: SpeechAuthorizationStatus;
   backgroundExport: 'continued-processing' | 'foreground';
   backgroundGPU: boolean;
   composition: 'configuration' | 'mutable';
@@ -282,6 +300,16 @@ interface EditifyEngineNative {
   /** The App Store receipt's kind ('sandbox' on TestFlight). Absent in binaries built before the 1.1 test-server banner. */
   appStoreReceipt?: () => 'sandbox' | 'production' | 'none';
 
+  // Speech permission (D21, C15). Absent in binaries before the Transcriber chain.
+  /** Read without prompting. */
+  speechAuthorization?: () => SpeechAuthorizationStatus;
+  /**
+   * Shows the system prompt when it was never answered (call it from the pre-prompt sheet while
+   * Editify is in front) and answers the status after it. A change also arrives as a
+   * `speechAuthorization` event.
+   */
+  requestSpeechAuthorization?: () => Promise<SpeechAuthorizationStatus>;
+
   /** Present (and true) only in binaries that have EditifyPlayerView. */
   nativePreviewAvailable?: () => boolean;
 
@@ -289,6 +317,8 @@ interface EditifyEngineNative {
   addListener(event: 'analysisStatus', listener: (event: AnalysisStatusEvent) => void): EventSubscription;
   addListener(event: 'analysisState', listener: (event: AnalysisStateEvent) => void): EventSubscription;
   addListener(event: 'exportState', listener: (event: ExportStateEvent) => void): EventSubscription;
+  /** The speech permission changed (checked whenever Editify comes to the front, and after a request): re-queue words on `authorized`. */
+  addListener(event: 'speechAuthorization', listener: (event: SpeechAuthorizationEvent) => void): EventSubscription;
 }
 
 /** iOS-only native engine (null on web and in builds without it): the capability lab, the device analyzers and export. */

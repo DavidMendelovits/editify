@@ -1,5 +1,7 @@
 // Adapters harness (decision D24): the composition root's choice and the policies behind the
-// ports, run on macOS against stubs. server/test/engine-adapters.test.ts builds it twice (with
+// ports, run on macOS against stubs: export admission, the Transcriber chain (fallthrough,
+// speech permission, the C25 re-run trigger), the SFSpeech chunk plan, merge and retry
+// policy, TranscriptAssembler parity, and the decoder's PTS origin on a synthesized clip. server/test/engine-adapters.test.ts builds it twice (with
 // and without -D EDITIFY_TEST_ADAPTERS) and asserts on the JSON it prints:
 //
 //   {"compiled": {"overrideCompiled": bool}, "checks": [{"name", "ok", "detail"?}]}
@@ -114,6 +116,14 @@ do {
   check("admission: ForegroundExecution → foreground with the keep-open notice",
         legacy.0 == .foreground(notice: "Keep Editify open until the export finishes.") && !legacy.prepared, legacy.0)
 }
+
+// MARK: - The Transcriber chain and the decoder (SpeechChecks.swift)
+
+await speechChecks()
+let work = FileManager.default.temporaryDirectory.appendingPathComponent("editify-adapters-\(UUID().uuidString)", isDirectory: true)
+try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+await ptsChecks(work: work)
+try? FileManager.default.removeItem(at: work)
 
 let report: [String: Any] = ["compiled": ["overrideCompiled": AdapterSelection.overrideCompiled], "checks": checks]
 FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]))

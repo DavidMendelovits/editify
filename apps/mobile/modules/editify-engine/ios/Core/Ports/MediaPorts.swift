@@ -35,12 +35,6 @@ public protocol AudioDecoder<Asset>: PortAdapter {
   func decodeMono(_ asset: Asset, rate: Double, progress: AnalyzerProgress?) async throws -> [Float]
 }
 
-/// transcriptResultSchema data with word times (the `words` part).
-public protocol Transcriber<Asset>: PortAdapter {
-  associatedtype Asset
-  func words(_ asset: Asset, locale: Locale, allowModelDownload: Bool, progress: AnalyzerProgress?, gate: AnalyzerGate?) async -> PartResult
-}
-
 /// Laughter spans with confidence (the `laughter` part).
 public protocol SoundClassifier<Asset>: PortAdapter {
   associatedtype Asset

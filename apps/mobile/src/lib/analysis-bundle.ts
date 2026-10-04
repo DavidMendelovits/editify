@@ -8,7 +8,8 @@
  *                                             └─ ready: { refetch } (events carry no data)
  *   getAnalysis(assetId) ─▶ applyAssetAnalysis ──┐  (the asset's parts become exactly what it returns)
  *   syncPair ─▶ applySync ───────────────────────┴─▶ DeviceAnalysisState
- *        markStale(current versions) ─┤  (a bumped analyzer sends its parts back to pending)
+ *        markStale(current versions) ─┤  (a bumped analyzer sends its parts back to pending;
+ *                                     │   words follow the C25 trigger rule, see WordsFreshness)
  *                                     └─▶ buildAnalysisBundle ─▶ { bundle, extras }
  *
  * Parts the shared schema has no slot for yet (laughter spans, onset peaks)
@@ -22,6 +23,10 @@ export interface PartState<T = unknown> {
   analyzerVersion: string;
   data?: T;
   error?: string;
+  /** Why it is unavailable, for the UI: `speechRecognitionOff` gets a Settings link (D21). */
+  code?: string;
+  /** Words only: the re-run trigger the native chain stamped on it (C25, WordsFreshness). */
+  trigger?: string;
 }
 
 export interface SyncState {
@@ -75,6 +80,8 @@ function normalize<T>(result: NativePartResult<T>): PartState<T> {
   const next: PartState<T> = { status: result.status, analyzerVersion: result.analyzerVersion };
   if (result.status === 'ready') next.data = result.data as T;
   if (result.error !== undefined) next.error = result.error;
+  if (result.code !== undefined) next.code = result.code;
+  if (result.trigger !== undefined) next.trigger = result.trigger;
   return next;
 }
 
@@ -123,6 +130,8 @@ export function applyStatusEvent(state: DeviceAnalysisState, event: AnalysisStat
   if (event.status === 'ready') return { state: current, refetch: true };
   const result: NativePartResult = { status: event.status, analyzerVersion: event.analyzerVersion };
   if (event.error !== undefined) result.error = event.error;
+  if (event.code !== undefined) result.code = event.code;
+  if (event.trigger !== undefined) result.trigger = event.trigger;
   return { state: applyPartResult(current, event.assetId, event.part, result), refetch: false };
 }
 
@@ -138,17 +147,54 @@ export function applySync(state: DeviceAnalysisState, videoAssetId: string, memo
 export interface StalePart { assetId: string; part: NativeAnalysisPart | 'sync'; memoAssetId?: string }
 
 /**
+ * When a stored words part is current (C25, refining D12); the native chain's
+ * `capabilities().transcriber` gives the three fields, and WordsFreshness in
+ * TranscriberChain.swift is the same rule.
+ *
+ *   version unknown to this build (an older analyzer) ──────────────▶ stale (re-run)
+ *   version of the best adapter (SpeechAnalyzer on 26, SFSpeech on 18) ▶ current
+ *   a fallback's version: trigger it carries == the current trigger ──▶ current
+ *                                               otherwise ───────────▶ stale, once: the re-run
+ *                                               carries the new trigger, so falling back again
+ *                                               (a model install that keeps failing) is current
+ *
+ * The trigger moves on an OS version change or a SpeechAnalyzer model install, never on a
+ * failed one, so nothing re-runs in a loop.
+ */
+export interface WordsFreshness { best: string; versions: string[]; trigger: string }
+
+export function wordsCurrent(policy: WordsFreshness, part: Pick<PartState, 'analyzerVersion' | 'trigger'>): boolean {
+  if (!policy.versions.includes(part.analyzerVersion)) return false;
+  return part.analyzerVersion === policy.best || part.trigger === policy.trigger;
+}
+
+/**
  * Parts made by an analyzer older than the one installed go back to `pending`
  * under the current version (their data dropped), and are listed so the caller
  * re-queues them with `analyze(..., { force: true })` or re-runs `syncPair`.
- * Parts with no current version (unknown to this build) are left alone.
+ * Parts with no current version (unknown to this build) are left alone. With `words`, a
+ * words part follows `wordsCurrent` instead of an exact match against `versions.words`
+ * (a binary with the Transcriber chain writes one version per adapter).
  */
-export function markStale(state: DeviceAnalysisState, versions: Partial<Record<NativeAnalysisPart | 'sync', string>>): { state: DeviceAnalysisState; stale: StalePart[] } {
+export function markStale(
+  state: DeviceAnalysisState,
+  versions: Partial<Record<NativeAnalysisPart | 'sync', string>>,
+  words?: WordsFreshness,
+): { state: DeviceAnalysisState; stale: StalePart[] } {
   const stale: StalePart[] = [];
   const assets: DeviceAnalysisState['assets'] = {};
   for (const [assetId, parts] of Object.entries(state.assets)) {
     const next: Partial<Record<NativeAnalysisPart, PartState>> = {};
     for (const [part, current] of Object.entries(parts) as Array<[NativeAnalysisPart, PartState]>) {
+      if (part === 'words' && words) {
+        if (wordsCurrent(words, current)) {
+          next[part] = current;
+        } else {
+          next[part] = { status: 'pending', analyzerVersion: words.best };
+          stale.push({ assetId, part });
+        }
+        continue;
+      }
       const version = versions[part];
       if (version && current.analyzerVersion !== version) {
         next[part] = { status: 'pending', analyzerVersion: version };

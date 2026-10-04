@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreMedia
 import SoundAnalysis
-import Speech
 import Vision
 
 /// The on-device analyzers (plan P2), promoted from server/scripts/native/standup-native.swift.
@@ -12,7 +11,8 @@ import Vision
 ///
 ///   ref ──AssetSource──▶ AVAsset ─┬─ PCMChunks (audio only, resampled) ─┬─ decodeMono 8 kHz ─▶ sync, energy, onsetPeaks
 ///                                 │                                     ├─ laughter (SoundAnalysis, 16 kHz stream)
-///                                 │                                     └─ words (SpeechAnalyzer, its preferred format)
+///                                 │                                     └─ words: the Transcriber chain (TranscriberChain;
+///                                 │                                        Adapters/SpeechAnalyzerTranscriber, SFSpeechTranscriber)
 ///                                 └─ AVAssetImageGenerator 2 fps ─▶ Vision ─▶ faces
 ///
 /// The shared pieces: PCMChunks in AudioDecode.swift; the gate and progress types, AnalysisQueue,
@@ -83,107 +83,6 @@ extension Analyzers {
       }
       progress?(1)
       return .ready(version, ["minConfidence": minConfidence, "spans": spans])
-    } catch is NoAudio {
-      return .unavailable(version, NoAudio().localizedDescription)
-    } catch {
-      return .failed(version, error)
-    }
-  }
-
-  // MARK: - Words (SpeechAnalyzer)
-
-  /// transcriptResultSchema data from SpeechTranscriber with word time ranges.
-  /// A missing speech model is downloaded when `allowModelDownload`; when that
-  /// isn't allowed or fails (offline), the part is `unavailable`, and the caller
-  /// re-queues it (`analyze` with `force`) once the phone is back online. When the
-  /// gate stops it (the part was cancelled) the result is `failed` with a
-  /// cancellation, never a partial `ready`.
-  @available(iOS 26.0, macOS 26.0, *)
-  static func words(_ asset: AVAsset, locale requested: Locale = .current, allowModelDownload: Bool = true, progress: AnalyzerProgress? = nil, gate: AnalyzerGate? = nil) async -> PartResult {
-    let version = AnalyzerVersion.words
-    guard SpeechTranscriber.isAvailable else { return .unavailable(version, "Speech transcription is not available on this device") }
-    guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requested) else {
-      return .unavailable(version, "No speech model for \(requested.identifier)")
-    }
-    let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
-    do {
-      if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-        guard allowModelDownload else { return .unavailable(version, "The speech model for \(locale.identifier) is not installed") }
-        do {
-          try await install.downloadAndInstall()
-        } catch {
-          return .unavailable(version, "The speech model for \(locale.identifier) could not be downloaded: \(error.localizedDescription)")
-        }
-      }
-    } catch {
-      return .unavailable(version, "The speech model for \(locale.identifier) is unavailable: \(error.localizedDescription)")
-    }
-
-    do {
-      guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
-        return .unavailable(version, "SpeechAnalyzer offered no audio format")
-      }
-      let chunks = try await PCMChunks(asset: asset, rate: format.sampleRate)
-      guard let floatFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false) else {
-        return .failed(version, "no float format at \(format.sampleRate) Hz")
-      }
-      // Same rate, so only the sample format may differ (usually Int16).
-      let converter = floatFormat == format ? nil : AVAudioConverter(from: floatFormat, to: format)
-      let stopped = CancelFlag()
-      let inputs = AsyncThrowingStream<AnalyzerInput, Error> {
-        if let gate, await !gate() { stopped.set(); return nil }
-        guard let (samples, position) = try await AnalysisQueue.run({ try chunks.next() }) else { return nil }
-        guard var buffer = PCMChunks.buffer(samples, format: floatFormat) else { return nil }
-        if let converter {
-          guard let converted = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength) else { return nil }
-          try converter.convert(to: converted, from: buffer)
-          buffer = converted
-        }
-        progress?(chunks.fraction(at: position) * 0.95)
-        return AnalyzerInput(buffer: buffer, bufferStartTime: CMTime(value: CMTimeValue(position), timescale: CMTimeScale(format.sampleRate)))
-      }
-
-      let analyzer = SpeechAnalyzer(modules: [transcriber])
-      let collect = Task { () -> (words: [[String: Any]], segments: [[String: Any]]) in
-        var words: [[String: Any]] = []
-        var segments: [[String: Any]] = []
-        for try await result in transcriber.results where result.isFinal {
-          var first: Double?
-          var last: Double?
-          for run in result.text.runs {
-            guard let range = run.audioTimeRange else { continue }
-            let text = String(result.text[run.range].characters).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            let start = max(0, range.start.seconds), end = max(start, range.end.seconds)
-            words.append(["w": text, "s": round3(start), "e": round3(end)])
-            first = first ?? start
-            last = end
-          }
-          let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-          guard !text.isEmpty else { continue }
-          let start = first ?? max(0, result.range.start.seconds)
-          let end = last ?? max(start, result.range.end.seconds)
-          segments.append(["text": text, "s": round3(start), "e": round3(end)])
-        }
-        return (words, segments)
-      }
-      do {
-        try await analyzer.start(inputSequence: inputs)
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-      } catch {
-        await analyzer.cancelAndFinishNow()
-        collect.cancel()
-        throw error
-      }
-      let (words, segments) = try await collect.value
-      if stopped.isSet { throw CancellationError() }
-      progress?(1)
-      return .ready(version, [
-        "language": locale.language.languageCode?.identifier ?? locale.identifier,
-        "durationProcessedSeconds": max(0, chunks.durationSeconds),
-        "words": words,
-        "segments": segments,
-      ])
     } catch is NoAudio {
       return .unavailable(version, NoAudio().localizedDescription)
     } catch {

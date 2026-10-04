@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analysisBundleSchema, readyPart } from '@editify/shared';
 import type { NativeEnergy, NativeFaces, NativeLaughter, NativeSync, NativeTranscript } from '../../modules/editify-engine';
-import { applyAssetAnalysis, applyPartResult, applyStatusEvent, applySync, buildAnalysisBundle, emptyAnalysisState, markStale, nextPartState } from './analysis-bundle';
+import { applyAssetAnalysis, applyPartResult, applyStatusEvent, applySync, buildAnalysisBundle, emptyAnalysisState, markStale, nextPartState, wordsCurrent, type WordsFreshness } from './analysis-bundle';
 
 const transcript: NativeTranscript = {
   language: 'en', durationProcessedSeconds: 12.5,
@@ -173,5 +173,56 @@ describe('markStale', () => {
     const { state: next, stale } = markStale(state, { words: 'w9' });
     expect(next.assets.a?.faces?.status).toBe('ready');
     expect(stale).toEqual([]);
+  });
+});
+
+describe('markStale: words re-run once per trigger (C25)', () => {
+  const ios26: WordsFreshness = { best: 'w-sa1', versions: ['w-sa1', 'w-sf1'], trigger: 'os=26.0;sa=0' };
+
+  it('keeps the best adapter\'s result, and a fallback\'s until the trigger moves', () => {
+    expect(wordsCurrent(ios26, { analyzerVersion: 'w-sa1' })).toBe(true);
+    expect(wordsCurrent(ios26, { analyzerVersion: 'w-sf1', trigger: 'os=26.0;sa=0' })).toBe(true);
+    expect(wordsCurrent(ios26, { analyzerVersion: 'w-sf1', trigger: 'os=18.7;sa=0' })).toBe(false);
+    expect(wordsCurrent(ios26, { analyzerVersion: 'w-sf1' })).toBe(false);
+    // An analyzer this build no longer writes is stale whatever it carries.
+    expect(wordsCurrent(ios26, { analyzerVersion: 'speechanalyzer-ios26-2', trigger: 'os=26.0;sa=0' })).toBe(false);
+    // On iOS 18 SFSpeech is the best adapter: its result never waits for a trigger.
+    expect(wordsCurrent({ best: 'w-sf1', versions: ['w-sf1'], trigger: 'os=18.7;sa=0' }, { analyzerVersion: 'w-sf1', trigger: 'os=18.0;sa=0' })).toBe(true);
+  });
+
+  it('re-runs an iOS 18 transcript once after the update to 26, and not again when the model install keeps failing', () => {
+    // Transcribed on iOS 18 by SFSpeech.
+    let state = applyPartResult(emptyAnalysisState(), 'video', 'words', { status: 'ready', analyzerVersion: 'w-sf1', trigger: 'os=18.7;sa=0', data: transcript });
+    let runs = 0;
+    for (let session = 0; session < 5; session += 1) {
+      const { state: next, stale } = markStale(state, {}, ios26);
+      state = next;
+      for (const item of stale) {
+        expect(item).toEqual({ assetId: 'video', part: 'words' });
+        expect(state.assets.video?.words).toEqual({ status: 'pending', analyzerVersion: 'w-sa1' });
+        runs += 1;
+        // The SpeechAnalyzer model download fails, so the chain falls through to SFSpeech again,
+        // stamping the current trigger.
+        state = applyAssetAnalysis(state, { assetId: 'video', parts: { words: { status: 'ready', analyzerVersion: 'w-sf1', trigger: ios26.trigger, data: transcript } } });
+      }
+    }
+    expect(runs).toBe(1);
+    expect(state.assets.video?.words?.status).toBe('ready');
+  });
+
+  it('re-runs once more after a SpeechAnalyzer model install moves the trigger', () => {
+    const state = applyPartResult(emptyAnalysisState(), 'video', 'words', { status: 'ready', analyzerVersion: 'w-sf1', trigger: ios26.trigger, data: transcript });
+    expect(markStale(state, {}, ios26).stale).toEqual([]);
+    expect(markStale(state, {}, { ...ios26, trigger: 'os=26.0;sa=1' }).stale).toEqual([{ assetId: 'video', part: 'words' }]);
+  });
+
+  it('carries the unavailable code and the trigger from status events', () => {
+    const { state } = applyStatusEvent(emptyAnalysisState(), {
+      assetId: 'a', part: 'words', revision: 1, status: 'unavailable', analyzerVersion: 'w-sf1',
+      error: 'Speech recognition is off for Editify', code: 'speechRecognitionOff', trigger: 'os=18.0;sa=0',
+    });
+    expect(state.assets.a?.words).toEqual({
+      status: 'unavailable', analyzerVersion: 'w-sf1', error: 'Speech recognition is off for Editify', code: 'speechRecognitionOff', trigger: 'os=18.0;sa=0',
+    });
   });
 });

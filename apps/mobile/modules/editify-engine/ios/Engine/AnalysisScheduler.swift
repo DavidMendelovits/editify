@@ -24,7 +24,7 @@ import Foundation
 /// A finished proxy can push the store over its byte budget: the least recently opened
 /// proxies are deleted, each reported as a `removed` proxy part.
 ///
-/// Events: `analysisStatus` {assetId, part, revision, status, analyzerVersion, error?} on
+/// Events: `analysisStatus` {assetId, part, revision, status, analyzerVersion, error?, code?, trigger?} on
 /// every change, carrying no data (on `ready`, read it with `analysis(assetId:)`), or
 /// {assetId, part, revision, removed: true} when `cancel` drops a pending part.
 /// `revision` counts changes per asset; `analysis(assetId:)` reports the one it reflects,
@@ -128,12 +128,13 @@ actor AnalysisScheduler {
     let generation = generations[assetId, default: 0]
     for part in parts {
       if !force, AnalysisPolicy.isFresh(results[assetId]?[part], part: part,
-                                        proxyOnDisk: part == .proxy && ProxyStore.shared.existing(assetId) != nil) { continue }
+                                        proxyOnDisk: part == .proxy && ProxyStore.shared.existing(assetId) != nil,
+                                        words: adapters.transcriber.freshness) { continue }
       if queue.contains(where: { $0.assetId == assetId && $0.part == part }) { continue }
       if running.values.contains(where: { $0.job.assetId == assetId && $0.job.part == part && $0.job.generation == generation }) { continue }
       seq += 1
       queue.append(Job(assetId: assetId, ref: ref, part: part, seq: seq, generation: generation, options: options))
-      record(assetId, part, PartResult(status: "pending", analyzerVersion: part.version))
+      record(assetId, part, PartResult(status: "pending", analyzerVersion: version(part)))
     }
     pump()
   }
@@ -359,7 +360,7 @@ actor AnalysisScheduler {
   }
 
   private func analyze(_ job: Job, progress: @escaping AnalyzerProgress, download: @escaping @Sendable (Double) -> Void, gate: @escaping AnalyzerGate) async -> PartResult {
-    let version = job.part.version
+    let version = version(job.part)
     do {
       switch job.part {
       case .decode:
@@ -377,6 +378,7 @@ actor AnalysisScheduler {
       case .words:
         let locale = job.options.locale.map(Locale.init(identifier:)) ?? .current
         let asset = try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download)
+        // The chain (D20): SpeechAnalyzer, then SFSpeech on-device, then unavailable.
         return await adapters.transcriber.words(asset, locale: locale, allowModelDownload: job.options.allowModelDownload, progress: progress, gate: gate)
       case .faces:
         let asset = try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download)
@@ -430,6 +432,9 @@ actor AnalysisScheduler {
     }
   }
 
+  /// The version a part's result carries now (words: the chain's best adapter's).
+  private func version(_ part: Part) -> String { part.version(words: adapters.transcriber.bestVersion) }
+
   /// What a stored proxy must match to be reused (AnalysisPolicy.proxyKey).
   static func proxyKey(_ fingerprint: [String: Any]) -> String { AnalysisPolicy.proxyKey(fingerprint) }
 
@@ -467,6 +472,8 @@ actor AnalysisScheduler {
       "status": result.status, "analyzerVersion": result.analyzerVersion,
     ]
     if let error = result.error { body["error"] = error }
+    if let code = result.code { body["code"] = code }
+    if let trigger = result.trigger { body["trigger"] = trigger }
     emit?("analysisStatus", body)
   }
 
