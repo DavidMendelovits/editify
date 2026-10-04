@@ -70,7 +70,7 @@ describe.skipIf(!hasFfmpeg)('import format allowlist', () => {
     expect((await probeMedia(m4a)).hasAudio).toBe(true);
     expect((await probeMedia(wav)).hasAudio).toBe(true);
     for (const still of [png, gif, jpg]) expect((await probeMedia(still)).hasVideo).toBe(true);
-  });
+  }, 30000); // Five spawned encodes and probes: well over the 5 s default on a loaded runner.
 
   it('accepts the other formats production takes: AVI, MPEG-TS, AIFF, CAF, APNG', async () => {
     const avi = make('clip.avi', ['-f', 'lavfi', '-i', 'testsrc=s=64x64:d=0.2', '-c:v', 'mpeg4']);
@@ -80,5 +80,5 @@ describe.skipIf(!hasFfmpeg)('import format allowlist', () => {
     const apng = make('sticker.apng', ['-f', 'lavfi', '-i', 'testsrc=s=16x16:d=0.2', '-f', 'apng']);
     for (const video of [avi, ts, apng]) expect((await probeMedia(video)).hasVideo, video).toBe(true);
     for (const audio of [aiff, caf]) expect((await probeMedia(audio)).hasAudio, audio).toBe(true);
-  });
+  }, 30000);
 });

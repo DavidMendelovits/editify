@@ -243,17 +243,25 @@ export function fromWorkingSpace(plan: Pick<RenderPlan, 'color'>, files: LutFile
   ].join(',');
 }
 
-/** Encoder arguments for the plan's output colour (8A: H.264 High 8-bit SDR, HEVC Main10 HLG). */
+/**
+ * Encoder arguments for the plan's output colour (8A: H.264 High 8-bit SDR,
+ * HEVC Main10 HLG). Threads and lookahead are capped for memory, not left to
+ * the host's core count: at 1080 x 1920 x264's defaults held 0.88 GB on a
+ * 14-core host (1.5 frame threads a core, a 40-frame lookahead) and 0.4 GB
+ * capped at 4 threads and 20 frames, with no loss of speed (the final pass is
+ * bound by its float filters, not the encode); x265 0.87 GB with 4 pools and
+ * 2 frame threads against 1.07 GB (its lookahead stays at medium's 20).
+ */
 export function encoderArgs(plan: Pick<RenderPlan, 'color'>): string[] {
   if (plan.color === 'hlg') {
     return [
       '-c:v', 'libx265', '-tag:v', 'hvc1', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p10le', '-profile:v', 'main10',
-      '-x265-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited:log-level=error',
+      '-x265-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited:log-level=error:pools=4:frame-threads=2',
       '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-color_range', 'tv',
     ];
   }
   return [
-    '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-threads:v', '4', '-rc-lookahead', '20',
     '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
   ];
 }

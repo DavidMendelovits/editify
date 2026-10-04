@@ -123,6 +123,70 @@ describe.skipIf(!usable)('plan render loudness on a real master', () => {
     expect(existsSync(join(scratch, 'big.mp4'))).toBe(false);
   });
 
+  it('estimates memory from the stress measurements, graphics grouped as the final pass groups them', async () => {
+    const { planRenderMemoryMb, planGraphics } = await import('../src/media/plan/render.js');
+    const size = { w: 1080, h: 1920 };
+    const box = { x: 100, y: 100, w: 100, h: 100, rotationDeg: 0 };
+    const sticker = (z: number): RenderPlan['overlays'][number] => ({ id: `s${z}`, kind: 'image', z, start: 0, end: 2, box, media: { assetRef: { id: 'logo', kind: 'image' }, srcStart: 0, speed: 1 } });
+    const callout = (z: number): RenderPlan['overlays'][number] => ({ id: `c${z}`, kind: 'callout', z, start: 0, end: 2, box } as RenderPlan['overlays'][number]);
+    type Shape = Pick<RenderPlan, 'size' | 'color' | 'captions' | 'overlays'> & Partial<Pick<RenderPlan, 'video'>>;
+    // Segments of a talking-head layer zooming 1x to 3x with a pan (the review's zoom stress).
+    const zooming = (segments: number): RenderPlan['video'] => ({
+      segments: Array.from({ length: segments }, (_, index) => ({
+        start: index, end: index + 1,
+        layers: [{
+          clipId: 'talk', trackIndex: 0, z: 0, assetRef: { id: 'talk', kind: 'video' }, srcStart: index, speed: 1, opacityKeys: [], dimKeys: [],
+          cropKeys: [{ t: index, scale: 1, x: 0, y: 0 }, { t: index + 1, scale: 3, x: 0.3, y: -0.2 }],
+        }],
+      })),
+    } as RenderPlan['video']);
+    const stress = (count: number, color: RenderPlan['color'] = 'sdr'): Shape => ({ size, color, captions: [], overlays: [...Array.from({ length: count }, (_, z) => sticker(z)), callout(count)] });
+    // Measured peaks (ffmpeg 9.0, 14 cores; the stress plan): no graphics 0.86 GB, 1 sticker + a callout 1.57 GB,
+    // 30 stickers + a callout 1.93 GB; HLG no graphics 1.45 GB. The estimate stays above them, within ~25%.
+    const cases: Array<[Shape, number]> = [
+      [{ size, color: 'sdr', captions: [], overlays: [] }, 863],
+      [stress(1), 1570],
+      [stress(10), 1681],
+      [stress(30), 1931],
+      [{ size, color: 'hlg', captions: [], overlays: [] }, 1450],
+      [stress(30, 'hlg'), 2381],
+      // Animated crops: one 3x zoom 1.50 GB, three zooming segments 1.38 GB (one window each), 30 stickers + a
+      // callout over a 3x zoom 2.57 GB.
+      [{ size, color: 'sdr', captions: [], overlays: [], video: zooming(1) }, 1503],
+      [{ size, color: 'sdr', captions: [], overlays: [], video: zooming(3) }, 1381],
+      [{ ...stress(30), video: zooming(1) }, 2566],
+    ];
+    for (const [plan, measured] of cases) {
+      expect(planRenderMemoryMb(plan)).toBeGreaterThanOrEqual(measured);
+      expect(planRenderMemoryMb(plan)).toBeLessThanOrEqual(measured * 1.25);
+    }
+    // Consecutive stickers share a canvas and consecutive callouts an ASS run; captions are one more run.
+    expect(planGraphics({ captions: [], overlays: [sticker(0), sticker(1), callout(2), callout(3), sticker(4)] })).toEqual({ graphics: 3, stickers: 3 });
+    expect(planGraphics({ captions: [{} as RenderPlan['captions'][number]], overlays: [] })).toEqual({ graphics: 1, stickers: 0 });
+  });
+
+  it('caps the encoders\' threads and lookahead (memory independent of the host\'s cores)', async () => {
+    const { encoderArgs } = await import('../src/media/plan/color.js');
+    const sdr = encoderArgs({ color: 'sdr' });
+    expect(sdr.slice(sdr.indexOf('-threads:v'), sdr.indexOf('-threads:v') + 4)).toEqual(['-threads:v', '4', '-rc-lookahead', '20']);
+    expect(encoderArgs({ color: 'hlg' }).find((arg) => arg.startsWith('colorprim='))).toContain(':pools=4:frame-threads=2');
+  });
+
+  it('cuts a zoom into crop-window chunks of at most 1.5x each', async () => {
+    const { zoomChunks, ZOOM_CHUNK_RATIO } = await import('../src/media/plan/render.js');
+    expect(ZOOM_CHUNK_RATIO).toBe(1.5);
+    expect(zoomChunks([{ t: 0, v: 1 }, { t: 90, v: 1.15 }], 90)).toEqual([{ first: 0, end: 90, smallest: 1 }]);
+    const chunks = zoomChunks([{ t: 0, v: 1 }, { t: 90, v: 3 }], 90);
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]!.first).toBe(0);
+    expect(chunks.at(-1)!.end).toBe(90);
+    chunks.forEach((chunk, index) => {
+      if (index > 0) expect(chunk.first).toBe(chunks[index - 1]!.end);
+      expect(chunk.smallest).toBeCloseTo(1 + (2 * chunk.first) / 90, 9);
+      expect((1 + (2 * (chunk.end - 1)) / 90) / chunk.smallest).toBeLessThanOrEqual(1.5 + 1e-9);
+    });
+  });
+
   it('removes its work directory after a render, and after a failed one', async () => {
     const { renderPlan } = await import('../src/media/plan/render.js');
     const workDir = join(scratch, 'work-ok');
