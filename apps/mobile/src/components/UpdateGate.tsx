@@ -1,12 +1,14 @@
 import { useState } from 'react';
-import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
+import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Brand } from './Brand';
 import { Button } from './Button';
 import { ProgressBar } from './ProgressBar';
 import { Screen } from './Screen';
 import { osLabel, type Gate } from '../lib/client-config';
 import { track } from '../lib/event-log';
+import { exportButton } from '../lib/export-plan';
 import { exportToPhotos, type ExportProgress, type ExportResult } from '../lib/photo-export';
+import { supabase } from '../lib/supabase';
 import { colors, fonts, radius, space, type } from '../lib/theme';
 import { appVersion } from '../lib/version';
 
@@ -47,6 +49,7 @@ function SunsetCard({ latestVersion, minOs }: { latestVersion: string; minOs: st
   const [result, setResult] = useState<ExportResult>();
   const [error, setError] = useState<string>();
   const running = progress !== undefined && result === undefined && error === undefined;
+  const button = exportButton(running, result);
   const current = typeof Platform.Version === 'string' ? Platform.Version : String(Platform.Version);
 
   async function run(): Promise<void> {
@@ -72,8 +75,8 @@ function SunsetCard({ latestVersion, minOs }: { latestVersion: string; minOs: st
         </Text>
       </View>
       <View style={styles.card}>
-        <Button accessibilityLabel="save my videos to Photos" onPress={() => void run()} disabled={running}>
-          {running ? 'Saving to Photos…' : result ? 'Save again' : 'Save my videos to Photos'}
+        <Button accessibilityLabel={button.label} onPress={() => void run()} disabled={button.disabled}>
+          {button.label}
         </Button>
         {progress && progress.total > 0 && (
           <View style={styles.progress}>
@@ -90,6 +93,10 @@ function SunsetCard({ latestVersion, minOs }: { latestVersion: string; minOs: st
         )}
         {error && <Text style={styles.error}>{error}</Text>}
       </View>
+      {/* A shared phone, or the wrong account: signing out drops the gate to sign-in, and the next account meets it again. */}
+      <Pressable accessibilityRole="button" accessibilityLabel="sign out" hitSlop={12} disabled={running} onPress={() => { void supabase.auth.signOut(); }} style={styles.signOut}>
+        <Text style={styles.signOutText}>Sign out</Text>
+      </Pressable>
     </>
   );
 }
@@ -106,5 +113,7 @@ const styles = StyleSheet.create({
   notice: { color: colors.success, fontFamily: fonts.medium, fontSize: type.lg, lineHeight: 18 },
   warn: { color: colors.warn, fontFamily: fonts.medium, fontSize: type.lg, lineHeight: 18 },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.lg, lineHeight: 18 },
+  signOut: { alignSelf: 'center', paddingVertical: space.sm, paddingHorizontal: space.lg },
+  signOutText: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.lg, textDecorationLine: 'underline' },
   version: { color: colors.muted, fontFamily: fonts.mono, fontSize: type.sm, letterSpacing: 1, textAlign: 'center' },
 });

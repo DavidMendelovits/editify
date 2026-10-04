@@ -10,28 +10,37 @@
  *      (locally: npm run drain -w @editify/server). Exits 0 once /health shows
  *      no queued or running renders, imports or media jobs on two reads in a
  *      row, or 1 at the timeout (DRAIN_TIMEOUT_MS, default 15 minutes).
- *   3. On exit 0: fly secrets set READ_ONLY=1 -a editify-dm.
+ *   3. On exit 0, still writable: deploy or `fly machine restart` once, so
+ *      the clean shutdown (index.ts) checkpoints the WAL into editify.db. A
+ *      READ_ONLY=1 connection cannot checkpoint. Then
+ *      fly secrets set READ_ONLY=1 -a editify-dm.
  *      On exit 1: it prints what is still running. Wait and rerun, or accept
  *      that those jobs are lost.
  *
  * A job can still start between step 2 and step 3; the window is the few
  * seconds the secret takes to apply. DRAIN_URL overrides the health URL.
+ *
+ * Any snapshot or copy of the database (the importer's included) must use the
+ * SQLite backup API (sqlite3 `.backup`, better-sqlite3 `database.backup()`)
+ * or copy editify.db-wal and editify.db-shm together with editify.db: the
+ * .db file alone can be missing the latest commits.
  */
-import type { PendingJobs } from './app.js';
 import { port } from './config.js';
-import { waitForDrain } from './services/drain.js';
+import { readHealthJobs, waitForDrain } from './services/drain.js';
 
 const url = process.env.DRAIN_URL ?? `http://127.0.0.1:${port}/health`;
 const timeoutMs = Number(process.env.DRAIN_TIMEOUT_MS ?? 15 * 60_000);
 const intervalMs = Number(process.env.DRAIN_INTERVAL_MS ?? 5_000);
+// Each read gives up after a few seconds (and counts as busy), so a hung
+// server cannot stall the drain past DRAIN_TIMEOUT_MS.
+const fetchTimeoutMs = Number(process.env.DRAIN_FETCH_TIMEOUT_MS ?? 5_000);
 
-const result = await waitForDrain(async () => {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-  const body = await response.json() as { jobs?: PendingJobs };
-  if (!body.jobs) throw new Error(`${url} reports no job counts; is this server older than the drain support?`);
-  return body.jobs;
-}, { timeoutMs, intervalMs, log: (line) => console.log(`[drain] ${line}`) });
+const deadline = Date.now() + timeoutMs;
+
+const result = await waitForDrain(
+  async () => await readHealthJobs(url, { timeoutMs: Math.max(1, Math.min(fetchTimeoutMs, deadline - Date.now())) }),
+  { timeoutMs, intervalMs, log: (line) => console.log(`[drain] ${line}`) },
+);
 
 if (result.drained) {
   console.log(`[drain] queue empty after ${Math.round(result.waitedMs / 1000)}s. Safe to set READ_ONLY=1.`);

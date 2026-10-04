@@ -18,6 +18,7 @@ import { AppProviders } from '../src/providers/AppProviders';
 import { scopeCacheTo } from '../src/lib/query-client';
 import { ShareIntake } from '../src/components/ShareIntake';
 import { UpdateGate } from '../src/components/UpdateGate';
+import { behindGate } from '../src/lib/client-config';
 import { useClientGate } from '../src/lib/use-client-gate';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { syncPurchaseUser } from '../src/lib/purchases';
@@ -92,11 +93,18 @@ export default function RootLayout() {
         <AppProviders>
           <StatusBar style="light" />
           <ShareIntake signedIn={Boolean(session)} />
-          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background }, animation: 'fade' }} />
+          {/* Hidden from VoiceOver while the gate blocks, so swiping cannot reach the app behind it. */}
+          <View style={styles.app} {...behindGate(Boolean(blocking))}>
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background }, animation: 'fade' }} />
+          </View>
           {/* Over the navigator rather than instead of it: expo-router needs the Stack mounted to route. */}
-          {blocking && <View style={StyleSheet.absoluteFill}><UpdateGate gate={blocking} /></View>}
+          {blocking && <View style={StyleSheet.absoluteFill} accessibilityViewIsModal><UpdateGate gate={blocking} /></View>}
         </AppProviders>
       </SafeAreaProvider>
     </ShareIntentProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  app: { flex: 1, backgroundColor: colors.background },
+});

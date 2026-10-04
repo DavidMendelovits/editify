@@ -5,7 +5,7 @@ import { buildApp } from '../src/app.js';
 import { createDatabase, type EditifyDatabase } from '../src/db/database.js';
 import { ProjectStore } from '../src/db/project-store.js';
 import { RenderStore } from '../src/db/render-store.js';
-import { DEFAULT_STORE_URL, readClientConfig } from '../src/routes/client-config.js';
+import { DEFAULT_MIN_OS, DEFAULT_STORE_URL, readClientConfig } from '../src/routes/client-config.js';
 
 const SUPABASE = 'https://client-config.supabase.test';
 const ENV_KEYS = ['MIN_APP_VERSION', 'LATEST_APP_VERSION', 'APP_STORE_URL', 'MIN_IOS_VERSION', 'EDITIFY_TOKEN'] as const;
@@ -45,15 +45,16 @@ describe('GET /client-config', () => {
     const response = await app.inject({ method: 'GET', url: '/client-config' });
     expect(response.statusCode).toBe(200);
     expect(response.headers['cache-control']).toBe('public, max-age=60');
-    expect(response.json()).toEqual({ minVersion: '1.0.0', latestVersion: '1.0.0', storeUrl: DEFAULT_STORE_URL });
+    expect(response.json()).toEqual({ minVersion: '1.0.0', latestVersion: '1.0.0', storeUrl: DEFAULT_STORE_URL, minOs: '18.0' });
+    expect(DEFAULT_MIN_OS).toBe('18.0');
   });
 
   it('reads the floor from the environment at request time, so a secret change needs no deploy', async () => {
     process.env.MIN_APP_VERSION = '1.1.0';
-    process.env.MIN_IOS_VERSION = '18.0';
+    process.env.MIN_IOS_VERSION = '19';
     try {
       const body = (await app.inject({ method: 'GET', url: '/client-config' })).json();
-      expect(body).toEqual({ minVersion: '1.1.0', latestVersion: '1.1.0', storeUrl: DEFAULT_STORE_URL, minOs: '18.0' });
+      expect(body).toEqual({ minVersion: '1.1.0', latestVersion: '1.1.0', storeUrl: DEFAULT_STORE_URL, minOs: '19' });
     } finally {
       delete process.env.MIN_APP_VERSION;
       delete process.env.MIN_IOS_VERSION;
@@ -63,8 +64,26 @@ describe('GET /client-config', () => {
   it('falls back to the default on a malformed version instead of shipping it', () => {
     const warnings: string[] = [];
     const config = readClientConfig({ MIN_APP_VERSION: 'one point one', LATEST_APP_VERSION: '1.2.0', MIN_IOS_VERSION: 'x' }, (message) => warnings.push(message));
-    expect(config).toEqual({ minVersion: '1.0.0', latestVersion: '1.2.0', storeUrl: DEFAULT_STORE_URL });
+    expect(config).toEqual({ minVersion: '1.0.0', latestVersion: '1.2.0', storeUrl: DEFAULT_STORE_URL, minOs: DEFAULT_MIN_OS });
     expect(warnings).toHaveLength(2);
+  });
+
+  it('never ships a store URL the client would reject (which would un-gate everyone)', () => {
+    for (const bad of ['itms-apps://apps.apple.com/app/id1', 'apps.apple.com/app/id1', 'javascript:alert(1)', 'https://has space']) {
+      const warnings: string[] = [];
+      const config = readClientConfig({ MIN_APP_VERSION: '1.1.0', APP_STORE_URL: bad }, (message) => warnings.push(message));
+      expect(config.storeUrl).toBe(DEFAULT_STORE_URL);
+      expect(config.minVersion).toBe('1.1.0');
+      expect(warnings).toEqual([expect.stringContaining('APP_STORE_URL')]);
+    }
+    const custom = 'https://apps.apple.com/us/app/editify/id6814607865';
+    expect(readClientConfig({ APP_STORE_URL: ` ${custom} ` }, () => { throw new Error('no warning expected'); }).storeUrl).toBe(custom);
+  });
+
+  it('always sends minOs, so the client never has to assume the floor', () => {
+    expect(readClientConfig({}).minOs).toBe('18.0');
+    expect(readClientConfig({ MIN_IOS_VERSION: ' ' }).minOs).toBe('18.0');
+    expect(readClientConfig({ MIN_IOS_VERSION: '19.2' }).minOs).toBe('19.2');
   });
 });
 

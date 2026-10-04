@@ -78,6 +78,17 @@ describe('mutations journal', () => {
       .toEqual([['insert', 'v1'], ['update', 'v2']]);
   });
 
+  it('journals webhook_events from the first boot: the table exists before the triggers are built', () => {
+    database = createDatabase(':memory:', { journal: true });
+    expect(journaledTables(database)).toContain('webhook_events');
+    expect(triggers(database).filter((name) => name.includes('webhook_events'))).toHaveLength(3);
+    database.prepare('INSERT INTO webhook_events (event_id, kind, user_id, processed_at, result_json) VALUES (?, ?, ?, ?, ?)')
+      .run('evt-1', 'user.deleted', 'alice', new Date(0).toISOString(), '{}');
+    const journal = readMutationsAfter(database, 0).filter((entry) => entry.table === 'webhook_events');
+    expect(journal).toHaveLength(1);
+    expect(journal[0]).toMatchObject({ op: 'insert', pk: { event_id: 'evt-1' }, row: { user_id: 'alice', kind: 'user.deleted' } });
+  });
+
   it('journals cascaded deletes and composite keys', () => {
     database = createDatabase(':memory:', { journal: true });
     const project = new ProjectStore(database).create({ title: 'p', format: '9:16', fps: 30 }, 'alice');
