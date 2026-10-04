@@ -30,8 +30,10 @@ describe('caption placement', () => {
   it('moves a caption that would sit on the face to just below the chin', () => {
     const [placement] = planCaptionPlacements(project(), [caption('c1', { anchorPct: 35, sizePct: 4 })], steadyFace(0.2, 0.45));
     expect(placement).toMatchObject({ clipId: 'c1', fromPct: 35, reason: 'below-face' });
-    // Chin at 864px + 36px gap + half the ~94px block.
-    expect(placement?.toPct).toBeCloseTo(49.3, 1);
+    // Chin at 864px + 36px gap + half the 83px block: one 77px cell (the ASS
+    // size, which libass makes winAscent + winDescent) plus 3px stroke each side.
+    // (It was 49.3 when the block was estimated at 1.15 x the size per line.)
+    expect(placement?.toPct).toBeCloseTo(49.0, 1);
   });
 
   it('keeps a caption that already clears the face and the app UI', () => {
@@ -42,9 +44,10 @@ describe('caption placement', () => {
   it('lifts a bottom caption out of the platform band even without a face track', () => {
     const instagram = planCaptionPlacements(project(), [caption('c1', {})], () => undefined)[0];
     expect(instagram).toMatchObject({ reason: 'safe-area' });
-    expect(instagram?.toPct).toBeCloseTo(76.1, 1);
+    // Bottom of the band at 1500px less half a 70px block (one 64px cell + 2 x 3px stroke); 76.1 under the old 1.15 estimate.
+    expect(instagram?.toPct).toBeCloseTo(76.3, 1);
     const shorts = planCaptionPlacements(project({}, 'shorts'), [caption('c1', {})], () => undefined)[0];
-    expect(shorts?.toPct).toBeCloseTo(78.1, 1);
+    expect(shorts?.toPct).toBeCloseTo(78.4, 1);
   });
 
   it('places an unstyled caption as the renderer draws it: bottom, 52px', () => {
@@ -57,7 +60,8 @@ describe('caption placement', () => {
   it('drops to the lowest safe spot when the face fills the frame', () => {
     const [placement] = planCaptionPlacements(project(), [caption('c1', { anchorPct: 50, sizePct: 4 })], steadyFace(0.1, 0.8));
     expect(placement?.reason).toBe('no-room');
-    expect(placement?.toPct).toBeCloseTo(75.7, 1);
+    // Same band, an 83px block (75.7 under the old 1.15 estimate).
+    expect(placement?.toPct).toBeCloseTo(76.0, 1);
   });
 
   it('follows a punch-in: the zoomed chin grows down onto a caption the unzoomed one cleared', () => {
