@@ -6,6 +6,22 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Project sync (server/test/pg-sync.test.ts) runs against a real Postgres.
+    # Supabase is on 17; with CI set, that suite fails rather than skips
+    # when it cannot reach this database.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: editify_t9_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: No videos in the repo (demos go to Google Drive)
@@ -20,6 +36,8 @@ jobs:
       - run: npm run build -w @editify/shared
       - run: npm run typecheck
       - run: npm test -w @editify/server
+        env:
+          SYNC_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/editify_t9_test
       - run: npm test -w @editify/mobile
   # Decision 1A: the phone syncs with a Swift port of packages/shared/src/sync.ts,
   # held to it by server/test/sync-parity.test.ts. That test needs swiftc, so it
