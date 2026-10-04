@@ -65,6 +65,9 @@ describe('parseClientConfig', () => {
     expect(parseClientConfig({ minVersion: '1.0.0', storeUrl: STORE })).toEqual({ minVersion: '1.0.0', latestVersion: '1.0.0', storeUrl: STORE });
     expect(parseClientConfig({ minVersion: '1.1.0', latestVersion: '1.1.2', storeUrl: STORE, minOs: '18.0' }))
       .toEqual({ minVersion: '1.1.0', latestVersion: '1.1.2', storeUrl: STORE, minOs: '18.0' });
+    expect(parseClientConfig({ minVersion: '1.1.0', storeUrl: STORE, testServer: true })?.testServer).toBe(true);
+    // Anything but a literal true (an older server, a typo) is not a test server.
+    expect(parseClientConfig({ minVersion: '1.1.0', storeUrl: STORE, testServer: 'true' })).not.toHaveProperty('testServer');
   });
 
   it('rejects anything malformed', () => {

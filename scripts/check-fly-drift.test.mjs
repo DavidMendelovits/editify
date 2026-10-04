@@ -45,6 +45,12 @@ test('DATABASE_SCHEMA may only be in the 1.1 file', () => {
   assert.equal(drift('app = "a"\n[env]\n  DATABASE_SCHEMA = "v11"\n', v11).length, 1);
 });
 
+test('TEST_SERVER may only be in the 1.1 file (the pre-cutover test server flag)', () => {
+  const v11 = 'app = "b"\n[env]\n  TEST_SERVER = "1"\n';
+  assert.deepEqual(drift('app = "a"\n[env]\n', v11), []);
+  assert.equal(drift('app = "a"\n[env]\n  TEST_SERVER = "1"\n', v11).length, 1);
+});
+
 test('a missing allowed key is still drift', () => {
   assert.equal(drift('app = "a"\n[env]\n  LINE = "1.0"\n', 'app = "b"\n[env]\n').length, 1);
 });

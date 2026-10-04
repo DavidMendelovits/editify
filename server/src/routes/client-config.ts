@@ -16,6 +16,12 @@ export interface ClientConfig {
   storeUrl: string;
   /** Always sent, so no client has to guess the floor. */
   minOs: string;
+  /**
+   * Sent (true) only while this server is a pre-cutover test server (TEST_SERVER=1, editify-v11
+   * before launch): TestFlight builds then show the "separate test server" banner (C8, C18).
+   * Absent everywhere else, so a 1.1 build on the launched server never shows it.
+   */
+  testServer?: true;
 }
 
 export const DEFAULT_MIN_VERSION = '1.0.0';
@@ -54,6 +60,7 @@ export function readClientConfig(env: NodeJS.ProcessEnv = process.env, warn: (me
     latestVersion,
     storeUrl: storeUrl(env.APP_STORE_URL, warn),
     minOs: version(env.MIN_IOS_VERSION, DEFAULT_MIN_OS, 'MIN_IOS_VERSION', warn),
+    ...(env.TEST_SERVER?.trim() === '1' ? { testServer: true as const } : {}),
   };
 }
 
