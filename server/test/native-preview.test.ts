@@ -269,7 +269,10 @@ describe('native preview: harness availability', () => {
       console.info('native preview: the audio tap got no callbacks on this runner (no output device); continuity unchecked');
       ctx.skip();
     }
-    expect(audio.sourceJumps).toBe(0);
+    // A swap that restarted the sound would jump on most of the ~120 swaps; a loaded host can drop
+    // the odd buffer on its own (1 jump in 20 stress runs), so a couple are let through.
+    if (audio.sourceJumps > 0) console.info(`native preview: ${audio.sourceJumps} audio source jump(s) over the drag, largest ${audio.largestSourceJumpMs.toFixed(1)} ms`);
+    expect(audio.sourceJumps).toBeLessThanOrEqual(2);
     expect(audio.seconds / report.drag60.wallSeconds).toBeGreaterThan(0.85);
     expect(audio.maxWallGapMs).toBeLessThan(250);
   });
