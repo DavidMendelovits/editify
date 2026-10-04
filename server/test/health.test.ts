@@ -54,7 +54,9 @@ describe('server logs', () => {
     process.env.GIT_SHA = 'deadbeef';
     const app = await buildApp({ database: createDatabase(':memory:'), databaseUrl: null, logger: true });
     try {
-      expect(app.log.bindings()).toMatchObject({ line: '1.1', commit: 'deadbeef' });
+      // Fastify types its logger without pino's bindings(); the instance is pino.
+      const bindings = (app.log as unknown as { bindings(): Record<string, unknown> }).bindings();
+      expect(bindings).toMatchObject({ line: '1.1', commit: 'deadbeef' });
     } finally {
       await app.close();
     }
