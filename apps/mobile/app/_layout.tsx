@@ -24,6 +24,7 @@ import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { syncPurchaseUser } from '../src/lib/purchases';
 import { posthog } from '../src/lib/posthog';
 import { startDeviceRuntime } from '../src/lib/device-runtime';
+import { SpeechPrompt } from '../src/components/SpeechPrompt';
 import { colors } from '../src/lib/theme';
 
 // Web has no share sheet to receive from; Expo Go has no native module, and the
@@ -78,7 +79,7 @@ export default function RootLayout() {
   }, [pathname]);
 
   // The engine's capabilities (line, OS, tier, transcriber, background export) tag every
-  // PostHog event (C12).
+  // PostHog event (C12), and the words flow listens for analysis and permission changes (C15).
   useEffect(() => { startDeviceRuntime(); }, []);
 
   useEffect(() => {
@@ -102,6 +103,7 @@ export default function RootLayout() {
           <View style={styles.app} {...behindGate(Boolean(blocking))}>
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background }, animation: 'fade' }} />
           </View>
+          {session && !blocking && <SpeechPrompt />}
           {/* Over the navigator rather than instead of it: expo-router needs the Stack mounted to route. */}
           {blocking && <View style={StyleSheet.absoluteFill} accessibilityViewIsModal><UpdateGate gate={blocking} /></View>}
         </AppProviders>
