@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 ///   pipeline   decode ▶ sync ▶ words ▶ laughter ▶ energy ▶ faces, in scheduler order, each timed
 ///   sync | words | laughter | energy | faces   one analyzer alone (its memPeakMB is that analyzer's)
 ///   scheduler  the 8A scheduler end to end: playback pauses the heavy lane, then everything finishes
-///   crop       renders frames through LabCompositor with an off-centre static crop into Documents/lab (OV8)
+///   crop       renders frames of the lab plan (LabTimeline, PlanBuilder) with an off-centre static crop into Documents/lab (OV8)
 ///
 /// Sync's answer is checked against a known lag:
 ///   - with a memo: params.expectedLag, a reference measurement of that pair (stand-up
@@ -186,9 +186,9 @@ struct AnalyzerSpike: Spike {
       timeline.overlay = false
       timeline.punchIn = 1
       timeline.crop = crop
-      let (composition, video) = try await CompositionBuilder.build(asset: asset, timeline: timeline)
-      let generator = AVAssetImageGenerator(asset: composition)
-      generator.videoComposition = video
+      let built = try await timeline.build(asset: asset)
+      let generator = AVAssetImageGenerator(asset: built.composition)
+      generator.videoComposition = built.videoComposition
       let (image, _) = try await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600))
       let url = LabStore.directory.appendingPathComponent("crop-\(name).png")
       guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { continue }
