@@ -174,6 +174,9 @@ export class ProjectStore {
    * as one checkpoint; client edits leave it undefined (NULL).
    */
   applyOperations(projectId: string, rawOperations: Operation[], baseVersion: number, runId?: string): Project {
+    // IMMEDIATE: this reads before it writes, and a deferred transaction that has read fails its
+    // first write with SQLITE_BUSY at once (no busy timeout) while another process (the cutover
+    // importer) holds the write lock. Taking the lock up front waits it out instead.
     return this.database.transaction(() => {
       let project = this.get(projectId);
       if (!project) throw new OperationError(`Project ${projectId} was not found`);
@@ -302,7 +305,7 @@ export class ProjectStore {
       this.database.prepare('UPDATE projects SET title = ?, doc_json = ?, updated_at = ? WHERE id = ?')
         .run(project.title, JSON.stringify(project), new Date().toISOString(), projectId);
       return project;
-    })();
+    }).immediate();
   }
 
   /**
