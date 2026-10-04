@@ -250,3 +250,35 @@ test('build-review renders the Profile section from fixtures', { skip: !hasFfmpe
   assert.ok(home.includes('render 2.1x'));
   assert.equal(readdirSync(root).filter((d) => d.endsWith('profile')).length, 2);
 });
+
+test('device render beside the server render and the earlier server baseline', () => {
+  const server = timings.render;
+  const device = { path: 'device', resolution: '1080p', status: 'done', seconds: 20, projectSeconds: 60,
+    shown: { label: '-16.0 LUFS · PEAK -1.4 dBTP PRE-ENCODE · 3.2x REALTIME', lufs: -16, truePeakPreEncode: -1.4, xRealtime: 3.2, peakMemMB: null },
+    states: [{ state: 'PREPARING CLIPS', at: 0.4 }, { state: 'RENDERING 50%', at: 9 }, { state: 'SAVED TO PHOTOS', at: 20 }] };
+  // The server render after the device one is a comparison: tagged `compare`, in neither total.
+  const steps = [...timings.steps, { name: 'Render 1080p on the server', kind: 'wait', start: 95, seconds: 30, tag: 'compare' }];
+  const both = { ...timings, steps, renders: [device, { ...server, path: 'server' }], baseline: { path: 'server', xRealtime: 0.88, resolution: '1080p', source: '20261003-0219-standup-replay-cold' } };
+  const p = buildProfile({ timings: both, logText: fixture('server.ndjson') });
+  assert.equal(p.render.path, 'device');
+  assert.equal(p.render.xRealtime, 3);
+  assert.equal(p.render.shown.lufs, -16);
+  assert.equal(p.renders[1].path, 'server');
+  assert.equal(p.renders[1].speedBasis, 'server');
+  assert.equal(p.baseline.xRealtime, 0.88);
+  assert.equal(p.totals.personSeconds, 91);
+  assert.equal(p.totals.compareSeconds, 30);
+  assert.equal(wait(p, 'Render 1080p on the server').compare, true);
+  const html = profileSection(p);
+  for (const needle of ['Device render', 'Server render', '3.00x realtime', '<h3>Render speed</h3>', '0.88x', '20261003-0219-standup-replay-cold',
+    '-16.0 LUFS', '-1.4 dBTP pre-encode', 'app shows 3.2x', '3.4x the server', 'SAVED TO PHOTOS', '(comparison, not in any total)']) {
+    assert.ok(html.includes(needle), `missing ${needle}`);
+  }
+  assert.match(profileChips(p), /device 3\.0x.*server 2\.1x/);
+
+  // A device export that failed is a failure, not a speed.
+  const failed = buildProfile({ timings: { ...timings, renders: [{ path: 'device', resolution: '1080p', status: 'error', error: 'decode error', seconds: 4, projectSeconds: 60 }] } });
+  assert.equal(failed.render.xRealtime, null);
+  assert.match(profileSection(failed), /decode error/);
+  assert.ok(!profileChips(failed).includes('device'));
+});

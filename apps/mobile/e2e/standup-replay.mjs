@@ -2,12 +2,29 @@
 // Stand-up workflow replay: the same flow a person does on the phone, driven
 // by agent-device against a local server, with every step timed.
 //
-//   node apps/mobile/e2e/standup-replay.mjs [--mode cold|warm] [--record] [--review] [--skip-render]
+//   node apps/mobile/e2e/standup-replay.mjs [--mode cold|warm] [--record] [--review]
+//        [--export device|server|both|none] [--server-baseline 0.88|<review dir>] [--skip-render]
 //
 //   cold  empty server: pick the 4K clip from the camera roll and the memo from
 //         Files, wait for real processing (what a person waits for today)
 //   warm  server cloned from the stand-up fixture (server/scripts/fixtures):
-//         the project already holds both clips, so the run starts at the agent
+//         the project already holds both clips, so the run starts at the agent.
+//         The phone's media registry gets rows for the fixture's assets, copied from
+//         the newest rows a cold run left (the same IMG_0008 and memo), so the clips
+//         count as on this iPhone, as if imported earlier
+//
+// Export (1080p, after the agent's edit):
+//   device (default)  in the UI: open export, tap render; when every clip is on this
+//         iPhone the screen routes to the device path and the replay waits on the card's
+//         state (never the server), reading what it shows: LUFS, pre-encode true peak,
+//         the app's x realtime. Recorded with the rest of the flow. If the screen routes
+//         to the server instead, its reason is recorded and the server path runs
+//   server  the request the export sheet sends to the server, through the API, after the
+//         recording (the pre-device behaviour)
+//   both    device, then the server render too (tagged `compare`: in neither total)
+//   none    no export (`--skip-render` is the old spelling)
+// The server baseline (render speed of the newest earlier review with a done server
+// render at this resolution, or --server-baseline) goes in timings.json for the page.
 //
 // Each step is `human` (a tap/pick/type, with an estimate of how long a person
 // takes) or `wait` (product latency, measured from server state). The report
@@ -30,7 +47,11 @@ const repo = resolve(here, '../../..');
 const args = process.argv.slice(2);
 const mode = args.includes('--mode') ? args[args.indexOf('--mode') + 1] : 'cold';
 const record = args.includes('--record');
-const exportRender = !args.includes('--skip-render');
+const opt = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const exportPath = args.includes('--skip-render') ? 'none' : (opt('--export') ?? 'device');
+if (!['device', 'server', 'both', 'none'].includes(exportPath)) throw new Error(`--export ${exportPath}: device, server, both or none`);
+const RESOLUTION = '1080p';
+const REVIEWS = process.env.REVIEWS_ROOT ?? join(process.env.HOME, 'editify-reviews');
 const SESSION = 'standup-replay';
 const DEVICE = process.env.SIM_DEVICE ?? 'iPhone 17 Pro Max';
 const API = 'http://127.0.0.1:3001';
@@ -131,6 +152,28 @@ if (mode === 'cold' && udid) {
   }
 }
 
+// Warm: the fixture's clips are on this iPhone too. The registry (expo-sqlite,
+// Documents/SQLite/local-media.db in the app's data container) gets rows for the
+// fixture's asset ids, copied from the newest local rows of the same media (matched by
+// duration) that a cold run left. Written with the app stopped; a cold run first if none.
+const SEED = 'local_media';
+if (mode === 'warm' && udid && exportPath !== 'none') {
+  try { execFileSync('xcrun', ['simctl', 'terminate', udid, 'com.editify.app'], { stdio: 'ignore' }); } catch {}
+  const container = execFileSync('xcrun', ['simctl', 'get_app_container', udid, 'com.editify.app', 'data'], { encoding: 'utf8' }).trim();
+  const db = join(container, 'Documents/SQLite/local-media.db');
+  const sql = (query) => execFileSync('sqlite3', [db, query], { encoding: 'utf8' }).trim();
+  const columns = existsSync(db) ? sql(`SELECT group_concat(name, ',') FROM pragma_table_info('${SEED}')`).split(',').filter((c) => c && c !== 'asset_id') : [];
+  for (const [what, id, local] of [['video', manifest.video.id, 'ph_local_id IS NOT NULL'], ['memo', manifest.memo.id, 'file_uri IS NOT NULL']]) {
+    const { duration } = await api(`/assets/${id}`);
+    const from = columns.length && /^[\w-]+$/.test(id) && Number.isFinite(duration)
+      ? sql(`SELECT asset_id FROM ${SEED} WHERE ${local} AND server_only = 0 AND asset_id != '${id}' AND abs(duration - ${duration}) < 0.5 ORDER BY updated_at DESC LIMIT 1`)
+      : '';
+    if (!from) { console.warn(`warm: no local ${what} row on the phone to copy (run a cold replay first); the export will route to the server`); continue; }
+    sql(`INSERT OR REPLACE INTO ${SEED} (asset_id, ${columns.join(', ')}) SELECT '${id}', ${columns.join(', ')} FROM ${SEED} WHERE asset_id = '${from}'`);
+    console.log(`warm: registry row for the fixture ${what} ${id} copied from ${from}`);
+  }
+}
+
 // ── the flow ───────────────────────────────────────────────────────────────
 // One session owns a device: close any other agent-device session first (e.g. a manual one).
 try {
@@ -173,11 +216,23 @@ if (mode === 'warm') {
   ] }) });
   await human('Open the stand-up project', 2, () => { ad('open', `editify://project/${projectId}`); waitFor('label="add media from camera roll"', 20000); });
 } else {
+  // A relaunched dev client can still be loading its bundle: wait for home first.
+  waitFor('label="9:16, Instagram Reel, 9:16 · UP TO 90S"', 60000);
   await human('Start a 9:16 Instagram Reel project', 2, () => { tap('label="9:16, Instagram Reel, 9:16 · UP TO 90S"'); waitFor('label="add media from camera roll"'); });
   projectId = (await api('/projects'))[0].id;
   mark('New project');
   await human('Pick the 4K clip from the camera roll', 5, async () => {
-    tap('label="add media from camera roll"'); waitFor('label="Done"');
+    tap('label="add media from camera roll"');
+    // First import: our "Use your originals" explainer, then iOS's Photos prompt (Allow
+    // Full Access), then the picker. Each only shows while access is undetermined.
+    for (let i = 0; i < 40; i += 1) {
+      const screen = tryAd('snapshot', '-i') ?? '';
+      if (/"Use your originals"/.test(screen)) { tap('label="Continue"'); mark('Use your originals: Continue'); continue; }
+      if (/"Allow Full Access"/.test(screen)) { tap('label="Allow Full Access"'); mark('iOS Photos prompt: Allow Full Access'); continue; }
+      if (/"Done"/.test(screen)) break;
+      await sleep(500);
+    }
+    waitFor('label="Done"');
     const ref = /(@e\d+) \[image\] "Video, four minutes, fifty-five seconds/.exec(ad('snapshot', '-i'))?.[1];
     if (!ref) throw new Error('stand-up clip not in the picker');
     tap(ref); tap('label="Done"');
@@ -231,51 +286,170 @@ await wait('Agent edits the project', () => until(async () => {
 mark('Agent done', 'check');
 await human('Watch the result', 10, async () => { for (let i = 0; i < 4; i += 1) ad('scroll', 'up', '4000'); tap('label="play"'); await sleep(10000); tryAd('press', 'label="pause"'); });
 
-if (record) ad('record', 'stop');
-tryAd('close');
-
-// Export: the same request the export sheet sends, then the wait for the master.
-// Driven through the API (the recording has stopped), timed like any other step.
+// ── export ─────────────────────────────────────────────────────────────────
 // The export phase (tagged export/render) is reported beside person time, not in it.
-// A failed or stuck render is recorded, never fatal: the run's timings still get written.
-let render;
-if (exportRender) {
-  let projectSeconds = null;
+// A failed or stuck export is recorded, never fatal: the run's timings still get written.
+const renders = [];
+let projectSeconds = null;
+if (exportPath !== 'none') projectSeconds = await api(`/projects/${projectId}`).then((p) => p.duration).catch(() => null);
+const renderTimeout = () => Math.max(5 * 60_000, 3 * (projectSeconds ?? 0) * 1000);
+
+/** The device export card's state labels (export.tsx exportStateLabel, upper-cased). */
+const CARD_STATE = /"(STARTING|WAITING TO START|PREPARING CLIPS|MEASURING LOUDNESS|RENDERING \d+%|SAVING TO PHOTOS|SAVED TO PHOTOS|READY TO SHARE|EXPORT FAILED|CANCELLED)"/;
+const CARD_DONE = /^(SAVED TO PHOTOS|READY TO SHARE|EXPORT FAILED|CANCELLED)$/;
+/** "-16.0 LUFS · PEAK -1.2 dBTP PRE-ENCODE · 2.3x REALTIME" (or SILENT, no peak). */
+function readCardStats(screen) {
+  const line = /"((?:-?\d+(?:\.\d+)? LUFS|SILENT)[^"]*REALTIME)"/.exec(screen)?.[1];
+  if (!line) return {};
+  const lufs = /(-?\d+(?:\.\d+)?) LUFS/.exec(line)?.[1];
+  const peak = /PEAK (-?\d+(?:\.\d+)?) dBTP/.exec(line)?.[1];
+  const memory = /(\d+(?:\.\d+)?) ?MB/.exec(line)?.[1];
+  return {
+    label: line, silent: line.startsWith('SILENT'), lufs: lufs ? Number(lufs) : null, truePeakPreEncode: peak ? Number(peak) : null,
+    xRealtime: Number(/([\d.]+)x REALTIME/.exec(line)?.[1] ?? NaN), peakMemMB: memory ? Number(memory) : null,
+  };
+}
+
+/**
+ * The device path, in the UI: open export (1080p is the default), and when the screen
+ * routes to this iPhone tap render and wait on the card's state. Returns null when the
+ * screen routes to the server (the caller falls back), with the reason in `routed`.
+ */
+const routed = { line: null };
+async function deviceExport() {
+  await human('Open export (1080p)', 3, async () => {
+    tryAd('press', 'label="pause"');
+    tap('label="export ↗"');
+    waitFor(`label="render ${RESOLUTION} master"`, 20000);
+  }, 'tap export; 1080p is preselected', 'export');
+  // The route query resolves every clip against the registry before the line shows. A full
+  // snapshot: `-i` leaves out the button, the route line and the card below the fold.
+  let screen = '';
+  for (let i = 0; i < 40; i += 1) {
+    screen = tryAd('snapshot') ?? '';
+    routed.line = /"(Exports on this iPhone[^"]*|Renders on the server[^"]*)"/.exec(screen)?.[1] ?? null;
+    if (routed.line) break;
+    await sleep(500);
+  }
+  if (!routed.line?.startsWith('Exports on this iPhone')) {
+    mark('Export routes to the server', 'issue', routed.line ?? 'no route line on the export screen');
+    tryAd('press', 'label="‹  EDITOR"');
+    return null;
+  }
+  mark('Export routes to this iPhone', 'check', routed.line);
+  let tapAt = 0;
+  await human(`Render ${RESOLUTION} on this iPhone`, 1, () => { tap(`label="render ${RESOLUTION} master"`); tapAt = now(); }, 'tap render', 'export');
+  const states = [];
+  let shown = {};
+  let error = null;
+  const finished = await wait(`Render ${RESOLUTION} on this iPhone`, async () => {
+    for (let scrolled = false; ;) {
+      screen = tryAd('snapshot') ?? '';
+      // iOS asks for add-only Photos access the first time an export saves.
+      if (/"Allow Full Access"|"Allow Access"|"Allow"/.test(screen) && !CARD_STATE.test(screen)) { tryAd('alert', 'accept'); continue; }
+      const state = CARD_STATE.exec(screen)?.[1];
+      if (!state && !scrolled) { tryAd('scroll', 'down', '600'); scrolled = true; continue; }
+      if (state && state !== states.at(-1)?.state) {
+        states.push({ state, at: Math.round((now() - tapAt) * 10) / 10 });
+        console.log(`          device card: ${state} (+${states.at(-1).at}s)`);
+      }
+      if (state && CARD_DONE.test(state)) return state;
+      if (now() - tapAt > renderTimeout() / 1000) throw new Error(`device export still "${state}" after ${Math.round(now() - tapAt)}s`);
+      await sleep(700);
+    }
+  }, 'tap render until the card says saved/ready (UI state, no server polling)', 'render');
+  const seconds = now() - tapAt;
+  // The stats line sits under the card, below the fold: scroll, then read it.
+  tryAd('scroll', 'down', '600');
+  screen = tryAd('snapshot') ?? screen;
+  if (finished === 'EXPORT FAILED') error = /"EXPORT FAILED"[\s\S]*?\[text\] "([^"]+)"/.exec(screen)?.[1] ?? 'the export failed';
+  else shown = readCardStats(screen);
+  const done = finished === 'SAVED TO PHOTOS' || finished === 'READY TO SHARE';
+  mark(done ? `Exported on this iPhone: ${shown.label ?? finished}` : `Device export: ${finished}`, done ? 'check' : 'issue', error ?? undefined);
+  return { path: 'device', resolution: RESOLUTION, status: done ? 'done' : finished === 'CANCELLED' ? 'cancelled' : 'error', seconds, projectSeconds,
+    xRealtime: done && projectSeconds > 0 ? projectSeconds / seconds : null, secondsPerOutputMinute: done && projectSeconds > 0 ? seconds / (projectSeconds / 60) : null,
+    shown, states, finalState: finished, ...(error ? { error } : {}) };
+}
+
+/** The server path: the request the export sheet sends, then the wait for the master, through the API. */
+async function serverExport(tag, note) {
   const renderStart = { at: null };
   try {
-    projectSeconds = (await api(`/projects/${projectId}`)).duration;
     let queued;
-    await human('Start the 1080p export', 3, async () => {
-      queued = await api(`/projects/${projectId}/render`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ resolution: '1080p' }) });
-    }, 'open export, pick 1080p, tap export (sent through the API)', 'export');
+    await human(`Start the ${RESOLUTION} server export`, 3, async () => {
+      queued = await api(`/projects/${projectId}/render`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ resolution: RESOLUTION }) });
+    }, 'open export, pick 1080p, tap export (sent through the API)', tag === 'compare' ? 'compare' : 'export');
     renderStart.at = now();
-    const timeout = Math.max(5 * 60_000, 3 * (projectSeconds ?? 0) * 1000);
-    const finished = await wait('Render 1080p', () => until(async () => {
+    const finished = await wait(`Render ${RESOLUTION} on the server`, () => until(async () => {
       const row = await api(`/renders/${queued.id}`);
       return (row.status === 'done' || row.status === 'error') && row;
-    }, { what: 'render', every: 1000, timeout }), 'POST /projects/:id/render until GET /renders/:id is done', 'render');
+    }, { what: 'render', every: 1000, timeout: renderTimeout() }), 'POST /projects/:id/render until GET /renders/:id is done', tag);
     const seconds = now() - renderStart.at;
     const done = finished.status === 'done' && projectSeconds > 0;
-    render = { id: queued.id, resolution: finished.resolution, status: finished.status, seconds, projectSeconds,
+    return { path: 'server', id: queued.id, resolution: finished.resolution, status: finished.status, seconds, projectSeconds,
       xRealtime: done ? projectSeconds / seconds : null, secondsPerOutputMinute: done ? seconds / (projectSeconds / 60) : null,
-      ...(finished.error ? { error: finished.error } : {}) };
+      ...(finished.error ? { error: finished.error } : {}), ...(note ? { note } : {}) };
   } catch (error) {
-    render = { status: 'error', error: String(error.message ?? error), projectSeconds, seconds: renderStart.at == null ? null : now() - renderStart.at, xRealtime: null, secondsPerOutputMinute: null };
+    return { path: 'server', status: 'error', error: String(error.message ?? error), projectSeconds, seconds: renderStart.at == null ? null : now() - renderStart.at, xRealtime: null, secondsPerOutputMinute: null, ...(note ? { note } : {}) };
   }
-  console.log(render.xRealtime
-    ? `render done: ${render.projectSeconds}s of output in ${render.seconds.toFixed(1)}s (${render.xRealtime.toFixed(2)}x realtime wall clock, ${render.secondsPerOutputMinute.toFixed(1)}s per output minute)`
-    : `render ${render.status}${render.error ? `: ${render.error}` : ''}`);
 }
+
+let fellBack = false;
+if (exportPath === 'device' || exportPath === 'both') {
+  try {
+    const device = await deviceExport();
+    if (device) renders.push(device);
+    else fellBack = true;
+  } catch (error) {
+    renders.push({ path: 'device', resolution: RESOLUTION, status: 'error', error: String(error.message ?? error), projectSeconds, seconds: null, xRealtime: null });
+    mark('Device export failed', 'issue', String(error.message ?? error));
+  }
+}
+if (record) ad('record', 'stop');
+tryAd('close');
+if (exportPath === 'server' || fellBack) renders.push(await serverExport('render', fellBack ? `device path not offered: ${routed.line ?? 'no route line'}` : undefined));
+if (exportPath === 'both') renders.push(await serverExport('compare'));
+for (const r of renders) {
+  console.log(r.xRealtime
+    ? `${r.path} render done: ${r.projectSeconds}s of output in ${r.seconds.toFixed(1)}s (${r.xRealtime.toFixed(2)}x realtime wall clock, ${r.secondsPerOutputMinute.toFixed(1)}s per output minute)${r.shown?.label ? ` · card: ${r.shown.label}` : ''}`
+    : `${r.path} render ${r.status}${r.error ? `: ${r.error}` : ''}`);
+}
+const render = renders[0];
+
+/**
+ * The server baseline: --server-baseline <x> or <review dir name>, else the newest earlier
+ * stand-up review with a done server render at this resolution.
+ */
+function serverBaseline() {
+  const pinned = opt('--server-baseline');
+  const given = Number(pinned);
+  if (Number.isFinite(given) && given > 0) return { path: 'server', xRealtime: given, resolution: RESOLUTION, source: '--server-baseline' };
+  try {
+    const names = pinned ? [pinned] : readdirSync(REVIEWS).filter((n) => /standup-replay/.test(n)).sort().reverse();
+    for (const name of names) {
+      const file = join(REVIEWS, name, 'review.json');
+      if (!existsSync(file)) continue;
+      const profile = JSON.parse(readFileSync(file, 'utf8')).profile;
+      const found = [...(profile?.renders ?? []), ...(profile?.render ? [profile.render] : [])]
+        .find((r) => (r.path ?? 'server') === 'server' && r.status === 'done' && r.resolution === RESOLUTION && r.xRealtime != null);
+      if (found) return { path: 'server', xRealtime: found.xRealtime, resolution: RESOLUTION, source: name };
+    }
+  } catch {}
+  return null;
+}
+const baseline = renders.length ? serverBaseline() : null;
+
 // The agent's trace (tool calls, thoughts, ops) for the profile.
 if (!serverExit) try { writeFileSync(join(out, 'chat.json'), JSON.stringify(await api(`/projects/${projectId}/chat`), null, 2)); } catch {}
 server.kill();
 
 // ── report ─────────────────────────────────────────────────────────────────
 // Person time is the editing flow only (comparable with runs that never exported).
+// A comparison export (`--export both`: the server render after the device one) is in neither total.
 const exportPhase = (s) => s.tag === 'export' || s.tag === 'render';
-const sum = (kind, field, phase = false) => steps.filter((s) => s.kind === kind && exportPhase(s) === phase).reduce((total, s) => total + s[field], 0);
+const sum = (kind, field, phase = false) => steps.filter((s) => s.kind === kind && s.tag !== 'compare' && exportPhase(s) === phase).reduce((total, s) => total + s[field], 0);
 const report = {
-  mode, at: new Date().toISOString(), startedAtMs: t0, server: { startedAtMs: serverStartedAtMs, log: 'server.ndjson' }, ...(render ? { render } : {}), commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
+  mode, at: new Date().toISOString(), startedAtMs: t0, server: { startedAtMs: serverStartedAtMs, log: 'server.ndjson' }, ...(render ? { render, renders } : {}), ...(baseline ? { baseline } : {}), exportPath, commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
   steps, totals: {
     runSeconds: now(), productWaitSeconds: sum('wait', 'seconds'), automationSeconds: sum('human', 'seconds') + sum('human', 'seconds', true),
     humanEstimateSeconds: sum('human', 'humanSeconds'), personSeconds: sum('human', 'humanSeconds') + sum('wait', 'seconds'),
@@ -296,14 +470,15 @@ try {
   profiled = true;
   console.log(`profile: ${profilePath}`);
   // The profile's speed prefers the server's encode time over this script's wall clock.
-  const speed = JSON.parse(readFileSync(profilePath, 'utf8')).render?.xRealtime;
-  if (render && speed != null) render.profileXRealtime = speed;
+  const profiledRenders = JSON.parse(readFileSync(profilePath, 'utf8')).renders ?? [];
+  renders.forEach((r, i) => { if (profiledRenders[i]?.xRealtime != null) r.profileXRealtime = profiledRenders[i].xRealtime; });
 } catch (error) { console.error(`profile failed: ${error.message}`); }
-const renderSpeed = render?.profileXRealtime ?? render?.xRealtime;
-const renderMeta = !render ? null : render.status !== 'done' ? 'failed' : renderSpeed != null ? `${renderSpeed.toFixed(2)}x` : null;
+const renderMeta = (r) => { const speed = r.profileXRealtime ?? r.xRealtime; return r.status !== 'done' ? 'failed' : speed != null ? `${speed.toFixed(2)}x` : null; };
+const renderMetas = renders.map((r) => renderMeta(r) && `${r.path === 'device' ? 'device' : 'server'}=${renderMeta(r)}`).filter(Boolean);
+if (baseline) renderMetas.push(`server-baseline=${baseline.xRealtime.toFixed(2)}x`);
 if (record && args.includes('--review')) {
-  const page = execFileSync('node', [join(S, 'build-review.mjs'), '--video', video, '--moments', join(out, 'moments.json'), '--slug', `standup-replay-${mode}`, '--meta', `mode=${mode}`, '--meta', `commit=${report.commit}`, '--meta', `person=~${fmt(report.totals.personSeconds)}`,
-    ...(renderMeta ? ['--meta', `render=${renderMeta}`] : []), ...(profiled ? ['--profile', profilePath] : [])], { encoding: 'utf8' }).trim();
+  const page = execFileSync('node', [join(S, 'build-review.mjs'), '--video', video, '--moments', join(out, 'moments.json'), '--slug', `standup-replay-${mode}${renders.some((r) => r.path === 'device') ? '-device' : ''}`, '--meta', `mode=${mode}`, '--meta', `commit=${report.commit}`, '--meta', `person=~${fmt(report.totals.personSeconds)}`,
+    ...renderMetas.flatMap((m) => ['--meta', m]), ...(profiled ? ['--profile', profilePath] : [])], { encoding: 'utf8' }).trim();
   console.log(execFileSync(join(S, 'serve-tailnet.sh'), [dirname(page)], { encoding: 'utf8' }).trim());
 }
 process.exit(0);
