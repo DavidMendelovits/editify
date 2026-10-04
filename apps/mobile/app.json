@@ -93,6 +93,7 @@
           "uploadNativeSymbols": true
         }
       ],
+      "./plugins/with-posthog-upload-switch",
       [
         "expo-build-properties",
         {

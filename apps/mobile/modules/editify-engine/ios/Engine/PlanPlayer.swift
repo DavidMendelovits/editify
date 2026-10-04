@@ -458,6 +458,10 @@ final class PlanPlayer {
       guard !torndown else { return }
       // The item on screen (if any) stays: the host decides whether to fall back.
       let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+      // The tagged retry was spent, failed or not: a later failure is reported (`.error`) instead of
+      // being ignored as though the player still waited for fresh media. That includes a retry
+      // that lands during a reconnect, which returns below before the failure policy runs.
+      if mediaRetry { remoteRetry = .retried }
       report(Applied(revision: plan.revision, buildSeq: plan.buildSeq, mode: .failed, milliseconds: elapsed(), audioSwapped: false, audioDeferred: false, error: message))
       if reconnecting {
         // The server is still out of reach: the next attempt, or the failure policy after the last.
@@ -712,7 +716,10 @@ final class PlanPlayer {
     } else if starve.since != nil, now - starve.grew > Self.starveLag {
       starve.since = nil
       setBuffering(false)
-    } else if starve.since == nil, reconnectWork == nil, !reloadRemote, now - starve.grew > Self.cleanPlayback {
+    } else if starve.since == nil, reconnectWork == nil, !reloadRemote, composed >= 0, now - starve.grew > Self.cleanPlayback {
+      // Clean playback: frames composed and keeping up for `cleanPlayback`. An item rebuilt by a
+      // reconnect that has composed nothing yet (still waiting on the server) is not that, and
+      // must not earn a fresh set of attempts.
       reconnects = 0
     }
   }
@@ -803,17 +810,41 @@ final class PlanPlayer {
   /// A paused exact seek on remote sources can land before the frame's bytes arrived, without the
   /// compositor having been asked for that frame. Then it is seeked once more: when the item can
   /// keep up, or after `verifyDelay`, whichever comes first (a newer seek or play cancels it).
+  /// Only for a frame a remote source draws: a frame from local files is never waiting on bytes.
+  /// (Once scheduled, the re-seek happens even if the compositor is asked meanwhile: asked before
+  /// its bytes arrive, it draws the frame without its source picture.)
   private func verifyPausedSeek(_ time: CMTime, exact: Bool) {
     unverifiedSeek = nil
-    guard !wantsPlay, exact, currentRefs.values.contains(where: Self.isRemote), let item = player.currentItem,
-          let compositor = item.customVideoCompositor as? EditifyCompositor, let built else { return }
-    let halfFrame = 0.5 / Double(built.plan.fps)
+    guard !wantsPlay, exact, let built else { return }
     let lastFrame = Double(max(0, built.plan.frameCount - 1)) / Double(built.plan.fps)
-    guard verifyAttempts < 3, time.seconds <= lastFrame + halfFrame, compositor.composedUpToSeconds + halfFrame < time.seconds else { return }
+    let halfFrame = 0.5 / Double(built.plan.fps)
+    guard verifyAttempts < 3, time.seconds <= lastFrame + halfFrame, Self.remoteSourceDraws(at: time.seconds, in: built.plan, refs: currentRefs),
+          !frameAsked(time) else { return }
     verifyAttempts += 1
     unverifiedSeek = time
     DispatchQueue.main.asyncAfter(deadline: .now() + Self.verifyDelay) { [weak self] in
       MainActor.assumeIsolated { self?.reseekUnverified() }
+    }
+  }
+
+  /// Whether the compositor of the item on screen has been asked for the frame at `time` since
+  /// the last seek (to within half a frame). True when there is nothing to ask.
+  private func frameAsked(_ time: CMTime) -> Bool {
+    guard let built, let compositor = player.currentItem?.customVideoCompositor as? EditifyCompositor else { return true }
+    return compositor.composedUpToSeconds + 0.5 / Double(built.plan.fps) >= time.seconds
+  }
+
+  /// Whether a remote source (a server copy) feeds the picture at `seconds`: a layer of the
+  /// segment there, or a video overlay showing then. A frame drawn from local files only is never
+  /// waiting on bytes.
+  nonisolated static func remoteSourceDraws(at seconds: Double, in plan: RenderPlan, refs: [String: String]) -> Bool {
+    let remote = { (id: String) in refs[id].map(isRemote) ?? false }
+    let segment = plan.video.segments.first { seconds >= $0.start - RenderPlan.epsilon && seconds < $0.end - RenderPlan.epsilon }
+      ?? plan.video.segments.last
+    if segment?.layers.contains(where: { remote($0.assetRef.id) }) == true { return true }
+    return plan.overlays.contains { overlay in
+      guard let media = overlay.media, seconds >= overlay.start - RenderPlan.epsilon, seconds < overlay.end else { return false }
+      return remote(media.assetRef.id)
     }
   }
 
@@ -1002,6 +1033,12 @@ final class PlanPlayer {
   func simulateErrorLog(_ kind: ErrorLogKind) {
     guard let item = player.currentItem else { return }
     errorLogged(item, kind, "simulated")
+  }
+
+  /// The parity harness's stand-in for a reconnect attempt coming due: the next apply rebuilds
+  /// with every remote source reloaded.
+  func simulateReconnectDue() {
+    reloadRemote = true
   }
 
   /// The parity harness's stand-in for a GPU refusal: the current item fails.
