@@ -245,18 +245,19 @@ describe('native preview: harness availability', () => {
     expect(drag.audioSwaps).toBe(0);
     expect(drag.stalls).toBe(0);
     expect(drag.playingAfter).toBe(true);
-    // Playback kept pace with the wall clock, and frames kept coming. How many frames a machine
-    // presents depends on the machine and its load (a Mac ~30 fps, a loaded CI VM rendering on the
-    // CPU 9 to 22), so they are held to the pacing the same player achieved just before the drag,
-    // with no updates: a swap per tick may cost frames on a slow renderer, but must not freeze
-    // the picture (no gap of half a second, at least 5 fps).
+    // Playback kept pace with the wall clock, and frames kept coming. The pacing the same player
+    // achieved just before the drag, with no updates, is logged with it: on CI runners that is a
+    // steady ~31 fps and the drag gets 8 to 25 (a composition swap per tick costs frames on their
+    // renderer; a phone is the real measure, P7), on a loaded Mac ~30 and 18 to 30. So the drag is
+    // held to not freezing the picture: at least a fifth of that pacing, at least 5 fps, and no gap
+    // of half a second.
     expect(drag.playedSeconds / drag.wallSeconds).toBeGreaterThan(0.85);
     const fps = drag.frames / drag.wallSeconds;
     const baselineFps = drag.baselineFrames / drag.baselineWallSeconds;
     console.info(`native preview 60 Hz drag (${report.adapters.set}): ${fps.toFixed(1)} fps while dragging, ${baselineFps.toFixed(1)} fps before`);
     expect(baselineFps).toBeGreaterThan(5);
     expect(fps).toBeGreaterThan(5);
-    expect(fps / baselineFps).toBeGreaterThan(0.35);
+    expect(fps / baselineFps).toBeGreaterThan(0.2);
     expect(drag.frameIntervalMs.max).toBeLessThan(500);
     expect(drag.latencyMs.p95).toBeLessThan(1000 / 60 * 3);
     // Only the logo moved: the emoji and callout bitmaps came from the cache.
