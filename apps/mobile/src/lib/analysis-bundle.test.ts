@@ -158,7 +158,7 @@ describe('markStale', () => {
     let state = applyPartResult(emptyAnalysisState(), 'video', 'words', { status: 'ready', analyzerVersion: 'speechanalyzer-ios26-1', data: transcript });
     state = applyPartResult(state, 'video', 'energy', { status: 'ready', analyzerVersion: 'energy-rms-50ms-1', data: energy });
     state = applySync(state, 'video', 'memo', { status: 'ready', analyzerVersion: 'audiosync-vdsp-1', data: sync });
-    const { state: next, stale } = markStale(state, { words: 'speechanalyzer-ios26-2', energy: 'energy-rms-50ms-1', sync: 'audiosync-vdsp-2' });
+    const { state: next, stale } = markStale(state, { words: 'speechanalyzer-ios26-2', energy: 'energy-rms-50ms-1', sync: 'audiosync-vdsp-2' }, null);
     expect(next.assets.video?.words).toEqual({ status: 'pending', analyzerVersion: 'speechanalyzer-ios26-2' });
     expect(next.assets.video?.energy?.status).toBe('ready');
     expect(next.syncs[0]).toEqual({ videoAssetId: 'video', memoAssetId: 'memo', status: 'pending', analyzerVersion: 'audiosync-vdsp-2' });
@@ -170,7 +170,7 @@ describe('markStale', () => {
 
   it('leaves parts alone when versions match or are unknown', () => {
     const state = applyPartResult(emptyAnalysisState(), 'a', 'faces', { status: 'ready', analyzerVersion: 'f1', data: faces });
-    const { state: next, stale } = markStale(state, { words: 'w9' });
+    const { state: next, stale } = markStale(state, { words: 'w9' }, null);
     expect(next.assets.a?.faces?.status).toBe('ready');
     expect(stale).toEqual([]);
   });
@@ -208,6 +208,20 @@ describe('markStale: words re-run once per trigger (C25)', () => {
     }
     expect(runs).toBe(1);
     expect(state.assets.video?.words?.status).toBe('ready');
+  });
+
+  it('never re-runs a current fallback for the exact words version the caller also passed (no loop)', () => {
+    // iOS 26 with SpeechAnalyzer unable to run: SFSpeech wrote w-sf1 under the current trigger.
+    // versions.words is the best adapter's version; the freshness rule wins over it.
+    let state = applyPartResult(emptyAnalysisState(), 'video', 'words', { status: 'ready', analyzerVersion: 'w-sf1', trigger: ios26.trigger, data: transcript });
+    for (let session = 0; session < 3; session += 1) {
+      const result = markStale(state, { words: 'w-sa1' }, ios26);
+      expect(result.stale).toEqual([]);
+      state = result.state;
+    }
+    expect(state.assets.video?.words?.status).toBe('ready');
+    // Without the rule (a binary before the chain) the exact match decides, as it always did.
+    expect(markStale(state, { words: 'w-sa1' }, null).stale).toEqual([{ assetId: 'video', part: 'words' }]);
   });
 
   it('re-runs once more after a SpeechAnalyzer model install moves the trigger', () => {

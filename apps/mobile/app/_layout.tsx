@@ -23,6 +23,7 @@ import { useClientGate } from '../src/lib/use-client-gate';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { syncPurchaseUser } from '../src/lib/purchases';
 import { posthog } from '../src/lib/posthog';
+import { startDeviceRuntime } from '../src/lib/device-runtime';
 import { colors } from '../src/lib/theme';
 
 // Web has no share sheet to receive from; Expo Go has no native module, and the
@@ -75,6 +76,10 @@ export default function RootLayout() {
   useEffect(() => {
     void posthog?.screen(pathname);
   }, [pathname]);
+
+  // The engine's capabilities (line, OS, tier, transcriber, background export) tag every
+  // PostHog event (C12).
+  useEffect(() => { startDeviceRuntime(); }, []);
 
   useEffect(() => {
     if (session === undefined) return;

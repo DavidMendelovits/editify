@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
@@ -63,7 +64,10 @@ export interface AppOptions {
 }
 
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: options.logger ?? false, bodyLimit: 20 * 1024 * 1024 });
+  // Every log line names the line (1.0 / 1.1) and the commit that wrote it (C12), next to
+  // pino's usual pid and hostname: both lines' logs can be read side by side.
+  const logger = options.logger ? { base: { pid: process.pid, hostname: hostname(), ...buildInfo() } } : false;
+  const app = Fastify({ logger, bodyLimit: 20 * 1024 * 1024 });
   // Background jobs (renders, Whisper, encodes) run without a request: they log through this.
   setMediaJobLogger(app.log);
   app.addHook('onClose', async () => clearMediaJobLogger(app.log));
