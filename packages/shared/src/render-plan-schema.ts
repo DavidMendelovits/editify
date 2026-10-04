@@ -88,6 +88,11 @@ import { calloutSchema } from './packets.js';
  * master and plain 100% white in an SDR one. The composite is then encoded to
  * `color`.
  *
+ * SDR video transfer: video tagged BT.709, BT.601/170M, gamma-tagged or
+ * unspecified decodes as v = e^1.961 and an `sdr` master encodes as
+ * e = v^(1/1.961) (Core Video's convention); sRGB-tagged sources and every
+ * hex colour use IEC 61966-2-1. Changing this curve is a `requires` feature.
+ *
  * Working-space scale: linear 1.0 is the 203-nit reference white (an HLG
  * signal of 0.75, PQ at 203 cd/m2, sRGB and BT.709 white all decode to 1.0;
  * the HLG nominal peak of 1000 cd/m2 is 1000 / 203 = 4.926).

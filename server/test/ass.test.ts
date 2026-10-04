@@ -72,4 +72,15 @@ describe('ASS subtitle generation', () => {
         ]
       `);
   });
+
+  it('keeps a typed backslash literal: libass has no \\\\ escape, so a word joiner follows it', () => {
+    const project = {
+      id: 'p', title: 'p', format: '9:16', fps: 30, duration: 2, version: 0,
+      tracks: [{ id: 'c', kind: 'caption', clips: [{ id: 'c1', start: 0, in: 0, out: 2, text: 'C:\\new \\N {x}' }] }],
+    } as unknown as Parameters<typeof generateAss>[0];
+    const dialogue = generateAss(project, 1080, 1920).split('\n').find((line) => line.startsWith('Dialogue: 0'))!;
+    expect(dialogue.endsWith('C:\\\u2060new \\\u2060N \\{x\\}')).toBe(true);
+    expect(dialogue).not.toContain('\\\\');
+  });
 });
+

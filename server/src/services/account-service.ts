@@ -2,6 +2,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { assetsRoot, supabaseUrl } from '../config.js';
 import type { EditifyDatabase } from '../db/database.js';
+import { removeRenderFiles } from '../media/render-files.js';
 import type { StyleService } from './style-service.js';
 
 export interface AccountDeletion { projects: number; assets: number; reports: number; styles: number }
@@ -31,11 +32,11 @@ export async function deleteUserData(database: EditifyDatabase, userId: string, 
   const assetIds = (database.prepare('SELECT id FROM assets WHERE user_id = ?').all(userId) as Array<{ id: string }>)
     .map((row) => row.id);
   // Read before the delete: dropping the projects cascades these rows away.
-  const outputs = (database.prepare(`
-    SELECT renders.output_path AS output_path FROM renders
+  const renders = (database.prepare(`
+    SELECT renders.id AS id, renders.output_path AS output_path FROM renders
     JOIN projects ON projects.id = renders.project_id
-    WHERE projects.user_id = ? AND renders.output_path IS NOT NULL
-  `).all(userId) as Array<{ output_path: string }>).map((row) => row.output_path);
+    WHERE projects.user_id = ?
+  `).all(userId) as Array<{ id: string; output_path: string | null }>).map((row) => ({ id: row.id, outputPath: row.output_path }));
 
   const counts = database.transaction((): AccountDeletion => {
     // One placeholder per asset would blow SQLite's variable limit for a heavy
@@ -55,10 +56,10 @@ export async function deleteUserData(database: EditifyDatabase, userId: string, 
     };
   })();
 
-  // Media is one directory per asset; a render output is a single file.
+  // Media is one directory per asset; a render is one directory too (output, captions, work files, contact sheet).
   await Promise.all([
     ...assetIds.map(async (id) => { await rm(join(assetsRoot, id), { recursive: true, force: true }); }),
-    ...outputs.map(async (path) => { await rm(path, { force: true }); }),
+    removeRenderFiles(renders),
   ]);
   return counts;
 }

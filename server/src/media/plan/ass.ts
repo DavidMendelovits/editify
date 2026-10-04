@@ -1,4 +1,5 @@
-import { fontMetrics, type PlanCallout, type PlanCaption, type PlanFontFace, type PlanOverlay, type RenderPlan } from '@editify/shared';
+import { ASS_BACKSLASH } from '../ass.js';
+import { fontMetrics, type PlanCallout, type PlanCaption, type PlanEmoji, type PlanFontFace, type PlanOverlay, type RenderPlan } from '@editify/shared';
 
 /*
  * The ASS writer for plan captions and callout cards (RenderPlan captionLine
@@ -56,7 +57,8 @@ function inlineAlpha(hex: string, opacity = 1): string {
 
 function assText(text: string): string {
   // Plan text never carries a line break (lines are pre-broken); a stray one must not become \N.
-  return text.replaceAll('\\', '\\\\').replaceAll('{', '\\{').replaceAll('}', '\\}').replace(/\r?\n/g, ' ');
+  // libass has no backslash escape: a word joiner after it stops `\\N`, `\\n`, `\\h` reading as tags (legacy ass.ts).
+  return text.replaceAll('\\', ASS_BACKSLASH).replaceAll('{', '\\{').replaceAll('}', '\\}').replace(/\r?\n/g, ' ');
 }
 
 /** A number for an override tag: three decimals, no trailing zeros. */
@@ -226,7 +228,21 @@ function calloutDialogue(overlay: PlanOverlay & { callout: PlanCallout }, layer:
 
 export type AssItem =
   | { kind: 'caption'; caption: PlanCaption }
-  | { kind: 'callout'; overlay: PlanOverlay & { callout: PlanCallout } };
+  | { kind: 'callout'; overlay: PlanOverlay & { callout: PlanCallout } }
+  | { kind: 'emoji'; overlay: PlanOverlay & { emoji: PlanEmoji } };
+
+/**
+ * An emoji sticker the server cannot draw in colour (no Apple Color Emoji, no
+ * raster): libass sets the text in monochrome white, centred on the box at the
+ * payload's size (an emoji line is about 1.3125 em, the ASS cell), turned with
+ * the box, as legacy render.ts's fallback did. Never silently dropped.
+ */
+function emojiDialogue(overlay: PlanOverlay & { emoji: PlanEmoji }, layer: number, fps: number): string {
+  const { box, emoji } = overlay;
+  const turn = box.rotationDeg ? `\\org(${n(box.x)},${n(box.y)})\\frz${n(-box.rotationDeg)}` : '';
+  return `Dialogue: ${layer},${formatCs(frameSnappedCs(overlay.start, fps))},${formatCs(frameSnappedCs(overlay.end, fps))},Label,,0,0,0,,` +
+    `{\\an5\\pos(${n(box.x)},${n(box.y)})${turn}\\fs${n(emoji.sizePx * 1.3125)}\\bord0\\shad0\\1c&HFFFFFF&}${assText(emoji.text)}`;
+}
 
 /**
  * A complete ASS script drawing `items` in order (later items on higher
@@ -243,9 +259,12 @@ export function planAss(plan: Pick<RenderPlan, 'size' | 'fps'>, items: readonly 
       events.push(...captionDialogue(item.caption, captionIndex, layer, plan.fps));
       captionIndex += 1;
       layer += 2;
-    } else {
+    } else if (item.kind === 'callout') {
       events.push(...calloutDialogue(item.overlay, layer, plan.fps));
       layer += 3;
+    } else {
+      events.push(emojiDialogue(item.overlay, layer, plan.fps));
+      layer += 1;
     }
   }
   const drawStyle: Style = { name: 'Draw', face: 'Montserrat-Bold', size: 20, primary: '&H00FFFFFF', secondary: '&H00FFFFFF', outline: '&H00000000', back: '&HFF000000', borderStyle: 1, outlineWidth: 0, shadow: 0 };

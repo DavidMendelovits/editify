@@ -74,6 +74,7 @@ interface Rendered {
   comparisons: Map<number, Comparison>;
 }
 const renders = new Map<string, Rendered>();
+let mediaPaths = new Map<string, string>();
 const planFor = (relative: string): RenderPlan => (JSON.parse(readFileSync(join(root, relative), 'utf8')) as { plan: RenderPlan }).plan;
 /** Every render the parity suite draws: the 13 shared fixtures plus the harness's two colour plans. */
 const RENDER_NAMES = [...manifest.renders.map((render) => render.name).filter((name) => (
@@ -91,6 +92,7 @@ beforeAll(async () => {
     for (const entry of plan.audio) ids.add(entry.assetRef.id);
   }
   const media = await synthesizeMedia(manifest.media, scratch, ids);
+  mediaPaths = media;
   for (const { name, plan } of plans) {
     const path = join(scratch, `${name}.mp4`);
     const workDir = join(scratch, name);
@@ -98,7 +100,7 @@ beforeAll(async () => {
       renders.set(name, { plan, path, workDir, notes: [], frames: new Map(), linear: new Map(), comparisons: new Map() });
       continue;
     }
-    const result = await renderPlan(plan, (ref) => media.get(ref.id), { outputPath: path, workDir });
+    const result = await renderPlan(plan, (ref) => media.get(ref.id), { outputPath: path, workDir, keepWorkDir: true });
     const rendered: Rendered = { plan, path, workDir, notes: result.notes, frames: new Map(), linear: new Map(), comparisons: new Map() };
     const spec = manifest.renders.find((render) => render.name === name)!;
     for (const frame of spec.frames) {
@@ -259,7 +261,9 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     }
     expect(audio).toMatchObject({ codec_name: 'aac', sample_rate: '48000', channels: 2 });
     const samples = spawnSync('ffmpeg', ['-v', 'error', '-i', path, '-vn', '-f', 's16le', 'pipe:1'], { maxBuffer: 1 << 30 }).stdout.length / 4;
-    expect(Math.abs(samples - Math.round(plan.duration * 48000))).toBeLessThanOrEqual(1024);
+    // AAC frames are 1024 samples; ffmpeg 5.1's mp4 muxer (Debian 12, production) also leaves the encoder
+    // priming in the decoded length, so allow two frames. The PCM master below is exact.
+    expect(Math.abs(samples - Math.round(plan.duration * 48000))).toBeLessThanOrEqual(2048);
     // The pre-loudness master is exact to the sample.
     expect(master(name).length).toBe(Math.round(plan.duration * 48000));
   });
@@ -324,10 +328,33 @@ describe.skipIf(!usable)('plan render vs the native goldens (RenderPlan v1 fixtu
     expect([15, 17, 18, 20, 23, 26].map(colour)).toEqual(['r', 'r', 'g', 'b', 'rg', 'r']);
   });
 
-  it('notes, rather than crashes on, an emoji sticker the host cannot draw', () => {
+  it('draws an emoji sticker the host cannot colour in monochrome, with a note, never dropping it', async () => {
     const notes = render('overlays').notes;
     if (process.platform === 'darwin') expect(notes).toEqual([]);
-    else expect(notes.some((note) => note.includes('emoji-fire'))).toBe(true);
+    else expect(notes.some((note) => note.includes('emoji-fire') && note.includes('monochrome'))).toBe(true);
+    // The fallback path on every host: no rasterizer, no raster.
+    const { renderPlan } = await import('../src/media/plan/render.js');
+    const plan = render('overlays').plan;
+    const path = join(scratch, 'overlays-mono.mp4');
+    const result = await renderPlan(plan, (ref) => mediaPaths.get(ref.id),
+      { outputPath: path, workDir: join(scratch, 'overlays-mono'), rasterizeEmoji: async () => null });
+    expect(result.notes).toEqual([expect.stringContaining('Emoji sticker emoji-fire was drawn in monochrome')]);
+    // Frame 40 (1.33 s, before the b-roll covers it): white glyph pixels inside the emoji's box, none there without it.
+    const whiteIn = (file: string): number => {
+      const picture = decodeFrame(file, 40, plan.size, false);
+      let count = 0;
+      for (let y = 250; y < 350; y += 1) {
+        for (let x = 140; x < 220; x += 1) {
+          const at3 = (y * picture.width + x) * 3;
+          if (Math.min(picture.rgb[at3]!, picture.rgb[at3 + 1]!, picture.rgb[at3 + 2]!) > 0.9) count += 1;
+        }
+      }
+      return count;
+    };
+    const withoutEmoji = join(scratch, 'overlays-no-emoji.mp4');
+    await renderPlan({ ...plan, overlays: plan.overlays.filter((item) => item.kind !== 'emoji') }, (ref) => mediaPaths.get(ref.id),
+      { outputPath: withoutEmoji, workDir: join(scratch, 'overlays-no-emoji') });
+    expect(whiteIn(path)).toBeGreaterThan(whiteIn(withoutEmoji) + 50);
   });
 
   it('keeps one colour pipeline across SDR, HLG and PQ sources (HLG out: reference white at 75% HLG)', () => {

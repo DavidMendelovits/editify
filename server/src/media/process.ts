@@ -39,12 +39,38 @@ function parseRate(rate: string | undefined): number {
   return divisor === 0 ? 0 : Number(numerator) / divisor;
 }
 
+/**
+ * The demuxers an upload may be opened with. ffprobe sniffs content, not the
+ * extension, so without this an HLS playlist or ffconcat script uploaded as
+ * clip.mp4 is opened as a playlist and its URLs (local files, network) are
+ * followed. Every later ffmpeg on the file sniffs the same way, so passing the
+ * probe here is what keeps them on these formats too.
+ */
+export const ALLOWED_DEMUXERS = [
+  'mov', // mov,mp4,m4a,3gp,3g2,mj2 (and HEIC stills on ffmpeg before 7.1)
+  'matroska', 'webm', 'avi', 'mpegts',
+  'mp3', 'wav', 'aac', 'flac', 'ogg', 'aiff', 'caf', 'amr', 'amrnb', 'amrwb',
+  'image2', 'png_pipe', 'jpeg_pipe', 'gif', 'apng', 'webp_pipe', 'bmp_pipe', 'tiff_pipe', 'heif',
+  // Never playlist or script demuxers (hls, concat, dash, ...): they open the URLs a file names.
+] as const;
+
+/** Thrown when an upload is not a media container the server accepts. */
+export class UnsupportedMediaError extends Error {
+  constructor(message = 'This file is not a supported video, audio or image format.') {
+    super(message);
+    this.name = 'UnsupportedMediaError';
+  }
+}
+
 export async function probeMedia(path: string): Promise<ProbeResult> {
   const { stdout } = await runProcess('ffprobe', [
-    '-v', 'error', '-show_entries',
+    '-v', 'error', '-format_whitelist', ALLOWED_DEMUXERS.join(','), '-show_entries',
     'format=duration:stream=index,codec_type,width,height,r_frame_rate,duration',
     '-of', 'json', path,
-  ]);
+  ]).catch((error: unknown) => {
+    if (error instanceof Error && /not on whitelist/i.test(error.message)) throw new UnsupportedMediaError();
+    throw error;
+  });
   const parsed = JSON.parse(stdout) as {
     format?: { duration?: string };
     streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string; duration?: string }>;

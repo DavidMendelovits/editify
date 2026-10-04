@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import {
   newProjectSchema,
   operationSchema,
@@ -8,6 +7,7 @@ import {
   type Operation,
   type Project,
 } from '@editify/shared';
+import { removeRenderFiles } from '../media/render-files.js';
 import { AssetStore } from './asset-store.js';
 import type { EditifyDatabase } from './database.js';
 import { applyOperation, assertNoNewVideoOverlap, OperationError } from '../operations/apply.js';
@@ -158,14 +158,14 @@ export class ProjectStore {
    * Removes the project and, through `ON DELETE CASCADE`, its operation log,
    * asset links, renders and chat. Rows in `assets` deliberately stay: media is
    * shared between projects, so deleting one must not strand another's clips.
-   * Rendered outputs on disk belong to this project alone, so they are unlinked.
+   * Rendered files on disk belong to this project alone, so each render's
+   * directory goes (output, captions, work files), finished or not.
    */
   async delete(id: string, userId?: string): Promise<boolean> {
     if (!this.get(id, userId)) return false;
-    const outputs = (this.database.prepare(
-      'SELECT output_path FROM renders WHERE project_id = ? AND output_path IS NOT NULL',
-    ).all(id) as Array<{ output_path: string }>).map((row) => row.output_path);
-    await Promise.all(outputs.map(async (path) => { await rm(path, { force: true }); }));
+    const renders = (this.database.prepare('SELECT id, output_path FROM renders WHERE project_id = ?')
+      .all(id) as Array<{ id: string; output_path: string | null }>).map((row) => ({ id: row.id, outputPath: row.output_path }));
+    await removeRenderFiles(renders);
     return this.database.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
   }
 

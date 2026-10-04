@@ -19,6 +19,8 @@ const calls = vi.hoisted(() => ({
   plan: [] as unknown[][],
   /** Holds the first legacy render until released, so a second job waits in the queue. */
   gate: null as Promise<void> | null,
+  /** Set: the plan render reports this server can't run it, so the queue falls back to legacy. */
+  planUnavailable: null as string | null,
 }));
 vi.mock('../src/media/render.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/media/render.js')>()),
@@ -28,9 +30,16 @@ vi.mock('../src/media/render.js', async (importOriginal) => ({
     return `/renders/${renderId}/output.mp4`;
   },
 }));
-vi.mock('../src/media/plan/render.js', () => ({
+// The real module (PlanRenderUnavailableError, probePlanUnlessUnsupported over the mocked
+// probe below) with only the ffmpeg run stubbed.
+vi.mock('../src/media/plan/render.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/media/plan/render.js')>()),
   renderPlan: async (...args: unknown[]) => {
     calls.plan.push(args);
+    if (calls.planUnavailable) {
+      const { PlanRenderUnavailableError } = await vi.importActual<typeof import('../src/media/plan/render.js')>('../src/media/plan/render.js');
+      throw new PlanRenderUnavailableError(calls.planUnavailable);
+    }
     const out = args[2] as { outputPath: string };
     return { outputPath: out.outputPath, frames: 30, notes: [], loudness: { measuredLufs: null, truePeakDb: null, decision: { gainDb: 0, limit: false } }, elapsed: 1 };
   },
@@ -133,6 +142,7 @@ beforeEach(() => {
   calls.legacy.length = 0;
   calls.plan.length = 0;
   calls.gate = null;
+  calls.planUnavailable = null;
 });
 afterEach(() => { delete process.env.RENDER_PLAN; });
 
@@ -195,6 +205,30 @@ describe('POST /projects/:id/render with a snapshot', () => {
     expect(plan.duration).toBe(3);
     expect(plan.video.segments.flatMap((segment) => segment.layers.map((layer) => layer.assetRef.id))).toEqual(['plan-a']);
     expect(calls.legacy).toEqual([]);
+  });
+
+  it('falls back to the legacy renderer with the snapshot, not the stored project, when the plan render is unavailable', async () => {
+    process.env.RENDER_PLAN = '1';
+    calls.planUnavailable = 'the plan is over the memory budget';
+    addAsset('fallback-a', ALICE);
+    addAsset('fallback-b', ALICE);
+    const project = await newProject(ALICE);
+    await call(ALICE, 'POST', '/assets/fallback-a/link', { projectId: project.id });
+    await call(ALICE, 'POST', '/assets/fallback-b/link', { projectId: project.id });
+    // The stored project names another clip; the phone's snapshot is what must render.
+    await call(ALICE, 'POST', `/projects/${project.id}/ops`, {
+      ops: [{ type: 'add_clip', params: { trackId: 'video-main', clip: { id: 'stored', assetId: 'fallback-b', start: 0, in: 0, out: 3 } } }],
+      baseVersion: project.version,
+    });
+    const snapshot = renderSnapshot(withClip(project, 'fallback-a', 2, 6));
+    const response = await renderWith(ALICE, project.id, snapshot);
+    expect(response.statusCode).toBe(202);
+    const id = response.json<{ id: string }>().id;
+    expect(await finished(id)).toMatchObject({ status: 'done', projectVersion: 6, snapshot: { revision: 6, hash: snapshot.hash } });
+    expect(calls.plan).toHaveLength(1);
+    const rendered = calls.legacy.find((entry) => entry.renderId === id);
+    expect(rendered?.project.tracks.flatMap((track) => track.clips.map((clip) => clip.assetId))).toEqual(['fallback-a']);
+    expect(projectHash(rendered!.project)).toBe(snapshot.hash);
   });
 
   it('refuses a snapshot whose hash, revision or project does not match', async () => {
