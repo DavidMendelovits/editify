@@ -5,7 +5,7 @@
  *   npx tsx scripts/cutover/cutover.ts measure
  *   npx tsx scripts/cutover/cutover.ts snapshot
  *   npx tsx scripts/cutover/cutover.ts copy     --all
- *   npx tsx scripts/cutover/cutover.ts import   --all | --user <email|id> [--user ...] [--force]
+ *   npx tsx scripts/cutover/cutover.ts import   --all | --user <email|id> [--user ...] [--force] [--without-journal]
  *   npx tsx scripts/cutover/cutover.ts delta
  *   npx tsx scripts/cutover/cutover.ts dry-run  --all | --user <email|id> [--quick] [--json]
  *   npx tsx scripts/cutover/cutover.ts failures
@@ -113,7 +113,7 @@ async function main(argv: string[]): Promise<number> {
         return result.failed ? 3 : 0;
       }
       case 'import': {
-        const report = await importer.import(await scope(), { force: flags.has('force') });
+        const report = await importer.import(await scope(), { force: flags.has('force'), withoutJournal: flags.has('without-journal') });
         for (const user of report.users) {
           console.log(`${user.status.padEnd(8)} ${displayUser(user.user)}  rows=${user.rows} files=${user.files} (${human(user.bytes)})${user.reasons.length ? `  ${user.reasons.slice(0, 3).join('; ')}` : ''}`);
         }

@@ -28,12 +28,18 @@
  * at the current snapshot is skipped unless --force, and only failed or new
  * users are retried. Postgres project sync (public ─▶ v11) rides along when
  * DATABASE_URL is set (pg-copy.ts).
+ *
+ * Two guards keep the delta's promise: `import --all` refuses a snapshot whose
+ * journal is off or missing triggers (the delta could not replay what follows
+ * it), and once the delta has started every import refuses, because 1.1 is
+ * live and a re-import rewrites imported projects' children from 1.0. The
+ * delta retries its own file failures on a re-run.
  */
 import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { EditifyDatabase } from '../../src/db/database.js';
-import { hasMutationJournal, iterateMutationsAfter, latestMutationId, type Mutation } from '../../src/db/mutation-journal.js';
+import { hasMutationJournal, iterateMutationsAfter, journaledTables, latestMutationId, type Mutation } from '../../src/db/mutation-journal.js';
 import {
   assertSpace,
   copyFiles,
@@ -115,7 +121,7 @@ export interface UserReport {
 
 export interface ImportReport {
   watermark: number;
-  /** False when 1.0 has no mutations journal: the delta could not replay anything after this snapshot. */
+  /** False when the snapshot has no complete mutations journal (a --without-journal rehearsal): the delta will refuse. */
   journal: boolean;
   snapshot: string;
   users: UserReport[];
@@ -166,6 +172,22 @@ interface UserPlan {
 const STATE_SNAPSHOT = 'current_snapshot';
 const STATE_BULK_WATERMARK = 'bulk_watermark';
 const STATE_DELTA_THROUGH = 'delta_through';
+/** Set when the first delta starts (after the App Store release): from then on an import would wipe 1.1 users' writes. */
+const STATE_DELTA_STARTED = 'delta_started';
+/** '1' when the bulk import's snapshot had the journal and all its triggers, '0' when it ran without them. */
+const STATE_BULK_JOURNAL = 'bulk_journal';
+/** Failures the delta records carry this prefix, so a re-run of the delta retries them itself. */
+const DELTA_FAILURE = 'delta: ';
+
+/** Whether a 1.0 database has the journal table and all three triggers on every table it journals (C19). */
+export function journalComplete(database: EditifyDatabase): { ok: boolean; missing: string[] } {
+  if (!hasMutationJournal(database)) return { ok: false, missing: ['the mutations table'] };
+  const triggers = new Set((database.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{ name: string }>).map((row) => row.name));
+  const missing = journaledTables(database).flatMap((table) => ['insert', 'update', 'delete']
+    .map((op) => `mutations_journal_${table}_${op}`)
+    .filter((name) => !triggers.has(name)));
+  return { ok: missing.length === 0, missing };
+}
 
 const ASSET_CHILDREN = TABLE_ORDER.filter((table) => {
   const rule = TABLE_RULES[table];
@@ -324,13 +346,22 @@ export class Importer {
    * scope is the cutover, which replaces each user's beta_copy rows in the same
    * transaction that imports their real ones.
    */
-  async import(scope: Scope, options: { force?: boolean } = {}): Promise<ImportReport> {
+  async import(scope: Scope, options: { force?: boolean; withoutJournal?: boolean } = {}): Promise<ImportReport> {
     const tag: ImportTag = scope.kind === 'all' ? 'cutover' : 'beta_copy';
+    if (getState(this.dest, STATE_DELTA_STARTED) !== undefined) {
+      // 1.1 is live by then: a re-import rewrites every imported project's children from 1.0 and so
+      // drops the chats, edits and renders (files too) 1.1 users made under them. Re-run `delta` instead.
+      throw new Error('The delta has started, so 1.1 is live: an import now would wipe what 1.1 users wrote under imported projects. Re-run `delta` (it retries its own failures).');
+    }
     if (scope.kind === 'users' && getState(this.dest, STATE_BULK_WATERMARK) !== undefined) {
       throw new Error('The cutover bulk import has run: a --user import now would turn real data back into a beta_copy. Use import --all.');
     }
     const prepared = await this.prepare();
     try {
+      const journal = journalComplete(prepared.snap);
+      if (scope.kind === 'all' && !journal.ok && !options.withoutJournal) {
+        throw new Error(`The snapshot's mutations journal is incomplete (missing ${journal.missing.slice(0, 3).join(', ')}${journal.missing.length > 3 ? ', ...' : ''}), so the delta could not replay what 1.0 writes after it. Set MUTATION_JOURNAL=1 on editify-dm, check \`source-agent.mjs status\`, then take a new snapshot (C19). --without-journal only for a rehearsal.`);
+      }
       const users = this.scopeUsers(prepared, scope);
       const failing = usersWithFailures(this.dest);
       const pending = users.filter((user) => {
@@ -340,11 +371,10 @@ export class Importer {
       });
       const plans = pending.map((user) => this.planUser(prepared, user));
       const copy = await this.copyPlans(prepared, plans);
-      const journal = hasMutationJournal(prepared.snap);
-      if (scope.kind === 'all' && !journal) this.log('WARNING: 1.0 has no mutations journal (MUTATION_JOURNAL=1), so writes after this snapshot cannot be replayed by the delta.');
+      if (scope.kind === 'all' && !journal.ok) this.log('WARNING: --without-journal: writes to 1.0 after this snapshot cannot be replayed, and the delta will refuse to run.');
       const report: ImportReport = {
         watermark: prepared.watermark,
-        journal,
+        journal: journal.ok,
         snapshot: prepared.snapshotName,
         users: users.filter((user) => !pending.includes(user)).map((user) => ({ user, status: 'skipped', rows: 0, files: 0, bytes: 0, reasons: ['already imported at this snapshot'] })),
         copied: copy.copied,
@@ -359,6 +389,7 @@ export class Importer {
       if (scope.kind === 'all' && !report.users.some((user) => user.status === 'failed')) {
         setState(this.dest, STATE_BULK_WATERMARK, String(prepared.watermark));
         setState(this.dest, STATE_DELTA_THROUGH, String(prepared.watermark));
+        setState(this.dest, STATE_BULK_JOURNAL, journal.ok ? '1' : '0');
       }
       return report;
     } finally {
@@ -544,13 +575,20 @@ export class Importer {
   async delta(): Promise<DeltaReport> {
     const bulk = getState(this.dest, STATE_BULK_WATERMARK);
     if (bulk === undefined) throw new Error('No full bulk import has completed: run `import --all` first.');
+    if (getState(this.dest, STATE_BULK_JOURNAL) !== '1') {
+      throw new Error('The bulk import ran without a complete mutations journal (MUTATION_JOURNAL=1), so writes to 1.0 after its snapshot cannot be replayed: the delta cannot be trusted. Turn the journal on, take a new snapshot and re-run `import --all` before the release (C19).');
+    }
+    // The delta's own file failures are retried by this run; any other failure is a user the bulk import never committed.
+    this.dest.prepare('DELETE FROM import_failures WHERE substr(reason, 1, ?) = ?').run(DELTA_FAILURE.length, DELTA_FAILURE);
     const outstanding = listFailures(this.dest);
     if (outstanding.length) throw new Error(`${outstanding.length} import failure(s) outstanding: fix them and re-run \`import --all\` before the delta.`);
     const from = Number(getState(this.dest, STATE_DELTA_THROUGH) ?? bulk);
+    if (getState(this.dest, STATE_DELTA_STARTED) === undefined) setState(this.dest, STATE_DELTA_STARTED, new Date().toISOString());
     await this.snapshot();
     const prepared = await this.prepare();
     try {
-      if (!hasMutationJournal(prepared.snap)) throw new Error('The 1.0 snapshot has no mutations journal, so there is nothing to replay. Set MUTATION_JOURNAL=1 on editify-dm before the bulk snapshot (C19).');
+      const journal = journalComplete(prepared.snap);
+      if (!journal.ok) throw new Error(`The 1.0 snapshot's mutations journal is incomplete (missing ${journal.missing.slice(0, 3).join(', ')}): it was switched off after the bulk snapshot, so writes in that gap are not in it (C19).`);
       if (latestMutationId(prepared.snap) < from) throw new Error(`The 1.0 journal ends at ${latestMutationId(prepared.snap)}, before the bulk watermark ${from}: it was reset, so the delta cannot be trusted.`);
       // Every file any row now names, so media written after J (or regenerated in place) is verified first.
       const users = [SHARED, ...listOwners(prepared.snap)];
@@ -560,18 +598,22 @@ export class Importer {
       const context = { database: this.dest, destRoot: this.destRoot, index: prepared.index };
       for (const plan of plans) {
         for (const file of await unverifiedFiles(context, [...plan.files.files, ...plan.depFiles.files])) {
-          recordFailure(this.dest, { userId: plan.user, assetId: file.owner.id, path: file.path, reason: copy.failed.get(file.path) ?? 'not verified on the 1.1 volume' });
+          recordFailure(this.dest, { userId: plan.user, assetId: file.owner.id, path: file.path, reason: `${DELTA_FAILURE}${copy.failed.get(file.path) ?? 'not verified on the 1.1 volume'}` });
           report.failures += 1;
         }
       }
       if (report.failures) {
-        this.log(`delta: NOT applied, ${report.failures} file(s) unverified (see failures)`);
+        this.log(`delta: NOT applied, ${report.failures} file(s) unverified (see failures); re-run \`delta\` to retry them`);
         return report;
       }
       const deletedMedia = { assets: [] as string[], renders: [] as string[] };
       this.dest.transaction(() => {
         for (const mutation of iterateMutationsAfter(prepared.snap, from)) {
-          this.replay(mutation, deletedMedia);
+          try {
+            this.replay(mutation, deletedMedia);
+          } catch (error) {
+            throw new Error(`Journal entry ${mutation.id} (${mutation.table} ${mutation.op} ${JSON.stringify(mutation.pk)}) did not replay, so nothing was: ${error instanceof Error ? error.message : String(error)}`);
+          }
           report.applied += 1;
           report.byOp[`${mutation.table}.${mutation.op}`] = (report.byOp[`${mutation.table}.${mutation.op}`] ?? 0) + 1;
           report.through = mutation.id;
@@ -764,6 +806,8 @@ export class Importer {
       snapshot: getState(this.dest, STATE_SNAPSHOT),
       bulkWatermark: getState(this.dest, STATE_BULK_WATERMARK),
       deltaThrough: getState(this.dest, STATE_DELTA_THROUGH),
+      bulkJournal: getState(this.dest, STATE_BULK_JOURNAL),
+      deltaStarted: getState(this.dest, STATE_DELTA_STARTED),
     };
   }
 }

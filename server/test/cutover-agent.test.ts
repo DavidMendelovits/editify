@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -141,6 +141,10 @@ describe('cutover source agent', () => {
       expect((await fetch(url(`/file?path=${encodeURIComponent(bad)}`), { headers: auth })).status, bad).toBe(400);
     }
     expect((await fetch(url('/file?path=assets/none.mov'), { headers: auth })).status).toBe(404);
+    // A symlinked directory inside the volume does not lead out of it.
+    writeFileSync(join(base!, 'outside.txt'), 'not media');
+    symlinkSync(base!, join(root, 'assets', 'escape'));
+    expect((await fetch(url(`/file?path=${encodeURIComponent('assets/escape/outside.txt')}`), { headers: auth })).status).toBe(404);
 
     const snap = await (await fetch(url('/snapshot'), { method: 'POST', headers: auth })).json() as { name: string; size: number; sha256: string; journalId: number };
     expect(snap.journalId).toBeGreaterThan(0);

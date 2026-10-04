@@ -12,7 +12,7 @@ The importer for release/1.1 plan tasks T9 and T16 (decisions D14, D15, C3, C6, 
    files, backup API snapshots
 
  BEFORE LAUNCH
-   MUTATION_JOURNAL=1 on editify-dm (C19) ─▶ measure, size editify_v11_data at 1.5x (C11)
+   MUTATION_JOURNAL=1 on editify-dm (C19; off in production until set) ─▶ measure, size editify_v11_data at 1.5x (C11)
    beta: snapshot ─▶ import --user <email> (tag beta_copy, C8/C18) ─▶ dry-run --user <email>
  LAUNCH
    snapshot (J = newest journal id in it) ─▶ copy --all (verified, space-checked) ─▶ import --all
@@ -68,7 +68,9 @@ All commands from the repo root on your laptop, logged in with `fly auth login`.
    fly secrets set MUTATION_JOURNAL=1 -a editify-dm
    ```
 
-   (restarts editify-dm; the triggers install at boot). Re-run `status`. Without the journal the delta refuses to run.
+   (restarts editify-dm; the triggers install at boot). Re-run `status`.
+
+   editify-dm runs without it today, so this is the step that makes the delta possible: only writes made while the journal is on can be replayed. It must be on, with all its triggers, before the launch-day snapshot (3.1) and stay on until the freeze. `import --all` refuses a snapshot with no journal or a missing trigger, and the delta refuses if the journal's triggers are gone from its own snapshot (it was switched off in between). Never unset MUTATION_JOURNAL on editify-dm during the cutover.
 
    The agent goes under `/data/cutover/` so it survives restarts; the agent and the importer never treat `cutover/` as media. Re-upload it if this file changes.
 
@@ -131,7 +133,7 @@ The import is tagged `beta_copy`. Re-importing a user replaces their beta copy. 
 
 ## 3. Launch day
 
-Long commands: run them under nohup and tail the log, so a dropped session does not matter (every step is safe to re-run):
+Long commands: run them under nohup and tail the log, so a dropped session does not matter. Every step up to the App Store release (3.6) is safe to re-run. After it, only `delta`, `dry-run`, `copy`, `failures` and `status` are: see "After the release" below.
 
 ```
 fly ssh console -a editify-v11 -C "sh -c 'cd /app/server && nohup npx tsx scripts/cutover/cutover.ts copy --all > /data/cutover/copy.log 2>&1 &'"
@@ -157,7 +159,7 @@ fly ssh console -a editify-v11 -C "tail -f /data/cutover/copy.log"
    ... cutover.ts failures
    ```
 
-   Fix the cause (usually re-run: a transient copy failure retries), then `import --all` again. It retries only failed and not-yet-imported users. `--force` re-imports everyone from the same snapshot.
+   Fix the cause (usually re-run: a transient copy failure retries), then `import --all` again. It retries only failed and not-yet-imported users. `--force` re-imports everyone from the same snapshot. Both are for before the release only.
 
 4. Dry run. Per user: every table's rows (1.0 columns, paths rewritten) and every media file's sha256, 1.0 against 1.1, plus the Postgres sync rows. Exit 1 on any diff; `--json` for the detail, `--quick` trusts the copy's recorded hashes instead of re-reading every file.
 
@@ -190,6 +192,8 @@ fly ssh console -a editify-v11 -C "tail -f /data/cutover/copy.log"
 
    The plain restart, while still writable, lets the shutdown handler checkpoint the WAL into editify.db; a READ_ONLY=1 connection cannot. The agent's snapshots use the backup API, so they are complete either way, but the freeze should start from a checkpointed file. Each restart ends the agent's ssh session: start it again (section 1) once READ_ONLY=1 has applied.
 
+   Do steps 6 and 7 back to back. Between them both servers take writes: a 1.0 write after J is replayed by the delta over whatever a 1.1 user did to the same row since the release (1.0 wins), and a project a 1.1 user deleted comes back if 1.0 changed it in that window.
+
 8. Delta (C19): a fresh snapshot of the frozen database, a copy of any media that changed, then every journal entry after J replayed in one transaction (insert and update upsert the row, delete deletes it; cascaded deletes are journaled too). It refuses to run while any import failure is outstanding.
 
    ```
@@ -199,9 +203,15 @@ fly ssh console -a editify-v11 -C "tail -f /data/cutover/copy.log"
 
    The dry run must show 0 diffs. Run it immediately: once 1.1 users write, their changes are 1.1's and show up as diffs against frozen 1.0.
 
+   Exit 3 means some file did not verify and nothing was replayed: `failures` lists them (reasons start with `delta:`). Re-run `delta`; it clears its own failures, copies again and replays. Do not run `import --all` to clear them.
+
 9. Gate 1.0: set `/client-config` minVersion to 1.1.0 on editify-dm (T14, C16/C17). Then the C14 follow-ups (merge release/1.1 into main).
 
 `cutover.ts status` prints the current snapshot, J and how far the delta replayed.
+
+## After the release
+
+From step 6 on, 1.1 users write under the projects the import put there: chats, edits, renders and their files. An import rewrites an imported project's children from the 1.0 snapshot, so a re-import after the release (a new `snapshot` then `import --all`, or `--force`) deletes all of that, render files included. Once the delta has started the importer refuses every import; between steps 6 and 8 nothing stops it but this runbook, so do not run `snapshot` or `import` in that window. A gap the delta cannot close is forward recovery (below), not a re-import.
 
 ## Go / no-go and recovery
 
@@ -221,7 +231,7 @@ npx tsx scripts/cutover/cutover.ts import --all --source-dir /path/to/v10-data -
 npx tsx scripts/cutover/cutover.ts dry-run --all --source-dir /path/to/v10-data --source-root /data --dest-root /path/to/v11-data
 ```
 
-`--source-root` is where the 1.0 rows' absolute paths start (`/data` for a copy of the production volume), so the rewrite to the local 1.1 directory is exercised. Without DATABASE_URL (or with `--no-pg`) the Postgres copy is skipped. The test suite (`server/test/cutover.test.ts`, `cutover-pg.test.ts`) runs the same flow on a fixture, including the HTTP agent on a loopback port.
+`--source-root` is where the 1.0 rows' absolute paths start (`/data` for a copy of the production volume), so the rewrite to the local 1.1 directory is exercised. A copy taken while editify-dm still ran without the journal needs `import --all --without-journal`; the delta then refuses, as it should. Without DATABASE_URL (or with `--no-pg`) the Postgres copy is skipped. The test suite (`server/test/cutover.test.ts`, `cutover-pg.test.ts`) runs the same flow on a fixture, including the HTTP agent on a loopback port.
 
 The rehearsal on a production copy (plan Verification 4) needs production data: take a snapshot through the agent (section 1, then `snapshot` with `--dest-root` on a scratch volume) or a `fly volumes snapshots create` of editify_data restored to a scratch app, and run sections 3.1 to 3.4 and 3.8 against it, timing the read-only window.
 
