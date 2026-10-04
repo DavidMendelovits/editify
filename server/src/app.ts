@@ -38,12 +38,16 @@ import { StyleAnalyzerRegistry } from './style/registry.js';
 import { ReproService } from './services/repro-service.js';
 import { TelemetryService } from './services/telemetry-service.js';
 import { TranscriptService } from './services/transcript-service.js';
+import { mediaSlots } from './services/media-slots.js';
+import { readOnlyFromEnv, registerReadOnlyGate } from './read-only.js';
 
 export interface AppOptions {
   database?: EditifyDatabase;
   logger?: boolean;
   /** Tests sign their own JWTs: a Supabase URL for the issuer and a local key set. */
   auth?: Pick<AuthOptions, 'supabaseUrl' | 'jwks'>;
+  /** The cutover freeze (see `read-only.ts`). Default: READ_ONLY=1. */
+  readOnly?: boolean;
 }
 
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
@@ -54,7 +58,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body: string, done) => {
     try { done(null, body ? JSON.parse(body) : {}); } catch (error) { done(error as Error, undefined); }
   });
-  const database = options.database ?? createDatabase();
+  const readOnly = options.readOnly ?? readOnlyFromEnv();
+  const database = options.database ?? createDatabase(undefined, { readonly: readOnly });
+  if (readOnly && !database.readonly) throw new Error('READ_ONLY=1 needs the database opened read-only');
   const projects = new ProjectStore(database);
   const assets = new AssetStore(database);
   const renders = new RenderStore(database);
@@ -66,7 +72,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const insights = new InsightService(new InsightStore(database), transcripts, resolveProvider);
   const styles = new StyleService(database, assets, agent, new StyleAnalyzerRegistry(settings));
   const renderQueue = new RenderQueue(renders, projects, assets);
-  renderQueue.recover();
+  // Read-only: no recovery. Re-queueing a stranded render is itself a write,
+  // and the queue it would feed can never run. Drain before flipping instead.
+  if (!readOnly) renderQueue.recover();
   const dissections = new DissectService(database);
   const syncs = new SyncService(assets);
   const faces = new FaceService(database);
@@ -81,6 +89,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   // is unscoped (no userId) and sees every row. Ignored on Fly/production.
   const noAuth = process.env.EDITIFY_NO_AUTH === '1'
     && process.env.NODE_ENV !== 'production' && !process.env.FLY_APP_NAME;
+  if (readOnly) {
+    app.log.warn('READ_ONLY=1: SQLite is read-only and every write request answers 503');
+    registerReadOnlyGate(app);
+  }
   if (noAuth) app.log.warn('EDITIFY_NO_AUTH=1: serving all requests unauthenticated');
   else registerAuth(app, {
     sharedToken: process.env.EDITIFY_TOKEN,
@@ -108,10 +120,16 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   await app.register(multipart, { limits: { files: 1, fileSize: 2 * 1024 * 1024 * 1024 } });
   await registerWebClient(app);
 
-  app.get('/health', async () => ({ ok: true, provider: (await resolveProvider()).name }));
+  app.get('/health', async () => ({
+    ok: true,
+    provider: (await resolveProvider()).name,
+    readOnly,
+    // What `src/drain.ts` waits on before the operator sets READ_ONLY=1.
+    jobs: pendingJobs(renders, database),
+  }));
   app.get('/presets', async () => EDITING_PRESETS.map(({ name, description, targetContent }) => ({ name, description, targetContent })));
   // Built-in SFX/music, synthesized on first request and registered as assets.
-  app.get('/sounds', async () => await ensureSoundLibrary(assets));
+  app.get('/sounds', async () => await ensureSoundLibrary(assets, readOnly));
   registerLegalRoutes(app);
   registerAccountRoutes(app, database, styles);
   registerProjectRoutes(app, projects, renderQueue, assets, transcripts, syncs);
@@ -140,6 +158,24 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
   app.addHook('onClose', async () => { database.close(); });
   return app;
+}
+
+export interface PendingJobs {
+  /** Renders queued or encoding (rows, so a crashed process's strays count too). */
+  renders: number;
+  /** Imports whose proxy and thumbnail are still being made. */
+  imports: number;
+  /** Media jobs holding or waiting for a slot: encodes, renders, whisper runs. */
+  media: number;
+}
+
+export function pendingJobs(renders: RenderStore, database: EditifyDatabase): PendingJobs {
+  const imports = database.prepare("SELECT COUNT(*) AS count FROM assets WHERE status = 'processing'").get() as { count: number };
+  return {
+    renders: renders.unfinished().length,
+    imports: imports.count,
+    media: mediaSlots.active().length + mediaSlots.queued().length,
+  };
 }
 
 /**

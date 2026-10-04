@@ -38,6 +38,8 @@ export class WaveformService {
     const pending = this.inFlight.get(asset.id) ?? this.analyzer(asset.originalPath)
       .then((energy) => {
         const parsed = energyAnalysisSchema.parse(energy);
+        // Read-only (the cutover freeze): serve it, store nothing.
+        if (this.database.readonly) return parsed;
         this.database.prepare(`
           INSERT INTO waveforms (asset_id, waveform_json, created_at) VALUES (?, ?, ?)
           ON CONFLICT(asset_id) DO UPDATE SET waveform_json = excluded.waveform_json, created_at = excluded.created_at

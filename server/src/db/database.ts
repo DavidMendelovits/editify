@@ -2,15 +2,34 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { databasePath } from '../config.js';
+import { readOnlyFromEnv } from '../read-only.js';
+import { configureMutationJournal, journalEnabledFromEnv } from './mutation-journal.js';
 
 export type EditifyDatabase = Database.Database;
 
-export function createDatabase(path = databasePath): EditifyDatabase {
+export interface DatabaseOptions {
+  /** Open with SQLite's read-only flag: no migration, no journal setup, and any write throws SQLITE_READONLY. Default: READ_ONLY=1. */
+  readonly?: boolean;
+  /** Install the mutations journal triggers. Default: MUTATION_JOURNAL=1. */
+  journal?: boolean;
+}
+
+export function createDatabase(path = databasePath, options: DatabaseOptions = {}): EditifyDatabase {
+  const readonly = options.readonly ?? readOnlyFromEnv();
+  if (readonly) {
+    // The read-only flag, not a convention: a writer this mode missed fails
+    // loudly instead of quietly diverging from the copy 1.1 imported.
+    if (path === ':memory:') throw new Error('A read-only database needs a file to read');
+    const database = new Database(path, { readonly: true, fileMustExist: true });
+    database.pragma('foreign_keys = ON');
+    return database;
+  }
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const database = new Database(path);
   database.pragma('foreign_keys = ON');
   if (path !== ':memory:') database.pragma('journal_mode = WAL');
   migrate(database);
+  configureMutationJournal(database, options.journal ?? journalEnabledFromEnv());
   return database;
 }
 
