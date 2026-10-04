@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ADAPTER_FLAGS, ADAPTER_RUNS, ADAPTER_SOURCES, type AdapterReport } from './helpers/engine-adapters.js';
 
 /*
  * Plan P5 (D1, OV10): the phone's native preview. The macOS harness
@@ -42,6 +43,7 @@ interface Stats { count: number; p50: number; p95: number; max: number }
 interface Compare { meanAbs?: Vec; blurredMax?: number; missingGolden?: boolean; sizeMismatch?: boolean }
 interface Continuity { callbacks: number; seconds: number; maxWallGapMs: number; sourceJumps: number; largestSourceJumpMs: number; sampleRate: number }
 interface Report {
+  adapters: AdapterReport;
   goldens: Array<{ name: string; mode: string; errors: string[]; frames: Array<{ k: number; golden: string; seekMs: number; compare: Compare }> }>;
   seekToFrameMs: Stats;
   paramUpdate: {
@@ -113,6 +115,8 @@ interface Report {
 }
 
 let dir: string | undefined;
+/** Each adapter set's run (D24); the describe below runs once per set with `report` pointing at its run. */
+const reports = {} as Record<AdapterReport['set'], Report>;
 let report: Report;
 // Async: the build and the playback take a while on a CI runner (see render-golden.test.ts).
 const run = promisify(execFile);
@@ -123,33 +127,38 @@ beforeAll(async () => {
   const binary = join(dir, 'preview-harness');
   // As render-golden.test.ts, plus the player and its preview files.
   const sources = ['Core/RenderPlan', 'Engine/PlanBuilder', 'Engine/EditifyCompositor', 'Core/CaptionRenderer', 'Core/OverlayGraphics', 'Core/AnalysisMath',
-    'Engine/PlanPlayer', 'Core/PreviewFiles', 'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/Adapters/ConfigurationVideoComposition']
+    'Engine/PlanPlayer', 'Core/PreviewFiles', ...ADAPTER_SOURCES]
     .map((name) => join(engine, 'ios', `${name}.swift`));
   const harness = ['render-golden/HarnessMedia.swift', 'preview/MediaServer.swift', 'preview/main.swift'].map((name) => join(engine, 'parity', name));
-  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
-  const args = [join(engine, 'parity/goldens/manifest.json'), root, join(dir, 'work'), join(dir, 'out')];
-  // The harness bounds itself (a watchdog exits with the stuck step within 300 s and prints a
-  // line per step to stderr); this timeout is the backstop under the 600 s hook.
-  try {
-    report = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, timeout: 420_000, killSignal: 'SIGKILL' })).stdout) as Report;
-  } catch (error) {
-    const stderr = (error as { stderr?: string }).stderr ?? '';
-    throw new Error(`preview harness failed:\n${stderr.split('\n').slice(-25).join('\n')}\n${String(error)}`);
+  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...ADAPTER_FLAGS, ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
+  // One set after the other: the runs measure playback timing.
+  for (const { set, env } of ADAPTER_RUNS) {
+    const args = [join(engine, 'parity/goldens/manifest.json'), root, join(dir, `work-${set}`), join(dir, `out-${set}`)];
+    // The harness bounds itself (a watchdog exits with the stuck step within 300 s and prints a
+    // line per step to stderr); this timeout is the backstop.
+    let current: Report;
+    try {
+      current = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, timeout: 420_000, killSignal: 'SIGKILL', env })).stdout) as Report;
+    } catch (error) {
+      const stderr = (error as { stderr?: string }).stderr ?? '';
+      throw new Error(`preview harness (${set} adapters) failed:\n${stderr.split('\n').slice(-25).join('\n')}\n${String(error)}`);
+    }
+    reports[set] = current;
+    console.info(`native preview steps (${set}):`, current.steps.map((step) => `${step.step} ${step.ms} ms`).join(', '), `| audio device: ${current.audioDevice}`);
+    // The numbers a phone run is compared against (P7).
+    console.info(`native preview on this Mac (${set}):`, JSON.stringify({
+      seekToFrameMs: current.seekToFrameMs,
+      updateLatencyMs: current.drag60.latencyMs,
+      decodeMs: current.drag60.decodeMs,
+      frameIntervalMs: current.drag60.frameIntervalMs,
+      pausedRefreshIntervalMs: current.pausedDrag60.refreshIntervalMs,
+      structuralResumeMs: current.structural.playing.movingMs,
+      audioSwapJumpMs: current.audioSwap.audio.largestSourceJumpMs,
+      audioSwapLandedMs: current.audioSwap.swapLandedMs,
+      tapCallbacks: current.drag60.audio.callbacks,
+    }));
   }
-  console.info('native preview steps:', report.steps.map((step) => `${step.step} ${step.ms} ms`).join(', '), `| audio device: ${report.audioDevice}`);
-  // The numbers a phone run is compared against (P7).
-  console.info('native preview on this Mac:', JSON.stringify({
-    seekToFrameMs: report.seekToFrameMs,
-    updateLatencyMs: report.drag60.latencyMs,
-    decodeMs: report.drag60.decodeMs,
-    frameIntervalMs: report.drag60.frameIntervalMs,
-    pausedRefreshIntervalMs: report.pausedDrag60.refreshIntervalMs,
-    structuralResumeMs: report.structural.playing.movingMs,
-    audioSwapJumpMs: report.audioSwap.audio.largestSourceJumpMs,
-    audioSwapLandedMs: report.audioSwap.swapLandedMs,
-    tapCallbacks: report.drag60.audio.callbacks,
-  }));
-}, 600000);
+}, 1200000);
 
 afterAll(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
@@ -161,7 +170,15 @@ describe('native preview: harness availability', () => {
   });
 });
 
-describe.skipIf(!swiftAvailable)('native preview (PlanPlayer on macOS)', () => {
+(swiftAvailable ? describe : describe.skip).each(ADAPTER_RUNS)('native preview (PlanPlayer on macOS, $set adapters)', ({ set, expected }) => {
+  beforeAll(() => {
+    report = reports[set];
+  });
+
+  it('built the adapters it was asked for (D24)', () => {
+    expect(report.adapters).toEqual(expected);
+  });
+
   it('shows the golden frames at exact seeks', () => {
     const frames = report.goldens.flatMap((render) => render.frames.map((frame) => ({ name: render.name, frame })));
     expect(frames.length).toBeGreaterThanOrEqual(13);

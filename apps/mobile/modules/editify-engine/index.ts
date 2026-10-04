@@ -20,6 +20,10 @@ export interface NativePartResult<T = unknown> {
   analyzerVersion: string;
   data?: T;
   error?: string;
+  /** A machine-readable reason: `speechRecognitionOff` (D21: show a Settings link), `speechRecognitionNotAsked` (ask again). */
+  code?: string;
+  /** Words only: the Transcriber chain's re-run trigger when it ran (C25). */
+  trigger?: string;
 }
 
 export interface NativeTranscript {
@@ -111,7 +115,7 @@ export type ProgressEvent =
  * counts changes per asset, so a `getAnalysis` snapshot older than an applied event can be dropped.
  */
 export type AnalysisStatusEvent =
-  | { assetId: string; part: NativeAnalysisPart; revision?: number; status: AnalysisPartStatus; analyzerVersion: string; error?: string; removed?: undefined }
+  | { assetId: string; part: NativeAnalysisPart; revision?: number; status: AnalysisPartStatus; analyzerVersion: string; error?: string; code?: string; trigger?: string; removed?: undefined }
   | { assetId: string; part: NativeAnalysisPart; revision?: number; removed: true };
 export interface AnalysisStateEvent { playbackActive: boolean; exportActive: boolean; thermal: string; heavyPaused: boolean }
 
@@ -172,6 +176,23 @@ export interface ExportProjectOptions {
   /** Encoder knobs only: the plan's size, colour and loudness always win. */
   videoBitrate?: number;
   keyframeInterval?: number;
+}
+
+/**
+ * What the composition root picked for this process (decision D5), read once at startup.
+ * `adapterSet`: modern (iOS 26 adapters) or legacy (iOS 18). `backgroundExport`: the
+ * BackgroundExecution adapter (`foreground` means every export runs with Editify open).
+ * `composition`: the VideoComposition adapter. `tier` is reserved for the RAM tier (T7).
+ */
+export interface EngineCapabilities {
+  /** "18.0.0" */
+  os: string;
+  adapterSet: 'modern' | 'legacy';
+  transcriber: string;
+  backgroundExport: 'continued-processing' | 'foreground';
+  backgroundGPU: boolean;
+  composition: 'configuration' | 'mutable';
+  tier: null;
 }
 
 interface EditifyEngineNative {
@@ -251,8 +272,13 @@ interface EditifyEngineNative {
   exportProject(planJson: string, options: ExportProjectOptions): Promise<string>;
   /** Cancels a queued or running export; its temp file is removed. Unknown ids are ignored. */
   cancelExport(id: string): void;
-  /** Whether this phone can keep exporting in the background (BGContinuedProcessingTask with GPU). */
-  exportCapabilities(): { backgroundGPU: boolean };
+  /**
+   * Whether this phone can keep exporting in the background (BGContinuedProcessingTask with GPU).
+   * Binaries with the composition root (release/1.1) answer the whole EngineCapabilities object.
+   */
+  exportCapabilities(): { backgroundGPU: boolean } & Partial<EngineCapabilities>;
+  /** The adapters this process runs (decision D5). Absent in binaries before release/1.1's composition root. */
+  capabilities?: () => EngineCapabilities;
   /** The App Store receipt's kind ('sandbox' on TestFlight). Absent in binaries built before the 1.1 test-server banner. */
   appStoreReceipt?: () => 'sandbox' | 'production' | 'none';
 

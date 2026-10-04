@@ -8,8 +8,7 @@ struct WriterVideoExport: VideoExport {
 
   func export(_ plan: RenderPlan, resolver: PlanAssetResolver, to output: URL, options: PlanExportOptions, control: PlanExportControl,
               extraCopies: Int, progress: @escaping @Sendable (PlanExportPhase, Double) -> Void) async throws -> PlanExportStats {
-    var build = PlanBuildOptions()
-    build.videoComposition = composition
+    let build = PlanBuildOptions(videoComposition: composition)
     return try await PlanExporter.export(plan, resolver: resolver, to: output, options: options, build: build, control: control,
                                          extraCopies: extraCopies, progress: progress)
   }

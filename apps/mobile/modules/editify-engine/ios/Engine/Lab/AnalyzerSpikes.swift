@@ -54,7 +54,7 @@ struct AnalyzerSpike: Spike {
       if all || variant == "words" {
         // Not ready (model missing, offline) is a result, recorded as wordsReady = false.
         await stage("words") {
-          let result = await Analyzers.words(speech, progress: report)
+          let result = await EngineAdapters.current.transcriber.words(speech, locale: .current, allowModelDownload: true, progress: report, gate: nil)
           metrics["wordsReady"] = result.status == "ready"
           metrics["wordCount"] = ((result.data?["words"] as? [Any])?.count ?? 0)
           metrics["segmentCount"] = ((result.data?["segments"] as? [Any])?.count ?? 0)

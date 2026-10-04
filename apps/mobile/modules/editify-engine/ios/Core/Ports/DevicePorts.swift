@@ -41,4 +41,7 @@ public protocol DeviceProfile: PortAdapter {
   var osVersion: String { get }
   /// Hardware identifier, e.g. "iPhone14,2".
   var model: String { get }
+  /// Calls `handler` on every thermal state change; the observation lasts as long as the
+  /// returned token is held.
+  func observeThermalState(_ handler: @escaping @Sendable () -> Void) -> AnyObject
 }

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { planFrameCount, renderPlanSchema } from '@editify/shared';
 import { buildRotatedPlan, PORTRAIT_CLIP, ROTATED_PLAN_FILE } from './helpers/rotated-plan.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ADAPTER_FLAGS, ADAPTER_RUNS, ADAPTER_SOURCES, type AdapterReport } from './helpers/engine-adapters.js';
 
 /*
  * Plan P4 (8A + OV8): the phone's on-device export. The macOS harness
@@ -107,6 +108,7 @@ interface ExportReport {
   file?: FileReport;
 }
 interface Report {
+  adapters: AdapterReport;
   meter: Record<string, { file: string; integrated: Nullable; truePeak: Nullable; samplePeak: Nullable }>;
   rules: Record<string, number | boolean>;
   exports: ExportReport[];
@@ -122,6 +124,8 @@ interface Report {
 }
 
 let dir: string | undefined;
+/** Each adapter set's run (D24); the describe below runs once per set with `report` pointing at its run. */
+const reports = {} as Record<AdapterReport['set'], Report>;
 let report: Report;
 const run = promisify(execFile);
 
@@ -131,14 +135,17 @@ beforeAll(async () => {
   const binary = join(dir, 'export-harness');
   // As render-golden.test.ts, plus the exporter and its Core types.
   const sources = ['Core/RenderPlan', 'Engine/PlanBuilder', 'Engine/EditifyCompositor', 'Core/CaptionRenderer', 'Core/OverlayGraphics', 'Core/AnalysisMath',
-    'Core/Loudness', 'Engine/PlanExporter', 'Core/PlanExport', 'Core/EditifyCore', 'Core/Ports/VideoComposition', 'Engine/Adapters/ConfigurationVideoComposition']
+    'Core/Loudness', 'Engine/PlanExporter', 'Core/PlanExport', ...ADAPTER_SOURCES]
     .map((name) => join(engine, 'ios', `${name}.swift`));
   const harness = [join(engine, 'parity/render-golden/HarnessMedia.swift'), join(engine, 'parity/export/main.swift')];
   // Async: the build and the exports take a while on a CI runner (see render-golden.test.ts).
-  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
-  const args = [join(engine, 'parity/goldens/manifest.json'), join(engine, 'parity/export/manifest.json'), root, join(dir, 'work'), join(dir, 'out')];
-  report = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20 })).stdout) as Report;
-}, 600000);
+  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...ADAPTER_FLAGS, ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
+  // One set after the other: the exports measure memory and time.
+  for (const { set, env } of ADAPTER_RUNS) {
+    const args = [join(engine, 'parity/goldens/manifest.json'), join(engine, 'parity/export/manifest.json'), root, join(dir, `work-${set}`), join(dir, `out-${set}`)];
+    reports[set] = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, env })).stdout) as Report;
+  }
+}, 900000);
 
 afterAll(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
@@ -178,7 +185,15 @@ describe('device export: harness availability', () => {
   });
 });
 
-describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => {
+(swiftAvailable ? describe : describe.skip).each(ADAPTER_RUNS)('device export (PlanExporter on macOS, $set adapters)', ({ set, expected }) => {
+  beforeAll(() => {
+    report = reports[set];
+  });
+
+  it('built the adapters it was asked for (D24)', () => {
+    expect(report.adapters).toEqual(expected);
+  });
+
   it('writes every plan: exact frames and duration, A/V lengths matched, moov first, no fragments', () => {
     expect(report.exports.length).toBeGreaterThanOrEqual(15);
     for (const item of report.exports) {
@@ -343,12 +358,12 @@ describe.skipIf(!swiftAvailable)('device export (PlanExporter on macOS)', () => 
 
   it.runIf(ffmpegAvailable)('holds the finished files to ffmpeg too', async () => {
     for (const name of ['audio-duck-loudness', 'loud-quiet', 'loud-hot', 'loud-dense']) {
-      const measured = await ffmpegLoudness(join(dir!, 'out', `${name}.mp4`));
+      const measured = await ffmpegLoudness(join(dir!, `out-${set}`, `${name}.mp4`));
       expect(Math.abs(measured.integrated! - LOUDNESS.targetLufs), `${name} ffmpeg I ${measured.integrated}`).toBeLessThanOrEqual(0.5);
       expect(measured.truePeak!, `${name} ffmpeg true peak`).toBeLessThanOrEqual(LOUDNESS.truePeakLimitDb);
     }
     // The hot dense mix: limited hard, the decoded AAC still reads under the limit by ffmpeg's 4x meter.
-    const hot = await ffmpegLoudness(join(dir!, 'out', 'loud-dense-hot.mp4'));
+    const hot = await ffmpegLoudness(join(dir!, `out-${set}`, 'loud-dense-hot.mp4'));
     expect(hot.truePeak!, `loud-dense-hot ffmpeg true peak ${hot.truePeak}`).toBeLessThanOrEqual(LOUDNESS.truePeakLimitDb);
   });
 

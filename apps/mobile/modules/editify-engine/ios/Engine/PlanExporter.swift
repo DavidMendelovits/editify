@@ -93,7 +93,7 @@ enum PlanExporter {
     resolver: PlanAssetResolver,
     to output: URL,
     options: PlanExportOptions = PlanExportOptions(),
-    build: PlanBuildOptions = PlanBuildOptions(),
+    build: PlanBuildOptions,
     control: PlanExportControl = PlanExportControl(),
     extraCopies: Int = 0,
     available: (URL) -> Int64? = PlanExporter.availableBytes(at:),

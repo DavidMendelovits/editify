@@ -22,7 +22,9 @@ struct LayerCrop {
 ///     callout card overlay for the whole plan (the cost stand-in for a bitmap sticker)
 ///
 /// Times are whole frames (segment edges sit on the 1/fps grid), so a 0.25 s fade at
-/// 30 fps is 8 frames. No audio entries: every spike that uses it is muted.
+/// 30 fps is 8 frames. When the source has sound, every even clip carries its audio (an
+/// audio entry over the clip's source range), as the old CompositionBuilder's composition
+/// did: the spikes play muted, but the decode load of S1/S2/S3 matches the lab plan's.
 struct LabTimeline {
   var clips = 2
   var clipSeconds = 5.0
@@ -37,7 +39,7 @@ struct LabTimeline {
   static let sourceId = "lab-source"
 
   /// The fixture as a decoded, validated RenderPlan.
-  func plan(sourceSeconds: Double, color: RenderPlan.OutputColor = .sdr, revision: Int = 1) throws -> RenderPlan {
+  func plan(sourceSeconds: Double, color: RenderPlan.OutputColor = .sdr, revision: Int = 1, hasAudio: Bool = false) throws -> RenderPlan {
     let fps = frameRate
     let clip = max(1, Int((clipSeconds * Double(fps)).rounded()))
     let fade = max(0, Int((crossfadeSeconds * Double(fps)).rounded()))
@@ -84,6 +86,22 @@ struct LabTimeline {
     }
     let total = (clips - 1) * step + clip
 
+    // Even clips carry the source's sound over their whole range (CompositionBuilder's audio track).
+    var audio: [[String: Any]] = []
+    if hasAudio {
+      for index in stride(from: 0, to: clips, by: 2) {
+        let from = sourceStart(index)
+        let length = min(seconds(clip), max(0, sourceSeconds - from))
+        guard length > 0 else { continue }
+        audio.append([
+          "id": "lab-audio-\(index)", "clipId": "c\(index)", "assetRef": ["id": Self.sourceId, "kind": "video"],
+          "at": seconds(index * step), "in": from, "out": from + length, "speed": 1,
+          "gainKeys": [["t": 0, "gain": 1]],
+          "fadeIn": ["duration": 0.008, "curve": "halfSine"], "fadeOut": ["duration": 0.008, "curve": "halfSine"],
+        ])
+      }
+    }
+
     var overlays: [[String: Any]] = []
     if overlay {
       let side = (Double(width) * 0.3).rounded()
@@ -105,7 +123,7 @@ struct LabTimeline {
       "size": ["w": width, "h": height], "fps": fps, "duration": seconds(total),
       "color": color.rawValue, "background": "#000000",
       "loudness": ["deadbandLu": 1, "silentBelowLufs": -70, "limiterCeilingDb": -1, "truePeakLimitDb": -1],
-      "video": ["segments": segments], "overlays": overlays, "captions": [], "audio": [],
+      "video": ["segments": segments], "overlays": overlays, "captions": [], "audio": audio,
     ]
     return try RenderPlan.decode(JSONSerialization.data(withJSONObject: json))
   }
@@ -114,16 +132,18 @@ struct LabTimeline {
   func build(asset: AVAsset, revision: Int = 1) async throws -> BuiltPlan {
     guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw SpikeError(message: "asset has no video track") }
     let duration = try await asset.load(.duration).seconds
-    let plan = try plan(sourceSeconds: duration, color: try await Self.color(of: track), revision: revision)
-    return try await PlanBuilder.build(plan, resolver: Self.resolver(asset))
+    let hasAudio = try await !asset.loadTracks(withMediaType: .audio).isEmpty
+    let plan = try plan(sourceSeconds: duration, color: try await Self.color(of: track), revision: revision, hasAudio: hasAudio)
+    return try await PlanBuilder.build(plan, resolver: Self.resolver(asset), options: PlanBuildOptions(videoComposition: EngineAdapters.current.videoComposition))
   }
 
   /// A parameter-only edit (crop keys, opacity): the same composition with a new video
   /// composition, as PlanPlayer applies one. nil when the edit changed the structure.
   func update(_ built: BuiltPlan, revision: Int) async throws -> BuiltPlan? {
     guard let asset = built.media.videos[Self.sourceId]?.asset else { return nil }
-    let plan = try plan(sourceSeconds: try await asset.load(.duration).seconds, color: built.plan.color, revision: revision)
-    return try PlanBuilder.update(built, to: plan, options: PlanBuildOptions())
+    let hasAudio = try await !asset.loadTracks(withMediaType: .audio).isEmpty
+    let plan = try plan(sourceSeconds: try await asset.load(.duration).seconds, color: built.plan.color, revision: revision, hasAudio: hasAudio)
+    return try PlanBuilder.update(built, to: plan, options: PlanBuildOptions(videoComposition: EngineAdapters.current.videoComposition))
   }
 
   static func resolver(_ asset: AVAsset) -> PlanAssetResolver {

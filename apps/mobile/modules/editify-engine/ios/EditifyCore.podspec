@@ -6,8 +6,8 @@ Pod::Spec.new do |s|
   s.license        = 'UNLICENSED'
   s.author         = 'Editify'
   s.homepage       = 'https://editify.app'
-  # Decision 2A: iOS 26 floor for now; release/1.1 lowers it to 18 with the iOS 18 adapters (T6).
-  s.platforms      = { :ios => '26.0' }
+  # release/1.1 runs on iOS 18 and up (the iOS 26 APIs sit behind #available in Engine adapters).
+  s.platforms      = { :ios => '18.0' }
   s.swift_version  = '5.9'
   s.source         = { git: '' }
   s.static_framework = true

@@ -36,10 +36,17 @@ import UniformTypeIdentifiers
 ///   2. Regenerate the ad hoc and App Store provisioning profiles (eas credentials, or the
 ///      portal), so both carry the capability.
 ///   3. Add `"entitlements": {"com.apple.developer.background-tasks.continued-processing.gpu": true}`
-///      under expo.ios in apps/mobile/app.json.
+///      under expo.ios in apps/mobile/app.json, and `"EditifyBackgroundGPU": true` under
+///      expo.ios.infoPlist (iOS has no API to read an entitlement back, so this marker is how
+///      AdapterSelection knows to pick ContinuedProcessingExecution).
 ///   4. Prove it with a manual `eas build --profile preview` before merging, since a main
 ///      merge starts a preview build; then check a background export on a phone that
 ///      reports .gpu.
+///
+/// Admission (which branch above) is ExportAdmission in Core, against the BackgroundExecution
+/// port. The legacy (iOS 18) set and any build without the entitlement get ForegroundExecution,
+/// so they always take the foreground branch; the modern set gets ContinuedProcessingExecution
+/// only when Info.plist says the entitlement is there (step 3 below).
 ///
 /// Ports: the background task goes through BackgroundExecution, the render through
 /// VideoExport, the save through PhotoLibrary, media through MediaSource (EngineAdapters).
@@ -129,9 +136,9 @@ final class ExportCenter: @unchecked Sendable {
 
   // MARK: Boundary
 
-  /// What JS can know before it asks: background GPU support on this phone.
+  /// What JS can know before it asks (EngineAdapters.capabilities: the adapters, background GPU support).
   static func capabilities() -> [String: Any] {
-    ["backgroundGPU": EngineAdapters.current.backgroundExecution.supportsBackgroundGPU]
+    EngineAdapters.current.capabilities()
   }
 
   /// Validates everything JS sent, then starts. Throws (rejecting the JS promise) for bad
@@ -220,35 +227,31 @@ final class ExportCenter: @unchecked Sendable {
   private func admit(_ job: Job) {
     let bundle = Bundle.main.bundleIdentifier ?? "com.editify.app"
     let identifier = "\(bundle).export.\(job.id)"
-    let background = adapters.backgroundExecution
-    guard background.supportsBackgroundGPU else {
-      return runInForeground(job, notice: "Keep Editify open until the export finishes.")
-    }
     // Each identifier is registered once (iOS kills an app that registers one twice); export
     // ids are unique per run, so this only guards against a repeated admit.
-    let fresh = lock.withLock { registered.insert(identifier).inserted }
-    let didRegister = fresh && background.register(identifier) { [weak self] task in
-      guard let self else {
-        task.setTaskCompleted(success: false)
-        return
-      }
-      self.launched(job, task: task)
-    }
-    guard didRegister else {
-      return runInForeground(job, notice: "Keep Editify open until the export finishes.")
-    }
-    // Set before submitting: the launch handler can run before submit returns.
-    job.lock.withLock {
-      job.taskIdentifier = identifier
-      job.mode = "background"
-      job.queuedAt = Date()
-    }
-    do {
-      try background.submit(identifier, title: "Exporting video", subtitle: "Starting")
-    } catch {
-      // Includes "not permitted" while the GPU entitlement is off (see the type's comment).
-      job.lock.withLock { job.taskIdentifier = nil; job.mode = "foreground"; job.queuedAt = nil }
-      return runInForeground(job, notice: "Keep Editify open until the export finishes.")
+    let fresh = adapters.backgroundExecution.supportsBackgroundGPU && lock.withLock { registered.insert(identifier).inserted }
+    let admission = ExportAdmission.decide(
+      adapters.backgroundExecution, identifier: identifier, fresh: fresh,
+      launched: { [weak self] task in
+        guard let self else {
+          task.setTaskCompleted(success: false)
+          return
+        }
+        self.launched(job, task: task)
+      },
+      prepare: {
+        job.lock.withLock {
+          job.taskIdentifier = identifier
+          job.mode = "background"
+          job.queuedAt = Date()
+        }
+      },
+      revert: {
+        job.lock.withLock { job.taskIdentifier = nil; job.mode = "foreground"; job.queuedAt = nil }
+      })
+    guard case .background = admission else {
+      if case .foreground(let notice) = admission { runInForeground(job, notice: notice) }
+      return
     }
     // Back in front after a while away: the 10 s timer may have found the app inactive.
     job.observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
@@ -476,7 +479,7 @@ final class ExportCenter: @unchecked Sendable {
       guard let url = containedFileURL(ref) else { throw AssetSource.NotFound(ref: id) }
       return url
     }
-    let (data, type) = try await AssetSource.originalImageData(ref)
+    let (data, type) = try await EngineAdapters.current.mediaSource.originalImageData(ref)
     let ext = type.flatMap { UTType($0)?.preferredFilenameExtension } ?? "img"
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)still-\(UUID().uuidString).\(ext)")
     try data.write(to: url)

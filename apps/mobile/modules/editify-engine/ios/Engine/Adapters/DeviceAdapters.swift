@@ -3,7 +3,10 @@ import BackgroundTasks
 import Photos
 
 /// BackgroundExecution adapter: BGContinuedProcessingTask with the GPU resource (iOS 26).
-/// Every refusal sends the export to the foreground (ExportCenter's admission).
+/// EngineAdapters picks it only when the entitlement is present (AdapterSelection); the GPU
+/// resource is checked per export. Every refusal sends the export to the foreground
+/// (ExportAdmission).
+@available(iOS 26.0, *)
 struct ContinuedProcessingExecution: BackgroundExecution {
   var name: String { "continued-processing" }
 
@@ -32,6 +35,7 @@ struct ContinuedProcessingExecution: BackgroundExecution {
 }
 
 /// A running BGContinuedProcessingTask behind the BackgroundTask port.
+@available(iOS 26.0, *)
 final class ContinuedProcessingTask: BackgroundTask, @unchecked Sendable {
   private let task: BGContinuedProcessingTask
 
@@ -80,4 +84,8 @@ struct SystemDeviceProfile: DeviceProfile {
   var physicalMemoryBytes: UInt64 { ProcessInfo.processInfo.physicalMemory }
   var osVersion: String { ProcessInfo.processInfo.operatingSystemVersionString }
   var model: String { Sampler.deviceModel() }
+
+  func observeThermalState(_ handler: @escaping @Sendable () -> Void) -> AnyObject {
+    NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { _ in handler() }
+  }
 }

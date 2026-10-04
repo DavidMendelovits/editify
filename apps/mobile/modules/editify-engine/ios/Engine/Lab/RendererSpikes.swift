@@ -67,7 +67,10 @@ struct WriterSpike: Spike {
     // However the run ends (a throw, a cancel), timing is off again afterwards.
     defer { _ = CompositorTiming.end() }
     let throttle = LabProgressThrottle()
-    let stats = try await PlanExporter.export(plan, resolver: LabPlan.resolver(media), to: output, progress: { phase, value in
+    // Through the VideoExport port, as ExportCenter renders.
+    let stats = try await EngineAdapters.current.videoExport.export(
+      plan, resolver: LabPlan.resolver(media), to: output, options: PlanExportOptions(), control: PlanExportControl(), extraCopies: 0,
+      progress: { phase, value in
       guard throttle.shouldSend(state: phase.rawValue, progress: value) else { return }
       // resolving 0-2%, measuring 2-10%, writing 10-100%.
       switch phase {
@@ -243,7 +246,7 @@ struct PlanPreviewSpike: Spike {
   /// The export path's frame `frame`: a fresh PlanBuilder build at render scale 1, read by an
   /// AVAssetReaderVideoCompositionOutput in the pixel format PlanExporter asks for.
   static func exportFrame(_ plan: RenderPlan, media: [String: String], frame: Int) async throws -> CVPixelBuffer {
-    let built = try await PlanBuilder.build(plan, resolver: LabPlan.resolver(media))
+    let built = try await PlanBuilder.build(plan, resolver: LabPlan.resolver(media), options: PlanBuildOptions(videoComposition: EngineAdapters.current.videoComposition))
     let reader = try AVAssetReader(asset: built.composition)
     let start = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(plan.fps))
     reader.timeRange = CMTimeRange(start: start, duration: CMTime(value: 1, timescale: CMTimeScale(plan.fps)))
@@ -317,7 +320,7 @@ final class PlayerRig {
 
   init(media: [String: String]) {
     self.media = media
-    player = PlanPlayer(resolver: { refs in LabPlan.resolver(refs) })
+    player = EngineAdapters.current.playback.makePlayer(resolver: { refs in LabPlan.resolver(refs) })
     player.setMuted(true)
     // No view: 1080 x 1920 is what the preview renders at most.
     player.viewPixels = CGSize(width: PlanPlayer.maxShortSide, height: PlanPlayer.maxLongSide)

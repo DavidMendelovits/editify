@@ -595,3 +595,15 @@ func compare(_ a: (width: Int, height: Int, rgb: [Float]), _ b: (width: Int, hei
 }
 
 func luma(_ p: [Float]) -> Float { 0.2627 * p[0] + 0.678 * p[1] + 0.0593 * p[2] }
+
+/// The adapters this harness run built with (D24): the set AdapterSelection chose (EDITIFY_ADAPTERS
+/// is read only when the harness is compiled with -D EDITIFY_TEST_ADAPTERS) and the
+/// VideoComposition adapter PlanBuilder and PlanPlayer default to. The tests assert on the names.
+func adapterReport() -> [String: Any] {
+  ["set": AdapterSelection.current.set.rawValue, "videoComposition": harnessComposition.name,
+   "overrideCompiled": AdapterSelection.overrideCompiled]
+}
+
+/// The VideoComposition adapter every build in this harness uses: AdapterSelection's choice for
+/// this process, as EngineAdapters makes it on a phone.
+let harnessComposition = PlanVideoCompositions.make(AdapterSelection.current.videoComposition)
