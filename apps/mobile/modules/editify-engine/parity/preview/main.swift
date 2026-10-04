@@ -298,6 +298,8 @@ final class Rig {
   var ends = 0
   var errors: [String] = []
   var expired: [String] = []
+  /// The player's reconnect count at each `.mediaExpired` (it can go on reconnecting after).
+  var reconnectsAtExpired: [Int] = []
   var readies = 0
   let tap = TapLog()
 
@@ -323,7 +325,9 @@ final class Rig {
       case .buffering(let on): if on { self.stalls += 1 }
       case .ended: self.ends += 1
       case .error(let message): self.errors.append(message)
-      case .mediaExpired(let message): self.expired.append(message)
+      case .mediaExpired(let message):
+        self.expired.append(message)
+        self.reconnectsAtExpired.append(self.player.reconnectCount)
       case .ready: self.readies += 1
       }
     }
@@ -435,6 +439,10 @@ func serverCode(_ rig: Rig, at k: Int) async throws -> Int {
       Watchdog.log("no frame at \(k) yet; seeking again (time \(rig.player.currentTime), status \(item?.status.rawValue ?? -1), "
         + "keepUp \(item?.isPlaybackLikelyToKeepUp ?? false), rate \(rig.player.player.rate), landed \(rig.seeksLanded), "
         + "output \(rig.output != nil), errors \(rig.errors.count), expired \(rig.expired.count))")
+      // A seek to the frame already shown need not vend a new buffer: step off it first.
+      let landed = rig.seeksLanded
+      rig.player.seek(to: Double(max(0, k - 3)) / 30, exact: true)
+      _ = await rig.until(5) { rig.seeksLanded > landed }
     }
     try? await Task.sleep(nanoseconds: 300_000_000)
   } while CFAbsoluteTimeGetCurrent() < deadline
@@ -1110,7 +1118,9 @@ func run() async throws -> [String: Any] {
       try? await Task.sleep(nanoseconds: UInt64((PlanPlayer.verifyDelay * 3 + 0.8) * 1e9))
       let reseeks = rig.seeksLanded - landed - 1
       let time = rig.player.currentTime
-      // And the player still draws the right frame there (a fresh exact seek, after the count).
+      // And the player still draws the right frame there: away and back (a seek to the frame
+      // already shown need not vend a new buffer), after the count.
+      _ = try await rig.frame(at: k - 5, fps: 30)
       let shown = decodeCode(pixels(try await rig.frame(at: k, fps: 30).buffer, space: workingSpace))
       return ["reseeks": reseeks, "time": time, "shown": shown]
     }
@@ -1278,12 +1288,14 @@ func run() async throws -> [String: Any] {
     _ = try await down.frame(at: 0, fps: 30)
     down.player.play()
     try await down.expect("playing before the outage") { down.player.player.rate > 0 && down.player.currentTime > 0.2 }
-    // Counted from the outage on: the throttled stream can starve once before it on a loaded runner.
+    // Counted from the outage to the request for media: the throttled stream can starve once
+    // before the outage on a loaded runner, and the watch can start another round after it.
     let reconnectsBefore = down.player.reconnectCount
     server.setFailing(true)
     let asked = await down.until(10) { !down.expired.isEmpty || !down.errors.isEmpty }
     var outage: [String: Any] = [
-      "asked": asked, "expired": down.expired.count, "errors": down.errors.count, "reconnects": down.player.reconnectCount - reconnectsBefore,
+      "asked": asked, "expired": down.expired.count, "errors": down.errors.count,
+      "reconnects": (down.reconnectsAtExpired.first ?? down.player.reconnectCount) - reconnectsBefore,
     ]
     server.setFailing(false)
     let retry = try await down.apply(try decode(base, revision: 1, buildSeq: 2), media: refs(server.token(expiresIn: 600)), mediaRetry: true)
