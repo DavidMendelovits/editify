@@ -34,6 +34,22 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: flyctl deploy --remote-only
         env: { FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN }}" }
+      # Post-deploy smoke (plan C13, scripts/deploy-smoke.sh): /health is ok,
+      # /client-config serves the update gate, GET /projects without
+      # credentials is 401, signed in as the smoke user (SMOKE_EMAIL /
+      # SMOKE_PASSWORD, skipped with a warning when unset) /projects is 200,
+      # and the app has its secrets.
+      - name: Smoke the deployed app
+        run: ./scripts/deploy-smoke.sh
+        env:
+          URL: https://editify-dm.fly.dev
+          APP: editify-dm
+          CONFIG: fly.toml
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          FLY_API_TOKEN: "${{ secrets.FLY_API_TOKEN }}"
+          # Missing Fly secrets warn for now; '1' fails the deploy on them.
+          STRICT_SECRETS: '0'
   # Every merge reaches preview installs. The fingerprint action compares the
   # native fingerprint against existing EAS builds: JS-only changes go out as an
   # OTA update on the preview channel, and a native change starts a new iOS
