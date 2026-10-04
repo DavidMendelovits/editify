@@ -37,10 +37,40 @@
       "channel": "production",
       "environment": "production",
       "autoIncrement": true
+    },
+    "preview-1.1": {
+      "extends": "base",
+      "distribution": "internal",
+      "channel": "preview-1.1",
+      "environment": "preview",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://editify-v11.fly.dev"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production-1.1": {
+      "extends": "base",
+      "channel": "production-1.1",
+      "environment": "production",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://editify-v11.fly.dev"
+      },
+      "autoIncrement": true
     }
   },
   "submit": {
     "production": {
+      "ios": {
+        "appleTeamId": "F9R8TK7W79",
+        "ascAppId": "6814607865"
+      }
+    },
+    "production-1.1": {
       "ios": {
         "appleTeamId": "F9R8TK7W79",
         "ascAppId": "6814607865"
