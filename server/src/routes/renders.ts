@@ -5,6 +5,9 @@ import type { RenderStore } from '../db/render-store.js';
 import { sendMediaFile } from '../media/send-file.js';
 
 export function registerRenderRoutes(app: FastifyInstance, renders: RenderStore): void {
+  // The newest finished master of each of the caller's projects.
+  app.get('/renders', async (request) => renders.latestDoneByProject(request.userId));
+
   app.get<{ Params: { id: string } }>('/renders/:id', async (request, reply) => {
     const render = renders.get(request.params.id, request.userId);
     return render ?? await reply.code(404).send({ error: 'Render not found' });
