@@ -21,9 +21,23 @@ export const IS_LOCAL_API = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/
 const FALLBACK_TOKEN = process.env.EXPO_PUBLIC_API_TOKEN ?? '';
 let accessToken: string = FALLBACK_TOKEN;
 
+const tokenListeners = new Set<() => void>();
+
 /** Keeps every API and media request on the current Supabase session. */
 export function setAccessToken(token?: string | null): void {
-  accessToken = token || FALLBACK_TOKEN;
+  const next = token || FALLBACK_TOKEN;
+  if (next === accessToken) return;
+  accessToken = next;
+  for (const listener of tokenListeners) listener();
+}
+
+/**
+ * Called when the token changes (a refresh, a sign-in): anything holding a media URL minted
+ * with the old one (its `k=` query) should mint it again.
+ */
+export function onAccessTokenChange(listener: () => void): () => void {
+  tokenListeners.add(listener);
+  return () => { tokenListeners.delete(listener); };
 }
 
 function authHeaders(): Record<string, string> {

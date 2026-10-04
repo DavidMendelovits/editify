@@ -110,6 +110,9 @@ final class PlanMediaCache: @unchecked Sendable {
     return info
   }
 
+  /// Memory pressure: every decoded image goes (they decode again on demand); sizes and GIF timing stay.
+  func trim() { images.removeAll() }
+
   /// Drops everything decoded from `url` (its file changed under the same path).
   func forget(_ url: URL) {
     lock.lock()
@@ -230,5 +233,42 @@ enum OverlayGraphics {
     body(context, point)
     guard let image = context.makeImage() else { return nil }
     return Drawn(image: image, margin: margin)
+  }
+}
+
+/// Emoji and callout bitmaps by everything that draws them (payload, box size, scale). A
+/// player passes one to every build, so a parameter-only update redraws only the sticker
+/// that changed instead of every sticker each tick; export draws without it.
+final class OverlayBitmapCache: @unchecked Sendable {
+  private let entries: ByteLRU<String, OverlayGraphics.Drawn>
+  private let lock = NSLock()
+  private var drawCount = 0
+
+  init(budgetBytes: Int = 32 << 20) { entries = ByteLRU(budget: budgetBytes) }
+
+  /// Bitmaps drawn (cache misses) so far.
+  var draws: Int { lock.withLock { drawCount } }
+  var count: Int { entries.count }
+
+  func removeAll() { entries.removeAll() }
+
+  func emoji(_ emoji: RenderPlan.Emoji, box: RenderPlan.Box, scale: CGFloat) -> OverlayGraphics.Drawn? {
+    cached("e|\(emoji.text)|\(emoji.sizePx)|\(emoji.x)|\(emoji.y)|\(emoji.width)|\(box.w)|\(box.h)|\(scale)") {
+      OverlayGraphics.emoji(emoji, box: box, scale: scale)
+    }
+  }
+
+  func callout(_ callout: RenderPlan.Callout, box: RenderPlan.Box, fonts: PlanFonts, scale: CGFloat) throws -> OverlayGraphics.Drawn? {
+    try cached("c|\(String(describing: callout))|\(box.w)|\(box.h)|\(scale)") {
+      try OverlayGraphics.callout(callout, box: box, fonts: fonts, scale: scale)
+    }
+  }
+
+  private func cached(_ key: String, draw: () throws -> OverlayGraphics.Drawn?) rethrows -> OverlayGraphics.Drawn? {
+    if let hit = entries.value(for: key) { return hit }
+    guard let drawn = try draw() else { return nil }
+    lock.withLock { drawCount += 1 }
+    entries.insert(drawn, bytes: drawn.image.bytesPerRow * drawn.image.height, for: key)
+    return drawn
   }
 }

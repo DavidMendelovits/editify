@@ -374,6 +374,19 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   /// seek or a rebuild drops the backlog at once, as in Apple's AVCustomEdit).
   nonisolated(unsafe) private var generation = 0  // under generationLock
   private let generationLock = NSLock()
+  /// Under generationLock. A remote source whose bytes stopped arriving (a dropped connection,
+  /// a 5xx, a refused token) shows up only here: measured on macOS, AVFoundation stops asking
+  /// for frames (the picture freezes, the clock runs on). (A nil source frame is no such sign:
+  /// a video track shorter than the span the plan plays hands over none, every time.)
+  nonisolated(unsafe) private var composedUpTo = -1.0
+
+  /// The latest composition time asked for since the last seek or rebuild, in seconds (-1: none
+  /// yet). Requests run ahead of the clock while sources flow; PlanPlayer reads a clock past it
+  /// as starvation, and a paused seek that lands without it as a frame not drawn yet.
+  var composedUpToSeconds: Double {
+    generationLock.lock(); defer { generationLock.unlock() }
+    return composedUpTo
+  }
 
   let supportsHDRSourceFrames = true
   let supportsWideColorSourceFrames = true
@@ -414,6 +427,10 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   }
 
   func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
+    let asked = request.compositionTime.seconds
+    generationLock.lock()
+    if asked.isFinite { composedUpTo = max(composedUpTo, asked) }
+    generationLock.unlock()
     let queuedAt = currentGeneration
     renderQueue.async { [self] in
       if queuedAt != currentGeneration {
@@ -447,6 +464,8 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
   func cancelAllPendingVideoCompositionRequests() {
     generationLock.lock()
     generation += 1
+    // A seek or a rebuild: the frames asked for so far no longer say where the clock is.
+    composedUpTo = -1
     generationLock.unlock()
   }
 }

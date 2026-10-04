@@ -43,6 +43,8 @@ struct PlanBuildOptions {
   var captions: CaptionRenderer?
   var media = PlanMediaCache()
   var captionCacheBytes = 64 << 20
+  /// A player's emoji and callout bitmaps, reused across updates (nil: drawn for this build).
+  var graphics: OverlayBitmapCache?
 }
 
 /// Sources a plan uses, loaded once. `PlanBuilder.prepare(_:resolver:reusing:)`
@@ -451,8 +453,13 @@ enum PlanBuilder {
     for face in Set(plan.captions.map(\.font)) { _ = try options.fonts.verticalMetrics(face) }
     var drawn: [String: OverlayGraphics.Drawn] = [:]
     for item in plan.overlays {
-      if let emoji = item.emoji, let bitmap = OverlayGraphics.emoji(emoji, box: item.box, scale: scale) { drawn[item.id] = bitmap }
-      if let callout = item.callout, let bitmap = try OverlayGraphics.callout(callout, box: item.box, fonts: options.fonts, scale: scale) {
+      if let emoji = item.emoji,
+         let bitmap = options.graphics.map({ $0.emoji(emoji, box: item.box, scale: scale) }) ?? OverlayGraphics.emoji(emoji, box: item.box, scale: scale) {
+        drawn[item.id] = bitmap
+      }
+      if let callout = item.callout,
+         let bitmap = try options.graphics.map({ try $0.callout(callout, box: item.box, fonts: options.fonts, scale: scale) })
+           ?? OverlayGraphics.callout(callout, box: item.box, fonts: options.fonts, scale: scale) {
         drawn[item.id] = bitmap
       }
     }
