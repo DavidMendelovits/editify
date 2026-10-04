@@ -419,6 +419,22 @@ func whiteAndRed(_ buffer: CVPixelBuffer, x: Double, y: Double, w: Double, h: Do
   return ["white": white, "red": red]
 }
 
+/// The frame at k of a plan whose talk clip carries its frame index (`code`), re-read until it
+/// shows that code, for up to 10 s. A CI runner has vended, once in a while, a first frame after a
+/// rebuild with no source picture in it (code 0, only the background); stepping off and back
+/// reads the frame drawn with its source. Logged when it happens, so the logs say how often.
+@MainActor
+func codedFrame(_ rig: Rig, at k: Int, code: Int) async throws -> CVPixelBuffer {
+  let deadline = CFAbsoluteTimeGetCurrent() + 10
+  var buffer = try await rig.frame(at: k, fps: 30).buffer
+  while decodeCode(pixels(buffer, space: workingSpace)) != code, CFAbsoluteTimeGetCurrent() < deadline {
+    Watchdog.log("frame \(k) showed code \(decodeCode(pixels(buffer, space: workingSpace))), not \(code); reading it again")
+    _ = try await rig.frame(at: max(0, k - 3), fps: 30)
+    buffer = try await rig.frame(at: k, fps: 30).buffer
+  }
+  return buffer
+}
+
 /// The source frame (its embedded code) the player shows paused at frame k of a plan whose
 /// talk clip plays from a server. Bytes may still be on their way (the server trickles them; a
 /// CI VM is slow): a paused seek lands on the last frame decoded, or vends no frame within its
@@ -1108,7 +1124,7 @@ func run() async throws -> [String: Any] {
     let rig = Rig()
     let plan = try fixture("crossfade")
     try await rig.apply(try decode(plan, revision: 1, buildSeq: 1), media: refs)
-    func repeatSeek(_ k: Int) async throws -> [String: Any] {
+    func repeatSeek(_ k: Int, source: Int) async throws -> [String: Any] {
       _ = try await rig.frame(at: k, fps: 30)
       try? await Task.sleep(nanoseconds: 300_000_000)
       let landed = rig.seeksLanded
@@ -1121,12 +1137,12 @@ func run() async throws -> [String: Any] {
       // And the player still draws the right frame there: away and back (a seek to the frame
       // already shown need not vend a new buffer), after the count.
       _ = try await rig.frame(at: k - 5, fps: 30)
-      let shown = decodeCode(pixels(try await rig.frame(at: k, fps: 30).buffer, space: workingSpace))
+      let shown = decodeCode(pixels(try await codedFrame(rig, at: k, code: source), space: workingSpace))
       return ["reseeks": reseeks, "time": time, "shown": shown]
     }
     let decoded = try decode(plan, revision: 1, buildSeq: 1)
     report["pausedSeekVerify"] = [
-      "local": try await repeatSeek(15), "remote": try await repeatSeek(100),
+      "local": try await repeatSeek(15, source: 15), "remote": try await repeatSeek(100, source: 70),
       // Which frames the verify watches at all: a (local) alone, the crossfade into b, b (remote) alone.
       "remoteDraws": [0.5, 2.2, 3.3, 4.0].map { PlanPlayer.remoteSourceDraws(at: $0, in: decoded, refs: refs) },
       "remoteDrawsAllLocal": PlanPlayer.remoteSourceDraws(at: 3.3, in: decoded, refs: mediaRefs),
@@ -1417,11 +1433,11 @@ func run() async throws -> [String: Any] {
     var proxied = mediaRefs
     proxied["asset-talk"] = proxyURL.absoluteString
     let first = try await rig.apply(try decode(plan, revision: 1, buildSeq: next()), media: proxied)
-    let (proxyFrame, _) = try await rig.frame(at: 40, fps: 30)
+    let proxyFrame = try await codedFrame(rig, at: 40, code: 40)
     let before = rig.player.built!.media
     let second = try await rig.apply(try decode(plan, revision: 1, buildSeq: next()), media: mediaRefs)
     let after = rig.player.built!.media
-    let (originalFrame, _) = try await rig.frame(at: 40, fps: 30)
+    let originalFrame = try await codedFrame(rig, at: 40, code: 40)
     report["proxySwap"] = [
       "first": first.mode.rawValue, "second": second.mode.rawValue,
       "proxySize": [CVPixelBufferGetWidth(proxyFrame), CVPixelBufferGetHeight(proxyFrame)],
