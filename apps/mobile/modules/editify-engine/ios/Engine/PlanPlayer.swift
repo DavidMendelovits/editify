@@ -713,7 +713,10 @@ final class PlanPlayer {
     } else if starve.since != nil, now - starve.grew > Self.starveLag {
       starve.since = nil
       setBuffering(false)
-    } else if starve.since == nil, reconnectWork == nil, !reloadRemote, now - starve.grew > Self.cleanPlayback {
+    } else if starve.since == nil, reconnectWork == nil, !reloadRemote, composed >= 0, now - starve.grew > Self.cleanPlayback {
+      // Clean playback: frames composed and keeping up for `cleanPlayback`. An item rebuilt by a
+      // reconnect that has composed nothing yet (still waiting on the server) is not that, and
+      // must not earn a fresh set of attempts.
       reconnects = 0
     }
   }

@@ -378,10 +378,8 @@ describe('native preview: harness availability', () => {
     expect(backSoon.starveToDetectMs).toBeLessThan(2000);
     // The buffer ahead (about a second at this rate) plays out first; a CI VM is slower.
     expect(backSoon.cutToDetectMs).toBeLessThan(8000);
-    expect(staysDown).toMatchObject({ asked: true, expired: 1, errors: 0, retryMode: 'rebuild', code: 100, errorsAfter: 0 });
-    // Every attempt (three here) before asking for media. On a loaded runner a reconnect can play
-    // from what was buffered for 5 s, which counts as clean playback and earns a fresh set.
-    expect(staysDown.reconnects).toBeGreaterThanOrEqual(3);
+    // Every attempt (three here), counted from the outage, then a request for media.
+    expect(staysDown).toMatchObject({ asked: true, expired: 1, errors: 0, reconnects: 3, retryMode: 'rebuild', code: 100, errorsAfter: 0 });
   });
 
   it('reads token refusals and transient failures from error-log entries, whatever the code', () => {
