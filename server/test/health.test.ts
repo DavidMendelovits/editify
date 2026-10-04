@@ -31,7 +31,7 @@ describe('buildInfo', () => {
 });
 
 describe('GET /health', () => {
-  it('answers without credentials with ok, line and commit', async () => {
+  it('answers without credentials with ok, line, commit and whether sync is on', async () => {
     process.env.LINE = '1.1';
     process.env.GIT_SHA = 'deadbeef';
     // A shared token makes every other route demand credentials.
@@ -40,7 +40,7 @@ describe('GET /health', () => {
     try {
       const health = await app.inject({ url: '/health' });
       expect(health.statusCode).toBe(200);
-      expect(health.json()).toMatchObject({ ok: true, line: '1.1', commit: 'deadbeef' });
+      expect(health.json()).toMatchObject({ ok: true, line: '1.1', commit: 'deadbeef', sync: false });
       expect((await app.inject({ url: '/projects' })).statusCode).toBe(401);
     } finally {
       await app.close();

@@ -5,9 +5,14 @@ import type { TurnLock } from '../routes/agent-turn.js';
 /** Longer than any real turn (24 model calls); past it the lock is let go even if the turn never finished. */
 export const MAX_TURN_HOLD_MS = 5 * 60 * 1000;
 
-/** A signed 64-bit advisory-lock key for one (user, project) pair, namespaced so other locks cannot collide. */
-export function turnLockKey(user: string, projectId: string): string {
-  return createHash('sha256').update(`editify:agent-turn\u0000${user}\u0000${projectId}`).digest().readBigInt64BE(0).toString();
+/**
+ * A signed 64-bit advisory-lock key for one (user, project) pair, namespaced so
+ * other locks cannot collide. Advisory locks are database-wide, not per schema,
+ * so the key also carries the line's schema (`public` for 1.0, DATABASE_SCHEMA
+ * `v11` for 1.1): two lines on the same Postgres never block each other's turns.
+ */
+export function turnLockKey(user: string, projectId: string, schema = 'public'): string {
+  return createHash('sha256').update(`editify:agent-turn\u0000${schema}\u0000${user}\u0000${projectId}`).digest().readBigInt64BE(0).toString();
 }
 
 /** The lock database could not be reached (down, refused, TLS or login failure). */
@@ -40,14 +45,15 @@ export class TurnCapacityError extends Error {
  * connection, and the lock with it.
  */
 export class PgTurnLock implements TurnLock {
-  constructor(private readonly pool: pg.Pool, private readonly maxHoldMs = MAX_TURN_HOLD_MS) {}
+  /** `schema` is the line's sync schema (PgPools.schema), which namespaces the lock keys. */
+  constructor(private readonly pool: pg.Pool, private readonly schema = 'public', private readonly maxHoldMs = MAX_TURN_HOLD_MS) {}
 
   private full(): boolean {
     return this.pool.totalCount >= (this.pool.options.max ?? 10) && this.pool.idleCount === 0;
   }
 
   async tryAcquire(user: string, projectId: string): Promise<(() => Promise<void>) | undefined> {
-    const key = turnLockKey(user, projectId);
+    const key = turnLockKey(user, projectId, this.schema);
     // Full pool: refuse now rather than queue for the connect timeout.
     if (this.full()) throw new TurnCapacityError();
     let client: pg.PoolClient;
