@@ -51,6 +51,11 @@ final class EditifyPlayerView: ExpoView {
     layer.addSublayer(playerLayer)
     core.onEvent = { [weak self] event in self?.dispatch(event) }
     core.onInstalled = { media in temps.retain(only: Set(media.images.values)) }
+    // No size, or nothing on screen yet: no frames are drawn, which is not a drop.
+    core.canWatch = { [weak self] in
+      guard let self else { return false }
+      return !self.playerLayer.bounds.isEmpty && self.playerLayer.isReadyForDisplay
+    }
     let center = NotificationCenter.default
     // The compositor renders on the GPU, which iOS refuses to a backgrounded app: nothing renders until it returns.
     observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
@@ -102,9 +107,11 @@ final class EditifyPlayerView: ExpoView {
   // MARK: Commands (from the module's View functions, on the main thread)
 
   /// Hands over a plan and its media map (validated off the main thread: PreviewMedia.validate).
+  /// `mediaRetry`: the media was resolved again after onError 'mediaExpired' (PlanPlayer.setPlan).
+  /// `tokenClockOffset`: seconds this device's clock runs ahead of the auth server's.
   /// False when the plan is not newer than the last one this view accepted.
-  func setPlan(_ plan: RenderPlan, media: [String: String]) -> Bool {
-    guard core.setPlan(plan, media: media) else { return false }
+  func setPlan(_ plan: RenderPlan, media: [String: String], mediaRetry: Bool, tokenClockOffset: Double?) -> Bool {
+    guard core.setPlan(plan, media: media, mediaRetry: mediaRetry, tokenClockOffset: tokenClockOffset) else { return false }
     backgroundColor = UIColor(red: plan.background.red, green: plan.background.green, blue: plan.background.blue, alpha: 1)
     return true
   }

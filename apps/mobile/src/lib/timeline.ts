@@ -1,5 +1,5 @@
 import type { Clip, Project, Track } from '@editify/shared';
-import { clipTimelineDuration } from '@editify/shared';
+import { clipTimelineDuration, planFrameAt } from '@editify/shared';
 
 /** Shortest timeline duration a manual trim is allowed to leave behind. */
 export const MIN_CLIP_DURATION = 0.2;
@@ -12,6 +12,17 @@ export const VIDEO_LANE_HEIGHT = 62;
 export const CAPTION_ROW_HEIGHT = 22;
 /** Fixed gutter on the left of the timeline holding the lane labels. */
 export const LANE_GUTTER = 60;
+
+/**
+ * Where something added "at the playhead" starts: in whole milliseconds, on or before the frame
+ * on screen and after the one before it. Overlays cover [start, end) and frame k shows
+ * t = k / fps, so a playhead of 10.6667 s (frame 320 at 30 fps) rounded UP to 10.667 would
+ * start the sticker on frame 321, leaving the paused frame without it until the playhead moves.
+ */
+export function playheadStart(time: number, fps: number): number {
+  const frameTime = fps > 0 ? planFrameAt(Math.max(0, time), fps) / fps : Math.max(0, time);
+  return Math.floor(frameTime * 1000 + 1e-6) / 1000;
+}
 
 export function clipEnd(clip: Clip): number {
   return clip.start + clipTimelineDuration(clip);
