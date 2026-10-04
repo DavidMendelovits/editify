@@ -79,6 +79,7 @@ beforeEach(async () => {
     fileExists: (uri) => files.has(uri),
     fileSize: () => 900,
     removeFile: (uri) => { files.delete(uri); },
+    geometry: async () => null,
     ensureProxy: async () => undefined,
     touchProxy: () => false,
     removeProxy: () => undefined,

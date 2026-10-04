@@ -1,0 +1,180 @@
+{
+ "media": {
+  "asset-clap": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "fps": 30,
+   "seconds": 3,
+   "base": [
+    0.02,
+    0.02,
+    0.02
+   ],
+   "toneHz": 220,
+   "amplitude": 0.05,
+   "clapAt": 1.0
+  },
+  "asset-deadband": {
+   "kind": "audio",
+   "seconds": 4,
+   "toneHz": 997,
+   "amplitude": 0.155
+  },
+  "asset-hot": {
+   "kind": "audio",
+   "seconds": 4,
+   "toneHz": 997,
+   "amplitude": 0.155,
+   "burstEvery": 1,
+   "burstAmplitude": 0.99
+  },
+  "asset-silent": {
+   "kind": "audio",
+   "seconds": 3,
+   "toneHz": 440,
+   "amplitude": 0
+  },
+  "asset-quiet": {
+   "kind": "audio",
+   "seconds": 4,
+   "toneHz": 997,
+   "amplitude": 0.05
+  },
+  "asset-talk-hd": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 1080,
+   "h": 1920,
+   "fps": 30,
+   "seconds": 10,
+   "base": [
+    0.05,
+    0.08,
+    0.12
+   ],
+   "toneHz": 220
+  },
+  "asset-dense": {
+   "kind": "audio",
+   "seconds": 6,
+   "signal": "dense"
+  },
+  "asset-portrait": {
+   "kind": "video",
+   "transfer": "sdr",
+   "w": 360,
+   "h": 640,
+   "rotation": 90,
+   "fps": 30,
+   "seconds": 4,
+   "base": [
+    0.1,
+    0.15,
+    0.1
+   ]
+  }
+ },
+ "exports": [
+  {
+   "name": "caption-karaoke",
+   "plan": "packages/shared/fixtures/render-plans/caption-karaoke.json"
+  },
+  {
+   "name": "crossfade",
+   "plan": "packages/shared/fixtures/render-plans/crossfade.json"
+  },
+  {
+   "name": "audio-duck-loudness",
+   "plan": "packages/shared/fixtures/render-plans/audio-duck-loudness.json"
+  },
+  {
+   "name": "hlg-color",
+   "plan": "packages/shared/fixtures/render-plans/hlg-color.json"
+  },
+  {
+   "name": "fast-audio-end",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/fast-audio-end.json"
+  },
+  {
+   "name": "surround",
+   "plan": "apps/mobile/modules/editify-engine/parity/goldens/plans/surround.json"
+  },
+  {
+   "name": "clap-sync",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/clap-sync.json",
+   "clapAt": 1.0
+  },
+  {
+   "name": "loud-deadband",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-deadband.json"
+  },
+  {
+   "name": "loud-hot",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-hot.json"
+  },
+  {
+   "name": "loud-silent",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-silent.json"
+  },
+  {
+   "name": "loud-quiet",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-quiet.json"
+  },
+  {
+   "name": "speed-1080p",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/speed-1080p.json"
+  },
+  {
+   "name": "loud-dense",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-dense.json"
+  },
+  {
+   "name": "loud-dense-hot",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/loud-dense-hot.json"
+  },
+  {
+   "name": "rotated-broll",
+   "plan": "apps/mobile/modules/editify-engine/parity/export/plans/rotated-broll.json",
+   "probes": [
+    {
+     "k": 0,
+     "name": "mainWhite",
+     "x": 70,
+     "y": 130
+    },
+    {
+     "k": 0,
+     "name": "mainGrey",
+     "x": 190,
+     "y": 130
+    },
+    {
+     "k": 89,
+     "name": "zoomedWhite",
+     "x": 105,
+     "y": 195
+    },
+    {
+     "k": 89,
+     "name": "zoomedBase",
+     "x": 105,
+     "y": 90
+    },
+    {
+     "k": 45,
+     "name": "pipWhite",
+     "x": 215,
+     "y": 385
+    },
+    {
+     "k": 45,
+     "name": "pipGrey",
+     "x": 263,
+     "y": 385
+    }
+   ]
+  }
+ ]
+}

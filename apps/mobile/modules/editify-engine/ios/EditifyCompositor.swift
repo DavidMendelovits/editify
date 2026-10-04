@@ -431,7 +431,12 @@ final class EditifyCompositor: NSObject, AVVideoCompositing {
         let image = try FrameRenderer.compose(instruction, at: t) { request.sourceFrame(byTrackID: $0) }
         PlanColorPipeline.tag(output, state.plan.color)
         let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(output), height: CVPixelBufferGetHeight(output))
-        Self.context.render(PlanColorPipeline.forOutput(image, state.plan.color), to: output, bounds: bounds, colorSpace: PlanColorPipeline.outputSpace(state.plan.color))
+        // A render task, waited on, so a failed render (the GPU refused, say, with the app
+        // in the background) fails the request instead of handing on an unwritten buffer.
+        let destination = CIRenderDestination(pixelBuffer: output)
+        destination.colorSpace = PlanColorPipeline.outputSpace(state.plan.color)
+        let task = try Self.context.startTask(toRender: PlanColorPipeline.forOutput(image, state.plan.color), from: bounds, to: destination, at: .zero)
+        _ = try task.waitUntilCompleted()
         request.finish(withComposedVideoFrame: output)
       } catch {
         request.finish(with: error)

@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMedia
 import Foundation
+import ImageIO
 
 /// What identifies a source in the local media registry (decision 3A + OV2): its
 /// duration, its size on disk, a short audio fingerprint and its color. Stored at
@@ -15,7 +16,8 @@ enum MediaFingerprint {
   /// Long enough that two different takes disagree, short enough to read in well under a second.
   static let audioSeconds = 20.0
 
-  /// {duration, bytes, audio (envelope hash, or null without an audio track), color ('hlg' | 'pq' | 'log' | 'sdr', or null without video)}.
+  /// {duration, bytes, audio (envelope hash, or null without an audio track), color ('hlg' | 'pq' | 'log' | 'sdr', or null without video),
+  /// geometry ({width, height, rotation} of the video track, or null without video)}.
   static func compute(_ asset: AVAsset) async throws -> [String: Any] {
     let duration = try await asset.load(.duration).seconds
     var bytes = 0
@@ -24,11 +26,13 @@ enum MediaFingerprint {
     }
     let color = try await colorName(asset)
     let audio = try await audioHash(asset)
+    let geometry = try await MediaGeometry.of(asset)
     return [
       "duration": round3(duration),
       "bytes": bytes,
       "audio": audio ?? NSNull(),
       "color": color ?? NSNull(),
+      "geometry": geometry ?? NSNull(),
     ]
   }
 
@@ -93,4 +97,50 @@ struct ColorTags {
   /// Any color tag at all: the frames carry them, so the encoder can keep them.
   var tagged: Bool { primaries != nil || transfer != nil || matrix != nil || log != nil }
   var name: String { isHLG ? "hlg" : isPQ ? "pq" : isAppleLog ? "log" : "sdr" }
+}
+
+/// A source's stored pixel size and the clockwise rotation (0, 90, 180, 270) that shows it
+/// upright: what buildRenderPlan's PlanAssetInfo needs (width, height, rotation). The
+/// server's asset records keep the coded size with no display matrix, so a portrait phone
+/// clip or a rotated photo would otherwise be laid out sideways.
+///
+/// Video: the first video track's naturalSize and preferredTransform. Stills: the image's
+/// pixel size and EXIF orientation (a mirrored orientation counts as its rotation; the
+/// renderer draws stills EXIF-upright either way, so only the box shape depends on it).
+enum MediaGeometry {
+  static func rotation(_ orientation: CGImagePropertyOrientation) -> Int {
+    switch orientation {
+    case .right, .leftMirrored: return 90
+    case .down, .downMirrored: return 180
+    case .left, .rightMirrored: return 270
+    default: return 0
+    }
+  }
+
+  static func of(_ asset: AVAsset) async throws -> [String: Any]? {
+    guard let track = try await firstEnabledTrack(asset, .video) else { return nil }
+    let (size, transform) = try await track.load(.naturalSize, .preferredTransform)
+    guard size.width > 0, size.height > 0 else { return nil }
+    return ["width": Int(size.width.rounded()), "height": Int(size.height.rounded()),
+            "rotation": rotation(AnalysisMath.orientation(of: transform))]
+  }
+
+  /// nil when `url` is not an image ImageIO can read.
+  static func ofImage(_ url: URL) -> [String: Any]? {
+    CGImageSourceCreateWithURL(url as CFURL, nil).flatMap(ofImage(source:))
+  }
+
+  /// A still's bytes (a Photos original), read the same way.
+  static func ofImage(data: Data) -> [String: Any]? {
+    CGImageSourceCreateWithData(data as CFData, nil).flatMap(ofImage(source:))
+  }
+
+  private static func ofImage(source: CGImageSource) -> [String: Any]? {
+    guard CGImageSourceGetCount(source) > 0,
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+          let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, width > 0, height > 0 else { return nil }
+    let exif = (properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
+    return ["width": width, "height": height, "rotation": rotation(CGImagePropertyOrientation(rawValue: exif) ?? .up)]
+  }
 }

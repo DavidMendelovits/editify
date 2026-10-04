@@ -1,11 +1,19 @@
-import { useEffect, useState } from 'react';
-import { Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Image, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { usePreventRemove } from '@react-navigation/native';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Brand } from '../../../src/components/Brand';
 import { Button } from '../../../src/components/Button';
 import { Screen } from '../../../src/components/Screen';
+import { EditifyEngine } from '../../../modules/editify-engine';
 import { api, IS_LOCAL_API, rebaseServerUrl, type RenderRecord } from '../../../src/lib/api';
+import {
+  buildExportPlan, exportOnDevice, exportStateLabel, isTerminal, routeExport, serverRouteLine, STARTING,
+  type DeviceExportView, type ExportChoices, type ExportRoute,
+} from '../../../src/lib/device-export';
+import { useEngineActivity } from '../../../src/lib/engine-activity';
+import { localMedia } from '../../../src/lib/local-media-native';
 import { track } from '../../../src/lib/telemetry';
 import { backControlStyle, goBack } from '../../../src/lib/nav';
 import { colors, radius, space, type, fonts } from '../../../src/lib/theme';
@@ -19,7 +27,7 @@ const resolutions: Array<{ value: RenderRecord['resolution']; label: string }> =
 /** HDR sources otherwise land in the export at whatever colour ffmpeg guesses. */
 const hdrOptions: Array<{ value: 'sdr' | 'hdr'; label: string; detail: string }> = [
   { value: 'sdr', label: 'Convert to SDR (BT.709)', detail: 'Default · matches the preview exactly' },
-  { value: 'hdr', label: 'Keep HDR (BT.2020 PQ)', detail: '10-bit master · preview shown is the SDR proof' },
+  { value: 'hdr', label: 'Keep HDR (BT.2020)', detail: '10-bit master · preview shown is the SDR proof' },
 ];
 
 /** Platforms play everything at about -16 LUFS; a quiet phone recording otherwise exports quiet. */
@@ -47,9 +55,87 @@ export default function ExportScreen() {
     onSuccess: (record) => { track('render_started', resolution); setRenderId(record.id); },
   });
   const status = render.data?.status ?? (start.isPending ? 'queued' : undefined);
-  // TODO(T7): when the on-device export lands, mark it with useEngineActivity('export', …)
-  // (src/lib/engine-activity.ts) for its whole run. A server render doesn't load the phone,
-  // so it doesn't pause proxies or analyzers.
+
+  // On-device export (plan P4): at 720p and 1080p, when every clip of the plan is on this
+  // iPhone, it renders here; otherwise the server path above runs as before, with a line
+  // saying why (the clips that aren't here, or 4K).
+  // TODO(T8): send the server a snapshot of this plan and check it has every original first.
+  const engine = EditifyEngine;
+  const choices: ExportChoices = { resolution, hdr, loudness };
+  const assets = useQuery({ queryKey: ['assets', id], queryFn: () => api.listAssets(id), enabled: Boolean(engine) });
+  const nameOf = (assetId: string): string => {
+    const asset = assets.data?.find((item) => item.id === assetId);
+    return asset ? `"${asset.label ?? asset.originalName}"` : 'a clip';
+  };
+  const route = useQuery({
+    queryKey: ['export-route', id, project.data?.version, assets.dataUpdatedAt, resolution],
+    enabled: Boolean(engine && project.data && assets.data),
+    queryFn: async (): Promise<ExportRoute> => {
+      const plan = buildExportPlan(project.data!, assets.data!, choices);
+      return await routeExport(plan, await localMedia(), nameOf, resolution);
+    },
+  });
+  const [device, setDevice] = useState<DeviceExportView>();
+  const [serverNote, setServerNote] = useState<string | null>(null);
+  const abort = useRef<AbortController | null>(null);
+  /** Set synchronously on the first tap: a second tap before React re-renders does nothing. */
+  const busy = useRef(false);
+  const deviceBusy = Boolean(device && !isTerminal(device.state));
+  // The phone does the work: proxies and analyzers get out of the way for the whole run.
+  useEngineActivity('export', deviceBusy);
+  useEffect(() => () => abort.current?.abort(), []);
+
+  // A foreground export can't outlive this screen: leaving asks, and stopping cancels cleanly.
+  // usePreventRemove also holds the native stack's swipe-back gesture while it runs.
+  const navigation = useNavigation();
+  usePreventRemove(deviceBusy, ({ data }) => {
+    Alert.alert('Leaving stops the export', 'Editify renders on this iPhone while this screen is open.', [
+      { text: 'Keep exporting', style: 'cancel' },
+      { text: 'Stop and leave', style: 'destructive', onPress: () => { abort.current?.abort(); navigation.dispatch(data.action); } },
+    ]);
+  });
+
+  const renderOnServer = (note: string | null): void => {
+    setServerNote(note);
+    start.mutate(undefined, { onSettled: () => { busy.current = false; } });
+  };
+  const exportHere = async (): Promise<void> => {
+    const deps = await localMedia();
+    const current = project.data;
+    const list = assets.data;
+    if (!engine || !deps || !current || !list) { renderOnServer(null); return; }
+    const controller = new AbortController();
+    abort.current = controller;
+    track('device_export_started', resolution);
+    try {
+      const outcome = await exportOnDevice({
+        build: (geometry) => buildExportPlan(current, list, choices, geometry),
+        resolution, deps, native: engine, nameOf, onUpdate: setDevice, signal: controller.signal,
+      });
+      if (outcome.kind === 'server') {
+        // Something changed since the screen opened (a clip went missing): the server renders it.
+        setDevice(undefined);
+        renderOnServer(serverRouteLine(outcome.route));
+        return;
+      }
+      track(`device_export_${outcome.view.state}`, outcome.view.stats ? `${outcome.view.stats.xRealtime}x` : undefined);
+    } finally {
+      if (abort.current === controller) abort.current = null;
+    }
+    busy.current = false;
+  };
+  const onRender = (): void => {
+    if (busy.current) return;
+    busy.current = true;
+    if (route.data?.kind === 'device') {
+      setDevice(STARTING);
+      void exportHere().catch(() => { busy.current = false; setDevice(undefined); });
+      return;
+    }
+    renderOnServer(route.data ? serverRouteLine(route.data) : null);
+  };
+  const locked = Boolean(renderId) || deviceBusy;
+  const routeLine = route.data?.kind === 'device' ? 'Exports on this iPhone. Keep Editify open until it finishes.' : route.data ? serverRouteLine(route.data) : null;
 
   useEffect(() => {
     if (status === 'done' || status === 'error') track(`render_${status}`);
@@ -66,21 +152,24 @@ export default function ExportScreen() {
       </View>
       <View><Text style={styles.sectionTitle}>Resolution</Text></View>
       <View style={styles.resolutions}>
-        {resolutions.map((item) => <Pressable key={item.value} disabled={Boolean(renderId)} onPress={() => setResolution(item.value)} style={[styles.resolution, resolution === item.value && styles.resolutionSelected]}><View style={[styles.radio, resolution === item.value && styles.radioSelected]}>{resolution === item.value && <View style={styles.radioDot} />}</View><Text style={styles.resolutionTitle}>{item.label}</Text></Pressable>)}
+        {resolutions.map((item) => <Pressable key={item.value} disabled={locked} onPress={() => setResolution(item.value)} style={[styles.resolution, resolution === item.value && styles.resolutionSelected]}><View style={[styles.radio, resolution === item.value && styles.radioSelected]}>{resolution === item.value && <View style={styles.radioDot} />}</View><Text style={styles.resolutionTitle}>{item.label}</Text></Pressable>)}
       </View>
       <View testID="color-section" style={styles.colorSection}>
         <View><Text style={styles.sectionKicker}>COLOR</Text><Text style={styles.sectionTitle}>HDR &amp; wide gamut</Text></View>
         <View style={styles.resolutions}>
-          {hdrOptions.map((item) => <Pressable key={item.value} testID={`hdr-${item.value}`} disabled={Boolean(renderId)} onPress={() => setHdr(item.value)} style={[styles.resolution, hdr === item.value && styles.resolutionSelected]}><View style={[styles.radio, hdr === item.value && styles.radioSelected]}>{hdr === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
+          {hdrOptions.map((item) => <Pressable key={item.value} testID={`hdr-${item.value}`} disabled={locked} onPress={() => setHdr(item.value)} style={[styles.resolution, hdr === item.value && styles.resolutionSelected]}><View style={[styles.radio, hdr === item.value && styles.radioSelected]}>{hdr === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
         </View>
       </View>
       <View testID="loudness-section" style={styles.colorSection}>
         <View><Text style={styles.sectionKicker}>AUDIO</Text><Text style={styles.sectionTitle}>Loudness</Text></View>
         <View style={styles.resolutions}>
-          {loudnessOptions.map((item) => <Pressable key={item.value} testID={`loudness-${item.value}`} disabled={Boolean(renderId)} onPress={() => setLoudness(item.value)} style={[styles.resolution, loudness === item.value && styles.resolutionSelected]}><View style={[styles.radio, loudness === item.value && styles.radioSelected]}>{loudness === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
+          {loudnessOptions.map((item) => <Pressable key={item.value} testID={`loudness-${item.value}`} disabled={locked} onPress={() => setLoudness(item.value)} style={[styles.resolution, loudness === item.value && styles.resolutionSelected]}><View style={[styles.radio, loudness === item.value && styles.radioSelected]}>{loudness === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
         </View>
       </View>
-      {!renderId && <Button onPress={() => start.mutate()} disabled={start.isPending || !project.data} style={styles.renderButton}>{start.isPending ? 'joining the queue…' : `render ${resolution} master`}</Button>}
+      {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{start.isPending ? 'joining the queue…' : `render ${resolution} master`}</Button>}
+      {!renderId && !device && (serverNote ?? routeLine) && <Text testID="export-route" style={styles.note}>{serverNote ?? routeLine}</Text>}
+      {device && <DeviceExportCard view={device} onCancel={() => abort.current?.abort()} onRetry={() => setDevice(undefined)} />}
+      {renderId && serverNote && <Text style={styles.note}>{serverNote}</Text>}
       {status && (
         <View style={[styles.statusCard, status === 'done' && styles.doneCard, status === 'error' && styles.errorCard]}>
           <View style={styles.statusTop}><Text style={styles.statusValue}>{status.toUpperCase()}</Text></View>
@@ -91,12 +180,32 @@ export default function ExportScreen() {
         </View>
       )}
       {(start.error || render.error) && <Text style={styles.error}>{start.error?.message ?? render.error?.message}</Text>}
-      <Text style={styles.note}>
+      {!device && route.data?.kind !== 'device' && <Text style={styles.note}>
         {IS_LOCAL_API
           ? 'Rendering runs on your local Editify server. Keep it running.'
           : 'Rendering runs on the Editify servers. Keep this screen open until it finishes: the download link only appears here.'}
-      </Text>
+      </Text>}
     </Screen>
+  );
+}
+
+/** The on-device export's progress, result and controls. */
+function DeviceExportCard({ view, onCancel, onRetry }: { view: DeviceExportView; onCancel: () => void; onRetry: () => void }) {
+  const running = !isTerminal(view.state);
+  const stats = view.stats;
+  return (
+    <View testID="device-export" style={[styles.statusCard, view.state === 'done' && styles.doneCard, view.state === 'failed' && styles.errorCard]}>
+      <View style={styles.statusTop}><Text style={styles.statusValue}>{exportStateLabel(view).toUpperCase()}</Text></View>
+      {running && <View style={styles.progress}><View style={[styles.progressFill, { width: `${Math.round(Math.max(0.03, view.progress) * 100)}%` }]} /></View>}
+      {running && <Text style={styles.qaDetail}>{view.notice ?? 'Keep Editify open until the export finishes.'} Leaving this screen stops it.</Text>}
+      {running && <Button secondary style={styles.downloadButton} onPress={onCancel}>cancel</Button>}
+      {view.state === 'done' && view.fileUri && <Button style={styles.downloadButton} onPress={() => void Share.share({ url: view.fileUri as string }).catch(() => undefined)}>share video</Button>}
+      {view.state === 'done' && stats && (
+        <Text style={styles.qaLine}>{`${stats.lufsOut === null ? 'SILENT' : `${stats.lufsOut.toFixed(1)} LUFS`}${stats.truePeakPreEncode === null ? '' : ` · PEAK ${stats.truePeakPreEncode.toFixed(1)} dBTP PRE-ENCODE`} · ${stats.xRealtime.toFixed(1)}x REALTIME`}</Text>
+      )}
+      {view.state === 'failed' && <Text style={styles.error}>{view.error}</Text>}
+      {(view.state === 'failed' || view.state === 'cancelled') && <Button secondary style={styles.downloadButton} onPress={onRetry}>try again</Button>}
+    </View>
   );
 }
 

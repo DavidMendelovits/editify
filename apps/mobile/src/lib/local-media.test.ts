@@ -80,6 +80,7 @@ function fakeNative(): Fake {
     fileExists: (uri) => fake.files.has(uri),
     fileSize: (uri) => fake.files.get(uri)?.bytes ?? 0,
     removeFile: (uri) => { fake.files.delete(uri); },
+    geometry: async () => null,
     ensureProxy: async (assetId, ref) => { fake.ensured.push([assetId, ref]); },
     touchProxy: (assetId) => { fake.touched.push(assetId); return true; },
     removeProxy: (assetId) => { fake.removedProxies.push(assetId); },
@@ -118,7 +119,7 @@ describe('migrate', () => {
     const columns = (await db.getAllAsync<{ name: string }>('PRAGMA table_info(local_media)')).map((column) => column.name);
     expect(columns).toEqual([
       'asset_id', 'ph_local_id', 'file_uri', 'proxy_uri', 'proxy_status', 'fingerprint',
-      'duration', 'bytes', 'color', 'server_only', 'updated_at', 'file_bytes', 'last_used', 'server_reason',
+      'duration', 'bytes', 'color', 'server_only', 'updated_at', 'file_bytes', 'last_used', 'server_reason', 'geometry',
     ]);
     expect(await db.getAllAsync('SELECT * FROM local_media_meta')).toEqual([]);
   });
@@ -336,7 +337,7 @@ describe('stageImport', () => {
     expect(fake.copies).toEqual([]);
     expect(await deps.store.lookup('a1')).toEqual({
       assetId: 'a1', phLocalId: 'PH-1', fileUri: null, fileBytes: null, proxyUri: null, proxyStatus: null,
-      fingerprint: HASH, duration: 12.5, bytes: 4_000_000, color: 'hlg', serverOnly: false, serverReason: null,
+      fingerprint: HASH, duration: 12.5, bytes: 4_000_000, color: 'hlg', geometry: null, serverOnly: false, serverReason: null,
       lastUsed: 1000, updatedAt: 1000,
     });
     expect(fake.ensured).toEqual([['a1', 'PH-1']]);

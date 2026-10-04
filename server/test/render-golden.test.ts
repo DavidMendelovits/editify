@@ -95,7 +95,8 @@ beforeAll(async () => {
   const binary = join(dir, 'render-golden');
   const sources = ['RenderPlan', 'PlanBuilder', 'EditifyCompositor', 'CaptionRenderer', 'OverlayGraphics', 'AnalysisMath']
     .map((name) => join(engine, 'ios', `${name}.swift`));
-  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, join(engine, 'parity/render-golden/main.swift'), '-o', binary], { maxBuffer: 64 << 20 });
+  const harness = ['HarnessMedia.swift', 'main.swift'].map((name) => join(engine, 'parity/render-golden', name));
+  await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
   const args = [join(goldens, 'manifest.json'), root, join(dir, 'work'), keepOut ?? join(dir, 'out'), ...(bless ? ['--bless'] : [])];
   report = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20 })).stdout) as Report;
 }, 600000);
