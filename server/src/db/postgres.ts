@@ -36,6 +36,11 @@ import pg from 'pg';
  * pool only, should point at the direct host, db.<ref>.supabase.co:5432; it
  * falls back to DATABASE_URL, with a warning when that is a pooler. The same
  * TLS rules (and CA) apply to it.
+ *
+ * Schema: DATABASE_SCHEMA (say `v11`, the 1.1 line) reads and writes the sync
+ * tables in that schema instead of `public`. PgSyncStore names it in every
+ * statement rather than relying on search_path, so it works through any
+ * pooler mode, and a missing schema fails loudly instead of landing in public.
  */
 
 /** Client-side cap on any one query, and the wait for a free connection. */
@@ -62,6 +67,17 @@ function caFrom(env: NodeJS.ProcessEnv): string | undefined {
     throw new Error(`DATABASE_CA_CERT is not a readable PEM certificate (${(error as Error).message})`);
   }
   return ca;
+}
+
+/** A plain Postgres identifier, safe to put in SQL unquoted or double-quoted. */
+export const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/** DATABASE_SCHEMA, checked: unset means `public` (undefined), anything not a plain identifier refuses to start. */
+export function schemaFrom(env: NodeJS.ProcessEnv): string | undefined {
+  const schema = env.DATABASE_SCHEMA?.trim();
+  if (!schema) return undefined;
+  if (!SCHEMA_NAME.test(schema)) throw new Error(`DATABASE_SCHEMA must be a plain lowercase identifier, not "${schema}"`);
+  return schema;
 }
 
 export interface PgSettings {
@@ -136,6 +152,8 @@ function pool(config: pg.PoolConfig, label: string): pg.Pool {
 
 export interface PgPools {
   sync: pg.Pool;
+  /** The schema the sync tables are read from: DATABASE_SCHEMA, else public. */
+  schema: string;
   /** Undefined when session locks cannot work (transaction pooler). */
   lock: pg.Pool | undefined;
   end(): Promise<void>;
@@ -151,6 +169,7 @@ export function createPgPools(connectionString: string, env: NodeJS.ProcessEnv =
   } else if (lockSettings.pooler) {
     warnings.push(`The agent-turn lock connects through a pooler: a machine that dies mid-turn can leave its project busy. Set DATABASE_LOCK_URL to the direct host (db.<ref>.supabase.co:5432).`);
   }
+  const schema = schemaFrom(env) ?? 'public';
   for (const warning of warnings) console.warn(`[postgres] WARNING: ${warning}`);
   const sync = pool({ ...settings.pool, max: positive(env.DATABASE_POOL_MAX, 4) }, 'sync');
   const lock = lockSettings.sessionLocks
@@ -158,6 +177,7 @@ export function createPgPools(connectionString: string, env: NodeJS.ProcessEnv =
     : undefined;
   return {
     sync,
+    schema,
     lock,
     async end() { await Promise.all([sync.end(), lock?.end()]); },
   };
