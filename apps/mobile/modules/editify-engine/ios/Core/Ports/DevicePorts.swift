@@ -38,6 +38,9 @@ public protocol DeviceProfile: PortAdapter {
   /// "nominal" | "fair" | "serious" | "critical".
   var thermalName: String { get }
   var physicalMemoryBytes: UInt64 { get }
+  /// The RAM tier (D13): TierPolicy.provisional over `physicalMemoryBytes`, unless a test
+  /// build's EDITIFY_TIER override says otherwise.
+  var tier: DeviceTier { get }
   var osVersion: String { get }
   /// Hardware identifier, e.g. "iPhone14,2".
   var model: String { get }

@@ -76,24 +76,20 @@ struct SFSpeechTranscriber: Transcriber {
       // Nothing decoded in this range (the track ends early): no words, not a failure.
       return ChunkWords(chunk: chunk, origin: chunk.start, words: [])
     }
-    let box = RecognitionBox()
-    let words: [TimedWord] = try await withTaskCancellationHandler {
-      try await withCheckedThrowingContinuation { continuation in
-        box.start(recognizer.recognitionTask(with: request) { result, error in
-          if let result, result.isFinal {
-            let words = result.bestTranscription.segments.map {
-              TimedWord(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
-            }
-            box.finish { continuation.resume(returning: words) }
-          } else if let error {
-            box.finish {
-              if Self.isNoSpeech(error) { continuation.resume(returning: []) } else { continuation.resume(throwing: error) }
-            }
-          }
-        })
+    // RecognitionRun answers once: the final result, an error, or a cancel (the chunk timeout
+    // or the caller), which resumes the wait itself instead of trusting the recognizer to call
+    // back after task.cancel().
+    let words = try await RecognitionRun<[TimedWord]>().run { run in
+      let task = recognizer.recognitionTask(with: request) { result, error in
+        if let result, result.isFinal {
+          run.finish(.success(result.bestTranscription.segments.map {
+            TimedWord(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
+          }))
+        } else if let error {
+          run.finish(Self.isNoSpeech(error) ? .success([]) : .failure(error))
+        }
       }
-    } onCancel: {
-      box.cancel()
+      return { task.cancel() }
     }
     return ChunkWords(chunk: chunk, origin: origin, words: words)
   }
@@ -102,42 +98,6 @@ struct SFSpeechTranscriber: Transcriber {
   static func isNoSpeech(_ error: Error) -> Bool {
     let ns = error as NSError
     return ns.code == 1110 && ns.domain.contains("AFAssistant") || ns.localizedDescription.localizedCaseInsensitiveContains("no speech detected")
-  }
-}
-
-/// The recognition task of one request, finished once (its handler can fire more than once)
-/// and cancellable from another thread.
-private final class RecognitionBox: @unchecked Sendable {
-  private let lock = NSLock()
-  private var task: SFSpeechRecognitionTask?
-  private var done = false
-  private var cancelled = false
-
-  func start(_ task: SFSpeechRecognitionTask) {
-    let cancelNow = lock.withLock { () -> Bool in
-      self.task = task
-      return cancelled
-    }
-    if cancelNow { task.cancel() }
-  }
-
-  func finish(_ body: () -> Void) {
-    let first = lock.withLock { () -> Bool in
-      if done { return false }
-      done = true
-      return true
-    }
-    if first { body() }
-  }
-
-  func cancel() {
-    let task = lock.withLock { () -> SFSpeechRecognitionTask? in
-      cancelled = true
-      return self.task
-    }
-    // The handler then reports an error, which resumes the continuation; the runner sees
-    // the task cancelled and throws CancellationError.
-    task?.cancel()
   }
 }
 

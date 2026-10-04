@@ -7,6 +7,10 @@ import Foundation
 ///                                                └─ heavy lane: words ▶ proxy ▶ faces      (one at a time, gated)
 ///   syncPair ─▶ runs at once, never queued (shares the cached or in-flight 8 kHz decode)
 ///
+/// Low RAM tier (D25, TierCaps): decode and energy stream the audio (AudioDecoder.streamMono,
+/// AnalysisMath.EnergyStream) and nothing is cached; words, laughter and faces stream already.
+/// syncPair still decodes both recordings whole: the cross-correlation needs them.
+///
 /// Picking order inside a lane: the asset on screen first (`setFocus`), then
 /// part rank (decode, words, proxy, laughter, energy, faces), then arrival. The heavy
 /// gate holds words/faces between chunks while playback or scrubbing is active
@@ -364,12 +368,23 @@ actor AnalysisScheduler {
     do {
       switch job.part {
       case .decode:
-        let samples = try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress, download: download)
+        // Low tier (D25): stream and count, keep nothing; otherwise decode once into the cache.
+        let count = adapters.tierCaps.streamsAnalysisDecode
+          ? try await adapters.audioDecoder.streamMono(try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download),
+                                                       rate: Double(AudioSync.sampleRate), progress: progress) { _ in }
+          : try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress, download: download).count
         return .ready(version, [
-          "sampleRate": AudioSync.sampleRate, "sampleCount": samples.count,
-          "seconds": Double(samples.count) / Double(AudioSync.sampleRate),
+          "sampleRate": AudioSync.sampleRate, "sampleCount": count,
+          "seconds": Double(count) / Double(AudioSync.sampleRate),
         ])
       case .energy:
+        if adapters.tierCaps.streamsAnalysisDecode {
+          // Low tier (D25): 50 ms levels measured as the audio streams by.
+          let stream = EnergyStreamBox(sampleRate: AudioSync.sampleRate)
+          _ = try await adapters.audioDecoder.streamMono(try await adapters.mediaSource.load(job.ref, allowNetwork: true, onDownload: download),
+                                                         rate: Double(AudioSync.sampleRate), progress: progress) { stream.append($0) }
+          return Analyzers.energy(levels: stream.finish())
+        }
         let samples = try await cachedPCM(assetId: job.assetId, ref: job.ref, progress: progress, download: download)
         return Analyzers.energy(samples: samples)
       case .laughter:
@@ -505,13 +520,27 @@ actor AnalysisScheduler {
     // A cancel while decoding removed the entry; don't cache what it dropped.
     guard decoding[key] == task else { return samples }
     decoding[key] = nil
+    // Low tier (D25): no cache, the caller's copy is the only one.
+    let budget = adapters.tierCaps.pcmCacheSamples
+    guard budget > 0 else { return samples }
     pcm[key] = samples
     pcmOrder.removeAll { $0 == key }
     pcmOrder.append(key)
-    for evicted in AnalysisPolicy.pcmEvictions(order: pcmOrder, counts: pcm.mapValues(\.count)) {
+    for evicted in AnalysisPolicy.pcmEvictions(order: pcmOrder, counts: pcm.mapValues(\.count), budget: budget) {
       pcmOrder.removeFirst()
       pcm[evicted] = nil
     }
     return samples
   }
+}
+
+/// AnalysisMath.EnergyStream fed from the decoder's queue (one writer, then one read).
+private final class EnergyStreamBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stream: AnalysisMath.EnergyStream
+
+  init(sampleRate: Int) { stream = AnalysisMath.EnergyStream(sampleRate: sampleRate) }
+
+  func append(_ samples: [Float]) { lock.withLock { stream.append(samples) } }
+  func finish() -> [Double] { lock.withLock { stream.finish() } }
 }

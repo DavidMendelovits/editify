@@ -67,7 +67,8 @@ public enum SpeechChunks {
   }
 
   /// One timeline from every chunk's words: rebased by each chunk's origin, the overlaps cut at
-  /// their middle, and a word both chunks heard at the seam kept once (dedupe by time + text).
+  /// their middle, and a word both chunks heard at the seam kept once (dedupe by time + text,
+  /// inside the overlap only, never a repeat the previous chunk heard as a separate word).
   /// `chunks` in index order.
   public static func merge(_ chunks: [ChunkWords]) -> [TimedWord] {
     let rebased = chunks.map { chunk in
@@ -83,9 +84,18 @@ public enum SpeechChunks {
         let middle = (word.start + word.end) / 2
         return middle >= lower && middle < upper
       }
-      // A word straddling the seam can land on both sides with slightly different times.
-      while let first = kept.first, let last = merged.last, sameWord(last, first) {
-        kept.removeFirst()
+      // A word straddling the seam can land on both sides with slightly different times. It is
+      // dropped only when it is that word heard twice: both copies inside the overlap (the
+      // only audio both chunks had), and the previous chunk didn't hear it separately past the
+      // seam (then it is a genuine repeat, "no no", and both stay).
+      if position > 0 {
+        let overlap = chunk.start...chunks[position - 1].chunk.end
+        let cutFromPrevious = rebased[position - 1].filter { ($0.start + $0.end) / 2 >= lower }
+        while let first = kept.first, let last = merged.last, sameWord(last, first),
+              overlap.contains((last.start + last.end) / 2), overlap.contains((first.start + first.end) / 2),
+              !cutFromPrevious.contains(where: { sameWord($0, first) && abs($0.start - first.start) < abs(last.start - first.start) }) {
+          kept.removeFirst()
+        }
       }
       merged.append(contentsOf: kept)
     }
@@ -200,5 +210,66 @@ public struct ChunkRunner: Sendable {
       guard let first = try await group.next() else { throw CancellationError() }
       return first
     }
+  }
+}
+
+/// One recognition request's answer, delivered once (C4): by the recognizer's handler, which
+/// can fire more than once, or by a cancel, whichever comes first. A cancel (the chunk timeout,
+/// or the caller's task) stops the request and resumes the waiting caller itself with
+/// CancellationError, so a recognizer that never calls back after `cancel()` can't hang the
+/// chunk, and withTimeout's task group can finish.
+public final class RecognitionRun<Value: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<Value, Error>?
+  private var outcome: Result<Value, Error>?
+  private var stop: (@Sendable () -> Void)?
+  private var cancelled = false
+
+  public init() {}
+
+  /// Starts the request (`start` answers how to stop it) and waits for its first answer.
+  public func run(_ start: @escaping (RecognitionRun<Value>) -> (@Sendable () -> Void)) async throws -> Value {
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Value, Error>) in
+        let pending = lock.withLock { () -> Result<Value, Error>? in
+          if let outcome { return outcome }
+          self.continuation = continuation
+          return nil
+        }
+        if let pending { continuation.resume(with: pending); return }
+        let stopper = start(self)
+        let stopNow = lock.withLock { () -> Bool in
+          // Kept only while unanswered: the request's handler holds this run, so holding the
+          // stopper (and its request) past the answer would be a cycle.
+          if outcome == nil { stop = stopper }
+          return cancelled
+        }
+        if stopNow { stopper() }
+      }
+    } onCancel: {
+      cancel()
+    }
+  }
+
+  /// The answer; only the first one counts.
+  public func finish(_ result: Result<Value, Error>) {
+    let waiting = lock.withLock { () -> CheckedContinuation<Value, Error>? in
+      if outcome != nil { return nil }
+      outcome = result
+      stop = nil
+      defer { continuation = nil }
+      return continuation
+    }
+    waiting?.resume(with: result)
+  }
+
+  /// Stops the request and answers CancellationError (unless an answer came first).
+  public func cancel() {
+    let stopper = lock.withLock { () -> (@Sendable () -> Void)? in
+      cancelled = true
+      return stop
+    }
+    stopper?()
+    finish(.failure(CancellationError()))
   }
 }

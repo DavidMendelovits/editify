@@ -129,6 +129,9 @@ final class PlanPlayer {
   /// The output cap: a preview never renders more than 1080 x 1920 (either orientation).
   static let maxLongSide: CGFloat = 1920
   static let maxShortSide: CGFloat = 1080
+  /// This player's cap, short side x long side: the static one, or the RAM tier's (TierCaps,
+  /// 720 x 1280 on a low-tier phone), set by the Playback adapter.
+  var renderCap = (short: PlanPlayer.maxShortSide, long: PlanPlayer.maxLongSide)
   /// How long the sound must stay unedited while playing before its new mix goes in.
   static let audioSwapDelay = 0.25
   /// Seconds either side an inexact (scrub) seek may land.
@@ -326,11 +329,11 @@ final class PlanPlayer {
     pumping = false
   }
 
-  /// Output pixels per plan pixel: no larger than the view shows, the 1080 x 1920 cap, or the plan itself.
+  /// Output pixels per plan pixel: no larger than the view shows, the render cap, or the plan itself.
   func renderScale(for plan: RenderPlan) -> CGFloat {
     let width = CGFloat(plan.size.w), height = CGFloat(plan.size.h)
     var scale: CGFloat = 1
-    scale = min(scale, Self.maxLongSide / max(width, height), Self.maxShortSide / min(width, height))
+    scale = min(scale, renderCap.long / max(width, height), renderCap.short / min(width, height))
     if viewPixels.width > 0, viewPixels.height > 0 {
       // The layer aspect-fits the render: it shows the plan at this scale.
       scale = min(scale, max(0.05, min(viewPixels.width / width, viewPixels.height / height)))

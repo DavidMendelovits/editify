@@ -10,9 +10,13 @@ import { ADAPTER_FLAGS, ADAPTER_RUNS } from './helpers/engine-adapters.js';
 /*
  * Decision D24: the adapters harness (apps/mobile/modules/editify-engine/parity/adapters). The
  * composition root's choice (AdapterSelection) and the policies behind the ports, against stubs:
- * export admission with a stub scheduler; the Transcriber chain (fallthrough, the four speech
- * permission states, the C25 one-re-run-per-trigger rule with a failing model install); the
- * SFSpeech chunk plan, merge (rebase + overlap dedupe) and retry/timeout/cancel policy (C4);
+ * export admission with a stub scheduler; the RAM tier (TierPolicy over 3/4/6/8 GB and the sizes
+ * iPhones report, the low tier's caps, the EDITIFY_TIER override, the chunked energy stream equal
+ * to the whole-file one); the Transcriber chain (fallthrough, the four speech permission states
+ * with no prompt from the words run, the sheet's grant and decline, the C25
+ * one-re-run-per-trigger rule with a failing model install); the
+ * SFSpeech chunk plan, merge (rebase + overlap dedupe that keeps a genuine repeat) and
+ * retry/timeout/cancel policy (C4), including a recognizer that never answers after cancel;
  * TranscriptAssembler against the schema the SpeechAnalyzer path always produced (D10); and the
  * decoder's PTS origin (D19) on a clip it synthesizes. Built twice:
  *
@@ -31,6 +35,7 @@ const run = promisify(execFile);
 const SOURCES = [
   'Core/EditifyCore', 'Core/Ports/DevicePorts', 'Core/Ports/SpeechPorts', 'Core/ExportAdmission', 'Core/Analysis', 'Core/AnalysisSupport',
   'Core/AnalysisMath', 'Core/AudioSync', 'Core/TranscriptAssembler', 'Core/SpeechChunks', 'Core/TranscriberChain',
+  'Core/TierPolicy', 'Core/AnalysisPolicy',
   'Engine/AudioDecode', 'Engine/AdapterSelection', 'Engine/Adapters/ForegroundExecution',
 ].map((name) => join(engine, 'ios', `${name}.swift`));
 const HARNESS = ['main.swift', 'SpeechChecks.swift'].map((name) => join(engine, 'parity/adapters', name));
@@ -112,9 +117,22 @@ describe.skipIf(!swiftAvailable)('engine adapters (composition root and port pol
     expect(names(flagged.modern)).toContain('chain: a failed model download falls through to SFSpeech (not unavailable)');
   });
 
-  it('handles the four speech permission states (D21)', () => {
+  it('maps RAM to the provisional tiers and caps the low tier (D13, D25)', () => {
+    expect(group('tier: ')).toEqual([
+      'tier: 3 GB → low', 'tier: 4 GB → standard', 'tier: 6 GB → full', 'tier: 8 GB → full',
+      'tier: XR 3 GB reports 2.79 GiB → low', 'tier: iPhone 11 4 GB reports 3.70 GiB → standard',
+      'tier: 12 Pro 6 GB reports 5.65 GiB → full', 'tier: 15 Pro 8 GB reports 7.47 GiB → full',
+      'tier: provisional thresholds are full ≥ 6, standard ≥ 4',
+    ]);
+    expect(group('tier caps: ')).toHaveLength(2);
+    expect(names(flagged.modern)).toContain('tier override: read from the environment and simctl\'s -KEY value form');
+    expect(names(unflagged)).toContain('tier override: absent without -D EDITIFY_TEST_ADAPTERS');
+    expect(names(flagged.modern)).toContain('energy stream: chunked levels equal the whole-file levels (with the trailing partial cell)');
+  });
+
+  it('handles the four speech permission states without prompting from the words run (D21, C15)', () => {
     expect(group('auth ')).toEqual([
-      'auth notDetermined: asks once on the first words run, then transcribes',
+      'auth notDetermined: no prompt from the words run, unavailable with the not-asked code, nothing transcribed',
       'auth denied: unavailable, speech-off reason + Settings code, nothing transcribed',
       'auth restricted: unavailable, speech-off reason + Settings code, nothing transcribed',
       'auth authorized: transcribes without asking',
@@ -129,8 +147,10 @@ describe.skipIf(!swiftAvailable)('engine adapters (composition root and port pol
   });
 
   it('chunks, merges and retries SFSpeech requests (D18, C4)', () => {
-    expect(group('chunks: ').length + group('merge: ').length + group('phrases: ').length).toBe(7);
+    expect(group('chunks: ').length + group('merge: ').length + group('phrases: ').length).toBe(8);
     expect(group('retry: ').length + group('timeout: ').length + group('cancel: ').length).toBe(5);
+    // RecognitionRun: a recognizer silent after cancel can't hang the chunk timeout.
+    expect(group('recognition: ')).toHaveLength(3);
   });
 
   it('assembles the transcript schema exactly as before, the same from both adapters (D10)', () => {

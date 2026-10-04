@@ -53,6 +53,9 @@ struct AnalyzerSpike: Spike {
       if all || variant == "sync" { try await stage("sync") { try await syncStage(video: video, memoRef: memoRef, expectedLag: expectedLag, metrics: &metrics) } }
       if all || variant == "words" {
         // Not ready (model missing, offline) is a result, recorded as wordsReady = false.
+        // The words run never prompts (C15); a lab run is tapped with the app in front, so ask
+        // here, outside the timed stage.
+        if EngineAdapters.current.speechAuthorization.status == .notDetermined { _ = await EngineAdapters.current.speechAuthorization.request() }
         await stage("words") {
           let result = await EngineAdapters.current.transcriber.words(speech, locale: .current, allowModelDownload: true, progress: report, gate: nil)
           metrics["wordsAdapter"] = result.analyzerVersion
