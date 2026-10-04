@@ -12,6 +12,32 @@
 - **Context:** Deletion already removes DB rows, media, and the Supabase login. This is the one remaining store of the user's data.
 - **Blocked by:** payments PR landing; a RevenueCat secret key.
 
+## Ship 1.1 from release/1.1 with an iOS 18 floor
+- **What:** 1.1 ships from the `release/1.1` branch with an iOS 18 floor: the hexagonal engine, a separate `editify-v11` Fly server, and a rehearsed cutover. Main stays on iOS 15.1 for 1.0.
+- **Why:** Replaces the old plan to raise main's floor to iOS 26. iOS 18 keeps far more phones, and a second line keeps the 1.0 binary and server untouched while 1.1 bakes.
+- **Context:** Plan: `~/.claude/plans/release-1.1-ios18.md`. Main merges forward into `release/1.1`. At launch, `release/1.1` merges back into main.
+- **Blocked by:** 1.0 approved and live.
+
+## Measure RAM tier thresholds on a low-memory iPhone
+- **Priority:** P2, before the 1.1 App Store release.
+- **What:** Replace the provisional TierPolicy numbers (full >= 6 GB, standard 4-6 GB, low < 4 GB) with measured ones, from an A12 phone (XR 3 GB / XS 4 GB) or from PostHog crash data tagged by tier.
+- **Why:** The thresholds are guesses. Too high wastes good phones, too low gets jetsam kills mid-export on iOS 18 devices.
+- **Context:** `apps/mobile/e2e/lab-run.mjs --udid <device>` can run the S4 export and preview spikes on a real phone.
+- **Blocked by:** an A12 test phone, or enough 1.1 beta crash data.
+
+## Server Whisper fallback for iOS 18
+- **Priority:** P3.
+- **What:** An audio-only upload transcriber behind the Transcriber chain, used when on-device SFSpeechRecognizer isn't good enough.
+- **Why:** iOS 18 has no SpeechAnalyzer, and SFSpeech accuracy on long or noisy audio may not hold up.
+- **Context:** Needs a consent step, and the `NSSpeechRecognitionUsageDescription` copy changes, since it currently says transcription happens "on this iPhone".
+- **Blocked by:** the T10 SFSpeech vs SpeechAnalyzer score. Only build it if SFSpeech scores poorly.
+
+## Self-healing media
+- **Priority:** P3, Server.
+- **What:** A missing proxy schedules regeneration instead of returning a 409 (the "not yet" 409 in `server/src/routes/assets.ts`, ~line 626 on release/1.1). A done render whose file is missing goes stale and re-renders (`server/src/routes/renders.ts`, ~line 13).
+- **Why:** Today a lost file is a dead end for the user.
+- **Context:** Once missing media heals itself, proxies and renders can be pruned to stay under the Fly volume's 500 GB cap.
+
 ## Reclaim disk from orphaned pre-auth media
 - **What:** A one-off script that deletes `user_id IS NULL` projects and non-`sound-*` assets, plus their `assetsRoot/<id>` dirs.
 - **Why:** After per-user scoping they're invisible to everyone but still use the Fly volume, which has a hard 500 GB cap.
