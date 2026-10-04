@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // config.ts reads these at import time, and vitest runs this block before the
@@ -77,16 +79,39 @@ const event = (eventId: string, userId = ALICE) => ({ type: 'user.deleted', even
 const projectCount = (database: EditifyDatabase, userId: string) =>
   (database.prepare('SELECT COUNT(*) AS count FROM projects WHERE user_id = ?').get(userId) as { count: number }).count;
 
-/** The admin API: 404 for ids in `gone`, 200 for everyone else. */
+/**
+ * What Supabase Auth sends for an unknown id with no API version header: the
+ * legacy envelope from internal/api/admin.go (loadUser), plus x-sb-error-code.
+ */
+const userNotFound = () => new Response(
+  JSON.stringify({ code: 404, error_code: 'user_not_found', msg: 'User not found' }),
+  { status: 404, headers: { 'content-type': 'application/json', 'x-sb-error-code': 'user_not_found' } },
+);
+
+/** A 404 that is not Auth's answer: a wrong SUPABASE_URL path, a proxy, a gateway. */
+const gateway404 = () => new Response(
+  JSON.stringify({ message: 'no Route matched with those values' }),
+  { status: 404, headers: { 'content-type': 'application/json' } },
+);
+
+/** The admin API: Auth's user_not_found for ids in `gone`, 200 for everyone else. */
 function stubAdmin(gone: string[], status?: number) {
   const fetchMock = vi.fn(async (url: string | URL) => {
     if (status) return new Response('{}', { status });
     const id = decodeURIComponent(String(url).split('/').pop() ?? '');
-    return new Response('{}', { status: gone.includes(id) ? 404 : 200 });
+    return gone.includes(id) ? userNotFound() : new Response('{}', { status: 200 });
   });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
+
+// Restored once every block has run: the sweep blocks below use the admin API too.
+afterAll(() => {
+  for (const [key, value] of Object.entries(scratch.saved)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
 describe('POST /webhooks/supabase/user-deleted', () => {
   let database: EditifyDatabase;
@@ -102,12 +127,6 @@ describe('POST /webhooks/supabase/user-deleted', () => {
     vi.unstubAllGlobals();
     delete process.env.SUPABASE_WEBHOOK_SECRET;
     delete process.env.READ_ONLY;
-  });
-  afterAll(() => {
-    for (const [key, value] of Object.entries(scratch.saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
   });
 
   it('purges a confirmed-deleted user (rows and files), leaving others alone', async () => {
@@ -231,6 +250,33 @@ describe('POST /webhooks/supabase/user-deleted', () => {
     expect(projectCount(database, ALICE)).toBe(1);
   });
 
+  it('answers 503 and deletes nothing on a 404 that is not Auth saying user_not_found', async () => {
+    seedUser(database, ALICE, 'gateway');
+    for (const response of [
+      gateway404,
+      () => new Response('<html>Not Found</html>', { status: 404, headers: { 'content-type': 'text/html' } }),
+      () => new Response('', { status: 404 }),
+      // Auth's own 404 for a malformed id is not "gone" either.
+      () => new Response(JSON.stringify({ code: 404, error_code: 'validation_failed', msg: 'user_id must be an UUID' }), { status: 404 }),
+    ]) {
+      vi.stubGlobal('fetch', vi.fn(async () => response()));
+      expect((await app.inject(delivery(event('evt-gateway')))).statusCode).toBe(503);
+      expect(projectCount(database, ALICE)).toBe(1);
+    }
+  });
+
+  it('accepts user_not_found in the 2024-01-01 error envelope and from the header alone', async () => {
+    seedUser(database, ALICE, 'versioned');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ code: 'user_not_found', message: 'User not found' }), { status: 404 },
+    )));
+    expect((await app.inject(delivery(event('evt-versioned')))).json().status).toBe('purged');
+
+    seedUser(database, ALICE, 'header-only');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404, headers: { 'x-sb-error-code': 'user_not_found' } })));
+    expect((await app.inject(delivery(event('evt-header-only')))).json().status).toBe('purged');
+  });
+
   it('rejects bad, missing and tampered signatures with 401 before any lookup', async () => {
     const fetchMock = stubAdmin([ALICE]);
     seedUser(database, ALICE, 'forged');
@@ -342,6 +388,25 @@ describe('orphan sweep', () => {
     database.close();
   });
 
+  it('confirms through the admin API only on user_not_found, aborting on a gateway 404', async () => {
+    const database = createDatabase(':memory:');
+    seedUser(database, ALICE, 'api-alice');
+    seedUser(database, BOB, 'api-bob');
+    // Bob is really gone; Alice's lookup hits something that is not Auth.
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => (String(url).endsWith(BOB) ? userNotFound() : gateway404())));
+    await expect(sweepOrphans(database, { purge: true })).rejects.toThrow(/lookup failed \(404\)/);
+    expect(projectCount(database, ALICE)).toBe(1);
+    expect(projectCount(database, BOB)).toBe(1);
+
+    stubAdmin([BOB]);
+    const swept = await sweepOrphans(database, { purge: true });
+    expect(swept.orphans).toEqual([BOB]);
+    expect(projectCount(database, BOB)).toBe(0);
+    expect(projectCount(database, ALICE)).toBe(1);
+    vi.unstubAllGlobals();
+    database.close();
+  });
+
   it('aborts on a lookup error before deleting anything', async () => {
     const database = createDatabase(':memory:');
     seedUser(database, ALICE, 'err-alice');
@@ -353,5 +418,45 @@ describe('orphan sweep', () => {
     await expect(sweepOrphans(database, { exists: flaky, purge: true })).rejects.toThrow(/500/);
     expect(projectCount(database, ALICE)).toBe(1);
     database.close();
+  });
+});
+
+describe('orphan-sweep script under READ_ONLY=1', () => {
+  const script = fileURLToPath(new URL('../scripts/orphan-sweep.ts', import.meta.url));
+  const serverDir = fileURLToPath(new URL('..', import.meta.url));
+  const run = (args: string[], env: Record<string, string>) => spawnSync(process.execPath, ['--import', 'tsx', script, ...args], {
+    cwd: serverDir,
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH ?? '',
+      HOME: process.env.HOME ?? '',
+      EDITIFY_DATA_DIR: scratch.dataDir,
+      SUPABASE_URL: 'https://supabase.test',
+      SUPABASE_SERVICE_ROLE_KEY: 'service-role-for-tests',
+      ...env,
+    },
+  });
+
+  it('refuses --purge with a clear message and a non-zero exit, before opening anything', () => {
+    const missing = join(scratch.dataDir, 'never-created.db');
+    const result = run(['--purge'], { READ_ONLY: '1', DATABASE_PATH: missing });
+    expect(result.status).toBe(4);
+    expect(result.stderr).toMatch(/READ_ONLY=1.*--purge will not run/);
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it('runs the dry run on a read-only connection, leaving the file byte-identical', () => {
+    const path = join(scratch.dataDir, 'frozen.db');
+    createDatabase(path, { readonly: false }).close();
+    const before = readFileSync(path);
+    const result = run([], { READ_ONLY: '1', DATABASE_PATH: path });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ mode: 'dry-run', owners: 0, orphans: [] });
+    expect(readFileSync(path).equals(before)).toBe(true);
+
+    // A read-write open would create a missing file; the read-only one refuses it.
+    const absent = join(scratch.dataDir, 'absent.db');
+    expect(run([], { READ_ONLY: '1', DATABASE_PATH: absent }).status).not.toBe(0);
+    expect(existsSync(absent)).toBe(false);
   });
 });

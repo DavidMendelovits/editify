@@ -132,9 +132,10 @@ export function listDataOwners(database: EditifyDatabase): string[] {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Whether Supabase still has this login, from the admin API. Only a 404 counts
- * as gone; anything else that is not a 200 throws, because callers delete data
- * on "gone" and an outage must never read as that.
+ * Whether Supabase still has this login, from the admin API. Only Auth's own
+ * "user not found" counts as gone; anything else that is not a 200 throws,
+ * because callers delete data on "gone" and an outage must never read as that.
+ * That includes a bare 404 from a wrong SUPABASE_URL, a proxy or a gateway.
  */
 export async function supabaseUserExists(userId: string): Promise<boolean> {
   const key = serviceRoleKey();
@@ -142,10 +143,26 @@ export async function supabaseUserExists(userId: string): Promise<boolean> {
   const response = await fetch(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
     headers: { apikey: key, authorization: `Bearer ${key}` },
   });
-  if (response.status === 404) return false;
   if (response.ok) return true;
+  if (response.status === 404 && await isUserNotFound(response)) return false;
   throw new Error(`Supabase admin lookup failed (${response.status})`);
 }
+
+/**
+ * Auth's GET /admin/users/{id} answers an unknown id with 404 and the error
+ * code `user_not_found` (internal/api/admin.go, loadUser). With no API version
+ * header the body is the legacy envelope
+ *   {"code":404,"error_code":"user_not_found","msg":"User not found"}
+ * and the 2024-01-01 envelope is {"code":"user_not_found","message":"..."}.
+ * Auth also sets `x-sb-error-code`. Any of the three is accepted.
+ */
+async function isUserNotFound(response: Response): Promise<boolean> {
+  if (response.headers.get('x-sb-error-code') === USER_NOT_FOUND) return true;
+  const body = await response.json().catch(() => undefined) as { error_code?: unknown; code?: unknown } | undefined;
+  return body?.error_code === USER_NOT_FOUND || body?.code === USER_NOT_FOUND;
+}
+
+const USER_NOT_FOUND = 'user_not_found';
 
 /**
  * Removes the Supabase login itself. This is `auth.admin.deleteUser` over the
