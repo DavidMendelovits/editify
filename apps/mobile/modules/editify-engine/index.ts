@@ -155,9 +155,10 @@ export interface ExportStateEvent {
   error?: string;
   /**
    * failed: why, as a stable code. `backgrounded`: a foreground export stopped because Editify
-   * went to the background (the error is ExportCenter's backgroundedMessage); the server can finish it.
+   * went to the background (the error is ExportCenter's backgroundedMessage). `expired`: iOS ended a
+   * background export's task (expiredMessage). The server can finish either.
    */
-  reason?: 'backgrounded';
+  reason?: 'backgrounded' | 'expired';
   /** done: the .mp4 (kept until the next launch), for the share sheet. */
   fileUri?: string;
   savedToPhotos?: boolean;

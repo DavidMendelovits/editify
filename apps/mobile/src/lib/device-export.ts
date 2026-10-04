@@ -23,7 +23,8 @@
  *           server checks the snapshot again and names what is missing
  *
  *   Finish on server (D26) ─▶ a device run failed with reason 'backgrounded' (ExportCenter's
- *     backgroundedMessage: Editify went to the background mid-export) ─▶ one tap, "finish on server"
+ *     backgroundedMessage: Editify went to the background mid-export) or 'expired' (expiredMessage:
+ *     iOS ended a background export's task) ─▶ one tap, "finish on server"
  *     ─▶ finishOnServerOnce (a second tap joins the run in flight; a started render answers again)
  *     ─▶ the project and assets as they are NOW (an edit since the failed run is what renders)
  *     ─▶ the server path above: ready / unchecked ─▶ render the current snapshot
@@ -410,7 +411,7 @@ export interface DeviceExportView {
   mode?: 'background' | 'foreground';
   notice?: string;
   error?: string;
-  /** failed: the native code for why (`backgrounded`: the server can finish it, D26). */
+  /** failed: the native code for why (`backgrounded` or `expired`: the server can finish it, D26). */
   reason?: ExportStateEvent['reason'];
   fileUri?: string;
   savedToPhotos?: boolean;
@@ -567,9 +568,9 @@ async function runNativeExport(args: ExportOnDeviceArgs, plan: RenderPlan, media
 
 // ─── Finish on server (D26) ───
 
-/** A device export stopped because Editify went to the background: the server can finish it. */
+/** A device export stopped by backgrounding, or a background one iOS stopped: the server can finish it. */
 export function canFinishOnServer(view: DeviceExportView | undefined): boolean {
-  return view?.state === 'failed' && view.reason === 'backgrounded';
+  return view?.state === 'failed' && (view.reason === 'backgrounded' || view.reason === 'expired');
 }
 
 /** No answer from the server at all (offline, DNS, TLS): the run can be tapped again later. */

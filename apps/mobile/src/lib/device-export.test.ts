@@ -601,7 +601,7 @@ describe('finish on server (D26)', () => {
     ...overrides,
   });
 
-  it('is offered only for a device export stopped by backgrounding, by its code and not its text', () => {
+  it('is offered only for a device export stopped by backgrounding or iOS, by its code and not its text', () => {
     const backgrounded = failedWith({ error: BACKGROUNDED, reason: 'backgrounded' });
     expect(backgrounded).toMatchObject({ state: 'failed', error: BACKGROUNDED, reason: 'backgrounded' });
     expect(canFinishOnServer(backgrounded)).toBe(true);
@@ -609,6 +609,10 @@ describe('finish on server (D26)', () => {
     expect(canFinishOnServer(failedWith({ error: 'Not enough space' }))).toBe(false);
     expect(canFinishOnServer(failedWith({ error: BACKGROUNDED }))).toBe(false);
     expect(canFinishOnServer(failedWith({ error: 'iOS stopped the export' }))).toBe(false);
+    // A background export iOS stopped (expiredMessage) carries its own code, and the server can finish it too.
+    const expired = failedWith({ error: 'iOS stopped the export', reason: 'expired' });
+    expect(expired).toMatchObject({ state: 'failed', reason: 'expired' });
+    expect(canFinishOnServer(expired)).toBe(true);
     expect(canFinishOnServer(exportReducer(STARTING, { id: 'x', state: 'cancelled', progress: 0 }))).toBe(false);
     expect(canFinishOnServer(undefined)).toBe(false);
   });
