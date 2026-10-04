@@ -374,24 +374,25 @@ final class Rig {
   }
 
   /// An exact seek, then the frame the output gets for it.
-  func frame(at k: Int, fps: Int) async throws -> (buffer: CVPixelBuffer, ms: Double) {
+  func frame(at k: Int, fps: Int, timeout: Double = 15) async throws -> (buffer: CVPixelBuffer, ms: Double) {
     let time = CMTime(value: CMTimeValue(k), timescale: CMTimeScale(fps))
     let started = CFAbsoluteTimeGetCurrent()
     let landed = seeksLanded
     player.seek(to: time.seconds, exact: true)
     try await expect("seek to frame \(k) landed") { seeksLanded > landed }
-    guard let buffer = await newFrame(at: time) else { throw HarnessError("timed out: the video output vended no frame at \(k)") }
+    guard let buffer = await newFrame(at: time, timeout: timeout) else { throw HarnessError("timed out: the video output vended no frame at \(k)") }
     return (buffer, (CFAbsoluteTimeGetCurrent() - started) * 1000)
   }
 
   /// The next frame the output vends for `time` itself. (hasNewPixelBuffer is also true for an
   /// older frame still queued, such as the one on screen when the player paused; on a slow VM
   /// that one can still be waiting when a seek lands. Its display time tells them apart.)
+  /// The output is read on every poll: a rebuild landing meanwhile (a stale source swapped at the
+  /// pause, say) replaces the item, and the frame then comes from the new item's output.
   func newFrame(at time: CMTime, timeout: Double = 15) async -> CVPixelBuffer? {
-    guard let output else { return nil }
     var found: CVPixelBuffer?
     _ = await until(timeout) {
-      guard output.hasNewPixelBuffer(forItemTime: time) else { return false }
+      guard let output, output.hasNewPixelBuffer(forItemTime: time) else { return false }
       var shown = CMTime.invalid
       guard let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &shown) else { return false }
       guard shown.isValid, abs(shown.seconds - time.seconds) < 1.0 / 120 else { return false }
@@ -434,16 +435,21 @@ func whiteAndRed(_ buffer: CVPixelBuffer, x: Double, y: Double, w: Double, h: Do
 
 /// The source frame (its embedded code) the player shows paused at frame k of a plan whose
 /// talk clip plays from a server. Bytes may still be on their way (the server trickles them; a
-/// CI VM is slow): a paused seek lands on the last frame decoded, so it seeks again until the
-/// frame at k arrives, for up to 15 s, and returns what it shows then.
+/// CI VM is slow): a paused seek lands on the last frame decoded, or vends no frame within its
+/// wait on a loaded runner, so it seeks again until the frame at k arrives, for up to 30 s, and
+/// returns what it shows then (-1: no frame at all).
 @MainActor
 func serverCode(_ rig: Rig, at k: Int) async throws -> Int {
   rig.player.pause()
-  let deadline = CFAbsoluteTimeGetCurrent() + 15
+  let deadline = CFAbsoluteTimeGetCurrent() + 30
   var shown = -1
   repeat {
-    shown = decodeCode(pixels(try await rig.frame(at: k, fps: 30).buffer, space: workingSpace))
-    if shown == k { break }
+    do {
+      shown = decodeCode(pixels(try await rig.frame(at: k, fps: 30, timeout: min(15, max(1, deadline - CFAbsoluteTimeGetCurrent()))).buffer, space: workingSpace))
+      if shown == k { break }
+    } catch let error as HarnessError where error.description.hasPrefix("timed out: the video output vended no frame") {
+      Watchdog.log("no frame at \(k) yet; seeking again")
+    }
     try? await Task.sleep(nanoseconds: 300_000_000)
   } while CFAbsoluteTimeGetCurrent() < deadline
   return shown
@@ -666,11 +672,23 @@ func run() async throws -> [String: Any] {
     let rig = Rig()
     let base = try fixture("overlays")
     try await rig.apply(try decode(base, revision: 1, buildSeq: next()))
-    rig.player.seek(to: 0.2, exact: true)
     rig.player.play()
-    try await rig.expect("playing before the drag") { rig.player.player.rate > 0 && rig.player.currentTime > 0.25 }
-    try? await Task.sleep(nanoseconds: 200_000_000)
+    try await rig.expect("playing before the drag") { rig.player.player.rate > 0 && rig.player.currentTime > 0.05 }
     let output = rig.output!
+    // The frame pacing this machine achieves right now with no updates (a loaded CI VM renders on
+    // the CPU at a fraction of a Mac's rate): the drag's frames are held to it, not to a constant.
+    // Half a second, which also lets playback settle; the drag and the audio edits after it still
+    // end before the 4 s plan does.
+    var baselineFrames = 0
+    let baselineStart = CFAbsoluteTimeGetCurrent()
+    while CFAbsoluteTimeGetCurrent() - baselineStart < 0.5 {
+      let itemTime = output.itemTime(forHostTime: CACurrentMediaTime())
+      if output.hasNewPixelBuffer(forItemTime: itemTime), output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) != nil {
+        baselineFrames += 1
+      }
+      try? await Task.sleep(nanoseconds: 1_000_000)
+    }
+    let baselineWall = CFAbsoluteTimeGetCurrent() - baselineStart
     var frameWalls: [Double] = []
     let stallsBefore = rig.stalls
     let drawsBefore = rig.player.graphics.draws
@@ -715,6 +733,7 @@ func run() async throws -> [String: Any] {
       // The emoji and callout stay put while the logo moves: their bitmaps come from the cache.
       "stickerRedraws": rig.player.graphics.draws - drawsBefore, "fps": 30,
       "frames": frameWalls.count, "frameIntervalMs": stats(intervals), "playingAfter": rig.player.player.rate > 0,
+      "baselineFrames": baselineFrames, "baselineWallSeconds": baselineWall,
       "audio": tapContinuity(rig.tap, from: startWall + 0.05, to: endWall),
     ] as [String: Any]
 
@@ -956,10 +975,32 @@ func run() async throws -> [String: Any] {
     let loadRetried: [String: Any] = ["mode": loadRetry.mode.rawValue, "state": "\(load.player.remoteRetry)", "errors": load.errors.count]
     load.player.teardown()
 
+    watchdog.step("server copies: the retry fails during a reconnect")
+    // The tagged retry lands while a reconnect is due and fails too: the reconnects run out on the
+    // dead URL, and that failure is reported. (The retry is spent: the player must not go on
+    // waiting for fresh media, ignoring every failure after it.)
+    let spent = Rig()
+    spent.player.reconnectDelays = [0, 0.05]
+    try await spent.apply(try decode(base, revision: 1, buildSeq: 1), media: serverCopy(token: "t7"))
+    spent.player.simulateItemFailure()
+    try await spent.expect("mediaExpired for the failure") { !spent.expired.isEmpty }
+    let awaitingBefore = "\(spent.player.remoteRetry)"
+    spent.player.simulateReconnectDue()
+    let appliedBeforeRetry = spent.applied.count
+    spent.player.setPlan(try decode(base, revision: 1, buildSeq: 2), media: serverCopy(token: "expired"), mediaRetry: true)
+    try await spent.expect("the retry failed") { spent.applied.dropFirst(appliedBeforeRetry).contains { $0.mode == .failed } }
+    let stateAfterRetry = "\(spent.player.remoteRetry)"
+    let reportedAfterReconnects = await spent.until(5) { !spent.errors.isEmpty }
+    let retryDuringReconnect: [String: Any] = [
+      "before": awaitingBefore, "after": stateAfterRetry, "reported": reportedAfterReconnects,
+      "expired": spent.expired.count, "errors": spent.errors.count, "reconnects": spent.player.reconnectCount,
+    ]
+    spent.player.teardown()
+
     report["serverCopies"] = [
       "paused": paused, "playing": playing, "staleRetry": staleRetry, "pauseSwap": pauseSwap, "asked": asked,
       "interleave": interleave, "retried": retried, "fellBack": fellBack, "structuralSwap": structuralSwap,
-      "loadFailure": loadFailure, "loadRetried": loadRetried,
+      "loadFailure": loadFailure, "loadRetried": loadRetried, "retryDuringReconnect": retryDuringReconnect,
     ] as [String: Any]
   }
 
@@ -1060,6 +1101,39 @@ func run() async throws -> [String: Any] {
     ] as [String: Any]
     rig.player.teardown()
     server.stop()
+  }
+
+  // MARK: The paused-seek verify re-seeks only a remote frame not drawn yet
+  do {
+    watchdog.step("paused seek verify")
+    // asset-b plays from a "server copy", asset-a from a local file (crossfade: a alone to 2 s,
+    // the crossfade to 2.5 s, b alone after). Seeking paused to a frame already on screen asks
+    // the compositor for nothing, so the verify must not read that as a frame not drawn.
+    var refs = mediaRefs
+    refs["asset-b"] = "https://media.test/asset-b/proxy.mov?k=t1"
+    let rig = Rig()
+    let plan = try fixture("crossfade")
+    try await rig.apply(try decode(plan, revision: 1, buildSeq: 1), media: refs)
+    func repeatSeek(_ k: Int) async throws -> [String: Any] {
+      _ = try await rig.frame(at: k, fps: 30)
+      try? await Task.sleep(nanoseconds: 300_000_000)
+      let landed = rig.seeksLanded
+      rig.player.seek(to: Double(k) / 30, exact: true)
+      try await rig.expect("the repeat seek to frame \(k) landed") { rig.seeksLanded > landed }
+      // Past three verify delays: every re-seek the verify would make has landed by then.
+      try? await Task.sleep(nanoseconds: UInt64((PlanPlayer.verifyDelay * 3 + 0.8) * 1e9))
+      let time = CMTime(value: CMTimeValue(k), timescale: 30)
+      let shown = rig.output?.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil).map { decodeCode(pixels($0, space: workingSpace)) }
+      return ["reseeks": rig.seeksLanded - landed - 1, "time": rig.player.currentTime, "shown": shown ?? -1]
+    }
+    let decoded = try decode(plan, revision: 1, buildSeq: 1)
+    report["pausedSeekVerify"] = [
+      "local": try await repeatSeek(15), "remote": try await repeatSeek(100),
+      // Which frames the verify watches at all: a (local) alone, the crossfade into b, b (remote) alone.
+      "remoteDraws": [0.5, 2.2, 3.3, 4.0].map { PlanPlayer.remoteSourceDraws(at: $0, in: decoded, refs: refs) },
+      "remoteDrawsAllLocal": PlanPlayer.remoteSourceDraws(at: 3.3, in: decoded, refs: mediaRefs),
+    ] as [String: Any]
+    rig.player.teardown()
   }
 
   // MARK: A remote clip whose picture ends before its sound, played at a quarter speed
