@@ -21,6 +21,8 @@ final class MediaServer: @unchecked Sendable {
   private var tokens = Set<String>()
   private var open: [ObjectIdentifier: NWConnection] = [:]
   private var counts = (served: 0, refused: 0, failed: 0)
+  /// When each refusal happened (CFAbsoluteTime).
+  private var refusals: [Double] = []
   private var failingNow = false
   /// Seconds the server's clock runs ahead of this machine's: it mints and checks `exp` by it.
   let clockShift: TimeInterval
@@ -91,6 +93,8 @@ final class MediaServer: @unchecked Sendable {
     lock.withLock { log.append(String(format: "%.2f ", CFAbsoluteTimeGetCurrent() - started) + line) }
   }
   var refused: Int { lock.withLock { counts.refused } }
+  /// Refusals between two moments (CFAbsoluteTime).
+  func refused(from: Double, to: Double) -> Int { lock.withLock { refusals.filter { $0 >= from && $0 <= to }.count } }
 
   // MARK: HTTP
 
@@ -141,7 +145,7 @@ final class MediaServer: @unchecked Sendable {
     let range = lines.dropFirst().first { $0.lowercased().hasPrefix("range:") } ?? "no range"
     guard allowed else {
       note("\(method) \(range) k=\(token.suffix(6)): 401")
-      lock.withLock { counts.refused += 1 }
+      lock.withLock { counts.refused += 1; refusals.append(CFAbsoluteTimeGetCurrent()) }
       return send(connection, status: "401 Unauthorized")
     }
     guard let file, let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return send(connection, status: "404 Not Found") }

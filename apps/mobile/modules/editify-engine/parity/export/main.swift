@@ -67,26 +67,7 @@ for item in exportManifest.exports {
 var mediaFiles: [String: URL] = [:]
 for id in wanted.sorted() {
   guard let media = allMedia[id] else { throw HarnessError("no media \(id) in either manifest") }
-  switch media.kind {
-  case "video":
-    let url = work.appendingPathComponent("\(id).mov")
-    _ = try writeVideo(media, to: url)
-    mediaFiles[id] = url
-  case "audio":
-    let url = work.appendingPathComponent("\(id).m4a")
-    try writeAudio(media, to: url)
-    mediaFiles[id] = url
-  case "png":
-    let url = work.appendingPathComponent("\(id).png")
-    try writeLogo(media, to: url)
-    mediaFiles[id] = url
-  case "gif":
-    let url = work.appendingPathComponent("\(id).gif")
-    try writeGif(media, to: url)
-    mediaFiles[id] = url
-  default:
-    throw HarnessError("unknown media kind \(media.kind)")
-  }
+  mediaFiles[id] = try synthesized(id, media, work: work).url
 }
 
 let resolver = PlanAssetResolver(

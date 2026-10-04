@@ -222,6 +222,8 @@ export class Importer {
     this.concurrency = options.concurrency ?? 4;
     this.log = options.log ?? (() => undefined);
     // The live 1.1 server shares this file: wait out its writes instead of failing with SQLITE_BUSY.
+    // Every write transaction here is IMMEDIATE: one that reads first (dropPrevious, replay) would
+    // otherwise fail its first write at once, without the timeout, while the server holds the lock.
     this.dest.pragma('busy_timeout = 15000');
     this.dest.pragma('foreign_keys = ON');
     ensureStateTables(this.dest);
@@ -442,7 +444,7 @@ export class Importer {
           rows = excluded.rows, files = excluded.files, imported_at = excluded.imported_at
       `).run(user, tag, prepared.watermark, prepared.snapshotName, rows, fileCount, now);
       clearFailures(this.dest, user);
-    })();
+    }).immediate();
     await this.removeStaleMedia(before);
 
     if (this.pg && user !== SHARED) {
@@ -467,7 +469,7 @@ export class Importer {
       this.dest.prepare("DELETE FROM import_ledger WHERE table_name = 'pg.sync_projects' AND user_id = ?").run(user);
       const insert = this.dest.prepare('INSERT OR REPLACE INTO import_ledger (table_name, pk_json, user_id, tag, imported_at) VALUES (?, ?, ?, ?, ?)');
       for (const id of projectIds) insert.run('pg.sync_projects', JSON.stringify([id]), user, tag, now);
-    })();
+    }).immediate();
   }
 
   /**
@@ -619,7 +621,7 @@ export class Importer {
           report.through = mutation.id;
         }
         setState(this.dest, STATE_DELTA_THROUGH, String(Math.max(report.through, prepared.watermark)));
-      })();
+      }).immediate();
       await this.removeStaleMedia(deletedMedia);
       if (this.pg) {
         const pgUsers = new Set([...(await this.pg.owners()), ...(this.dest.prepare("SELECT DISTINCT user_id FROM import_ledger WHERE table_name = 'pg.sync_projects'").all() as Array<{ user_id: string }>).map((row) => row.user_id)]);

@@ -69,7 +69,7 @@ export async function purgeUserData(database: EditifyDatabase, userId: string, s
       reports: database.prepare('DELETE FROM reports WHERE user_id = ?').run(userId).changes,
       styles: database.prepare('DELETE FROM style_profiles WHERE user_id = ?').run(userId).changes,
     };
-  })();
+  }).immediate();
 
   // Media is one directory per asset and one per render. A recorded output
   // outside its render directory (older layouts, tests) goes too.

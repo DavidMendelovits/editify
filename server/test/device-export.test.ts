@@ -8,6 +8,7 @@ import { planFrameCount, renderPlanSchema } from '@editify/shared';
 import { buildRotatedPlan, PORTRAIT_CLIP, ROTATED_PLAN_FILE } from './helpers/rotated-plan.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ADAPTER_FLAGS, ADAPTER_RUNS, ADAPTER_SOURCES, type AdapterReport } from './helpers/engine-adapters.js';
+import { harnessMediaEnv } from './helpers/harness-media.js';
 
 /*
  * Plan P4 (8A + OV8): the phone's on-device export. The macOS harness
@@ -141,9 +142,11 @@ beforeAll(async () => {
   // Async: the build and the exports take a while on a CI runner (see render-golden.test.ts).
   await run('xcrun', ['swiftc', '-O', '-swift-version', '5', ...ADAPTER_FLAGS, ...sources, ...harness, '-o', binary], { maxBuffer: 64 << 20 });
   // One set after the other: the exports measure memory and time.
+  // Both sets play the same synthesized media (helpers/harness-media.ts).
+  const media = harnessMediaEnv(dir);
   for (const { set, env } of ADAPTER_RUNS) {
     const args = [join(engine, 'parity/goldens/manifest.json'), join(engine, 'parity/export/manifest.json'), root, join(dir, `work-${set}`), join(dir, `out-${set}`)];
-    reports[set] = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, env })).stdout) as Report;
+    reports[set] = JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...env, ...media } })).stdout) as Report;
   }
 }, 900000);
 
