@@ -50,17 +50,13 @@ var mediaReport: [String: Any] = [:]
 for (id, media) in manifest.media.sorted(by: { $0.key < $1.key }) {
   switch media.kind {
   case "video":
-    let url = work.appendingPathComponent("\(id).mov")
-    let codec = try writeVideo(media, to: url)
+    let (url, codec) = try synthesized(id, media, work: work)
     mediaFiles[id] = url
-    mediaReport[id] = ["codec": codec]
+    mediaReport[id] = ["codec": codec ?? "?"]
   case "audio":
-    let url = work.appendingPathComponent("\(id).m4a")
-    try writeAudio(media, to: url)
-    mediaFiles[id] = url
+    mediaFiles[id] = try synthesized(id, media, work: work).url
   case "png":
-    let url = work.appendingPathComponent("\(id).png")
-    try writeLogo(media, to: url)
+    let url = try synthesized(id, media, work: work).url
     mediaFiles[id] = url
     let source = CGImageSourceCreateWithURL(url as CFURL, nil)!
     let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
@@ -72,8 +68,7 @@ for (id, media) in manifest.media.sorted(by: { $0.key < $1.key }) {
                        "uprightWidth": Int(full.extent.width), "uprightHeight": Int(full.extent.height),
                        "downsampled": [Int(small.extent.width), Int(small.extent.height)]]
   case "gif":
-    let url = work.appendingPathComponent("\(id).gif")
-    try writeGif(media, to: url)
+    let url = try synthesized(id, media, work: work).url
     mediaFiles[id] = url
     let source = CGImageSourceCreateWithURL(url as CFURL, nil)!
     var delays: [Double] = []

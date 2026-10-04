@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPlanSchema } from '@editify/shared';
 import { ADAPTER_FLAGS, ADAPTER_RUNS, ADAPTER_SOURCES, type AdapterReport } from './helpers/engine-adapters.js';
+import { harnessMediaEnv } from './helpers/harness-media.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /*
@@ -112,11 +113,13 @@ beforeAll(async () => {
   // One after the other, the legacy run compared with the default run's frames (not the
   // goldens): its `compare` is then the exact Mutable-vs-Configuration difference per frame.
   const reports: Report[] = [];
+  // Both runs read the same synthesized media (helpers/harness-media.ts).
+  const media = harnessMediaEnv(dir);
   for (const { set, env } of ADAPTER_RUNS) {
     // Only the default run may bless.
     const args = [join(goldens, 'manifest.json'), root, join(dir, `work-${set}`), outDirs[set], ...(bless && set === 'modern' ? ['--bless'] : [])];
     const compareWith = set === 'legacy' ? { GOLDEN_COMPARE_DIR: outDirs.modern } : {};
-    reports.push(JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...env, ...compareWith } })).stdout) as Report);
+    reports.push(JSON.parse((await run(binary, args, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...env, ...media, ...compareWith } })).stdout) as Report);
   }
   [report, legacyReport] = reports as [Report, Report];
 }, 600000);
@@ -153,6 +156,13 @@ const srgbLinear = (byte: number): number => {
   return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 };
 const tone = (name: string, window: string, hz: number): number => render(name).audio!.windows[window]![String(hz)]!;
+/** Whether a plan time-scales any audio entry (speed != 1): its mix runs through time-pitch. */
+function planHasSpedAudio(name: string): boolean {
+  const harnessOnly = join(goldens, 'plans', `${name}.json`);
+  const file = readdirSync(join(goldens, 'plans')).includes(`${name}.json`) ? harnessOnly : join(root, 'packages/shared/fixtures/render-plans', `${name}.json`);
+  const { plan } = JSON.parse(readFileSync(file, 'utf8')) as { plan: { audio?: Array<{ speed: number }> } };
+  return (plan.audio ?? []).some((entry) => entry.speed !== 1);
+}
 
 describe('render goldens: harness availability', () => {
   it.runIf(required)('has swiftc where REQUIRE_SWIFT=1', () => {
@@ -182,33 +192,42 @@ describe.skipIf(!swiftAvailable)('render goldens: both adapter sets (D22, D24)',
     expect(pngs.length).toBeGreaterThan(20);
     expect(readdirSync(outDirs.legacy).filter((name) => name.endsWith('.png')).sort()).toEqual(pngs);
     const differing = pngs.filter((name) => !readFileSync(join(outDirs.modern, name)).equals(readFileSync(join(outDirs.legacy, name))));
-    // Byte-identical in a quiet run (both compositions hand EditifyCompositor the same
-    // instructions, size, frame duration and colour tags). Under load the compositor's frames
-    // can move by a few codes between any two runs, the same set included, so a differing frame
-    // is held to the golden tolerance against the default run's frame and its numbers logged.
+    // Both compositions hand EditifyCompositor the same instructions, size, frame duration and
+    // colour tags, and both runs decode the same source files (synthesized once per test run,
+    // helpers/harness-media.ts): the frames are byte-identical, under load too. (Each run used to
+    // encode its own sources, and the hardware encoder moved crossfade-067 and dip-055 by a few
+    // codes between runs on a loaded machine.) A differing frame's numbers are logged.
     const diffs = legacyReport.renders.flatMap((item) => (item.frames ?? []).filter((f) => f.golden && differing.includes(f.golden))
       .map((f) => ({ frame: `${item.name}#${f.k}`, meanAbs: f.compare?.meanAbs, blurredMax: f.compare?.blurredMax })));
     console.info(`mutable vs configuration: ${pngs.length - differing.length}/${pngs.length} frames byte-identical`, diffs.length ? JSON.stringify(diffs) : '');
-    for (const item of legacyReport.renders) {
-      for (const f of item.frames ?? []) {
-        if (!f.golden) continue;
-        const label = `${item.name}#${f.k} (${f.golden}) mutable vs configuration`;
-        expect(f.compare?.missingGolden, label).toBeUndefined();
-        expect(f.compare?.sizeMismatch, label).toBeUndefined();
-        for (const value of f.compare!.meanAbs!) expect(value, `${label} mean abs`).toBeLessThanOrEqual(MEAN_ABS_MAX);
-        expect(f.compare!.blurredMax!, `${label} blurred max`).toBeLessThanOrEqual(BLURRED_MAX);
-      }
-    }
+    expect(differing).toEqual([]);
     // What doesn't depend on GPU timing is identical: colour tags, decoded frame codes, the
     // instruction count, durations, the mix. Not how many samples the reader handed back past
     // the end or fell short of it (its buffer sizes and the time-pitch tail vary run to run;
-    // the tone windows hold the mix).
+    // the tone windows hold the mix). Where time-pitch runs (a sped-up entry) its tail varies run
+    // to run (trimmed past the end, or padded with silence where it falls short, by up to 2048 of
+    // the mix's samples), and the tone windows move with it: held to 0.005 there, exactly
+    // everywhere else.
+    const sped = (item: Render) => planHasSpedAudio(item.name);
+    const exactAudio = (item: Render) => item.audio && !sped(item)
+      ? { ...item.audio, overshootDropped: undefined, shortfall: undefined }
+      : item.audio && { samples: item.audio.samples };
     const structure = (value: Report) => value.renders.map((item) => ({
       name: item.name, emptyPlanRefused: item.emptyPlanRefused, instructions: item.instructions, durationSeconds: item.durationSeconds,
       frames: (item.frames ?? []).map((f) => ({ k: f.k, code: f.code, tags: f.tags })), sequentialCodes: item.sequentialCodes,
-      audioEdits: item.audioEdits, audio: item.audio && { ...item.audio, overshootDropped: undefined, shortfall: undefined },
+      audioEdits: item.audioEdits, audio: exactAudio(item),
     }));
     expect(structure(legacyReport)).toEqual(structure(report));
+    for (const item of report.renders.filter((candidate) => candidate.audio && sped(candidate))) {
+      const other = legacyReport.renders.find((candidate) => candidate.name === item.name)!.audio!;
+      for (const part of ['windows', 'left', 'right'] as const) {
+        for (const [window, tones] of Object.entries(item.audio![part])) {
+          for (const [hz, amplitude] of Object.entries(tones)) {
+            expect(Math.abs(other[part][window]![hz]! - amplitude), `${item.name} ${part} ${window} ${hz} Hz`).toBeLessThanOrEqual(0.005);
+          }
+        }
+      }
+    }
   });
 });
 

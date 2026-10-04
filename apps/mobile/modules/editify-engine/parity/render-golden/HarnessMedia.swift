@@ -5,6 +5,7 @@
 
 import AVFoundation
 import CoreImage
+import CryptoKit
 import Foundation
 import ImageIO
 import Metal
@@ -13,7 +14,7 @@ import UniformTypeIdentifiers
 // MARK: Manifest
 
 struct Manifest: Decodable {
-  struct Media: Decodable {
+  struct Media: Codable {
     let kind: String            // video | audio | png | gif
     let transfer: String?       // sdr | hlg | pq
     let codec: String?          // h264 | hevc
@@ -52,7 +53,7 @@ struct Manifest: Decodable {
     /// near full scale and a high crest factor, for the limiter's true-peak check.
     let signal: String?
   }
-  struct GifFrame: Decodable { let rgb: [Double]; let delayCs: Int }
+  struct GifFrame: Codable { let rgb: [Double]; let delayCs: Int }
   struct Probe: Decodable { let name: String; let x: Double; let y: Double; let r: Int? }
   struct Rect: Decodable { let name: String; let x: Double; let y: Double; let w: Double; let h: Double }
   struct Frame: Decodable {
@@ -175,6 +176,55 @@ func audioSampleBuffer(_ samples: [Float], start: Int, rate: Double, channels: I
     presentationTimeStamp: CMTime(value: CMTimeValue(start), timescale: CMTimeScale(rate)), packetDescriptions: nil, sampleBufferOut: &buffer)
   guard status == noErr, let buffer else { throw HarnessError("audio sample buffer: \(status)") }
   return buffer
+}
+
+// MARK: Media synthesis, once
+
+/// One manifest medium, synthesized into `work`, or (with HARNESS_MEDIA_DIR set) made once and
+/// reused from there. The videos go through the hardware encoder, whose output moves by a few
+/// codes from run to run on a loaded machine; reading the same files, two runs (the two adapter
+/// sets, D24) see the same source pixels, so their frames compare byte for byte. Each file is
+/// named by the hash of its spec, so a changed spec is a new file; the directory itself is per
+/// version of this file's synthesis code (server/test/helpers/harness-media.ts). Returns the file
+/// and, for a video, the codec the encoder used.
+func synthesized(_ id: String, _ media: Manifest.Media, work: URL) throws -> (url: URL, codec: String?) {
+  let ext = ["video": "mov", "audio": "m4a", "png": "png", "gif": "gif"][media.kind] ?? "bin"
+  func write(to url: URL) throws -> String? {
+    switch media.kind {
+    case "video": return try writeVideo(media, to: url)
+    case "audio": try writeAudio(media, to: url)
+    case "png": try writeLogo(media, to: url)
+    case "gif": try writeGif(media, to: url)
+    default: throw HarnessError("unknown media kind \(media.kind)")
+    }
+    return nil
+  }
+  guard let shared = ProcessInfo.processInfo.environment["HARNESS_MEDIA_DIR"], !shared.isEmpty else {
+    let url = work.appendingPathComponent("\(id).\(ext)")
+    return (url, try write(to: url))
+  }
+  let dir = URL(fileURLWithPath: shared, isDirectory: true)
+  try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = .sortedKeys
+  let digest = SHA256.hash(data: try encoder.encode(media)).prefix(8).map { String(format: "%02x", $0) }.joined()
+  let name = "\(id)-\(digest)"
+  let url = dir.appendingPathComponent("\(name).\(ext)")
+  let codecFile = dir.appendingPathComponent("\(name).codec")
+  let codec = { try? String(contentsOf: codecFile, encoding: .utf8) }
+  if FileManager.default.fileExists(atPath: url.path) { return (url, codec()) }
+  // Made beside its final name and moved in last (after the codec note): a run killed mid-write,
+  // or another run making the same file, never leaves a half file under the name.
+  let partial = dir.appendingPathComponent("\(name).partial-\(UUID().uuidString).\(ext)")
+  let made = try write(to: partial)
+  if let made { try made.write(to: codecFile, atomically: true, encoding: .utf8) }
+  do {
+    try FileManager.default.moveItem(at: partial, to: url)
+  } catch where FileManager.default.fileExists(atPath: url.path) {
+    try? FileManager.default.removeItem(at: partial)
+    return (url, codec())
+  }
+  return (url, made)
 }
 
 /// Writes one synthetic video (and its tone) with AVAssetWriter. Returns the codec actually used.

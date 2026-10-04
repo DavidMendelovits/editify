@@ -157,7 +157,7 @@ jobs:
           done
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "App build needed: $app" | tee -a "$GITHUB_STEP_SUMMARY"
-          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/(sync\.ts|render-plan|caption-)|packages/shared/fixtures/render-plans/|server/fonts/|server/src/media/|server/test/(sync-parity\.test\.ts|render-golden\.test\.ts|device-export\.test\.ts|native-preview\.test\.ts|engine-adapters\.test\.ts|helpers/sync-fixtures\.ts|helpers/rotated-plan\.ts|helpers/engine-adapters\.ts|media-pipeline\.test\.ts|analyzer-math\.test\.ts)|scripts/(check-core-imports(\.test)?\.mjs|typecheck-engine\.sh)|\.github/workflows/ci\.yml)'; then
+          if git diff --name-only "$base" HEAD | grep -qE '^(apps/mobile/modules/editify-engine/|packages/shared/src/(sync\.ts|render-plan|caption-)|packages/shared/fixtures/render-plans/|server/fonts/|server/src/media/|server/test/(sync-parity\.test\.ts|render-golden\.test\.ts|device-export\.test\.ts|native-preview\.test\.ts|engine-adapters\.test\.ts|helpers/sync-fixtures\.ts|helpers/rotated-plan\.ts|helpers/engine-adapters\.ts|helpers/harness-media\.ts|media-pipeline\.test\.ts|analyzer-math\.test\.ts)|scripts/(check-core-imports(\.test)?\.mjs|typecheck-engine\.sh)|\.github/workflows/ci\.yml)'; then
             echo "engine=true" >> "$GITHUB_OUTPUT"; else echo "engine=false" >> "$GITHUB_OUTPUT"; fi
   # Always runs, so deploy and preview can depend on it: a change that touches
   # none of the engine paths reports success without spinning up macOS.
@@ -195,6 +195,20 @@ jobs:
         if: needs.changes.outputs.engine == 'true'
       - run: npm run build -w @editify/shared
         if: needs.changes.outputs.engine == 'true'
+      # The harnesses' synthesized media (server/test/helpers/harness-media.ts): made once per
+      # runner image and version of the synthesis code, then every run renders, exports and
+      # previews the same source bytes (the hardware encoder's output moves under load).
+      - name: Harness media cache key
+        id: harness-media
+        if: needs.changes.outputs.engine == 'true'
+        run: |
+          echo "HARNESS_MEDIA_CACHE=$RUNNER_TEMP/harness-media" >> "$GITHUB_ENV"
+          echo "image=${ImageOS:-macos}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: needs.changes.outputs.engine == 'true'
+        with:
+          path: ${{ runner.temp }}/harness-media
+          key: harness-media-${{ steps.harness-media.outputs.image }}-xcode26.6-${{ hashFiles('apps/mobile/modules/editify-engine/parity/render-golden/HarnessMedia.swift', 'apps/mobile/modules/editify-engine/parity/goldens/manifest.json', 'apps/mobile/modules/editify-engine/parity/export/manifest.json') }}
       - name: Swift AudioSync parity with sync.ts
         if: needs.changes.outputs.engine == 'true'
         run: npx vitest run test/sync-parity.test.ts
