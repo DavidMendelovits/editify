@@ -22,6 +22,7 @@ import { timeMediaJob } from '../services/media-jobs.js';
 import { mediaSlots, withMediaSlot, type SlotLane } from '../services/media-slots.js';
 import type { TranscriptService } from '../services/transcript-service.js';
 import { WaveformService } from '../services/waveform-service.js';
+import { READ_ONLY_MESSAGE, readOnlyReply } from '../read-only.js';
 
 function publicAsset(asset: StoredAsset): AssetMetadata {
   const { originalPath: _originalPath, proxyPath: _proxyPath, thumbnailPath: _thumbnailPath, ...metadata } = asset;
@@ -653,7 +654,8 @@ export function registerAssetRoutes(
     const asset = assets.get(request.params.id, request.userId);
     if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
     if (!existsSync(asset.thumbnailPath)) return notReady(reply, asset);
-    if (colorPipelineIsStale(asset)) {
+    // Read-only (the cutover freeze) serves the old thumb rather than re-shooting it.
+    if (!database.readonly && colorPipelineIsStale(asset)) {
       const pending = recolors.get(asset.id) ?? timeMediaJob('thumbnail', { assetId: asset.id }, () =>
         regenerateThumbnail(asset.originalPath, asset.thumbnailPath, asset))
         .then(async () => { await rm(join(dirname(asset.thumbnailPath), 'filmstrip.jpg'), { force: true }); })
@@ -677,6 +679,8 @@ export function registerAssetRoutes(
     if (!existsSync(asset.proxyPath)) return notReady(reply, asset);
     const path = join(dirname(asset.proxyPath), 'filmstrip.jpg');
     if (!existsSync(path)) {
+      // Read-only (the cutover freeze) writes no files; the timeline draws without tiles.
+      if (database.readonly) return await readOnlyReply(reply).send({ error: READ_ONLY_MESSAGE, readOnly: true });
       const pending = filmstrips.get(asset.id)
         ?? createFilmstrip(asset.proxyPath, path, asset).finally(() => filmstrips.delete(asset.id));
       filmstrips.set(asset.id, pending);
