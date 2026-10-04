@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Platform } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { Stack, usePathname, useRouter, useSegments, type Href } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -17,6 +17,8 @@ import { SpaceMono_700Bold } from '@expo-google-fonts/space-mono';
 import { AppProviders } from '../src/providers/AppProviders';
 import { scopeCacheTo } from '../src/lib/query-client';
 import { ShareIntake } from '../src/components/ShareIntake';
+import { UpdateGate } from '../src/components/UpdateGate';
+import { useClientGate } from '../src/lib/use-client-gate';
 import { onAuthStateChange, supabase } from '../src/lib/supabase';
 import { syncPurchaseUser } from '../src/lib/purchases';
 import { posthog } from '../src/lib/posthog';
@@ -34,6 +36,7 @@ export default function RootLayout() {
   const segments = useSegments();
   const pathname = usePathname();
   const [session, setSession] = useState<Session | null>();
+  const gate = useClientGate();
   const [loaded] = useFonts({
     SpaceGrotesk_400Regular,
     SpaceGrotesk_500Medium,
@@ -80,6 +83,9 @@ export default function RootLayout() {
   }, [router, segments, session]);
 
   if (!loaded || session === undefined) return null;
+  // The sunset screen exports the user's videos, which needs their session, so
+  // a signed-out phone reaches sign-in first and meets the gate right after.
+  const blocking = gate.kind === 'update' || (gate.kind === 'sunset' && session) ? gate : undefined;
   return (
     <ShareIntentProvider options={SHARE_OPTIONS}>
       <SafeAreaProvider>
@@ -87,6 +93,8 @@ export default function RootLayout() {
           <StatusBar style="light" />
           <ShareIntake signedIn={Boolean(session)} />
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background }, animation: 'fade' }} />
+          {/* Over the navigator rather than instead of it: expo-router needs the Stack mounted to route. */}
+          {blocking && <View style={StyleSheet.absoluteFill}><UpdateGate gate={blocking} /></View>}
         </AppProviders>
       </SafeAreaProvider>
     </ShareIntentProvider>
