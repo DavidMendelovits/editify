@@ -19,7 +19,9 @@ function firstMatchingFont(directory: string, pattern: RegExp): string | undefin
 
 const bundledFontsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../../fonts');
 const montserratPath = join(bundledFontsDirectory, 'Montserrat-Bold.ttf');
-const montserratUrl = 'https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf';
+// The static Bold cut. The variable font (Montserrat[wght]) makes libass fall
+// back to Helvetica-Bold for weight 700: `fontselect: (Montserrat, 700, 0) -> Helvetica-Bold`.
+const montserratUrl = 'https://raw.githubusercontent.com/JulietaUla/Montserrat/master/fonts/ttf/Montserrat-Bold.ttf';
 
 export function locateAssFont(): AssFont {
   if (existsSync(montserratPath)) return { family: 'Montserrat', directory: bundledFontsDirectory };

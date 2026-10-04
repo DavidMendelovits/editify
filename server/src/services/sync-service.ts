@@ -9,7 +9,6 @@ import {
 } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import { MAX_SYNC_SECONDS, SyncError, measureSyncFiles, type SyncMeasurement } from '../media/sync.js';
-import { withMediaSlot } from './media-slots.js';
 
 /** A memo piece shorter than this is a sliver where the recordings barely overlap: not worth a clip. */
 const MIN_PIECE_SECONDS = 0.05;
@@ -45,11 +44,12 @@ export class SyncService {
 
   constructor(
     private readonly assets: Pick<AssetStore, 'get'>,
-    // A measurement decodes two recordings and holds their samples, the same
-    // class of job as an import encode or a render, so it waits for a slot in
-    // the shared pool rather than piling onto a machine that is mid-render.
-    private readonly measure: (videoPath: string, memoPath: string) => Promise<SyncMeasurement> =
-      async (videoPath, memoPath) => await withMediaSlot('sync', () => measureSyncFiles(videoPath, memoPath)),
+    // Not in the shared media pool: a measurement is an audio-only decode plus
+    // a few FFTs (~2.5s for a 5-minute set), and queued behind an import's
+    // encode and Whisper it waited ~107s (stand-up harness, 2026-10-02). Its
+    // memory is already bounded by this class: one measurement at a time,
+    // MAX_WAITING in hand.
+    private readonly measure: (videoPath: string, memoPath: string) => Promise<SyncMeasurement> = measureSyncFiles,
   ) {}
 
   /** `userId` scopes asset lookups the way the routes scope projects; undefined is unscoped (agent, tests). */
