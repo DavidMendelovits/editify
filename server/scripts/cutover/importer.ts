@@ -26,8 +26,8 @@
  *
  * Re-runs are idempotent: verified files are skipped, a user already imported
  * at the current snapshot is skipped unless --force, and only failed or new
- * users are retried. Postgres project sync (public ─▶ v11) rides along when
- * DATABASE_URL is set (pg-copy.ts).
+ * users are retried. Postgres sync tables are not copied: 1.0 has no /sync, so
+ * public.sync_* never holds rows.
  *
  * Two guards keep the delta's promise: `import --all` refuses a snapshot whose
  * journal is off or missing triggers (the delta could not replay what follows
@@ -54,7 +54,6 @@ import {
   type ManifestIndex,
   type MediaFile,
 } from './media.js';
-import type { PgSyncCopy } from './pg-copy.js';
 import type { CutoverSource, DuReport, ManifestEntry, SnapshotInfo } from './source.js';
 import { sha256File } from './source-agent.mjs';
 import {
@@ -104,7 +103,6 @@ export interface ImporterOptions {
   sourceRoot?: string;
   /** Snapshots and scratch; default <destRoot>/cutover, which the media copy never touches. */
   workDir?: string;
-  pg?: PgSyncCopy | undefined;
   freeBytes?: (path: string) => Promise<number>;
   concurrency?: number;
   log?: (line: string) => void;
@@ -145,7 +143,6 @@ export interface DryRunUser {
   destHash: string;
   tables: TableDiff[];
   fileDiffs: FileDiff[];
-  pg?: { source: string; dest: string; counts: Record<string, number> };
 }
 export interface DryRunReport { snapshot: string; watermark: number; users: DryRunUser[]; diffs: number }
 
@@ -204,7 +201,6 @@ export class Importer {
   private readonly destRoot: string;
   private readonly paths: PathMap;
   private readonly workDir: string;
-  private readonly pg: PgSyncCopy | undefined;
   private readonly freeBytes: (path: string) => Promise<number>;
   private readonly concurrency: number;
   private readonly log: (line: string) => void;
@@ -217,7 +213,6 @@ export class Importer {
     this.destRoot = options.destRoot;
     this.paths = { sourceRoot: options.sourceRoot ?? '/data', destRoot: options.destRoot };
     this.workDir = options.workDir ?? join(options.destRoot, 'cutover');
-    this.pg = options.pg;
     this.freeBytes = options.freeBytes ?? freeBytesOf;
     this.concurrency = options.concurrency ?? 4;
     this.log = options.log ?? (() => undefined);
@@ -447,29 +442,8 @@ export class Importer {
     }).immediate();
     await this.removeStaleMedia(before);
 
-    if (this.pg && user !== SHARED) {
-      try {
-        const previous = [...(ledgerFor(this.dest, user).get('pg.sync_projects') ?? [])].map((pk) => (JSON.parse(pk) as string[])[0] as string);
-        const copied = await this.pg.copyUser(user, previous);
-        this.ledgerPg(user, tag, copied);
-      } catch (error) {
-        const reason = `postgres sync copy failed: ${error instanceof Error ? error.message : String(error)}`;
-        recordFailure(this.dest, { userId: user, assetId: null, path: null, reason });
-        this.dest.prepare('DELETE FROM import_users WHERE user_id = ?').run(user);
-        return { user, status: 'failed', rows, files: fileCount, bytes, reasons: [reason] };
-      }
-    }
     this.log(`${displayUser(user)}: imported ${rows} rows, ${fileCount} files (${tag})`);
     return { user, status: 'imported', rows, files: fileCount, bytes, reasons: [] };
-  }
-
-  private ledgerPg(user: string, tag: ImportTag, projectIds: string[]): void {
-    const now = new Date().toISOString();
-    this.dest.transaction(() => {
-      this.dest.prepare("DELETE FROM import_ledger WHERE table_name = 'pg.sync_projects' AND user_id = ?").run(user);
-      const insert = this.dest.prepare('INSERT OR REPLACE INTO import_ledger (table_name, pk_json, user_id, tag, imported_at) VALUES (?, ?, ?, ?, ?)');
-      for (const id of projectIds) insert.run('pg.sync_projects', JSON.stringify([id]), user, tag, now);
-    }).immediate();
   }
 
   /**
@@ -484,6 +458,7 @@ export class Importer {
       const { pk } = this.info(table);
       incoming.set(table, new Set(list.map((row) => pkOf(row, pk))));
     }
+    // pg.* rows are an earlier importer's Postgres copy ledger (a rehearsal database may still hold them): no SQLite table to delete from.
     const ledgered = this.dest.prepare("SELECT table_name, pk_json, tag FROM import_ledger WHERE user_id = ? AND table_name NOT LIKE 'pg.%'")
       .all(plan.user) as Array<{ table_name: string; pk_json: string; tag: ImportTag }>;
     const deletedAssets: string[] = [];
@@ -623,13 +598,6 @@ export class Importer {
         setState(this.dest, STATE_DELTA_THROUGH, String(Math.max(report.through, prepared.watermark)));
       }).immediate();
       await this.removeStaleMedia(deletedMedia);
-      if (this.pg) {
-        const pgUsers = new Set([...(await this.pg.owners()), ...(this.dest.prepare("SELECT DISTINCT user_id FROM import_ledger WHERE table_name = 'pg.sync_projects'").all() as Array<{ user_id: string }>).map((row) => row.user_id)]);
-        for (const user of pgUsers) {
-          const previous = [...(ledgerFor(this.dest, user).get('pg.sync_projects') ?? [])].map((pk) => (JSON.parse(pk) as string[])[0] as string);
-          this.ledgerPg(user, 'cutover', await this.pg.copyUser(user, previous));
-        }
-      }
       this.log(`delta: replayed ${report.applied} mutation(s), journal ${from} ─▶ ${report.through}`);
       return report;
     } finally {
@@ -683,7 +651,7 @@ export class Importer {
       const report: DryRunReport = { snapshot: prepared.snapshotName, watermark: prepared.watermark, users: [], diffs: 0 };
       for (const user of users) {
         const result = await this.compareUser(prepared, user, options.rehash ?? true);
-        report.diffs += result.tables.length + result.fileDiffs.length + (result.pg && result.pg.source !== result.pg.dest ? 1 : 0);
+        report.diffs += result.tables.length + result.fileDiffs.length;
         report.users.push(result);
       }
       return report;
@@ -765,15 +733,6 @@ export class Importer {
     }
     sourceDigests.push(`files:${sha256(sourceFiles.join('\n'))}`);
     destDigests.push(`files:${sha256(destFiles.join('\n'))}`);
-
-    let pg: DryRunUser['pg'];
-    if (this.pg && user !== SHARED) {
-      const only = new Set([...(ledger.get('pg.sync_projects') ?? [])].map((pk) => (JSON.parse(pk) as string[])[0] as string));
-      const [source, dest] = await Promise.all([this.pg.digest(this.pg.sourceSchema, user), this.pg.digest(this.pg.destSchema, user, only)]);
-      pg = { source: source.digest, dest: dest.digest, counts: source.counts };
-      sourceDigests.push(`pg:${source.digest}`);
-      destDigests.push(`pg:${dest.digest}`);
-    }
     return {
       user,
       rows,
@@ -783,7 +742,6 @@ export class Importer {
       destHash: sha256(destDigests.join('\n')),
       tables,
       fileDiffs,
-      ...(pg ? { pg } : {}),
     };
   }
 
