@@ -1,5 +1,6 @@
 import AVFoundation
 import ExpoModulesCore
+import UIKit
 
 /// The on-device engine. Four surfaces:
 ///   - capability lab: each `runSpike` call is one run: Sampler begin → spike → one
@@ -21,10 +22,12 @@ public class EditifyEngineModule: Module {
   private var epochForCalls: Int? { contextEpoch == 0 ? nil : contextEpoch }
   /// iCloud downloads started by `downloadMedia`, by the caller's request id, for `cancelDownload`.
   private let downloads = DownloadTasks()
+  /// The speech permission JS last heard about, to send `speechAuthorization` only on a change.
+  private let speechStatus = SpeechStatusWatch()
 
   public func definition() -> ModuleDefinition {
     Name("EditifyEngine")
-    Events("progress", "analysisStatus", "analysisState", "exportState")
+    Events("progress", "analysisStatus", "analysisState", "exportState", "speechAuthorization")
 
     OnCreate {
       LabStore.recoverKilledRun()
@@ -39,11 +42,15 @@ public class EditifyEngineModule: Module {
         // Idempotent per epoch, so landing after this context's own calls changes nothing.
         await AnalysisScheduler.shared.reset(epoch: epoch)
       }
+      // D21: the user may turn speech recognition on in Settings and come back; JS re-queues
+      // the unavailable words parts when this says `authorized`.
+      self.speechStatus.start(self.adapters.speechAuthorization) { [weak self] body in self?.sendEvent("speechAuthorization", body) }
     }
 
     OnDestroy {
       // Nobody listens to a running export once this JS context is gone.
       ExportCenter.shared.cancelAll()
+      self.speechStatus.stop()
     }
 
     Function("readResults") { LabStore.readAll() }
@@ -70,7 +77,27 @@ public class EditifyEngineModule: Module {
 
     // MARK: Analyzers, called directly (no queue)
 
-    Function("analyzerVersions") { AnalyzerVersion.all }
+    /// Each part's current analyzer version; `words` is the best adapter's in this set (w-sa1
+    /// on iOS 26, w-sf1 on 18). capabilities().transcriber has the whole words rule.
+    Function("analyzerVersions") { () -> [String: String] in
+      AnalyzerVersion.all.merging(["words": self.adapters.transcriber.bestVersion]) { current, _ in current }
+    }
+
+    // MARK: Speech permission (D21, C15)
+
+    /// 'notDetermined' | 'denied' | 'restricted' | 'authorized', read without prompting.
+    Function("speechAuthorization") { () -> String in
+      self.adapters.speechAuthorization.status.rawValue
+    }
+
+    /// Shows the system speech-recognition prompt when it was never answered (call it from the
+    /// pre-prompt sheet, with Editify in front) and answers the status after it. A change also
+    /// arrives as a `speechAuthorization` event.
+    AsyncFunction("requestSpeechAuthorization") { () async -> String in
+      let status = await self.adapters.speechAuthorization.request()
+      self.speechStatus.check(self.adapters.speechAuthorization)
+      return status.rawValue
+    }
 
     /// Decodes the audio to mono Float32 LE at `sampleRate` (8000-48000, default 8000) into
     /// a temp file (swept on next launch); JS gets the file and its length.
@@ -90,7 +117,7 @@ public class EditifyEngineModule: Module {
 
     AsyncFunction("words") { (ref: String, locale: String?, allowModelDownload: Bool?) async -> [String: Any] in
       let progress = self.progress(part: "words", ref: ref)
-      return await self.part(ref, "words", AnalyzerVersion.words) { asset in
+      return await self.part(ref, "words", self.adapters.transcriber.bestVersion) { asset in
         await self.adapters.transcriber.words(asset, locale: locale.map(Locale.init(identifier:)) ?? .current,
                                               allowModelDownload: allowModelDownload ?? true, progress: progress, gate: nil)
       }
@@ -415,5 +442,44 @@ private final class DownloadTasks: @unchecked Sendable {
       return nil
     }
     task?.cancel()
+  }
+}
+
+/// Sends `speechAuthorization` {status, previous} whenever the permission changes: checked when
+/// Editify comes back to the front (the user may have flipped it in Settings) and after a request.
+private final class SpeechStatusWatch: @unchecked Sendable {
+  private let lock = NSLock()
+  private var last: SpeechAuthorizationStatus?
+  private var observer: NSObjectProtocol?
+  private var send: (([String: Any]) -> Void)?
+
+  func start(_ authorization: any SpeechAuthorization, send: @escaping ([String: Any]) -> Void) {
+    lock.withLock {
+      self.send = send
+      last = authorization.status
+    }
+    let observer = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+      self?.check(authorization)
+    }
+    lock.withLock { self.observer = observer }
+  }
+
+  func check(_ authorization: any SpeechAuthorization) {
+    let status = authorization.status
+    let (changed, previous, send) = lock.withLock { () -> (Bool, SpeechAuthorizationStatus?, (([String: Any]) -> Void)?) in
+      let previous = last
+      last = status
+      return (previous != status, previous, self.send)
+    }
+    guard changed, let send else { return }
+    send(["status": status.rawValue, "previous": previous?.rawValue ?? NSNull()])
+  }
+
+  func stop() {
+    let observer = lock.withLock { () -> NSObjectProtocol? in
+      defer { self.observer = nil; send = nil }
+      return self.observer
+    }
+    if let observer { NotificationCenter.default.removeObserver(observer) }
   }
 }

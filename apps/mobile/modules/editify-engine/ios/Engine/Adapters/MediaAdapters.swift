@@ -40,26 +40,6 @@ struct AssetReaderAudioDecoder: AudioDecoder {
   }
 }
 
-/// Transcriber adapter: SpeechAnalyzer + SpeechTranscriber (iOS 26).
-@available(iOS 26.0, *)
-struct SpeechAnalyzerTranscriber: Transcriber {
-  var name: String { "speech-analyzer" }
-
-  func words(_ asset: AVAsset, locale: Locale, allowModelDownload: Bool, progress: AnalyzerProgress?, gate: AnalyzerGate?) async -> PartResult {
-    await Analyzers.words(asset, locale: locale, allowModelDownload: allowModelDownload, progress: progress, gate: gate)
-  }
-}
-
-/// The legacy set's Transcriber until the SFSpeech adapter lands (T6 second half): every words
-/// part is `unavailable` with a reason.
-struct UnavailableTranscriber: Transcriber {
-  var name: String { "unavailable" }
-
-  func words(_ asset: AVAsset, locale: Locale, allowModelDownload: Bool, progress: AnalyzerProgress?, gate: AnalyzerGate?) async -> PartResult {
-    .unavailable(AnalyzerVersion.words, "Speech transcription needs iOS 26 on this build")
-  }
-}
-
 /// SoundClassifier adapter: SoundAnalysis' built-in classifier.
 struct SoundAnalysisClassifier: SoundClassifier {
   var name: String { "sound-analysis" }

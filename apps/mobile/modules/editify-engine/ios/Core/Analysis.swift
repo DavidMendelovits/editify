@@ -12,15 +12,22 @@ public enum AnalyzerVersion {
   // can change the input of every audio analyzer on files with a disabled first track.
   public static let decode = "avassetreader-8k-2"
   public static let sync = "audiosync-vdsp-2"
-  public static let words = "speechanalyzer-ios26-2"
-  public static let laughter = "soundanalysis-v1-2"
+  // The words part's version names the Transcriber adapter that ran (D12): SpeechAnalyzer
+  // (iOS 26) or SFSpeech on-device (iOS 18). Both start after the decoder's PTS fix (D19),
+  // which moved word times on recordings whose audio doesn't start at zero; that is the bump
+  // from "speechanalyzer-ios26-2". Which one a part needs: TranscriberChain / WordsFreshness.
+  public static let wordsSpeechAnalyzer = "w-sa1"
+  public static let wordsSFSpeech = "w-sf1"
+  // -3: laughter windows are timed from the audio's start in the recording (D19 PTS fix).
+  public static let laughter = "soundanalysis-v1-3"
   public static let energy = "energy-rms-50ms-2"
   public static let faces = "vision-facerect-1"
   /// Not an analyzer: the 1080p preview proxy (ProxyPipeline), versioned the same way.
   public static let proxy = "writer-1080-1"
 
+  /// Every part's version but `words`, which depends on the adapter set (TranscriberChain.bestVersion).
   public static let all: [String: String] = [
-    "decode": decode, "sync": sync, "words": words, "laughter": laughter, "energy": energy, "faces": faces, "proxy": proxy,
+    "decode": decode, "sync": sync, "laughter": laughter, "energy": energy, "faces": faces, "proxy": proxy,
   ]
 }
 
@@ -29,6 +36,10 @@ public struct PartResult {
   public let analyzerVersion: String
   public var data: [String: Any]?
   public var error: String?
+  /// A machine-readable reason JS acts on (`speechRecognitionOff`: show a Settings link).
+  public var code: String?
+  /// Words only: the Transcriber chain's re-run trigger when it ran (C25).
+  public var trigger: String?
 
   public init(status: String, analyzerVersion: String, data: [String: Any]? = nil, error: String? = nil) {
     self.status = status
@@ -46,6 +57,8 @@ public struct PartResult {
     var out: [String: Any] = ["status": status, "analyzerVersion": analyzerVersion]
     if let data { out["data"] = data }
     if let error { out["error"] = error }
+    if let code { out["code"] = code }
+    if let trigger { out["trigger"] = trigger }
     return out
   }
 }

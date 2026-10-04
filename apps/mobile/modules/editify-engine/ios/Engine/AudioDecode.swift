@@ -12,24 +12,38 @@ import Foundation
 /// instead of the whole recording piling up in memory. `next()` blocks: call it
 /// through `AnalysisQueue`.
 ///
-/// TODO(P2 follow-up 10): positions count from the first decoded sample; offset them by
-/// the first buffer's presentation time for tracks that don't start at zero.
+/// Positions are frames from the start of the recording (D19): the first buffer's
+/// presentation time sets the origin, so a track that starts 1.5 s in (an edit list's empty
+/// edit) or a read of `range` starting at 48 s reports positions from there, not from 0.
+/// Word and laughter times follow them (the words and laughter versions moved with this).
 final class PCMChunks: @unchecked Sendable {
   let rate: Double
   let durationSeconds: Double
+  /// Where the read starts in the recording (`range`'s lower bound, else 0).
+  let startSeconds: Double
   private let reader: AVAssetReader
   private let output: AVAssetReaderTrackOutput
-  private var position = 0
+  /// The next sample's frame in the recording; set from the first buffer's presentation time.
+  private var position: Int?
 
-  /// `limitSeconds` reads only the start (the media fingerprint's first 20 s).
-  init(asset: AVAsset, rate: Double, limitSeconds: Double? = nil) async throws {
+  /// `limitSeconds` reads only the start (the media fingerprint's first 20 s); `range` only that
+  /// span of the recording, in seconds (the SFSpeech adapter's chunks).
+  init(asset: AVAsset, rate: Double, limitSeconds: Double? = nil, range: Range<Double>? = nil) async throws {
     self.rate = try AnalyzerLimits.sampleRate(rate)
     guard let track = try await firstEnabledTrack(asset, .audio) else { throw NoAudio() }
     let total = try await asset.load(.duration).seconds
-    durationSeconds = limitSeconds.map { min($0, total) } ?? total
     reader = try AVAssetReader(asset: asset)
-    if let limitSeconds {
-      reader.timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: limitSeconds, preferredTimescale: 48_000))
+    if let range {
+      let start = max(0, range.lowerBound), end = min(total, range.upperBound)
+      startSeconds = start
+      durationSeconds = max(0, end - start)
+      reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 48_000), end: CMTime(seconds: end, preferredTimescale: 48_000))
+    } else {
+      startSeconds = 0
+      durationSeconds = limitSeconds.map { min($0, total) } ?? total
+      if let limitSeconds {
+        reader.timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: limitSeconds, preferredTimescale: 48_000))
+      }
     }
     output = AVAssetReaderTrackOutput(track: track, outputSettings: [
       AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
@@ -49,16 +63,22 @@ final class PCMChunks: @unchecked Sendable {
       guard length >= 4 else { continue }
       var chunk = [Float](repeating: 0, count: length / 4)
       _ = chunk.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
-      let start = position
-      position += chunk.count
+      let start = position ?? Self.origin(CMSampleBufferGetPresentationTimeStamp(buffer), rate: rate)
+      position = start + chunk.count
       return (chunk, start)
     }
     if reader.status == .failed { throw reader.error ?? EngineError(message: "audio decode failed") }
     return nil
   }
 
+  /// The first buffer's frame in the recording (0 for a missing or negative time).
+  static func origin(_ time: CMTime, rate: Double) -> Int {
+    guard time.isNumeric, time.seconds.isFinite else { return 0 }
+    return max(0, Int((time.seconds * rate).rounded()))
+  }
+
   func fraction(at position: Int) -> Double {
-    durationSeconds > 0 ? min(1, Double(position) / rate / durationSeconds) : 0
+    durationSeconds > 0 ? min(1, max(0, Double(position) / rate - startSeconds) / durationSeconds) : 0
   }
 
   func cancel() { reader.cancelReading() }
