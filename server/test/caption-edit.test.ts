@@ -76,3 +76,34 @@ describe('update_caption text edits', () => {
     expect(result.tracks[0]?.clips[0]?.style?.words).toEqual(words);
   });
 });
+
+describe('set_clip_properties sticker text', () => {
+  function stickerProject(): Project {
+    return {
+      id: 'sticker-edit', title: 'Sticker edit', format: '9:16', fps: 30, duration: 4, version: 0,
+      tracks: [{
+        id: 'overlays',
+        kind: 'overlay',
+        clips: [
+          { id: 'callout-1', start: 0, in: 0, out: 2, text: 'NOPE', callout: { variant: 'x' } },
+          { id: 'image-1', assetId: 'asset-1', start: 2, in: 0, out: 2 },
+        ],
+      }],
+    };
+  }
+
+  it('updates the text of a text-only sticker', () => {
+    const result = applyOperation(stickerProject(), {
+      type: 'set_clip_properties',
+      params: { updates: [{ clipId: 'callout-1', text: 'YES' }] },
+    });
+    expect(result.tracks[0]?.clips[0]?.text).toBe('YES');
+  });
+
+  it('rejects text on a clip backed by an asset', () => {
+    expect(() => applyOperation(stickerProject(), {
+      type: 'set_clip_properties',
+      params: { updates: [{ clipId: 'image-1', text: 'nope' }] },
+    })).toThrow(/text sticker/);
+  });
+});
