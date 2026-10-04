@@ -1,10 +1,15 @@
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { assetsRoot, supabaseUrl } from '../config.js';
 import type { EditifyDatabase } from '../db/database.js';
 import type { StyleService } from './style-service.js';
 
 export interface AccountDeletion { projects: number; assets: number; reports: number; styles: number }
+
+/** What a purge removed from the volume: one directory per asset, one file per render. */
+export interface FilesPurged { assetDirs: number; renderOutputs: number }
+
+export interface UserPurge { rows: AccountDeletion; files: FilesPurged }
 
 /** Well under SQLite's bound-parameter ceiling on every build we might run on. */
 const OBSERVATION_DELETE_CHUNK = 500;
@@ -27,6 +32,15 @@ export class AccountDeletionUnavailable extends Error {
  * analysis still running for them, so it cannot save a profile afterwards.
  */
 export async function deleteUserData(database: EditifyDatabase, userId: string, styles?: Pick<StyleService, 'forget'>): Promise<AccountDeletion> {
+  return (await purgeUserData(database, userId, styles)).rows;
+}
+
+/**
+ * The purge behind `deleteUserData`, with what it took off the volume as well.
+ * It needs no HTTP session, so the user-deleted webhook and the orphan sweep
+ * run the exact same deletion as DELETE /account.
+ */
+export async function purgeUserData(database: EditifyDatabase, userId: string, styles?: Pick<StyleService, 'forget'>): Promise<UserPurge> {
   styles?.forget(userId);
   const assetIds = (database.prepare('SELECT id FROM assets WHERE user_id = ?').all(userId) as Array<{ id: string }>)
     .map((row) => row.id);
@@ -37,7 +51,7 @@ export async function deleteUserData(database: EditifyDatabase, userId: string, 
     WHERE projects.user_id = ? AND renders.output_path IS NOT NULL
   `).all(userId) as Array<{ output_path: string }>).map((row) => row.output_path);
 
-  const counts = database.transaction((): AccountDeletion => {
+  const rows = database.transaction((): AccountDeletion => {
     // One placeholder per asset would blow SQLite's variable limit for a heavy
     // user, and this is the one endpoint Apple requires to work, so chunk it.
     for (let start = 0; start < assetIds.length; start += OBSERVATION_DELETE_CHUNK) {
@@ -56,11 +70,59 @@ export async function deleteUserData(database: EditifyDatabase, userId: string, 
   })();
 
   // Media is one directory per asset; a render output is a single file.
-  await Promise.all([
-    ...assetIds.map(async (id) => { await rm(join(assetsRoot, id), { recursive: true, force: true }); }),
-    ...outputs.map(async (path) => { await rm(path, { force: true }); }),
+  const removed = await Promise.all([
+    ...assetIds.map(async (id) => await removeIfPresent(join(assetsRoot, id))),
+    ...outputs.map(async (path) => await removeIfPresent(path)),
   ]);
-  return counts;
+  const files: FilesPurged = {
+    assetDirs: removed.slice(0, assetIds.length).filter(Boolean).length,
+    renderOutputs: removed.slice(assetIds.length).filter(Boolean).length,
+  };
+  return { rows, files };
+}
+
+/** True when something was there to remove; a missing path is not an error. */
+async function removeIfPresent(path: string): Promise<boolean> {
+  const present = await stat(path).then(() => true, () => false);
+  await rm(path, { recursive: true, force: true });
+  return present;
+}
+
+/**
+ * Every user id that owns something on this server: the four owned tables
+ * plus `key:userId` preferences. Supabase user ids are UUIDs, which is what
+ * tells a per-user setting suffix apart from any other colon in a key.
+ */
+export function listDataOwners(database: EditifyDatabase): string[] {
+  const owners = new Set((database.prepare(`
+    SELECT user_id FROM projects WHERE user_id IS NOT NULL
+    UNION SELECT user_id FROM assets WHERE user_id IS NOT NULL
+    UNION SELECT user_id FROM reports WHERE user_id IS NOT NULL
+    UNION SELECT user_id FROM style_profiles WHERE user_id IS NOT NULL
+  `).all() as Array<{ user_id: string }>).map((row) => row.user_id));
+  for (const { key } of database.prepare("SELECT key FROM settings WHERE key LIKE '%:%'").all() as Array<{ key: string }>) {
+    const suffix = key.slice(key.lastIndexOf(':') + 1);
+    if (UUID.test(suffix)) owners.add(suffix);
+  }
+  return [...owners].sort();
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether Supabase still has this login, from the admin API. Only a 404 counts
+ * as gone; anything else that is not a 200 throws, because callers delete data
+ * on "gone" and an outage must never read as that.
+ */
+export async function supabaseUserExists(userId: string): Promise<boolean> {
+  const key = serviceRoleKey();
+  if (!key) throw new AccountDeletionUnavailable(missingKeyMessage());
+  const response = await fetch(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    headers: { apikey: key, authorization: `Bearer ${key}` },
+  });
+  if (response.status === 404) return false;
+  if (response.ok) return true;
+  throw new Error(`Supabase admin lookup failed (${response.status})`);
 }
 
 /**
