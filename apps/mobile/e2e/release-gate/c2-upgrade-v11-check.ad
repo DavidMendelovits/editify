@@ -1,0 +1,15 @@
+# Flow c step 3 (C10): after `simctl install` put the 1.1 build over 1.0 (no uninstall) and
+# cutover-local.sh imported the user: still signed in, no update gate, the 1.0 project opens.
+# Needs: EVIDENCE; fake auth + the 1.1 server. Run with --udid <the upgrade sim>.
+context platform=ios kind=simulator
+open "com.editify.app" --relaunch
+wait "text" "v1.1.0" 30000
+# The update gate replaces the home screen, so a visible sign out + project list means no gate.
+is visible "role=\"button\" label=\"sign out\""
+wait "text" "Instagram Reel edit" 20000
+screenshot "${EVIDENCE}/c10-02-v11-after-upgrade.png"
+# Run flow c before a and b: they add projects for the same user, and a half-done one has the same label.
+press "role=\"button\" label=\"9:16, 0:53, project menu, Instagram Reel edit, 1 clips · 0 captions · v1\""
+wait "text" "1 CLIPS" 20000
+screenshot "${EVIDENCE}/c10-03-v11-project-open.png"
+close

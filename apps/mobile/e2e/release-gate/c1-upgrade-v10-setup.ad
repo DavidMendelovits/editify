@@ -1,0 +1,34 @@
+# Flow c step 1 (C10): a fresh 1.0 install, signed in, with one project holding one clip.
+# Needs: APP_10 (the stored 1.0 build), EVIDENCE, CLIP_LABEL; fake auth + the 1.0 server
+# (MIN_APP_VERSION unset). Run with --udid <the upgrade sim>.
+context platform=ios kind=simulator
+reinstall "com.editify.app" "${APP_10}"
+open "com.editify.app" --relaunch
+wait "text" "v1.0.0" 30000
+fill "role=\"textfield\" label=\"email\" editable=true" "gate@editify.test"
+fill "role=\"securetextfield\" label=\"password\"" "gate-local-pass"
+press "role=\"button\" label=\"sign in\""
+wait "role=\"button\" label=\"sign out\"" 20000
+# The home screen re-renders once projects load; a tap before that is lost.
+wait "text" "Recent projects" 20000
+wait 2000
+press "role=\"button\" label=\"9:16, Instagram Reel, 9:16 · UP TO 90S\""
+wait "text" "PREVIEW" 15000
+# Same for a fresh editor: let it settle before the first tap.
+wait "role=\"button\" label=\"add media from camera roll\"" 15000
+wait 2000
+press "role=\"button\" label=\"add media from camera roll\""
+wait "role=\"image\" label=\"${CLIP_LABEL}\"" 15000
+press "role=\"image\" label=\"${CLIP_LABEL}\""
+press "role=\"button\" label=\"Add\""
+# 1.0 asks for library access after the pick.
+wait "label=\"Allow Full Access\"" 20000
+wait 1500
+press "label=\"Allow Full Access\""
+wait "text" "1 CLIPS" 60000
+wait 10000
+open "com.editify.app" --relaunch
+wait "text" "Recent projects" 20000
+wait "text" "Instagram Reel edit" 20000
+screenshot "${EVIDENCE}/c10-01-v10-signed-in-project.png"
+close
