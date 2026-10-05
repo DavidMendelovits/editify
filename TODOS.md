@@ -33,6 +33,16 @@
 - **Evidence (T10):** `docs/transcriber-score-1.1.md`. On the stand-up memo SFSpeech scored 51.7% WER vs SpeechAnalyzer's 14.6%, with a start error p95 of 4.4 s, so both promote thresholds trip. The doc recommends promoting this TODO.
 - **Blocked by:** the T10 SFSpeech vs SpeechAnalyzer score. Only build it if SFSpeech scores poorly.
 
+## Finish on server for exports iOS stops in the background
+- **Priority:** P3, deferred by the founder (2026-10-04: "not sure finishing exports that ios stops is the move, punt for later").
+- **What:** Offer "Finish on server" when iOS ends a foreground export after the background grace period (`ExportCenter.expiredMessage`, "iOS stopped the export"), not only when the user backgrounds the app.
+- **Context:** Built once in #163 (commit 98a6642) and reverted before merge (ff35a7b). Re-applying it is a reason code on the failed event plus `canFinishOnServer` accepting it.
+
+## Speech pre-prompt says "Nothing is uploaded"
+- **Priority:** P2, before any outside tester sees 1.1.
+- **What:** The C15 sheet's copy ("Editify writes captions by listening on your iPhone. Nothing is uploaded.") is not true today: the clip is already uploaded and captions still come from server Whisper (option B). Reword it, e.g. "Editify listens on your iPhone to find words in your clips."
+- **Context:** `apps/mobile/src/components/SpeechPrompt.tsx`. Flagged by the final 1.1 review.
+
 ## Self-healing media
 - **Priority:** P3, Server.
 - **What:** A missing proxy schedules regeneration instead of returning a 409 (the "not yet" 409 in `server/src/routes/assets.ts`, ~line 626 on release/1.1). A done render whose file is missing goes stale and re-renders (`server/src/routes/renders.ts`, ~line 13).
