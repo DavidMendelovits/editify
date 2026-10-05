@@ -1,0 +1,70 @@
+# Flow b, iOS 26.5 (stock simulator; speech engines don't run there, so words are skipped:
+# the speech pre-prompt gets "not now"). Sign in, import, edit, an on-device 720p export to
+# Photos; then a 1080p export backgrounded mid-run, "finish on server", and the server render.
+# Needs: APP_11, EVIDENCE, CLIP_LABEL; fake auth + the 1.1 server with RENDER_PLAN=1 (servers.sh v11).
+# After it: the 1.1 server log must hold "[render] rendered from the plan" (see the gate doc).
+context platform=ios kind=simulator
+reinstall "com.editify.app" "${APP_11}"
+open "com.editify.app" --relaunch
+wait "text" "v1.1.0" 30000
+fill "role=\"textfield\" label=\"email\" editable=true" "gate@editify.test"
+fill "role=\"securetextfield\" label=\"password\"" "gate-local-pass"
+press "role=\"button\" label=\"sign in\""
+# iOS 26 offers to save the password, over the home screen.
+wait "label=\"Not Now\"" 20000
+wait 1500
+press "label=\"Not Now\""
+wait "role=\"button\" label=\"sign out\"" 20000
+# The home screen re-renders once projects load; a tap before that is lost.
+wait "text" "Recent projects" 20000
+wait 2000
+press "role=\"button\" label=\"9:16, Instagram Reel, 9:16 · UP TO 90S\""
+wait "text" "PREVIEW" 15000
+# Same for a fresh editor: let it settle before the first tap.
+wait "role=\"button\" label=\"add media from camera roll\"" 15000
+wait 2000
+press "role=\"button\" label=\"add media from camera roll\""
+wait "label=\"Continue\"" 15000
+wait 1500
+press "label=\"Continue\""
+wait "label=\"Allow Full Access\"" 15000
+wait 1500
+press "label=\"Allow Full Access\""
+wait "role=\"image\" label=\"${CLIP_LABEL}\"" 15000
+press "role=\"image\" label=\"${CLIP_LABEL}\""
+press "role=\"button\" label=\"Done\""
+wait "text" "1 CLIPS" 60000
+wait "role=\"button\" label=\"not now\"" 60000
+wait 1500
+press "role=\"button\" label=\"not now\""
+# The sheet slides away first.
+wait "role=\"button\" label=\"add speech-clip.mp4 to the timeline\"" 15000
+wait 1500
+press "role=\"button\" label=\"add speech-clip.mp4 to the timeline\""
+wait "text" "2 CLIPS" 15000
+screenshot "${EVIDENCE}/b26-01-edited.png"
+press "role=\"button\" label=\"export ↗\""
+wait "text" "Resolution" 15000
+press "label=\"720p\""
+scroll down
+press "role=\"button\" label=\"render 720p master\""
+wait "text" "SAVED TO PHOTOS" 240000
+screenshot "${EVIDENCE}/b26-02-saved-to-photos.png"
+# Background mid-export, come back, finish on the server (D26).
+scroll up
+press "role=\"button\" label=\"‹  EDITOR\""
+press "role=\"button\" label=\"export ↗\""
+wait "text" "Resolution" 15000
+press "label=\"1080p\""
+scroll down
+press "role=\"button\" label=\"render 1080p master\""
+wait 3000
+home
+wait 15000
+open "com.editify.app"
+wait "role=\"button\" label=\"finish on server\"" 20000
+screenshot "${EVIDENCE}/b26-03-backgrounded.png"
+press "role=\"button\" label=\"finish on server\""
+wait "text" "DONE" 240000
+screenshot "${EVIDENCE}/b26-04-server-done.png"
+close

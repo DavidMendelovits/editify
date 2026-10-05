@@ -1,0 +1,57 @@
+# Flow a, iOS 18.0: sign in, import a speech clip, the speech pre-prompt and the system alert,
+# SFSpeech words, an edit, an on-device 720p export in the foreground, saved to Photos.
+# Needs: APP_11 (the 1.1 gate build), EVIDENCE (a directory), CLIP_LABEL (the picker label of the
+# speech clip, e.g. "Video, fifty-three seconds, January 15, 12:00 PM" for media added with
+# simctl addmedia); fake auth + the 1.1 server running. Run with --udid <an iOS 18.0 sim>.
+# After it: `defaults` must say editify.transcriber.lastRan = sfspeech (see the gate doc).
+context platform=ios kind=simulator
+reinstall "com.editify.app" "${APP_11}"
+open "com.editify.app" --relaunch
+wait "text" "v1.1.0" 30000
+fill "role=\"textfield\" label=\"email\" editable=true" "gate@editify.test"
+fill "role=\"securetextfield\" label=\"password\"" "gate-local-pass"
+press "role=\"button\" label=\"sign in\""
+wait "role=\"button\" label=\"sign out\"" 20000
+# The home screen re-renders once projects load; a tap before that is lost.
+wait "text" "Recent projects" 20000
+wait 2000
+press "role=\"button\" label=\"9:16, Instagram Reel, 9:16 · UP TO 90S\""
+wait "text" "PREVIEW" 15000
+# Same for a fresh editor: let it settle before the first tap.
+wait "role=\"button\" label=\"add media from camera roll\"" 15000
+wait 2000
+press "role=\"button\" label=\"add media from camera roll\""
+# The app's own Photos pre-prompt, then the system alert.
+wait "label=\"Continue\"" 15000
+wait 1500
+press "label=\"Continue\""
+wait "label=\"Allow Full Access\"" 15000
+wait 1500
+press "label=\"Allow Full Access\""
+wait "role=\"image\" label=\"${CLIP_LABEL}\"" 15000
+press "role=\"image\" label=\"${CLIP_LABEL}\""
+press "role=\"button\" label=\"Add\""
+wait "text" "1 CLIPS" 60000
+# Words came back not-asked: the speech pre-prompt (C15), then the system speech alert.
+wait "role=\"button\" label=\"continue\"" 60000
+wait 1500
+screenshot "${EVIDENCE}/a18-01-speech-preprompt.png"
+press "role=\"button\" label=\"continue\""
+wait "label=\"Allow\"" 15000
+screenshot "${EVIDENCE}/a18-02-speech-system-alert.png"
+press "label=\"Allow\""
+# SFSpeech runs on the 53 s clip (about a minute on a laptop simulator).
+wait 90000
+# Edit: the clip goes on the timeline a second time.
+press "role=\"button\" label=\"add speech-test.mp4 to the timeline\" || label=\"add speech-clip.mp4 to the timeline\""
+wait "text" "2 CLIPS" 15000
+screenshot "${EVIDENCE}/a18-03-edited.png"
+press "role=\"button\" label=\"export ↗\""
+wait "text" "Resolution" 15000
+press "label=\"720p\""
+scroll down
+wait "text" "Exports on this iPhone. Keep Editify open until it finishes." 10000
+press "role=\"button\" label=\"render 720p master\""
+wait "text" "SAVED TO PHOTOS" 240000
+screenshot "${EVIDENCE}/a18-04-saved-to-photos.png"
+close

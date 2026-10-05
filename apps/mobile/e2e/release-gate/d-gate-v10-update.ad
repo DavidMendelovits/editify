@@ -1,0 +1,9 @@
+# Flow d (C16): the 1.0 server says minVersion 1.1.0 (servers.sh v10 MIN_APP_VERSION=1.1.0) and
+# the 1.0 build shows the "Update Editify" gate. Needs: APP_10, EVIDENCE.
+context platform=ios kind=simulator
+reinstall "com.editify.app" "${APP_10}"
+open "com.editify.app" --relaunch
+wait "text" "Update Editify" 30000
+wait "text" "This version is no longer supported" 5000
+screenshot "${EVIDENCE}/d-01-v10-update-editify.png"
+close
