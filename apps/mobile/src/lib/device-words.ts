@@ -35,7 +35,7 @@ import {
 import type { Capabilities, CapabilityCache } from './engine-capabilities';
 
 export const SPEECH_PROMPT_TITLE = 'Captions from your voice';
-export const SPEECH_PROMPT_TEXT = 'Editify writes captions by listening on your iPhone. Nothing is uploaded.';
+export const SPEECH_PROMPT_TEXT = 'Editify listens on your iPhone to find the words in your clips.';
 /** The native part's reason (D21), also the receipt's first line. */
 export const SPEECH_OFF_TEXT = 'Speech recognition is off for Editify';
 export const SPEECH_OFF_DETAIL = 'Captions need it. Turn on Speech Recognition for Editify in Settings.';

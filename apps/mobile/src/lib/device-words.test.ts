@@ -47,7 +47,7 @@ describe('the speech pre-prompt decision (C15)', () => {
   });
 
   it('says what it says', () => {
-    expect(SPEECH_PROMPT_TEXT).toBe('Editify writes captions by listening on your iPhone. Nothing is uploaded.');
+    expect(SPEECH_PROMPT_TEXT).toBe('Editify listens on your iPhone to find the words in your clips.');
   });
 });
 
