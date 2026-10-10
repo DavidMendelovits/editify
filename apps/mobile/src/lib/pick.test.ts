@@ -19,6 +19,12 @@ const state = vi.hoisted(() => ({
   alerts: [] as string[],
   alertChoice: 'Continue',
   pickerOpenedAfterAlert: false,
+  /** POST /assets/register answers (an older server 404s and the import uploads first). */
+  register: false,
+  registered: [] as Array<{ projectId: string; name: string; mimeType: string; duration: number; width: number; height: number; hasAudio: boolean }>,
+  originals: [] as Array<{ assetId: string; projectId: string; uri: string }>,
+  /** Holds every PUT /assets/:id/original until released. */
+  hold: null as Promise<void> | null,
 }));
 
 vi.mock('react-native', () => ({
@@ -37,6 +43,17 @@ vi.mock('./api', () => ({
     state.uploads.push({ uri: asset.uri, name: asset.name });
     return { id: `asset-${asset.name}`, originalName: asset.name };
   },
+  api: {
+    registerAsset: async (projectId: string, probe: (typeof state.registered)[number]) => {
+      if (!state.register) throw Object.assign(new Error('Not found'), { status: 404 });
+      state.registered.push({ ...probe, projectId });
+      return { id: `asset-${probe.name}`, originalName: probe.name, mimeType: probe.mimeType, duration: probe.duration, hasAudio: probe.hasAudio };
+    },
+  },
+  uploadOriginal: async (assetId: string, projectId: string, file: { uri: string }) => {
+    state.originals.push({ assetId, projectId, uri: file.uri });
+    await state.hold;
+  },
 }));
 vi.mock('./shared-files', () => ({ discardSharedCopy: (uri: string) => { state.discarded.push(uri); } }));
 vi.mock('expo-file-system', () => ({ File: class { size = 0; constructor(public uri: string) {} } }));
@@ -50,9 +67,13 @@ vi.mock('expo-image-picker', () => ({
 vi.mock('expo-document-picker', () => ({ getDocumentAsync: async () => state.documents }));
 
 const { pickFromFiles, pickFromPhotos, uploadMediaFile, uploadShared } = await import('./pick');
+const { uploads } = await import('./uploads');
+const { onImportCompleted } = await import('./import-hooks');
+const { pendingUploads } = await import('./local-media');
 
 let files: Set<string>;
 let access: 'all' | 'limited' | 'denied' | 'undetermined';
+let print: MediaProbe;
 
 beforeEach(async () => {
   const db = memoryDb();
@@ -60,8 +81,9 @@ beforeEach(async () => {
   files = new Set();
   access = 'all';
   let copies = 0;
+  print = { status: 'ok', fingerprint: PRINT };
   const native: MediaNative = {
-    probe: async (): Promise<MediaProbe> => ({ status: 'ok', fingerprint: PRINT }),
+    probe: async (): Promise<MediaProbe> => print,
     download: async () => ({ status: 'icloud' }),
     cancelDownload: () => undefined,
     photosAccess: () => access,
@@ -93,6 +115,10 @@ beforeEach(async () => {
   state.alerts = [];
   state.alertChoice = 'Continue';
   state.pickerOpenedAfterAlert = false;
+  state.register = false;
+  state.registered = [];
+  state.originals = [];
+  state.hold = null;
 });
 
 describe('Photos access', () => {
@@ -175,5 +201,61 @@ describe('import hooks', () => {
     state.deps = null;
     await uploadShared('p1', [{ uri: 'file:///group/clip.mov', name: 'clip.mov' }]);
     expect(state.uploads).toEqual([{ uri: 'file:///group/clip.mov', name: 'clip.mov' }]);
+  });
+});
+
+describe('land first', () => {
+  const VIDEO = { ...PRINT, geometry: { width: 3840, height: 2160, rotation: 90 } };
+  beforeEach(() => {
+    state.register = true;
+    print = { status: 'ok', fingerprint: VIDEO };
+  });
+
+  it('puts the clip on the timeline before its original uploads, with words started on the copy', async () => {
+    let release = (): void => undefined;
+    state.hold = new Promise((resolve) => { release = resolve; });
+    const announced: string[] = [];
+    const stop = onImportCompleted((assets) => { announced.push(...assets.map((asset) => asset.id)); });
+    state.documents = { canceled: false, assets: [{ uri: 'file:///cache/DocumentPicker/take.mov', name: 'take.mov', mimeType: 'video/quicktime' }] };
+
+    const result = await pickFromFiles('p1');
+    stop();
+    expect(result).toEqual({ assets: [expect.objectContaining({ id: 'asset-take.mov', duration: 3 })], failed: [] });
+    expect(state.uploads).toEqual([]);
+    expect(state.registered).toEqual([{ projectId: 'p1', name: 'take.mov', mimeType: 'video/quicktime', duration: 3, width: 3840, height: 2160, hasAudio: true }]);
+    // Playable from this phone right away, and announced for words before any byte is sent.
+    expect(await state.deps?.store.lookup('asset-take.mov')).toMatchObject({ fileUri: 'media/1-take.mov' });
+    expect(announced).toEqual(['asset-take.mov']);
+    expect(uploads.get('asset-take.mov')).toMatchObject({ state: 'uploading', projectId: 'p1' });
+    expect(await pendingUploads(state.deps!.store)).toEqual([expect.objectContaining({ assetId: 'asset-take.mov', projectId: 'p1' })]);
+
+    release();
+    expect(await uploads.settled(['asset-take.mov'])).toBe(true);
+    expect(state.originals).toEqual([{ assetId: 'asset-take.mov', projectId: 'p1', uri: `${ROOT}media/1-take.mov` }]);
+    expect(uploads.get('asset-take.mov')).toBeUndefined();
+    expect(await pendingUploads(state.deps!.store)).toEqual([]);
+  });
+
+  it('lands a voice-over take and a share the same way, and lets the share-extension copy go', async () => {
+    print = { status: 'ok', fingerprint: PRINT };
+    await uploadMediaFile('p1', { uri: 'file:///tmp/take.m4a', name: 'take.m4a', mimeType: 'audio/mp4' }, { kind: 'audio', origin: 'capture' });
+    await uploadShared('p1', [{ uri: 'file:///group/memo.m4a', name: 'memo.m4a', mimeType: 'audio/x-m4a' }]);
+    expect(state.uploads).toEqual([]);
+    expect(state.registered.map((probe) => [probe.name, probe.width, probe.height])).toEqual([['take.m4a', 0, 0], ['memo.m4a', 0, 0]]);
+    expect(state.discarded).toEqual(['file:///group/memo.m4a']);
+    expect(await uploads.settled(['asset-take.m4a', 'asset-memo.m4a'])).toBe(true);
+  });
+
+  it('uploads first without a project, for a still, when the probe fails, and on an older server', async () => {
+    await uploadShared(undefined, [{ uri: 'file:///group/a.mov', name: 'a.mov', mimeType: 'video/quicktime' }]);
+    await uploadMediaFile('p1', { uri: 'file:///cache/sticker.png', name: 'sticker.png', mimeType: 'image/png' }, { kind: 'image', origin: 'photos' });
+    print = { status: 'failed', error: 'unreadable' };
+    await uploadShared('p1', [{ uri: 'file:///group/b.mkv', name: 'b.mkv' }]);
+    print = { status: 'ok', fingerprint: VIDEO };
+    state.register = false;
+    await uploadShared('p1', [{ uri: 'file:///group/c.mov', name: 'c.mov', mimeType: 'video/quicktime' }]);
+    expect(state.uploads.map((upload) => upload.name)).toEqual(['a.mov', 'sticker.png', 'b.mkv', 'c.mov']);
+    expect(state.registered).toEqual([]);
+    expect(uploads.entries()).toEqual([]);
   });
 });

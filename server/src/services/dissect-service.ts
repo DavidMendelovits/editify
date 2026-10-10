@@ -3,6 +3,7 @@ import type { StoredAsset } from '../db/asset-store.js';
 import type { EditifyDatabase } from '../db/database.js';
 import { analyzeEnergy } from '../media/audio-analysis.js';
 import { analyzeLoudness, runProcess } from '../media/process.js';
+import { requireOriginal } from './asset-availability.js';
 
 /** Sampling rate for the overlay-zone edge scan; 4 fps is enough for captions. */
 const OVERLAY_FPS = 4;
@@ -32,6 +33,7 @@ export class DissectService {
       const existing = this.get(asset.id);
       if (existing) return existing;
     }
+    requireOriginal(asset);
     const pending = this.inFlight.get(asset.id) ?? this.dissect(asset)
       .then((dissection) => {
         // Read-only (the cutover freeze): serve it, store nothing.

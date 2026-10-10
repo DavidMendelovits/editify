@@ -86,6 +86,11 @@ export class AssetStore {
     `).run(path, path, path, id);
   }
 
+  /** A clip registered from the phone gets its frame rate once its original arrives. */
+  setFps(id: string, fps: number): void {
+    this.database.prepare('UPDATE assets SET fps = ? WHERE id = ?').run(fps, id);
+  }
+
   /** An empty/blank label clears it, so the card falls back to the file name. */
   setLabel(id: string, label: string): StoredAsset | undefined {
     const trimmed = label.trim();

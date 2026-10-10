@@ -11,6 +11,7 @@ import { receiptItems, type AgentTraceStep } from '../../lib/agent';
 import { presetPrompt } from '../../lib/presets';
 import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
+import { useUploads } from '../../lib/uploads';
 
 const QUICK_PROMPTS = ['add bold captions', 'remove the silence', 'punch in on the hook', 'tighten the ending'];
 
@@ -47,6 +48,8 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
   const [improving, setImproving] = useState(false);
   const scroller = useRef<ScrollView>(null);
   const lastUserMessage = [...(messages ?? [])].reverse().find((message) => message.role === 'user')?.content;
+  // The agent reads words, captions and sync from the server's copy, which a land-first clip doesn't have yet.
+  const uploading = useUploads(projectId).length;
 
   function draft(next: string): void {
     setText(next);
@@ -173,6 +176,11 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
           </Pressable>
         </View>
       </View>
+      {uploading > 0 && (
+        <Text style={styles.uploadNote}>
+          {uploading === 1 ? '1 clip is' : `${uploading} clips are`} still uploading. The AI can arrange clips now; captions, words, silences and sync wait until the upload finishes.
+        </Text>
+      )}
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
@@ -379,5 +387,6 @@ const styles = StyleSheet.create({
   sendDisabled: { opacity: 0.4 },
   sendText: { color: colors.text, fontSize: type.xxl, fontWeight: '700' },
   error: { color: colors.danger, fontFamily: fonts.medium, fontSize: type.md },
+  uploadNote: { color: colors.muted, fontFamily: fonts.medium, fontSize: type.sm },
   pressed: { opacity: 0.7 },
 });

@@ -2,7 +2,11 @@ import { useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetMetadata } from '@editify/shared';
+import { Image as LocalFrame } from 'expo-image';
 import { api, assetThumbUrl } from '../lib/api';
+import { useLocalFrames } from '../lib/local-frames';
+import { uploadLabel } from '../lib/upload-queue';
+import { uploads, useUpload } from '../lib/uploads';
 import { formatTimecode } from '../lib/timeline';
 import { sensitive } from '../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../lib/theme';
@@ -141,17 +145,7 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
               accessibilityLabel={`add ${asset.label ?? asset.originalName} to the timeline`}
               style={({ pressed }) => [styles.thumbWrap, pressed && styles.pressed]}
             >
-              {/* Mounted only once ready: a thumb requested mid-processing 409s and
-                  the failed load would stick to the unchanged URI. */}
-              {asset.status === 'ready'
-                ? <Image source={{ uri: assetThumbUrl(asset.id) }} style={styles.thumb} resizeMode="cover" />
-                : <View style={styles.thumb} />}
-              {asset.status !== 'ready' && (
-                <View style={styles.processing}>
-                  {asset.status === 'processing' && <ActivityIndicator size="small" color={colors.accent} />}
-                  <Text style={styles.processingText}>{asset.status === 'processing' ? 'processing…' : 'failed'}</Text>
-                </View>
-              )}
+              <CardThumb asset={asset} />
               <Text style={styles.duration}>{formatTimecode(asset.duration, false)}</Text>
               <View style={styles.addCue}><Text style={styles.addCueText}>+</Text></View>
             </Pressable>
@@ -179,6 +173,50 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
         ))}
       </ScrollView>
     </View>
+  );
+}
+
+/**
+ * The server's thumb once it is made; before that, a frame from the clip on this phone, and
+ * where its upload stands (land first: "uploading 34%", or failed with a retry).
+ */
+function CardThumb({ asset }: { asset: AssetMetadata }) {
+  const upload = useUpload(asset.id);
+  const frames = useLocalFrames(asset.id, asset.duration, asset.status !== 'ready' && asset.width > 0);
+  // Mounted only once ready: a thumb requested mid-processing 409s and the failed load
+  // would stick to the unchanged URI.
+  const thumb = asset.status === 'ready'
+    ? <Image source={{ uri: assetThumbUrl(asset.id) }} style={styles.thumb} resizeMode="cover" />
+    : frames?.[0] ? <LocalFrame source={frames[0]} style={styles.thumb} contentFit="cover" /> : <View style={styles.thumb} />;
+  if (upload) {
+    return (
+      <>
+        {thumb}
+        <View style={styles.uploadStrip}>
+          {upload.state === 'failed' ? (
+            <Pressable onPress={() => uploads.retry(asset.id)} accessibilityRole="button" accessibilityLabel={`retry the upload of ${asset.label ?? asset.originalName}`} hitSlop={8}>
+              <Text style={[styles.processingText, styles.uploadFailed]} numberOfLines={2}>upload failed · retry</Text>
+            </Pressable>
+          ) : (
+            <>
+              <ActivityIndicator size="small" color={colors.accent} />
+              <Text style={styles.processingText}>{uploadLabel(upload)}</Text>
+            </>
+          )}
+        </View>
+      </>
+    );
+  }
+  return (
+    <>
+      {thumb}
+      {asset.status !== 'ready' && (
+        <View style={styles.processing}>
+          {asset.status === 'processing' && <ActivityIndicator size="small" color={colors.accent} />}
+          <Text style={styles.processingText}>{asset.status === 'processing' ? 'processing…' : 'failed'}</Text>
+        </View>
+      )}
+    </>
   );
 }
 
@@ -217,6 +255,9 @@ const styles = StyleSheet.create({
   thumb: { width: '100%', height: 72 },
   processing: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: space.sm, backgroundColor: '#0404089C' },
   processingText: { color: colors.text, fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.6 },
+  // The frame stays visible above it: the clip is usable while it uploads.
+  uploadStrip: { position: 'absolute', left: 0, right: 0, top: 0, flexDirection: 'row', alignItems: 'center', gap: space.xs, padding: space.xs, backgroundColor: '#0404089C' },
+  uploadFailed: { color: colors.danger },
   duration: { position: 'absolute', left: 5, bottom: 5, color: colors.text, fontFamily: fonts.bold, fontSize: type.xs, backgroundColor: '#04040899', paddingHorizontal: space.sm, paddingVertical: space.xs, borderRadius: radius.md },
   addCue: { position: 'absolute', right: 5, bottom: 5, width: 18, height: 18, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentStrong },
   addCueText: { color: colors.text, fontFamily: fonts.bold, fontSize: type.base, lineHeight: 13 },

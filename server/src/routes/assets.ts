@@ -14,7 +14,7 @@ import { assetsRoot, mediaImportDir } from '../config.js';
 import { COLOR_PIPELINE_VERSION } from '../media/color.js';
 import { createFilmstrip, createProxyAndThumbnail, probeMedia, regenerateThumbnail, type ProbeResult } from '../media/process.js';
 import { sendMediaFile } from '../media/send-file.js';
-import { isFile } from '../services/asset-availability.js';
+import { awaitingOriginal, isFile } from '../services/asset-availability.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { FaceService } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
@@ -43,6 +43,19 @@ const forceRequestSchema = z.object({ force: z.boolean().optional().default(fals
 const labelRequestSchema = z.object({ label: z.string().max(120) }).strict();
 const linkRequestSchema = z.object({ projectId: z.string().min(1) }).strict();
 const rawUploadSchema = z.string().trim().min(1).max(255);
+/**
+ * A clip the phone measured itself (POST /assets/register): it lands on the timeline now and
+ * its original follows through PUT /assets/:id/original. Video and audio only: a still's
+ * original is its display image, so it uploads first as before.
+ */
+const registerRequestSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  mimeType: z.string().regex(/^(video|audio)\//),
+  duration: z.number().positive().finite(),
+  width: z.number().int().min(0),
+  height: z.number().int().min(0),
+  hasAudio: z.boolean(),
+}).strict();
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 /**
  * The only spelling of an asset id that may name a folder: server ids are lowercase UUIDs
@@ -388,6 +401,47 @@ export function registerAssetRoutes(
   });
 
   /**
+   * Land first: the row for a clip that is still on the phone, from the phone's own probe, so
+   * the clip goes on the timeline before its original uploads. The row stays 'processing' with
+   * no original (`awaitingOriginal`): everything that reads the original says it is still
+   * uploading (409 { code: 'uploading' }) until PUT /assets/:id/original brings it, which then
+   * queues the proxy, thumbnail and transcription like an import. `projectId` is required,
+   * since that PUT needs it. fps stays 0 until the original arrives.
+   */
+  app.post<{ Querystring: { projectId?: string } }>('/assets/register', async (request, reply) => {
+    const projectId = requireProject(request.query.projectId, reply, request.userId);
+    if (projectId === null) return reply;
+    if (!projectId) return await reply.code(400).send({ error: 'projectId is required' });
+    const input = registerRequestSchema.parse(request.body);
+    if (input.mimeType.startsWith('video/') && !(input.width > 0 && input.height > 0)) {
+      return await reply.code(400).send({ error: 'A video needs its width and height' });
+    }
+    const id = randomUUID();
+    const directory = join(assetsRoot, id);
+    const asset = assets.insert({
+      id,
+      originalName: input.name,
+      mimeType: input.mimeType,
+      duration: input.duration,
+      width: input.width,
+      height: input.height,
+      fps: 0,
+      hasAudio: input.hasAudio,
+      status: 'processing',
+      originalPath: '',
+      proxyPath: join(directory, 'proxy.mp4'),
+      thumbnailPath: join(directory, 'thumb.jpg'),
+      originalUrl: `/assets/${id}/original`,
+      proxyUrl: `/assets/${id}/proxy.mp4`,
+      thumbnailUrl: `/assets/${id}/thumb.jpg`,
+      filmstripUrl: `/assets/${id}/filmstrip.jpg`,
+      createdAt: new Date().toISOString(),
+    }, request.userId);
+    assets.link(projectId, id);
+    return await reply.code(201).send(publicAsset(asset));
+  });
+
+  /**
    * Puts an original back on the server under its existing asset id (plan OV1, "upload
    * clips X"): the phone uploads only the clips a server render is missing, from its app
    * copy or the Photos original, and the project's references keep working.
@@ -398,6 +452,8 @@ export function registerAssetRoutes(
    *   own row, original gone .......... written to a new file beside it, checked against the
    *                                     record (kind, duration, size; 409 { code: 'mismatch' }
    *                                     when it is another file), then renamed into place
+   *   own row, registered and never ... the same, then the import's background work is queued
+   *   uploaded (land first)             (proxy, thumbnail, transcription), with the fps measured here
    *
    * Always linked to `projectId`, which is required. The body is the raw file, as for /assets/raw.
    * Only the incoming file this request wrote is ever removed, never a folder.
@@ -451,6 +507,11 @@ export function registerAssetRoutes(
       await rename(incoming, originalPath);
       assets.setOriginalPath(id, originalPath);
       assets.link(projectId, id);
+      if (awaitingOriginal(existing)) {
+        assets.setFps(id, probe.fps);
+        const landed = assets.get(id);
+        if (landed) queueAssetWork(app.log, assets, transcripts, landed, probe, faces);
+      }
       return await reply.code(200).send(publicAsset(assets.get(id) ?? existing));
     } catch (error) {
       await rm(incoming, { force: true });
@@ -619,8 +680,9 @@ export function registerAssetRoutes(
     return reply.code(409).send({
       error: asset.status === 'error'
         ? 'Asset processing failed'
-        : 'Asset is still processing',
+        : awaitingOriginal(asset) ? 'The original is still uploading' : 'Asset is still processing',
       status: asset.status,
+      ...(awaitingOriginal(asset) ? { code: 'uploading' } : {}),
     });
   }
 
@@ -691,6 +753,8 @@ export function registerAssetRoutes(
 
   app.get<{ Params: { id: string } }>('/assets/:id/original', async (request, reply) => {
     const asset = assets.get(request.params.id, request.userId);
-    return asset ? await sendFile(reply, asset.originalPath, asset.mimeType, request.headers.range) : await reply.code(404).send({ error: 'Asset not found' });
+    if (!asset) return await reply.code(404).send({ error: 'Asset not found' });
+    if (awaitingOriginal(asset)) return notReady(reply, asset);
+    return await sendFile(reply, asset.originalPath, asset.mimeType, request.headers.range);
   });
 }

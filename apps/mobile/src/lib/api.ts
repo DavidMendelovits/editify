@@ -361,6 +361,9 @@ export const api = {
   linkAsset: (projectId: string, assetId: string) => request<AssetMetadata>(`/assets/${assetId}/link`, {
     method: 'POST', body: JSON.stringify({ projectId }),
   }),
+  /** Land first: an asset row from this phone's own probe, before its original uploads (PUT /assets/:id/original). */
+  registerAsset: (projectId: string, probe: { name: string; mimeType: string; duration: number; width: number; height: number; hasAudio: boolean }) =>
+    request<AssetMetadata>(`/assets/register?projectId=${encodeURIComponent(projectId)}`, { method: 'POST', body: JSON.stringify(probe) }),
   setAssetLabel: (id: string, label: string) => request<AssetMetadata>(`/assets/${id}`, {
     method: 'PATCH', body: JSON.stringify({ label }),
   }),

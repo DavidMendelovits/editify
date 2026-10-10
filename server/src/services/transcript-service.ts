@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StoredAsset } from '../db/asset-store.js';
 import { analyzeEnergy } from '../media/audio-analysis.js';
+import { requireOriginal } from './asset-availability.js';
 import { timeMediaJob } from './media-jobs.js';
 import { mediaSlots, type MediaSlots, type SlotLane } from './media-slots.js';
 import {
@@ -142,6 +143,7 @@ export class TranscriptService {
       if (existing.energy) return existing;
       try { return this.store.putEnergy(asset.id, await this.measureEnergy(asset)); } catch { return existing; }
     }
+    requireOriginal(asset);
     // ponytail: a force=true call that lands mid-run joins the in-flight run
     // instead of starting a second Whisper pass — it gets a transcript that is
     // at most one run stale, which beats paying for minutes of duplicate GPU.

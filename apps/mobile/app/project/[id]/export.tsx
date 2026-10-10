@@ -15,6 +15,8 @@ import {
   type DeviceExportView, type ExportChoices, type ExportRoute, type ServerCheck, type UploadClip, type UploadOriginal,
 } from '../../../src/lib/device-export';
 import { describeImport, type ImportProgress } from '../../../src/lib/upload-progress';
+import { uploadLabel } from '../../../src/lib/upload-queue';
+import { uploads as uploadQueue, useUploads } from '../../../src/lib/uploads';
 import { useEngineActivity } from '../../../src/lib/engine-activity';
 import { localMedia } from '../../../src/lib/local-media-native';
 import { track } from '../../../src/lib/telemetry';
@@ -86,6 +88,13 @@ export default function ExportScreen() {
     },
   });
   const [uploading, setUploading] = useState<ImportProgress>();
+  // Land-first originals still on their way: the server path waits for that upload instead
+  // of starting a second one, and routes again each time one lands.
+  const queued = useUploads(id);
+  useEffect(() => {
+    if (engine && project.data && assets.data) void route.refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queued.length]);
   const [serverError, setServerError] = useState<string | null>(null);
   const [device, setDevice] = useState<DeviceExportView>();
   const [serverNote, setServerNote] = useState<string | null>(null);
@@ -264,6 +273,11 @@ export default function ExportScreen() {
       void exportHere().catch(() => { busy.current = false; setDevice(undefined); });
       return;
     }
+    if (waitingFor.length > 0) {
+      busy.current = false;
+      for (const entry of waitingFor) uploadQueue.retry(entry.assetId);
+      return;
+    }
     if (route.data?.kind === 'server' && route.data.server?.state === 'upload') {
       void uploadThenRender(route.data.server.clips).catch((error: unknown) => {
         busy.current = false;
@@ -276,13 +290,21 @@ export default function ExportScreen() {
   };
   const locked = Boolean(renderId) || deviceBusy || Boolean(uploading);
   const needsUpload = route.data?.kind === 'server' && route.data.server?.state === 'upload' ? route.data.server.clips : null;
+  const waitingFor = queued.filter((entry) => needsUpload?.some((clip) => clip.assetId === entry.assetId));
+  const waitingFailed = waitingFor.filter((entry) => entry.state === 'failed');
   const blocked = route.data?.kind === 'server' && route.data.server?.state === 'blocked';
-  const renderLabel = uploading
+  const renderLabel = waitingFor.length > 0
+    ? waitingFailed.length > 0 ? 'retry upload' : `waiting for upload… ${uploadLabel(waitingFor[0]!).replace('uploading', '').trim()}`
+    : uploading
     ? `uploading… ${describeImport(uploading)}`
     : start.isPending ? 'joining the queue…'
       : needsUpload ? `upload ${needsUpload.length === 1 ? 'clip' : `${needsUpload.length} clips`}`
         : `render ${resolution} master`;
-  const routeLine = route.data?.kind === 'device' ? 'Exports on this iPhone. Keep Editify open until it finishes.' : route.data ? serverRouteLine(route.data) : null;
+  const routeLine = waitingFor.length > 0
+    ? waitingFailed.length > 0
+      ? `${waitingFailed.map((entry) => `"${entry.name}"`).join(', ')} didn't upload: ${waitingFailed[0]!.error ?? 'the upload failed'}.`
+      : `This export renders on the server, which needs ${waitingFor.map((entry) => `"${entry.name}"`).join(', ')}. Render once the upload finishes.`
+    : route.data?.kind === 'device' ? 'Exports on this iPhone. Keep Editify open until it finishes.' : route.data ? serverRouteLine(route.data) : null;
 
   useEffect(() => {
     if (status === 'done' || status === 'error') track(`render_${status}`);
@@ -319,7 +341,7 @@ export default function ExportScreen() {
           {loudnessOptions.map((item) => <Pressable key={item.value} testID={`loudness-${item.value}`} disabled={locked} onPress={() => setLoudness(item.value)} style={[styles.resolution, loudness === item.value && styles.resolutionSelected]}><View style={[styles.radio, loudness === item.value && styles.radioSelected]}>{loudness === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
         </View>
       </View>
-      {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || Boolean(uploading) || blocked || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{renderLabel}</Button>}
+      {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || Boolean(uploading) || blocked || (waitingFor.length > 0 && waitingFailed.length === 0) || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{renderLabel}</Button>}
       {!renderId && !device && (serverNote ?? routeLine) && <Text testID="export-route" style={styles.note}>{serverNote ?? routeLine}</Text>}
       {uploading && <Button secondary style={styles.downloadButton} onPress={() => abort.current?.abort()}>cancel upload</Button>}
       {serverError && <Text style={styles.error}>{serverError}</Text>}

@@ -6,6 +6,9 @@ import { clipTimelineDuration } from '@editify/shared';
 import { Filmstrip } from './Filmstrip';
 import { useHorizontalDrag } from './useHorizontalDrag';
 import { api, type WaveformEnvelope } from '../../lib/api';
+import { useLocalWaveform } from '../../lib/local-frames';
+import { uploadLabel } from '../../lib/upload-queue';
+import { useUpload } from '../../lib/uploads';
 import { sensitive } from '../../lib/sensitive';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
 import { describeImport, importFraction, type ImportProgress } from '../../lib/upload-progress';
@@ -72,6 +75,8 @@ export const TimelineClip = memo(function TimelineClip({
   // below the label strip; a video's are a strip along its bottom edge.
   const soundOnly = !asset || asset.width === 0 || asset.height === 0;
   const waveHeight = Math.max(0, soundOnly ? height - 15 : Math.round(height * 0.35));
+  // Land first: the original is still on its way, and the clip edits from this phone meanwhile.
+  const upload = useUpload(asset?.id);
 
   return (
     <View
@@ -89,7 +94,7 @@ export const TimelineClip = memo(function TimelineClip({
       <Filmstrip asset={asset} in={clip.in} out={clip.out} width={width} height={height} />
       <View style={styles.scrim} pointerEvents="none" />
       {asset?.hasAudio && (
-        <ClipWaveform assetId={asset.id} in={clip.in} out={clip.out} width={width} height={waveHeight} />
+        <ClipWaveform assetId={asset.id} local={Boolean(upload)} in={clip.in} out={clip.out} width={width} height={waveHeight} />
       )}
       <View style={styles.meta} pointerEvents="none">
         <Text style={styles.number}>{String(index + 1).padStart(2, '0')}</Text>
@@ -100,6 +105,11 @@ export const TimelineClip = memo(function TimelineClip({
         )}
       </View>
       <View style={styles.badges} pointerEvents="none">
+        {upload && (
+          <View style={[styles.badge, upload.state === 'failed' && styles.badgeFailed]} accessibilityLabel={uploadLabel(upload)}>
+            <Text style={styles.badgeText}>{uploadLabel(upload).toUpperCase()}</Text>
+          </View>
+        )}
         {speed !== 1 && <View style={[styles.badge, styles.badgeAccent]}><Text style={styles.badgeText}>{speed}×</Text></View>}
         {clip.volume === 0 && <View style={styles.badge}><Text style={styles.badgeText}>MUTE</Text></View>}
         {roomy && <View style={styles.badge}><Text style={styles.badgeText}>{duration.toFixed(1)}s</Text></View>}
@@ -141,9 +151,11 @@ const MAX_BARS = 120;
  * its own, since the chip's pixel width already accounts for it.
  */
 const ClipWaveform = memo(function ClipWaveform({
-  assetId, in: inPoint, out, width, height,
+  assetId, local, in: inPoint, out, width, height,
 }: {
   assetId: string | undefined;
+  /** The server can't measure it yet (its original is uploading): the engine's energy part instead. */
+  local: boolean;
   in: number;
   out: number;
   width: number;
@@ -153,9 +165,11 @@ const ClipWaveform = memo(function ClipWaveform({
     queryKey: ['waveform', assetId],
     queryFn: async () => await api.getWaveform(assetId as string),
     staleTime: Infinity,
-    enabled: Boolean(assetId),
+    enabled: Boolean(assetId) && !local,
   });
-  const bars = useMemo(() => barHeights(data, inPoint, out, width, height), [data, inPoint, out, width, height]);
+  const onPhone = useLocalWaveform(assetId, local);
+  const envelope = local ? onPhone ?? undefined : data;
+  const bars = useMemo(() => barHeights(envelope, inPoint, out, width, height), [envelope, inPoint, out, width, height]);
   if (bars.length === 0) return null;
   return (
     <View pointerEvents="none" style={[styles.waveform, { height }]}>
@@ -424,6 +438,7 @@ const styles = StyleSheet.create({
   badges: { position: 'absolute', bottom: 4, left: 6, right: 6, flexDirection: 'row', alignItems: 'center', gap: space.sm },
   badge: { borderRadius: radius.md, backgroundColor: '#00000099', paddingHorizontal: space.sm, paddingVertical: space.xs },
   badgeAccent: { backgroundColor: colors.accentStrong },
+  badgeFailed: { backgroundColor: colors.danger },
   badgeText: { color: '#FFFFFF', fontFamily: fonts.mono, fontSize: type.xs, letterSpacing: 0.4 },
   transition: {
     position: 'absolute', left: 0, top: 15, width: 10, height: 16,

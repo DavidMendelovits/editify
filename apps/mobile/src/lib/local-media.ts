@@ -12,6 +12,8 @@
  *                          │   Application Support/Editify/media BEFORE upload (PHAsset id kept)
  *                          └─ no file, or no room for a copy ─▶ server-only (with the reason)
  *          upload ok ─▶ commit(assetId): row + fingerprint of the uploaded file (+ proxy queued)
+ *          land first (pick.ts) ─▶ registered, commit(assetId) before the upload, original sent
+ *                                  behind it (upload-queue.ts; pendingUploads until it lands)
  *
  *   assetRef ─▶ resolveMedia ─┬─ app copy on disk ─────────────────────────▶ 'file'
  *                             ├─ PHAsset local, fingerprint matches ────────▶ 'local'
@@ -21,10 +23,11 @@
  *                                (preview: the server proxy; export: the server render path)
  *
  * Copies are a cache of media the server already has (rows exist only after an upload
- * landed): when an import commits, least recently used ones are evicted under a byte
- * budget, min(20 GB, 25% of free space plus the cache) unless set, skipping leased assets
- * (`leaseMedia`, held by an export or a preview); they are also released when their
- * project is deleted. A copy made for an upload that never committed (the app was killed
+ * landed, or after a land-first registration whose original is in `pendingUploads`): when
+ * an import commits, least recently used ones are evicted under a byte budget, min(20 GB,
+ * 25% of free space plus the cache) unless set, skipping leased assets (`leaseMedia`, held
+ * by an export or a preview) and pending uploads, which are the only copy anywhere; they
+ * are also released when their project is deleted. A copy made for an upload that never committed (the app was killed
  * mid-upload) has no row; the launch sweep deletes such files after 24 hours.
  *
  * Analyzers and proxies only ever get a ref resolveMedia returned (`analyzeMedia`), never
@@ -687,7 +690,7 @@ export async function setCopyBudget(deps: MediaDeps, bytes: number | null): Prom
  * Evicts least recently used copies until committed plus in-flight copies fit the
  * budget, and, with `minFree`, until that much space is free. In-flight copies count
  * but are never evicted; neither is `protect` (the copy just committed) nor a leased
- * asset. Runs when an import commits (and at launch only when space is short), never
+ * asset, nor a pending upload (the server doesn't have it yet). Runs when an import commits (and at launch only when space is short), never
  * while staging: a failed upload evicts nothing. Returns the evicted asset ids.
  */
 export async function enforceCopyBudget(deps: MediaDeps, options: { protect?: string; minFree?: number } = {}): Promise<string[]> {
@@ -700,9 +703,10 @@ export async function enforceCopyBudget(deps: MediaDeps, options: { protect?: st
     if (shortfall > 0) target = Math.min(target, total - shortfall);
   }
   const evicted: string[] = [];
+  const pending = new Set((await pendingUploads(deps.store)).map((upload) => upload.assetId));
   for (const row of copies) {
     if (total <= target) break;
-    if (row.assetId === options.protect || !row.fileUri || isLeased(deps, row.assetId)) continue;
+    if (row.assetId === options.protect || !row.fileUri || isLeased(deps, row.assetId) || pending.has(row.assetId)) continue;
     deps.native.removeMedia(row.fileUri);
     await deps.store.dropCopy(row.assetId, 'evicted');
     total -= row.fileBytes ?? 0;
@@ -758,6 +762,34 @@ export async function releaseProjectMedia(deps: MediaDeps, projectAssetIds: Iter
   return await forgetMedia(deps, [...projectAssetIds].filter((id) => !stillUsed.has(id)));
 }
 
+// ─── Originals still uploading (land first) ───
+
+export const PENDING_UPLOADS_KEY = 'pending_uploads';
+
+/** A land-first import whose original hasn't reached the server yet (upload-queue.ts). */
+export interface PendingUpload {
+  assetId: string;
+  /** PUT /assets/:id/original needs it. */
+  projectId: string;
+  kind: PlanAssetRef['kind'];
+  name: string;
+  mimeType?: string;
+}
+
+/** Kept in the registry's meta table so a relaunch can resume them and eviction skips them. */
+export async function pendingUploads(store: Pick<LocalMediaStore, 'getMeta'>): Promise<PendingUpload[]> {
+  try {
+    const list: unknown = JSON.parse(await store.getMeta(PENDING_UPLOADS_KEY) ?? '[]');
+    return Array.isArray(list) ? list as PendingUpload[] : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setPendingUploads(store: Pick<LocalMediaStore, 'setMeta'>, uploads: readonly PendingUpload[]): Promise<void> {
+  await store.setMeta(PENDING_UPLOADS_KEY, uploads.length > 0 ? JSON.stringify(uploads) : null);
+}
+
 // ─── Import hooks ───
 
 export type ImportOrigin = 'photos' | 'files' | 'share' | 'capture';
@@ -779,7 +811,9 @@ export interface StagedImport {
   uploadUri: string;
   /** The device keeps its own copy (a share-extension copy is then redundant). */
   durable: boolean;
-  /** After a successful upload: writes the row (and queues the preview proxy for video). */
+  /** After commit this phone has a source (the copy or the PHAsset): the clip can land before its upload. */
+  onPhone: boolean;
+  /** After a successful upload, or a land-first registration: writes the row (and queues the preview proxy for video). */
   commit(assetId: string): Promise<void>;
   /** After a failed upload: removes the copy made for it. */
   abort(): void;
@@ -794,7 +828,7 @@ export interface StagedImport {
  *   (the picker uploads the rendered edit, the original differs). A PHAsset id is kept
  *   next to the copy.
  * - No file, or not enough room for a copy, leaves the asset server-only (with the reason).
- * The row is written in `commit`, after the upload; a copy whose upload never commits
+ * The row is written in `commit`, after the upload or a land-first registration; a copy that never commits
  * (the app was killed) is left to `sweepOrphanCopies`. The copy's modification time is
  * set at copy time, so the sweep's 24-hour clock starts then.
  */
@@ -805,6 +839,7 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
   const serverOnly = (reason: ServerReason): StagedImport => ({
     uploadUri: candidate.uri,
     durable: false,
+    onPhone: false,
     commit: async (assetId) => { await store.markServerOnly(assetId, reason); },
     abort: () => undefined,
   });
@@ -818,6 +853,7 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
       return {
         uploadUri: candidate.uri,
         durable: false,
+        onPhone: true,
         commit: async (assetId) => {
           await store.record({ assetId, phLocalId, fingerprint });
           native.ensureProxy(assetId, phLocalId).catch(() => undefined);
@@ -845,6 +881,7 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
   return {
     uploadUri: copy.uri,
     durable: true,
+    onPhone: true,
     commit: async (assetId) => {
       try {
         const fingerprint = candidate.kind === 'image' ? null : uploaded ?? await fingerprintOf(native, copy.uri);
@@ -852,7 +889,7 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
       } finally {
         state.inFlight.delete(token);
       }
-      // Evicting happens here only: the upload landed, so whatever goes is on the server.
+      // Evicting happens here only: what goes is on the server (a pending upload is never evicted).
       await enforceCopyBudget(deps, { protect: assetId });
       if (candidate.kind === 'video') native.ensureProxy(assetId, copy.uri).catch(() => undefined);
     },

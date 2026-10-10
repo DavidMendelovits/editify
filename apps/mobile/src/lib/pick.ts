@@ -4,10 +4,11 @@ import { discardSharedCopy } from './shared-files';
 import * as ImagePicker from 'expo-image-picker';
 import { Alert } from 'react-native';
 import type { AssetMetadata } from '@editify/shared';
-import { uploadAsset, type UploadBytes } from './api';
-import { askForPhotosAccessOnce, mediaKindOf, stageImport, type ImportCandidate } from './local-media';
+import { api, uploadAsset, type UploadBytes } from './api';
+import { askForPhotosAccessOnce, mediaKindOf, stageImport, type ImportCandidate, type MediaDeps, type StagedImport } from './local-media';
 import { localMedia } from './local-media-native';
 import { importCompleted } from './import-hooks';
+import { localSources, uploads } from './uploads';
 import type { ImportProgress } from './upload-progress';
 import type { SharedFile } from './share-intake';
 
@@ -43,9 +44,10 @@ function sizeOf(file: PendingFile): number {
 const UPLOAD_CONCURRENCY = 4;
 
 /**
- * A few uploads at a time: the import request only writes the file to disk and
- * probes it — `queueAssetWork` moved the proxy transcode and the transcription
- * to the background — so the network transfer is the part worth overlapping.
+ * A few imports at a time. Most land first (`landFirst`: a registration, no upload); the
+ * rest upload here, where the request only writes the file to disk and probes it —
+ * `queueAssetWork` moved the proxy transcode and the transcription to the background —
+ * so the network transfer is the part worth overlapping.
  * Results go in by index because completions arrive out of order and the picked
  * order is the order the clips land on the timeline. One bad file does not sink
  * the batch. Everything lands in `projectId`'s library, or unattached without one.
@@ -91,21 +93,28 @@ async function uploadAll(projectId: string | undefined, files: PendingFile[], on
   }));
   const assets = uploaded.filter((asset) => asset !== undefined);
   // On this iPhone: words for the clips with sound, and the speech pre-prompt when it's due (C15).
+  // A land-first clip is read from its copy or PHAsset, so its words don't wait for the upload.
   importCompleted(assets);
   return { assets, failed };
 }
 
 /**
- * One upload, with the local media registry around it: the file is staged first
- * (copied into Application Support, or referenced by its PHAsset id), uploaded from
- * there, and recorded under the server's asset id once the upload lands. A failed
- * upload removes its copy. The registry never fails an import that reached the server.
+ * One import, with the local media registry around it: the file is staged first
+ * (copied into Application Support, or referenced by its PHAsset id). A video or audio
+ * clip in a project that this phone keeps lands first (`landFirst`). Anything else is
+ * uploaded from there and recorded under the server's asset id once the upload lands;
+ * a failed upload removes its copy. The registry never fails an import that reached the server.
  */
 async function uploadKeepingLocal(projectId: string | undefined, file: PendingFile, onBytes?: UploadBytes): Promise<AssetMetadata> {
   const registry = file.local ? await localMedia() : null;
   const staged = registry && file.local
     ? await stageImport({ uri: file.uri, name: file.name, ...file.local, ...(file.size ? { size: file.size } : {}) }, registry).catch(() => undefined)
     : undefined;
+  const kind = file.local?.kind;
+  if (registry && staged?.onPhone && projectId && (kind === 'video' || kind === 'audio')) {
+    const landed = await landFirst(projectId, file, kind, staged, registry).catch(() => undefined);
+    if (landed) return landed;
+  }
   const { local: _local, ...upload } = file;
   let asset: AssetMetadata;
   try {
@@ -115,6 +124,32 @@ async function uploadKeepingLocal(projectId: string | undefined, file: PendingFi
     throw error;
   }
   await staged?.commit(asset.id).catch(() => undefined);
+  return asset;
+}
+
+/**
+ * Land first: the clip is registered from this phone's own probe (duration, size, sound) and
+ * committed to the registry at once, so it is on the timeline and plays from its copy or
+ * PHAsset within a second or two of the picker closing. Its original uploads behind it
+ * (uploads.ts); what needs it on the server says so until it lands. Undefined when the probe
+ * can't read the clip or the server can't register it (an older server): the caller then
+ * uploads first, as before.
+ */
+async function landFirst(
+  projectId: string, file: PendingFile, kind: 'video' | 'audio', staged: StagedImport, registry: MediaDeps,
+): Promise<AssetMetadata | undefined> {
+  const probe = await registry.native.probe(staged.uploadUri);
+  if (probe.status !== 'ok') return undefined;
+  const { duration, audio, geometry } = probe.fingerprint;
+  if (!(duration > 0) || (kind === 'video' && !geometry)) return undefined;
+  const mimeType = /^(video|audio)\//.test(file.mimeType ?? '') ? file.mimeType as string : kind === 'audio' ? 'audio/mp4' : 'video/quicktime';
+  const asset = await api.registerAsset(projectId, {
+    name: file.name, mimeType, duration, width: geometry?.width ?? 0, height: geometry?.height ?? 0, hasAudio: audio !== null,
+  });
+  // From here the clip is the server's: a registry hiccup shows up as a failed upload, never a lost clip.
+  await staged.commit(asset.id).catch(() => undefined);
+  localSources.set(asset.id, staged.uploadUri);
+  await uploads.enqueue({ assetId: asset.id, projectId, kind, name: file.name, mimeType });
   return asset;
 }
 
@@ -230,8 +265,8 @@ export async function pickFromFiles(projectId: string | undefined, onProgress?: 
  * video). The share extension copies each one into the app's own storage, and
  * nothing else ever deletes those copies. The import copies it again into
  * Application Support before uploading (local-media.ts), and that durable copy is
- * the one the registry keeps; so once a file is on the server, the share
- * extension's copy goes. A failed one stays for a retry.
+ * the one the registry keeps; so once a file is on the server, or landed from that
+ * copy, the share extension's copy goes. A failed one stays for a retry.
  */
 export async function uploadShared(projectId: string | undefined, files: SharedFile[], onProgress?: PickProgress): Promise<PickResult> {
   const result = await uploadAll(projectId, files.map((file) => ({

@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { Operation, Project } from '@editify/shared';
 import { apiFetch } from '../../lib/api';
 import { colors, radius, space, type, fonts } from '../../lib/theme';
+import { useUploads } from '../../lib/uploads';
 
 interface Props {
   projectId: string;
@@ -57,6 +58,8 @@ export function CleanupSheet({ projectId, project, visible, onClose, onApply }: 
     enabled: visible,
   });
   const plan = planQuery.data;
+  // Fillers and silences come from the server's transcript of each original.
+  const uploading = useUploads(projectId).length > 0;
 
   function apply(row: 'fillers' | 'silences', ranges: CleanupRange[]): void {
     if (!plan || !ranges.length) return;
@@ -84,7 +87,8 @@ export function CleanupSheet({ projectId, project, visible, onClose, onApply }: 
 
           {planQuery.isLoading && <Text style={styles.hint}>measuring…</Text>}
           {planQuery.isError && <Text style={styles.error}>Could not measure: {planQuery.error.message}</Text>}
-          {plan && !plan.transcribed && <Text style={styles.hint}>no transcript yet: ask the agent to transcribe first</Text>}
+          {uploading && <Text style={styles.hint}>a clip is still uploading: cleanup measures it once it is on the server</Text>}
+          {plan && !plan.transcribed && !uploading && <Text style={styles.hint}>no transcript yet: ask the agent to transcribe first</Text>}
           {nothingToCut && <Text style={styles.hint}>clean already</Text>}
 
           {plan?.transcribed && !nothingToCut && (
