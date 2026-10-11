@@ -40,6 +40,7 @@ import {
   unionRanges,
   type CleanupRange,
 } from '../services/cleanup.js';
+import { awaitingOriginal } from '../services/asset-availability.js';
 import type { DissectService } from '../services/dissect-service.js';
 import type { FaceService, FaceTrack } from '../services/face-service.js';
 import type { InsightService } from '../services/insight-service.js';
@@ -1027,14 +1028,15 @@ export function createToolRegistry(): ToolDef[] {
     {
       name: 'list_assets',
       needs: ['assets'],
-      description: 'List this project\'s media assets, the only ones you may cut with. Use an asset id from this result as add_clip.assetId. Duration is source-time seconds.',
+      description: 'List this project\'s media assets, the only ones you may cut with. Use an asset id from this result as add_clip.assetId. Duration is source-time seconds. An asset with uploading: true is still on its way from the phone: you can place, trim and arrange it, but its transcript, captions, silence removal, sync and dissection wait until it arrives, so tell the user that part has to wait instead of guessing.',
       schema: emptyInputSchema,
       execute: async (ctx, input) => {
         emptyInputSchema.parse(input);
         // Scoped to the project: another project's footage is not yours to cut.
-        return ctx.assets.listForProject(ctx.projectId, ctx.userId).map(({ id, originalName, label, duration, width, height, hasAudio, mimeType }) => ({
-          id, originalName, label, duration, width, height, hasAudio, mimeType,
-        }));
+        return ctx.assets.listForProject(ctx.projectId, ctx.userId).map((asset) => {
+          const { id, originalName, label, duration, width, height, hasAudio, mimeType } = asset;
+          return { id, originalName, label, duration, width, height, hasAudio, mimeType, ...(awaitingOriginal(asset) ? { uploading: true } : {}) };
+        });
       },
     },
     {

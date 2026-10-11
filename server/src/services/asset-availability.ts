@@ -41,3 +41,26 @@ export async function isFile(path: string): Promise<boolean> {
 export function idsWith(availability: ReadonlyMap<string, AssetAvailability>, status: AssetAvailability): string[] {
   return [...availability].filter(([, value]) => value === status).map(([id]) => id);
 }
+
+/**
+ * An asset the phone registered before sending its bytes (POST /assets/register): the row is
+ * on the timeline, the original is still on its way (PUT /assets/:id/original). A stateless
+ * turn's snapshot assets also have no path, but they are never 'processing'.
+ */
+export function awaitingOriginal(asset: { originalPath: string; status: string }): boolean {
+  return asset.originalPath === '' && asset.status === 'processing';
+}
+
+/** Work that reads the original, asked for before it has arrived: a 409, said plainly. */
+export class OriginalUploadingError extends Error {
+  readonly code = 'uploading';
+  constructor(asset: { originalName: string; label?: string | undefined }) {
+    super(`"${asset.label ?? asset.originalName}" hasn't reached the server from the phone yet, and this needs it there. Try again once its upload finishes.`);
+    this.name = 'OriginalUploadingError';
+  }
+}
+
+/** Throws OriginalUploadingError for an asset whose original hasn't arrived yet. */
+export function requireOriginal(asset: { originalPath: string; status: string; originalName: string; label?: string | undefined }): void {
+  if (awaitingOriginal(asset)) throw new OriginalUploadingError(asset);
+}

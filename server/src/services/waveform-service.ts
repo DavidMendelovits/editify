@@ -3,6 +3,7 @@ import type { EditifyDatabase } from '../db/database.js';
 import { energyAnalysisSchema, type EnergyAnalysis } from '../db/transcript-store.js';
 import { analyzeEnergy } from '../media/audio-analysis.js';
 import { timeMediaJob } from './media-jobs.js';
+import { requireOriginal } from './asset-availability.js';
 import type { EnergyAnalyzer, TranscriptService } from './transcript-service.js';
 
 /** What a silent (or video-only) asset gets: the client simply draws nothing. */
@@ -36,6 +37,7 @@ export class WaveformService {
     if (transcribed) return transcribed;
     const cached = this.get(asset.id);
     if (cached) return cached;
+    requireOriginal(asset);
     const pending = this.inFlight.get(asset.id) ?? timeMediaJob('waveform', { assetId: asset.id }, () => this.analyzer(asset.originalPath))
       .then((energy) => {
         const parsed = energyAnalysisSchema.parse(energy);

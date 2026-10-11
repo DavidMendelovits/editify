@@ -4,6 +4,8 @@ import type { ProjectStore } from '../db/project-store.js';
 import type { RenderRecord, RenderStore } from '../db/render-store.js';
 import type { HdrHandling } from '../media/color.js';
 import { renderPlanEnabled } from '../config.js';
+import { assetIds } from '../db/project-store.js';
+import { awaitingOriginal, OriginalUploadingError } from './asset-availability.js';
 import { renderProjectFromPlan } from '../media/plan/project.js';
 import { PlanRenderUnavailableError } from '../media/plan/render.js';
 import { renderProject } from '../media/render.js';
@@ -80,6 +82,13 @@ export class RenderQueue {
         }
         if (!record || !project) {
           this.renders.update(id, 'error', { error: 'Project was not found' });
+          continue;
+        }
+        // Queued before a land-first clip was added, or recovered after a restart: a clip whose
+        // original hasn't arrived fails plainly instead of reaching ffmpeg with no input.
+        const uploading = [...assetIds(project)].map((assetId) => this.assets.get(assetId)).find((asset) => asset && awaitingOriginal(asset));
+        if (uploading) {
+          this.renders.update(id, 'error', { error: new OriginalUploadingError(uploading).message });
           continue;
         }
         this.renders.update(id, 'processing', { projectVersion: project.version });

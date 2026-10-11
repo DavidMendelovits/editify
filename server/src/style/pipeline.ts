@@ -1,5 +1,6 @@
 import type { StoredAsset } from '../db/asset-store.js';
 import { analyzeLoudness, analyzeScenes } from '../media/process.js';
+import { requireOriginal } from '../services/asset-availability.js';
 import type { VideoAnalyzer, VideoAnalysisInput } from './analyzer.js';
 import { formatFor, type StyleMetric, type StyleTemplate, type VideoObservation } from './observation.js';
 import type { ObservationCache } from './observation-cache.js';
@@ -122,6 +123,7 @@ export async function runStylePipeline(options: StylePipelineOptions): Promise<S
 }
 
 async function measure(asset: StoredAsset): Promise<VideoAnalysisInput> {
+  requireOriginal(asset);
   const scenes = await analyzeScenes(asset.originalPath, asset.duration);
   const loudnessLufs = asset.hasAudio ? await analyzeLoudness(asset.originalPath) : null;
   const metrics: StyleMetric = {

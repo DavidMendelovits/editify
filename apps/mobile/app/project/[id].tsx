@@ -33,6 +33,7 @@ import { captureScreen, type Screenshot } from '../../src/lib/capture';
 import { packetPrompt } from '../../src/lib/packets';
 import { pickFromFiles, pickFromPhotos, uploadFiles, uploadShared, type PickProgress, type PickResult } from '../../src/lib/pick';
 import type { ImportProgress } from '../../src/lib/upload-progress';
+import { uploads } from '../../src/lib/uploads';
 import { getActiveProject, setActiveProject, subscribeShares, takeShare } from '../../src/lib/share-intake';
 import { isAudioOnly } from '../../src/lib/media';
 import { playheadStart } from '../../src/lib/timeline';
@@ -341,6 +342,9 @@ export default function EditorScreen() {
     return subscribeShares(pickUp);
   }, [id, projectLoaded]);
 
+  // Land-first originals a previous launch left unsent go again (upload-queue.ts).
+  useEffect(() => { void uploads.resume(); }, []);
+
   // Space toggles playback on web, unless the composer has focus.
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -444,6 +448,15 @@ export default function EditorScreen() {
    */
   async function syncAudio(clipId: string, auto = false): Promise<void> {
     setSync({ clipId, busy: true });
+    // The server measures from the originals: a clip still uploading (land first) is waited for.
+    const waiting = uploads.entries().filter((entry) => entry.projectId === id && !entry.stuck).map((entry) => entry.assetId);
+    if (waiting.length > 0) {
+      setSync({ clipId, busy: true, message: 'Syncs once the upload finishes.' });
+      if (!(await uploads.settled(waiting))) {
+        setSync({ clipId, busy: false, failed: !auto, message: 'Not synced: a clip didn\'t upload. Retry it in the library, then sync.' });
+        return;
+      }
+    }
     try {
       // Measure what the server has once any edit already in flight lands.
       await opChain.current.catch(() => undefined);

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   COPY_FREE_RESERVE, LOCAL_MEDIA_MIGRATIONS, ORPHAN_AGE_MS, isLeased, leaseMedia, PHOTOS_ASKED_KEY, analyzeMedia, applyProxyEvent, askForPhotosAccessOnce, copyBudget,
   createLocalMediaStore, downloadMedia, enforceCopyBudget, envelopeDistance, fingerprintsMatch, forgetMedia, maintainMedia,
-  mediaKindOf, migrate, releaseProjectMedia, resolveMedia, setCopyBudget, stageImport, sweepOrphanCopies,
+  mediaKindOf, migrate, pendingUploads, releaseProjectMedia, resolveMedia, setCopyBudget, setPendingUploads, stageImport, sweepOrphanCopies,
   type MediaDeps, type MediaFingerprint, type MediaNative, type MediaProbe, type PhotosAccess, type SqlDb,
 } from './local-media';
 import { memoryDb } from './test-sqlite';
@@ -533,6 +533,18 @@ describe('copy cache', () => {
     expect(await resolveMedia(video('b'), deps)).toMatchObject({ state: 'server', reason: 'evicted' });
     await setCopyBudget(deps, 500);
     expect(await enforceCopyBudget(deps, { protect: 'c' })).toEqual(['a']);
+  });
+
+  it('never evicts a copy whose original is still uploading (land first)', async () => {
+    const { deps, fake, clock } = await setup();
+    await setCopyBudget(deps, 500);
+    await seed(deps, fake, clock, ['a', 'b'], 1000);
+    await setPendingUploads(deps.store, [{ assetId: 'a', userId: null, projectId: 'p1', kind: 'video', name: 'a.mov' }]);
+    expect(await pendingUploads(deps.store)).toEqual([{ assetId: 'a', userId: null, projectId: 'p1', kind: 'video', name: 'a.mov' }]);
+    expect(await enforceCopyBudget(deps)).toEqual(['b']);
+    expect(fake.files.has(`${ROOT}media/a.mov`)).toBe(true);
+    await setPendingUploads(deps.store, []);
+    expect(await enforceCopyBudget(deps)).toEqual(['a']);
   });
 
   it('keeps the PHAsset id of an evicted copy', async () => {

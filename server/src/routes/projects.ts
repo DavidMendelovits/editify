@@ -5,7 +5,7 @@ import {
 } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
 import { assetIds, type ProjectStore } from '../db/project-store.js';
-import { assetAvailability, idsWith } from '../services/asset-availability.js';
+import { assetAvailability, awaitingOriginal, idsWith, OriginalUploadingError } from '../services/asset-availability.js';
 import { OperationError, applyBatch, assertNoNewVideoOverlap } from '../operations/apply.js';
 import {
   SILENCE_DEFAULTS,
@@ -190,6 +190,10 @@ export function registerProjectRoutes(
       const checked = await checkSnapshot(project, sent, request.userId);
       if (!checked.ok) return await reply.code(checked.status).send(checked.body);
       snapshot = checked.snapshot;
+    } else {
+      // The server's own copy renders from the originals: one still uploading from the phone waits.
+      const uploading = [...assetIds(project)].map((assetId) => assets.get(assetId)).find((asset) => asset && awaitingOriginal(asset));
+      if (uploading) throw new OriginalUploadingError(uploading);
     }
     // A 4K encode can run the single 4 GB server out of memory, but shipped app
     // builds still offer 4K, so rejecting it would surface as an error. Export

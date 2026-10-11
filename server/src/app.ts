@@ -37,6 +37,7 @@ import { registerTelemetryRoutes } from './routes/telemetry.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { ensureSoundLibrary } from './media/sound-library.js';
 import { RenderQueue } from './services/render-queue.js';
+import { OriginalUploadingError } from './services/asset-availability.js';
 import { UnsupportedMediaError } from './media/process.js';
 import { DissectService } from './services/dissect-service.js';
 import { SyncService } from './services/sync-service.js';
@@ -188,6 +189,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (error instanceof UnsupportedMediaError) {
       return await reply.code(415).send({ error: error.message });
     }
+    if (error instanceof OriginalUploadingError) {
+      return await reply.code(409).send({ error: error.message, code: error.code });
+    }
     // Fastify's own refusals (413 body too large, 415, malformed JSON) keep their status.
     const status = (error as { statusCode?: unknown }).statusCode;
     if (typeof status === 'number' && status >= 400 && status < 500) {
@@ -215,7 +219,8 @@ export interface PendingJobs {
 }
 
 export function pendingJobs(renders: RenderStore, database: EditifyDatabase): PendingJobs {
-  const imports = database.prepare("SELECT COUNT(*) AS count FROM assets WHERE status = 'processing'").get() as { count: number };
+  // A clip registered from the phone whose original never arrived has nothing running here.
+  const imports = database.prepare("SELECT COUNT(*) AS count FROM assets WHERE status = 'processing' AND original_path != ''").get() as { count: number };
   return {
     renders: renders.unfinished().length,
     imports: imports.count,

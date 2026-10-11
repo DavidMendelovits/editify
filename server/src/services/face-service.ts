@@ -5,6 +5,7 @@ import { faceAt, faceTrackSchema, type FaceBox, type FaceTrack } from '@editify/
 import { dataRoot } from '../config.js';
 import type { StoredAsset } from '../db/asset-store.js';
 import type { EditifyDatabase } from '../db/database.js';
+import { requireOriginal } from './asset-availability.js';
 
 const FACE_TRACK_TIMEOUT_MS = 5 * 60 * 1000;
 const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts/face_track.py');
@@ -79,6 +80,7 @@ export class FaceService {
     if (!(asset.width > 0 && asset.height > 0) || asset.mimeType.startsWith('image/')) {
       throw new Error(`Asset ${asset.id} is not a video`);
     }
+    requireOriginal(asset);
     const pending = this.inFlight.get(asset.id) ?? this.runner(asset.originalPath)
       .then((track) => {
         this.database.prepare(`

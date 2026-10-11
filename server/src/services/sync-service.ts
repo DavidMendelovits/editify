@@ -6,6 +6,7 @@ import {
   type SyncAudioResult,
 } from '@editify/shared';
 import type { AssetStore } from '../db/asset-store.js';
+import { awaitingOriginal, OriginalUploadingError } from './asset-availability.js';
 import { timeMediaJob } from './media-jobs.js';
 import { SyncError, measureSyncFiles, type SyncMeasurement } from '../media/sync.js';
 
@@ -48,6 +49,9 @@ export class SyncService {
     const video = this.assets.get(resolved.pair.videoAsset.id, userId);
     const memo = this.assets.get(resolved.pair.memoAsset.id, userId);
     if (!video || !memo) return { ok: false, error: 'That clip has no media' };
+    // Measured from the originals: one still on its way from the phone is said, not guessed at.
+    const uploading = [video, memo].find(awaitingOriginal);
+    if (uploading) return { ok: false, error: new OriginalUploadingError(uploading).message };
     let measurement: SyncMeasurement;
     try {
       measurement = await this.cachedMeasure(video.id, video.originalPath, memo.id, memo.originalPath, project.id);
