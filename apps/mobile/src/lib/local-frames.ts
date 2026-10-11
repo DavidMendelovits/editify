@@ -34,6 +34,19 @@ async function makeFrames(assetId: string, duration: number): Promise<VideoThumb
   if (!uri) return null;
   const player = createVideoPlayer(uri);
   try {
+    // The player loads its item asynchronously; the generator reads that item.
+    if (player.status !== 'readyToPlay') {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { subscription.remove(); reject(new Error('The clip did not load')); }, 10_000);
+        const subscription = player.addListener('statusChange', ({ status }) => {
+          if (status !== 'readyToPlay' && status !== 'error') return;
+          clearTimeout(timer);
+          subscription.remove();
+          if (status === 'error') reject(new Error('The clip did not load'));
+          else resolve();
+        });
+      });
+    }
     const times = Array.from({ length: FILMSTRIP_TILES }, (_, tile) => ((tile + 0.5) * duration) / FILMSTRIP_TILES);
     return await player.generateThumbnailsAsync(times, { maxWidth: 240 });
   } finally {
