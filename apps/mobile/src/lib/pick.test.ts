@@ -25,6 +25,10 @@ const state = vi.hoisted(() => ({
   originals: [] as Array<{ assetId: string; projectId: string; uri: string }>,
   /** Holds every PUT /assets/:id/original until released. */
   hold: null as Promise<void> | null,
+  /** PUT /assets/:id/original fails (offline). */
+  putFails: false,
+  unregistered: [] as string[],
+  probes: 0,
 }));
 
 vi.mock('react-native', () => ({
@@ -49,8 +53,10 @@ vi.mock('./api', () => ({
       state.registered.push({ ...probe, projectId });
       return { id: `asset-${probe.name}`, originalName: probe.name, mimeType: probe.mimeType, duration: probe.duration, hasAudio: probe.hasAudio };
     },
+    unregisterAsset: async (id: string) => { state.unregistered.push(id); },
   },
   uploadOriginal: async (assetId: string, projectId: string, file: { uri: string }) => {
+    if (state.putFails) throw new Error('The network connection was lost.');
     state.originals.push({ assetId, projectId, uri: file.uri });
     await state.hold;
   },
@@ -84,7 +90,7 @@ beforeEach(async () => {
   let copies = 0;
   print = { status: 'ok', fingerprint: PRINT };
   const native: MediaNative = {
-    probe: async (): Promise<MediaProbe> => print,
+    probe: async (): Promise<MediaProbe> => { state.probes += 1; return print; },
     download: async () => ({ status: 'icloud' }),
     cancelDownload: () => undefined,
     photosAccess: () => access,
@@ -120,6 +126,9 @@ beforeEach(async () => {
   state.registered = [];
   state.originals = [];
   state.hold = null;
+  state.putFails = false;
+  state.unregistered = [];
+  state.probes = 0;
 });
 
 describe('Photos access', () => {
@@ -228,6 +237,8 @@ describe('land first', () => {
     // Playable from this phone right away, and announced for words before any byte is sent.
     expect(await state.deps?.store.lookup('asset-take.mov')).toMatchObject({ fileUri: 'media/1-take.mov' });
     expect(announced).toEqual(['asset-take.mov']);
+    // One probe of the copy: the registry row reuses it.
+    expect(state.probes).toBe(1);
     expect(uploads.get('asset-take.mov')).toMatchObject({ state: 'uploading', projectId: 'p1' });
     expect(await pendingUploads(state.deps!.store)).toEqual([expect.objectContaining({ assetId: 'asset-take.mov', projectId: 'p1' })]);
 
@@ -265,6 +276,16 @@ describe('land first', () => {
     expect(state.originals).toEqual([{ assetId: 'asset-take.mov', projectId: 'p1', uri: `${ROOT}media/1-take.mov` }]);
     expect(uploads.get('asset-take.mov')).toBeUndefined();
     expect(await pendingUploads(store)).toEqual([]);
+  });
+
+  it('takes the registration back and uploads first when the row write and the upload after it both fail', async () => {
+    state.deps = { ...state.deps!, store: { ...state.deps!.store, record: async () => { throw new Error('disk I/O error'); } } };
+    state.putFails = true;
+    state.documents = { canceled: false, assets: [{ uri: 'file:///cache/DocumentPicker/take.mov', name: 'take.mov', mimeType: 'video/quicktime' }] };
+    const result = await pickFromFiles('p1');
+    expect(state.unregistered).toEqual(['asset-take.mov']);
+    expect(state.uploads).toEqual([{ uri: `${ROOT}media/1-take.mov`, name: 'take.mov' }]);
+    expect(result.failed).toEqual([]);
   });
 
   it('uploads first without a project, for a still, when the probe fails, and on an older server', async () => {

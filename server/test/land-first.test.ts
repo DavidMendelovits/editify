@@ -170,6 +170,21 @@ describe('POST /assets/register', () => {
     await settle(video.id);
   });
 
+  it.skipIf(!hasFfmpeg)('takes back a registration that never got its original, and nothing else', async () => {
+    const asset = (await register()).json<{ id: string }>();
+    created.push(asset.id);
+    expect((await app.inject({ method: 'DELETE', url: `/assets/${asset.id}/registration` })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'GET', url: `/assets/${asset.id}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/assets?projectId=${projectId}` })).json()).toEqual([]);
+
+    const landed = (await register()).json<{ id: string }>();
+    created.push(landed.id);
+    expect((await put(landed.id, clip('kept.mp4', 1))).statusCode).toBe(200);
+    expect((await app.inject({ method: 'DELETE', url: `/assets/${landed.id}/registration` })).statusCode).toBe(409);
+    expect((await app.inject({ method: 'DELETE', url: '/assets/no-such-asset/registration' })).statusCode).toBe(404);
+    await settle(landed.id);
+  });
+
   it.skipIf(!hasFfmpeg)('lands one of two uploads racing for the same clip, and queues its work once', async () => {
     const asset = (await register()).json<{ id: string }>();
     created.push(asset.id);

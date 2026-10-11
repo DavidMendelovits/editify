@@ -10,8 +10,8 @@
  *     iCloud one downloaded first; leased meanwhile)
  *        ├─ sent ─▶ gone from the queue and from pendingUploads
  *        ├─ 404 (the clip or its project was deleted) ─▶ dropped quietly
- *        ├─ 409 in_progress (another upload of it is landing) ─▶ sent again after a pause,
- *        │     which the server answers 200 once that one landed
+ *        ├─ 409 in_progress (another upload of it is landing) ─▶ to the back of the queue, sent
+ *        │     again after a pause (the rest go meanwhile); the server answers 200 once that one landed
  *        ├─ 409 mismatch or 413 (the server will never take it) ─▶ 'failed' and `stuck`: no
  *        │     retry, the clip stays on this iPhone only and its copy is kept
  *        └─ failed otherwise ─▶ 'failed' with the reason, still in pendingUploads; retry() sends it again
@@ -31,6 +31,8 @@ export interface UploadEntry extends PendingUpload {
   state: 'queued' | 'uploading' | 'failed';
   progress?: ImportProgress | undefined;
   error?: string | undefined;
+  /** Not sent again before this time (ms): another upload of the clip was landing. */
+  notBefore?: number | undefined;
 }
 
 export interface UploadQueueDeps {
@@ -53,7 +55,7 @@ export interface UploadQueue {
   enqueue(upload: Omit<PendingUpload, 'userId'>, commit?: () => Promise<void>): Promise<void>;
   /** A failed upload goes again; a stuck one or anything else is left as it is. */
   retry(assetId: string): void;
-  /** Once per launch and account: queues what that account left unsent. */
+  /** Queues what the signed-in account left unsent (read once per launch and account), and starts the queue. */
   resume(): Promise<void>;
   get(assetId: string): UploadEntry | undefined;
   /** The same array until something changes (for useSyncExternalStore). */
@@ -111,7 +113,7 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
     await persist((list) => list.filter((upload) => upload.assetId !== assetId)).catch(() => undefined);
     publish(entries.filter((entry) => entry.assetId !== assetId));
   };
-  const toUpload = ({ state: _state, progress: _progress, error: _error, ...upload }: UploadEntry): PendingUpload => upload;
+  const toUpload = ({ state: _state, progress: _progress, error: _error, notBefore: _notBefore, ...upload }: UploadEntry): PendingUpload => upload;
 
   const send = async (entry: UploadEntry): Promise<void> => {
     const { assetId } = entry;
@@ -144,8 +146,9 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
     // Only the signed-in owner's uploads are sent, so a 404 means the clip itself is gone.
     if (result.uploaded.length > 0 || status === 404) return await forget(assetId);
     if (status === 409 && code === 'in_progress') {
-      await new Promise((resolve) => setTimeout(resolve, deps.inProgressWaitMs ?? IN_PROGRESS_WAIT_MS));
-      update(assetId, { state: 'queued' });
+      // To the back of the queue, so the clips behind it don't wait on another upload of it.
+      const waited = { ...entry, state: 'queued' as const, progress: undefined, error: undefined, notBefore: now() + (deps.inProgressWaitMs ?? IN_PROGRESS_WAIT_MS) };
+      publish([...entries.filter((item) => item.assetId !== assetId), waited]);
       return;
     }
     const stuck = stuckReason(refused);
@@ -157,10 +160,9 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
     update(assetId, { state: 'failed', error: result.failed[0]?.error ?? 'The upload failed' });
   };
 
-  const next = (): UploadEntry | undefined => {
-    const user = deps.user();
-    return entries.find((entry) => entry.state === 'queued' && !held.has(entry.assetId) && entry.userId === user);
-  };
+  const sendable = (entry: UploadEntry): boolean => entry.state === 'queued' && !held.has(entry.assetId) && entry.userId === deps.user();
+  const next = (): UploadEntry | undefined => entries.find((entry) => sendable(entry) && (entry.notBefore ?? 0) <= now());
+  let wake: ReturnType<typeof setTimeout> | undefined;
   const pump = async (): Promise<void> => {
     if (running) return;
     running = true;
@@ -173,6 +175,11 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
       }
     } finally {
       running = false;
+    }
+    // Only clips waiting out another upload of themselves are left: come back when the first may go.
+    const waiting = entries.filter(sendable).map((entry) => entry.notBefore ?? 0);
+    if (waiting.length > 0 && !wake) {
+      wake = setTimeout(() => { wake = undefined; void pump(); }, Math.max(0, Math.min(...waiting) - now()));
     }
   };
 
@@ -201,7 +208,7 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
     retry(assetId) {
       const entry = entries.find((item) => item.assetId === assetId);
       if (entry?.state !== 'failed' || entry.stuck) return;
-      update(assetId, { state: 'queued', error: undefined });
+      update(assetId, { state: 'queued', error: undefined, notBefore: undefined });
       void pump();
     },
 
@@ -221,11 +228,11 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
             }
             add(upload);
           }
-          void pump();
         })().catch(() => undefined);
         resumed.set(user, pending);
       }
-      return pending;
+      // Every time, not only the first: back on an account in the same launch, its uploads go again.
+      return pending.then(() => { void pump(); });
     },
 
     get: (assetId) => entries.find((entry) => entry.assetId === assetId),

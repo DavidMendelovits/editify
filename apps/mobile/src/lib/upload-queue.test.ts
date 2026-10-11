@@ -146,12 +146,32 @@ describe('upload queue', () => {
     expect(sent).toEqual([]);
   });
 
-  it('asks again while another upload of the clip is landing', async () => {
-    const uploads = queue();
+  it('asks again while another upload of the clip is landing, after the clips behind it', async () => {
+    const uploads = queue({ inProgressWaitMs: 30 });
     outcome.set('a', async () => { outcome.delete('a'); await refusal(409, 'in_progress')(); });
     await uploads.enqueue(clip('a'));
+    await uploads.enqueue(clip('b'));
+    expect(await uploads.settled(['a', 'b'])).toBe(true);
+    expect(sent).toEqual([`b ${ROOT}media/b.mov`, `a ${ROOT}media/a.mov`]);
+  });
+
+  it('starts an account\'s uploads again when it signs back in during the same launch', async () => {
+    const uploads = queue();
+    await uploads.resume();
+    let release = (): void => undefined;
+    outcome.set('a', () => new Promise<void>((resolve) => { release = resolve; }));
+    await uploads.enqueue(clip('a'));
+    await uploads.enqueue(clip('c'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    user = 'bob'; // alice signs out while 'a' is on its way: 'c' waits
+    outcome.delete('a');
+    release();
     expect(await uploads.settled(['a'])).toBe(true);
-    expect(sent).toEqual([`a ${ROOT}media/a.mov`]);
+    expect(uploads.get('c')?.state).toBe('queued');
+    user = 'alice';
+    await uploads.resume(); // already read this launch: it still starts her queue
+    expect(await uploads.settled(['c'])).toBe(true);
+    expect(sent).toEqual([`a ${ROOT}media/a.mov`, `c ${ROOT}media/c.mov`]);
   });
 
   it('sends only the signed-in account\'s uploads, and resumes each account\'s own', async () => {

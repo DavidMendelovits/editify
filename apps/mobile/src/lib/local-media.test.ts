@@ -558,6 +558,31 @@ describe('copy cache', () => {
     expect(await resolveMedia(video('a'), deps)).toMatchObject({ state: 'server', reason: 'limited' });
   });
 
+  it('lands a copy of a file in the app container on a nearly full phone (an APFS clone takes no space)', async () => {
+    const { deps, fake } = await setup();
+    fake.available.value = 100 * 1024 ** 2;
+    const container = ROOT.slice(0, ROOT.indexOf('/Library/') + 1);
+    add(fake, `${container}Library/Caches/ImagePicker/big.mov`, 3 * GB);
+    add(fake, 'file:///elsewhere/big.mov', 3 * GB);
+    const picked = { name: 'big.mov', kind: 'video' as const, origin: 'photos' as const, phLocalId: 'PH-1', keepCopy: true };
+    expect(await stageImport({ ...picked, uri: `${container}Library/Caches/ImagePicker/big.mov` }, deps)).toMatchObject({ durable: true });
+    // Outside the container (or without keepCopy) the free-space check still applies.
+    expect(await stageImport({ ...picked, uri: 'file:///elsewhere/big.mov' }, deps)).toMatchObject({ durable: false });
+    expect(await stageImport({ ...picked, uri: `${container}Library/Caches/ImagePicker/big.mov`, keepCopy: false }, deps)).toMatchObject({ durable: false });
+  });
+
+  it('records the fingerprint a land-first caller already measured instead of probing the copy again', async () => {
+    const { deps, fake } = await setup();
+    add(fake, 'file:///cache/take.mov', 1000);
+    let probes = 0;
+    const probe = deps.native.probe;
+    deps.native.probe = async (ref) => { probes += 1; return await probe(ref); };
+    const staged = await stageImport({ uri: 'file:///cache/take.mov', name: 'take.mov', kind: 'video', origin: 'files' }, deps);
+    await staged.commit('take', { ...PRINT, duration: 7 });
+    expect(probes).toBe(0);
+    expect(await deps.store.lookup('take')).toMatchObject({ duration: 7, fingerprint: HASH });
+  });
+
   it('makes room for a new copy, counting images too', async () => {
     const { deps, fake, clock } = await setup();
     await setCopyBudget(deps, 2500);
