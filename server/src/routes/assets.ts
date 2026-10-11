@@ -478,6 +478,20 @@ export function registerAssetRoutes(
    * Always linked to `projectId`, which is required. The body is the raw file, as for /assets/raw.
    * Only the incoming file this request wrote is ever removed, never a folder.
    */
+  /**
+   * Takes back a land-first registration the phone couldn't land (its registry write and the
+   * upload right after both failed), so no card waits forever for an original that isn't
+   * coming. Only an own row whose original never arrived: nothing that has media is removed.
+   */
+  app.delete<{ Params: { id: string } }>('/assets/:id/registration', async (request, reply) => {
+    const existing = assets.owned(request.params.id, request.userId);
+    if (!existing) return await reply.code(404).send({ error: 'Asset not found' });
+    if (!awaitingOriginal(existing) || landing.has(existing.id) || !assets.removeRegistration(existing.id)) {
+      return await reply.code(409).send({ error: 'This clip already has its original' });
+    }
+    return await reply.code(204).send();
+  });
+
   /** Land-first originals being written right now (this process only; Fly runs one machine). */
   const landing = new Set<string>();
   app.put<{ Params: { id: string }; Querystring: { projectId?: string; name?: string } }>('/assets/:id/original', async (request, reply) => {

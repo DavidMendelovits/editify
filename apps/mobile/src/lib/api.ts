@@ -364,6 +364,11 @@ export const api = {
   /** Land first: an asset row from this phone's own probe, before its original uploads (PUT /assets/:id/original). */
   registerAsset: (projectId: string, probe: { name: string; mimeType: string; duration: number; width: number; height: number; hasAudio: boolean }) =>
     request<AssetMetadata>(`/assets/register?projectId=${encodeURIComponent(projectId)}`, { method: 'POST', body: JSON.stringify(probe) }),
+  /** Takes back a land-first registration whose original never arrived. Answers 204 with no body. */
+  unregisterAsset: async (id: string): Promise<void> => {
+    const response = await timedFetch(`/assets/${encodeURIComponent(id)}/registration`, { method: 'DELETE', headers: authHeaders() });
+    if (!response.ok) throw new Error(describeFailure(response.status, await response.text()));
+  },
   setAssetLabel: (id: string, label: string) => request<AssetMetadata>(`/assets/${id}`, {
     method: 'PATCH', body: JSON.stringify({ label }),
   }),

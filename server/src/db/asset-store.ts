@@ -98,6 +98,15 @@ export class AssetStore {
     `).run(path, measured.duration, measured.width, measured.height, measured.fps, measured.hasAudio ? 1 : 0, id).changes === 1;
   }
 
+  /** Drops a land-first registration whose original never arrived, with its project links. False when it has one. */
+  removeRegistration(id: string): boolean {
+    return this.database.transaction(() => {
+      const removed = this.database.prepare("DELETE FROM assets WHERE id = ? AND original_path = '' AND status = 'processing'").run(id).changes === 1;
+      if (removed) this.database.prepare('DELETE FROM project_assets WHERE asset_id = ?').run(id);
+      return removed;
+    })();
+  }
+
   /** An empty/blank label clears it, so the card falls back to the file name. */
   setLabel(id: string, label: string): StoredAsset | undefined {
     const trimmed = label.trim();

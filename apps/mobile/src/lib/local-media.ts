@@ -821,8 +821,12 @@ export interface StagedImport {
   uploadUri: string;
   /** The device keeps its own copy (a share-extension copy is then redundant). */
   durable: boolean;
-  /** After a successful upload, or a land-first registration: writes the row (and queues the preview proxy for video). */
-  commit(assetId: string): Promise<void>;
+  /**
+   * After a successful upload, or a land-first registration: writes the row (and queues the
+   * preview proxy for video). `fingerprint` is the copy's, when the caller already measured
+   * it (land first probes it to register): it isn't measured a second time.
+   */
+  commit(assetId: string, fingerprint?: MediaFingerprint): Promise<void>;
   /** After a failed upload: removes the copy made for it. */
   abort(): void;
 }
@@ -872,7 +876,11 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
   if (!onDisk) return serverOnly('server-only');
 
   const size = candidate.size || native.fileSize(candidate.uri);
-  if (native.availableBytes() < size + COPY_FREE_RESERVE || size > await copyBudget(deps)) return serverOnly('no-space');
+  // A land-first copy of a file already in the app's container (the picker's) is an APFS clone
+  // that takes no space of its own, so a fullish phone still lands a 4K clip. If the copy fails
+  // anyway, the import goes server-only below.
+  const clone = candidate.keepCopy === true && inAppContainer(native, candidate.uri);
+  if (!clone && (native.availableBytes() < size + COPY_FREE_RESERVE || size > await copyBudget(deps))) return serverOnly('no-space');
 
   let copy: { path: string; uri: string; bytes: number };
   try {
@@ -887,9 +895,9 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
   return {
     uploadUri: copy.uri,
     durable: true,
-    commit: async (assetId) => {
+    commit: async (assetId, measured) => {
       try {
-        const fingerprint = candidate.kind === 'image' ? null : uploaded ?? await fingerprintOf(native, copy.uri);
+        const fingerprint = candidate.kind === 'image' ? null : measured ?? uploaded ?? await fingerprintOf(native, copy.uri);
         await store.record({ assetId, phLocalId, fileUri: copy.path, fileBytes: copy.bytes || size, fingerprint });
       } finally {
         state.inFlight.delete(token);
@@ -903,6 +911,13 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
       try { native.removeFile(copy.uri); } catch { /* already gone */ }
     },
   };
+}
+
+/** Whether a file:// URI is inside this app's own container (the folder above Library/). */
+function inAppContainer(native: Pick<MediaNative, 'mediaRoot'>, uri: string): boolean {
+  const root = native.mediaRoot();
+  const container = root.slice(0, root.indexOf('/Library/') + 1);
+  return container.length > 1 && uri.startsWith(container);
 }
 
 /** The uploaded file's fingerprint, or null (the row then takes the first one resolve sees). */

@@ -140,7 +140,8 @@ async function uploadKeepingLocal(projectId: string | undefined, file: PendingFi
  * The pending upload is saved before the registry row is written, so no other import's copy
  * budget can evict this copy in between. If the row can't be written, the clip isn't left
  * resting on a copy nothing tracks: its original goes up now, under the registered id, and
- * the clip lands once that upload does.
+ * the clip lands once that upload does. If that upload fails too, the registration is taken
+ * back (no card waits forever for it) and the caller uploads first, as before.
  */
 async function landFirst(
   projectId: string, file: PendingFile, kind: 'video' | 'audio', staged: StagedImport, registry: MediaDeps, onBytes?: UploadBytes,
@@ -157,10 +158,16 @@ async function landFirst(
   }).catch(() => undefined);
   if (!asset) return undefined;
   try {
-    await uploads.enqueue({ assetId: asset.id, projectId, kind, name: file.name, mimeType }, async () => { await staged.commit(asset.id); });
+    // The probe above measured this very copy: the registry row reuses it rather than reading it again.
+    await uploads.enqueue({ assetId: asset.id, projectId, kind, name: file.name, mimeType }, async () => { await staged.commit(asset.id, probe.fingerprint); });
   } catch {
-    await uploadOriginal(asset.id, projectId, { uri: staged.uploadUri, name: file.name, mimeType }, onBytes);
-    return asset;
+    try {
+      await uploadOriginal(asset.id, projectId, { uri: staged.uploadUri, name: file.name, mimeType }, onBytes);
+      return asset;
+    } catch {
+      await api.unregisterAsset(asset.id).catch(() => undefined);
+      return undefined;
+    }
   }
   localSources.set(asset.id, staged.uploadUri);
   return asset;
