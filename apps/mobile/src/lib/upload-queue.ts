@@ -4,17 +4,24 @@
  * one clip at a time, tied to no screen. Free of React Native: the registry and the upload
  * are passed in (uploads.ts wires the real ones), so every branch runs under vitest.
  *
- *   enqueue ─▶ pendingUploads (registry meta: its copy is never evicted) ─▶ 'queued'
- *     ─▶ 'uploading' ─▶ uploadMissing for that one clip (the app copy as it is, a Photos
- *        original through a temporary file, an iCloud one downloaded first; leased meanwhile)
+ *   enqueue ─▶ pendingUploads (registry meta: its copy is never evicted) ─▶ the registry row
+ *     (`commit`, run only once the entry is saved) ─▶ 'queued' ─▶ 'uploading' ─▶ uploadMissing
+ *     for that one clip (the app copy as it is, a Photos original through a temporary file, an
+ *     iCloud one downloaded first; leased meanwhile)
  *        ├─ sent ─▶ gone from the queue and from pendingUploads
  *        ├─ 404 (the clip or its project was deleted) ─▶ dropped quietly
- *        └─ failed ─▶ 'failed' with the reason, still in pendingUploads; retry() sends it again
+ *        ├─ 409 in_progress (another upload of it is landing) ─▶ sent again after a pause,
+ *        │     which the server answers 200 once that one landed
+ *        ├─ 409 mismatch or 413 (the server will never take it) ─▶ 'failed' and `stuck`: no
+ *        │     retry, the clip stays on this iPhone only and its copy is kept
+ *        └─ failed otherwise ─▶ 'failed' with the reason, still in pendingUploads; retry() sends it again
  *
- * If the app dies mid-upload, the entry stays in pendingUploads: resume() (the editor calls it)
- * sends it again, and its copy is kept meanwhile. Should that never happen, the export's server
- * path finds the original missing (serverReadiness) and offers the same upload, so the clip
- * is never lost.
+ * Each entry belongs to the account that imported it: only the signed-in account's uploads
+ * are sent, so another account's token never meets them. If the app dies mid-upload, the entry
+ * stays in pendingUploads: resume() (the editor calls it) sends it again, and its copy is kept
+ * meanwhile; one whose registry row is gone (its project was deleted) is dropped then. Should a
+ * resume never happen, the export's server path finds the original missing (serverReadiness)
+ * and offers the same upload.
  */
 import { pendingUploads, setPendingUploads, type MediaDeps, type PendingUpload } from './local-media';
 import { uploadMissing, type OriginalFile } from './device-export';
@@ -28,17 +35,25 @@ export interface UploadEntry extends PendingUpload {
 
 export interface UploadQueueDeps {
   media: () => Promise<MediaDeps | null>;
-  /** PUT /assets/:id/original for `entry`; rejects with the server's refusal. */
+  /** PUT /assets/:id/original for `entry`; rejects with the server's refusal ({ status, code }). */
   upload: (entry: PendingUpload, file: OriginalFile, onBytes: (sent: number, expected: number) => void, signal?: AbortSignal) => Promise<void>;
+  /** The signed-in account (null: none, or the shared token). */
+  user: () => string | null;
   now?: () => number;
+  /** How long to wait before asking again while another upload of the clip lands. */
+  inProgressWaitMs?: number;
 }
 
 export interface UploadQueue {
-  /** Persists the upload and starts it (after any ahead of it). An id already queued is left as it is. */
-  enqueue(upload: PendingUpload): Promise<void>;
-  /** A failed upload goes again; anything else is left as it is. */
+  /**
+   * Saves the upload (for the signed-in account), runs `commit` (the registry row) only once it
+   * is saved, then starts it after any ahead of it. When `commit` throws, nothing is queued and
+   * the error is rethrown. An id already queued is left as it is.
+   */
+  enqueue(upload: Omit<PendingUpload, 'userId'>, commit?: () => Promise<void>): Promise<void>;
+  /** A failed upload goes again; a stuck one or anything else is left as it is. */
   retry(assetId: string): void;
-  /** Once per launch: queues what a previous launch left unsent. */
+  /** Once per launch and account: queues what that account left unsent. */
   resume(): Promise<void>;
   get(assetId: string): UploadEntry | undefined;
   /** The same array until something changes (for useSyncExternalStore). */
@@ -50,13 +65,25 @@ export interface UploadQueue {
 
 /** Progress lands on React state, and a native upload reports every chunk. */
 const PROGRESS_INTERVAL_MS = 250;
+const IN_PROGRESS_WAIT_MS = 5000;
+
+/** Why the server will never take this original, said plainly; undefined when a retry may work. */
+function stuckReason(refused: unknown): string | undefined {
+  const { status, code } = (refused ?? {}) as { status?: number; code?: string };
+  if (status === 413) return 'It is over the 2 GB upload limit, so it stays on this iPhone only. Editing and exporting here still work.';
+  if (status === 409 && code === 'mismatch') return 'The server could not read it as the same clip, so it stays on this iPhone only. Editing and exporting here still work.';
+  return undefined;
+}
 
 export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
   const now = deps.now ?? Date.now;
   let entries: readonly UploadEntry[] = [];
   const listeners = new Set<() => void>();
   let running = false;
-  let resumed: Promise<void> | undefined;
+  /** Accounts resumed this launch. */
+  const resumed = new Map<string | null, Promise<void>>();
+  /** Saved but not committed yet: not sent until the registry row exists. */
+  const held = new Set<string>();
   /** Registry writes, one after another: each reads the list it changes. */
   let writes: Promise<void> = Promise.resolve();
 
@@ -67,21 +94,24 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
   const update = (assetId: string, patch: Partial<UploadEntry>): void => {
     publish(entries.map((entry) => (entry.assetId === assetId ? { ...entry, ...patch } : entry)));
   };
+  /** Rejects when the write fails; the chain itself carries on. */
   const persist = (change: (list: PendingUpload[]) => PendingUpload[]): Promise<void> => {
-    writes = writes.then(async () => {
+    const write = writes.then(async () => {
       const media = await deps.media();
       if (media) await setPendingUploads(media.store, change(await pendingUploads(media.store)));
-    }).catch(() => undefined);
-    return writes;
+    });
+    writes = write.catch(() => undefined);
+    return write;
   };
   const subscribe = (listener: () => void): (() => void) => {
     listeners.add(listener);
     return () => { listeners.delete(listener); };
   };
-  const finish = async (assetId: string): Promise<void> => {
-    await persist((list) => list.filter((upload) => upload.assetId !== assetId));
+  const forget = async (assetId: string): Promise<void> => {
+    await persist((list) => list.filter((upload) => upload.assetId !== assetId)).catch(() => undefined);
     publish(entries.filter((entry) => entry.assetId !== assetId));
   };
+  const toUpload = ({ state: _state, progress: _progress, error: _error, ...upload }: UploadEntry): PendingUpload => upload;
 
   const send = async (entry: UploadEntry): Promise<void> => {
     const { assetId } = entry;
@@ -98,7 +128,7 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
       deps: media,
       upload: async (file, onBytes, signal) => {
         try {
-          await deps.upload(entry, file, onBytes, signal);
+          await deps.upload(toUpload(entry), file, onBytes, signal);
         } catch (error) {
           refused = error;
           throw error;
@@ -110,20 +140,35 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
         update(assetId, { progress });
       },
     });
-    if (result.uploaded.length > 0 || (refused as { status?: number } | undefined)?.status === 404) {
-      await finish(assetId);
+    const { status, code } = (refused ?? {}) as { status?: number; code?: string };
+    // Only the signed-in owner's uploads are sent, so a 404 means the clip itself is gone.
+    if (result.uploaded.length > 0 || status === 404) return await forget(assetId);
+    if (status === 409 && code === 'in_progress') {
+      await new Promise((resolve) => setTimeout(resolve, deps.inProgressWaitMs ?? IN_PROGRESS_WAIT_MS));
+      update(assetId, { state: 'queued' });
+      return;
+    }
+    const stuck = stuckReason(refused);
+    if (stuck) {
+      await persist((list) => list.map((upload) => (upload.assetId === assetId ? { ...upload, stuck } : upload))).catch(() => undefined);
+      update(assetId, { state: 'failed', error: stuck, stuck });
       return;
     }
     update(assetId, { state: 'failed', error: result.failed[0]?.error ?? 'The upload failed' });
   };
 
+  const next = (): UploadEntry | undefined => {
+    const user = deps.user();
+    return entries.find((entry) => entry.state === 'queued' && !held.has(entry.assetId) && entry.userId === user);
+  };
   const pump = async (): Promise<void> => {
     if (running) return;
     running = true;
     try {
-      for (let next = entries.find((entry) => entry.state === 'queued'); next; next = entries.find((entry) => entry.state === 'queued')) {
-        await send(next).catch((error: unknown) => {
-          update((next as UploadEntry).assetId, { state: 'failed', error: error instanceof Error ? error.message : String(error) });
+      for (let entry = next(); entry; entry = next()) {
+        const current = entry;
+        await send(current).catch((error: unknown) => {
+          update(current.assetId, { state: 'failed', error: error instanceof Error ? error.message : String(error) });
         });
       }
     } finally {
@@ -133,30 +178,54 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
 
   const add = (upload: PendingUpload): void => {
     if (entries.some((entry) => entry.assetId === upload.assetId)) return;
-    publish([...entries, { ...upload, state: 'queued' }]);
+    publish([...entries, upload.stuck ? { ...upload, state: 'failed', error: upload.stuck } : { ...upload, state: 'queued' }]);
   };
 
   return {
-    async enqueue(upload) {
+    async enqueue(input, commit) {
+      const upload: PendingUpload = { ...input, userId: deps.user() };
+      held.add(upload.assetId);
       add(upload);
-      await persist((list) => (list.some((item) => item.assetId === upload.assetId) ? list : [...list, upload]));
+      try {
+        await persist((list) => (list.some((item) => item.assetId === upload.assetId) ? list : [...list, upload]));
+        await commit?.();
+      } catch (error) {
+        await forget(upload.assetId);
+        held.delete(upload.assetId);
+        throw error;
+      }
+      held.delete(upload.assetId);
       void pump();
     },
 
     retry(assetId) {
-      if (entries.find((entry) => entry.assetId === assetId)?.state !== 'failed') return;
+      const entry = entries.find((item) => item.assetId === assetId);
+      if (entry?.state !== 'failed' || entry.stuck) return;
       update(assetId, { state: 'queued', error: undefined });
       void pump();
     },
 
     resume() {
-      resumed ??= (async () => {
-        const media = await deps.media();
-        if (!media) return;
-        for (const upload of await pendingUploads(media.store)) add(upload);
-        void pump();
-      })().catch(() => undefined);
-      return resumed;
+      const user = deps.user();
+      let pending = resumed.get(user);
+      if (!pending) {
+        pending = (async () => {
+          const media = await deps.media();
+          if (!media) return;
+          for (const upload of await pendingUploads(media.store)) {
+            if (upload.userId !== user || entries.some((entry) => entry.assetId === upload.assetId)) continue;
+            // Its row went with its project (forgetMedia): there is nothing left to send.
+            if (!(await media.store.lookup(upload.assetId))) {
+              await persist((list) => list.filter((item) => item.assetId !== upload.assetId)).catch(() => undefined);
+              continue;
+            }
+            add(upload);
+          }
+          void pump();
+        })().catch(() => undefined);
+        resumed.set(user, pending);
+      }
+      return pending;
     },
 
     get: (assetId) => entries.find((entry) => entry.assetId === assetId),
@@ -184,8 +253,9 @@ export function createUploadQueue(deps: UploadQueueDeps): UploadQueue {
   };
 }
 
-/** "uploading 34%", "waiting to upload", "upload failed". */
+/** "uploading 34%", "waiting to upload", "upload failed", "only on this iPhone". */
 export function uploadLabel(entry: UploadEntry): string {
+  if (entry.stuck) return 'only on this iPhone';
   if (entry.state === 'failed') return 'upload failed';
   if (entry.state === 'queued') return 'waiting to upload';
   const progress = entry.progress;

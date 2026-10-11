@@ -539,8 +539,8 @@ describe('copy cache', () => {
     const { deps, fake, clock } = await setup();
     await setCopyBudget(deps, 500);
     await seed(deps, fake, clock, ['a', 'b'], 1000);
-    await setPendingUploads(deps.store, [{ assetId: 'a', projectId: 'p1', kind: 'video', name: 'a.mov' }]);
-    expect(await pendingUploads(deps.store)).toEqual([{ assetId: 'a', projectId: 'p1', kind: 'video', name: 'a.mov' }]);
+    await setPendingUploads(deps.store, [{ assetId: 'a', userId: null, projectId: 'p1', kind: 'video', name: 'a.mov' }]);
+    expect(await pendingUploads(deps.store)).toEqual([{ assetId: 'a', userId: null, projectId: 'p1', kind: 'video', name: 'a.mov' }]);
     expect(await enforceCopyBudget(deps)).toEqual(['b']);
     expect(fake.files.has(`${ROOT}media/a.mov`)).toBe(true);
     await setPendingUploads(deps.store, []);

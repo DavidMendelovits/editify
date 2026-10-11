@@ -49,7 +49,7 @@ export function ChatDock({ projectId, messages, latestTrace, latestAssistantId, 
   const scroller = useRef<ScrollView>(null);
   const lastUserMessage = [...(messages ?? [])].reverse().find((message) => message.role === 'user')?.content;
   // The agent reads words, captions and sync from the server's copy, which a land-first clip doesn't have yet.
-  const uploading = useUploads(projectId).length;
+  const uploading = useUploads(projectId).filter((entry) => !entry.stuck).length;
 
   function draft(next: string): void {
     setText(next);

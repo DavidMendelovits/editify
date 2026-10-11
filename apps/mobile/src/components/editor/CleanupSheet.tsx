@@ -59,7 +59,7 @@ export function CleanupSheet({ projectId, project, visible, onClose, onApply }: 
   });
   const plan = planQuery.data;
   // Fillers and silences come from the server's transcript of each original.
-  const uploading = useUploads(projectId).length > 0;
+  const uploading = useUploads(projectId).some((entry) => !entry.stuck);
 
   function apply(row: 'fillers' | 'silences', ranges: CleanupRange[]): void {
     if (!plan || !ranges.length) return;

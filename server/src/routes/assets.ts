@@ -55,6 +55,8 @@ const registerRequestSchema = z.object({
   width: z.number().int().min(0),
   height: z.number().int().min(0),
   hasAudio: z.boolean(),
+  /** The file's size, so a clip past the upload cap is refused now instead of after it lands. */
+  bytes: z.number().int().min(0).optional(),
 }).strict();
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 /**
@@ -63,6 +65,16 @@ const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
  * while a case-insensitive filesystem would not.
  */
 const CANONICAL_ASSET_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
+/**
+ * The first original of a clip registered from the phone (land first): the phone's AVFoundation
+ * and the server's ffprobe can disagree (a VBR MP3 without a Xing header, raw ADTS AAC, a
+ * disabled audio track), so only the kind of media is checked and the server's probe replaces
+ * the phone's numbers. A restore keeps the strict `sameMedia` check.
+ */
+export function sameKind(record: Pick<StoredAsset, 'mimeType'>, probe: ProbeResult): boolean {
+  return record.mimeType.startsWith('audio/') ? probe.hasAudio : probe.hasVideo;
+}
+
 /** A re-uploaded original may differ from the record by a remux's frame or two, never by a trim. */
 export const RESTORE_DURATION_TOLERANCE = 0.25;
 /** Pixel sizes may differ by rounding in a re-wrap, never by a resize. */
@@ -403,18 +415,22 @@ export function registerAssetRoutes(
   /**
    * Land first: the row for a clip that is still on the phone, from the phone's own probe, so
    * the clip goes on the timeline before its original uploads. The row stays 'processing' with
-   * no original (`awaitingOriginal`): everything that reads the original says it is still
-   * uploading (409 { code: 'uploading' }) until PUT /assets/:id/original brings it, which then
+   * no original (`awaitingOriginal`): everything that reads the original says it hasn't
+   * arrived (409 { code: 'uploading' }) until PUT /assets/:id/original brings it, which then
    * queues the proxy, thumbnail and transcription like an import. `projectId` is required,
-   * since that PUT needs it. fps stays 0 until the original arrives.
+   * since that PUT needs it. fps stays 0 until the original arrives. A file over the upload
+   * cap (`bytes`) is refused here (413), so it never lands only to be refused later.
    */
   app.post<{ Querystring: { projectId?: string } }>('/assets/register', async (request, reply) => {
     const projectId = requireProject(request.query.projectId, reply, request.userId);
     if (projectId === null) return reply;
     if (!projectId) return await reply.code(400).send({ error: 'projectId is required' });
-    const input = registerRequestSchema.parse(request.body);
+    const { bytes, ...input } = registerRequestSchema.parse(request.body);
     if (input.mimeType.startsWith('video/') && !(input.width > 0 && input.height > 0)) {
       return await reply.code(400).send({ error: 'A video needs its width and height' });
+    }
+    if (bytes !== undefined && bytes > MAX_UPLOAD_BYTES) {
+      return await reply.code(413).send({ error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
     }
     const id = randomUUID();
     const directory = join(assetsRoot, id);
@@ -452,12 +468,18 @@ export function registerAssetRoutes(
    *   own row, original gone .......... written to a new file beside it, checked against the
    *                                     record (kind, duration, size; 409 { code: 'mismatch' }
    *                                     when it is another file), then renamed into place
-   *   own row, registered and never ... the same, then the import's background work is queued
-   *   uploaded (land first)             (proxy, thumbnail, transcription), with the fps measured here
+   *   own row, registered and never ... checked for its kind only (`sameKind`), the server's probe
+   *   uploaded (land first)             replaces the phone's numbers, and the import's background
+   *                                     work is queued (proxy, thumbnail, transcription). One upload
+   *                                     at a time: a second one while it lands is 409
+   *                                     { code: 'in_progress' } before its body is read, and of two
+   *                                     that still race (`landOriginal`) only the first queues work
    *
    * Always linked to `projectId`, which is required. The body is the raw file, as for /assets/raw.
    * Only the incoming file this request wrote is ever removed, never a folder.
    */
+  /** Land-first originals being written right now (this process only; Fly runs one machine). */
+  const landing = new Set<string>();
   app.put<{ Params: { id: string }; Querystring: { projectId?: string; name?: string } }>('/assets/:id/original', async (request, reply) => {
     const body = typeof (request.body as NodeJS.ReadableStream | undefined)?.pipe === 'function'
       ? request.body as NodeJS.ReadableStream
@@ -489,6 +511,9 @@ export function registerAssetRoutes(
     if (Number(request.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) {
       return await refuse(413, { error: `Uploads are limited to ${Math.round(MAX_UPLOAD_BYTES / 1024 ** 3)} GB` });
     }
+    const first = awaitingOriginal(existing);
+    if (first && landing.has(id)) return await refuse(409, { error: 'This clip is already uploading', code: 'in_progress' });
+    if (first) landing.add(id);
 
     const directory = join(assetsRoot, id);
     // The asset's own folder (it may already hold its proxy and thumbnail).
@@ -498,25 +523,53 @@ export function registerAssetRoutes(
     try {
       await pipeline(body, capBytes(MAX_UPLOAD_BYTES), (await import('node:fs')).createWriteStream(incoming, { flags: 'wx' }));
       const probe = await probeMedia(incoming).catch(() => undefined);
-      if (!probe || !sameMedia(existing, probe)) {
+      if (!probe || !(first ? sameKind(existing, probe) : sameMedia(existing, probe))) {
         await rm(incoming, { force: true });
         return await reply.code(409).send({ error: "That file isn't the clip this project uses", code: 'mismatch' });
       }
       const originalPath = join(directory, `original${extension}`);
+      if (first) {
+        const measured = { duration: probe.duration, width: probe.width, height: probe.height, fps: probe.fps, hasAudio: probe.hasAudio };
+        if (!assets.landOriginal(id, originalPath, measured)) {
+          await rm(incoming, { force: true });
+          // Another upload of this clip landed first (that one is the original), or the row is gone.
+          const now = assets.owned(id, request.userId);
+          if (now) return await reply.code(200).send(publicAsset(now));
+          await rm(directory, { recursive: true, force: true });
+          return await reply.code(404).send({ error: 'Asset not found' });
+        }
+        try {
+          await rename(incoming, originalPath);
+        } catch (error) {
+          assets.setOriginalPath(id, ''); // still waiting for its original: a retry lands it
+          throw error;
+        }
+        // Re-read: the clip or its account may have been deleted while it uploaded.
+        if (!assets.owned(id, request.userId)) {
+          // The clip or its account was deleted while it uploaded: nothing may stay behind.
+          await rm(directory, { recursive: true, force: true });
+          return await reply.code(404).send({ error: 'Asset not found' });
+        }
+        const changed = (Object.keys(measured) as Array<keyof typeof measured>).filter((key) => existing[key] !== measured[key]);
+        if (changed.length > 0) {
+          app.log.info({ assetId: id, phone: Object.fromEntries(changed.map((key) => [key, existing[key]])), server: Object.fromEntries(changed.map((key) => [key, measured[key]])) }, 'land-first original measured differently on the server');
+        }
+        assets.link(projectId, id);
+        const landed = assets.get(id);
+        if (landed) queueAssetWork(app.log, assets, transcripts, landed, probe, faces);
+        return await reply.code(200).send(publicAsset(landed ?? existing));
+      }
       // Atomic: two restores of the same clip each rename a whole file; the last one stays.
       await rename(incoming, originalPath);
       assets.setOriginalPath(id, originalPath);
       assets.link(projectId, id);
-      if (awaitingOriginal(existing)) {
-        assets.setFps(id, probe.fps);
-        const landed = assets.get(id);
-        if (landed) queueAssetWork(app.log, assets, transcripts, landed, probe, faces);
-      }
       return await reply.code(200).send(publicAsset(assets.get(id) ?? existing));
     } catch (error) {
       await rm(incoming, { force: true });
       if (error instanceof UploadTooLargeError) return await reply.code(413).send({ error: error.message });
       throw error;
+    } finally {
+      if (first) landing.delete(id);
     }
   });
 
@@ -680,7 +733,7 @@ export function registerAssetRoutes(
     return reply.code(409).send({
       error: asset.status === 'error'
         ? 'Asset processing failed'
-        : awaitingOriginal(asset) ? 'The original is still uploading' : 'Asset is still processing',
+        : awaitingOriginal(asset) ? "The original hasn't reached the server yet" : 'Asset is still processing',
       status: asset.status,
       ...(awaitingOriginal(asset) ? { code: 'uploading' } : {}),
     });

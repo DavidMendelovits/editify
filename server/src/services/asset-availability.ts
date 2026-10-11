@@ -51,11 +51,11 @@ export function awaitingOriginal(asset: { originalPath: string; status: string }
   return asset.originalPath === '' && asset.status === 'processing';
 }
 
-/** Work that reads the original, asked for while it is still uploading: a 409, said plainly. */
+/** Work that reads the original, asked for before it has arrived: a 409, said plainly. */
 export class OriginalUploadingError extends Error {
   readonly code = 'uploading';
   constructor(asset: { originalName: string; label?: string | undefined }) {
-    super(`"${asset.label ?? asset.originalName}" is still uploading from the phone. This needs it on the server, so try again once the upload finishes.`);
+    super(`"${asset.label ?? asset.originalName}" hasn't reached the server from the phone yet, and this needs it there. Try again once its upload finishes.`);
     this.name = 'OriginalUploadingError';
   }
 }

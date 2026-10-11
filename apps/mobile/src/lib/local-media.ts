@@ -769,11 +769,15 @@ export const PENDING_UPLOADS_KEY = 'pending_uploads';
 /** A land-first import whose original hasn't reached the server yet (upload-queue.ts). */
 export interface PendingUpload {
   assetId: string;
+  /** The account that imported it: only that account's session sends it. Null: no account (shared token). */
+  userId: string | null;
   /** PUT /assets/:id/original needs it. */
   projectId: string;
   kind: PlanAssetRef['kind'];
   name: string;
   mimeType?: string;
+  /** Why the server will never take it (413, or another kind of media): it stays on this phone only. */
+  stuck?: string;
 }
 
 /** Kept in the registry's meta table so a relaunch can resume them and eviction skips them. */
@@ -804,6 +808,12 @@ export interface ImportCandidate {
   phLocalId?: string | null;
   /** The picker's size, when it reported one. */
   size?: number;
+  /**
+   * Land first (pick.ts): copy even a Photos original that could be referenced, since until
+   * its upload lands this copy is the only one Editify can count on (the user may delete or
+   * edit it in Photos meanwhile).
+   */
+  keepCopy?: boolean;
 }
 
 export interface StagedImport {
@@ -811,8 +821,6 @@ export interface StagedImport {
   uploadUri: string;
   /** The device keeps its own copy (a share-extension copy is then redundant). */
   durable: boolean;
-  /** After commit this phone has a source (the copy or the PHAsset): the clip can land before its upload. */
-  onPhone: boolean;
   /** After a successful upload, or a land-first registration: writes the row (and queues the preview proxy for video). */
   commit(assetId: string): Promise<void>;
   /** After a failed upload: removes the copy made for it. */
@@ -822,7 +830,7 @@ export interface StagedImport {
 /**
  * Prepares one import before its upload.
  * - A Photos video with full library access whose original (`.original`) matches the
- *   picked file is referenced by PHAsset id, never copied (D5).
+ *   picked file is referenced by PHAsset id, never copied (D5), unless `keepCopy` (land first).
  * - Anything else with a file is copied into the media folder first: Files, share,
  *   capture, stickers, Photos without full access, and a clip already edited in Photos
  *   (the picker uploads the rendered edit, the original differs). A PHAsset id is kept
@@ -839,13 +847,12 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
   const serverOnly = (reason: ServerReason): StagedImport => ({
     uploadUri: candidate.uri,
     durable: false,
-    onPhone: false,
     commit: async (assetId) => { await store.markServerOnly(assetId, reason); },
     abort: () => undefined,
   });
 
   let uploaded: MediaFingerprint | null | undefined;
-  if (candidate.kind === 'video' && candidate.origin === 'photos' && phLocalId && native.photosAccess() === 'all') {
+  if (candidate.kind === 'video' && candidate.origin === 'photos' && phLocalId && !candidate.keepCopy && native.photosAccess() === 'all') {
     uploaded = onDisk ? await fingerprintOf(native, candidate.uri) : null;
     const original = await native.probe(phLocalId).catch(() => null);
     if (uploaded && original?.status === 'ok' && fingerprintsMatch(expectedOf(uploaded), original.fingerprint)) {
@@ -853,7 +860,6 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
       return {
         uploadUri: candidate.uri,
         durable: false,
-        onPhone: true,
         commit: async (assetId) => {
           await store.record({ assetId, phLocalId, fingerprint });
           native.ensureProxy(assetId, phLocalId).catch(() => undefined);
@@ -881,7 +887,6 @@ export async function stageImport(candidate: ImportCandidate, deps: MediaDeps): 
   return {
     uploadUri: copy.uri,
     durable: true,
-    onPhone: true,
     commit: async (assetId) => {
       try {
         const fingerprint = candidate.kind === 'image' ? null : uploaded ?? await fingerprintOf(native, copy.uri);

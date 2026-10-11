@@ -4,7 +4,7 @@ import { discardSharedCopy } from './shared-files';
 import * as ImagePicker from 'expo-image-picker';
 import { Alert } from 'react-native';
 import type { AssetMetadata } from '@editify/shared';
-import { api, uploadAsset, type UploadBytes } from './api';
+import { api, uploadAsset, uploadOriginal, type UploadBytes } from './api';
 import { askForPhotosAccessOnce, mediaKindOf, stageImport, type ImportCandidate, type MediaDeps, type StagedImport } from './local-media';
 import { localMedia } from './local-media-native';
 import { importCompleted } from './import-hooks';
@@ -101,18 +101,20 @@ async function uploadAll(projectId: string | undefined, files: PendingFile[], on
 /**
  * One import, with the local media registry around it: the file is staged first
  * (copied into Application Support, or referenced by its PHAsset id). A video or audio
- * clip in a project that this phone keeps lands first (`landFirst`). Anything else is
+ * clip in a project that this phone keeps lands first (`landFirst`; always from a copy,
+ * since until its upload lands that copy is the only one). Anything else is
  * uploaded from there and recorded under the server's asset id once the upload lands;
  * a failed upload removes its copy. The registry never fails an import that reached the server.
  */
 async function uploadKeepingLocal(projectId: string | undefined, file: PendingFile, onBytes?: UploadBytes): Promise<AssetMetadata> {
   const registry = file.local ? await localMedia() : null;
-  const staged = registry && file.local
-    ? await stageImport({ uri: file.uri, name: file.name, ...file.local, ...(file.size ? { size: file.size } : {}) }, registry).catch(() => undefined)
-    : undefined;
   const kind = file.local?.kind;
-  if (registry && staged?.onPhone && projectId && (kind === 'video' || kind === 'audio')) {
-    const landed = await landFirst(projectId, file, kind, staged, registry).catch(() => undefined);
+  const landable = Boolean(projectId) && (kind === 'video' || kind === 'audio');
+  const staged = registry && file.local
+    ? await stageImport({ uri: file.uri, name: file.name, ...file.local, ...(file.size ? { size: file.size } : {}), keepCopy: landable }, registry).catch(() => undefined)
+    : undefined;
+  if (registry && staged?.durable && projectId && (kind === 'video' || kind === 'audio')) {
+    const landed = await landFirst(projectId, file, kind, staged, registry, onBytes);
     if (landed) return landed;
   }
   const { local: _local, ...upload } = file;
@@ -129,27 +131,38 @@ async function uploadKeepingLocal(projectId: string | undefined, file: PendingFi
 
 /**
  * Land first: the clip is registered from this phone's own probe (duration, size, sound) and
- * committed to the registry at once, so it is on the timeline and plays from its copy or
- * PHAsset within a second or two of the picker closing. Its original uploads behind it
- * (uploads.ts); what needs it on the server says so until it lands. Undefined when the probe
- * can't read the clip or the server can't register it (an older server): the caller then
- * uploads first, as before.
+ * committed to the registry at once, so it is on the timeline and plays from its copy within a
+ * second or two of the picker closing. Its original uploads behind it (uploads.ts); what needs
+ * it on the server says so until it lands. Undefined when the probe can't read the clip or the
+ * server won't register it (an older server, or a file over the upload cap): the caller then
+ * uploads first, as before, and a file over the cap is refused there as it always was.
+ *
+ * The pending upload is saved before the registry row is written, so no other import's copy
+ * budget can evict this copy in between. If the row can't be written, the clip isn't left
+ * resting on a copy nothing tracks: its original goes up now, under the registered id, and
+ * the clip lands once that upload does.
  */
 async function landFirst(
-  projectId: string, file: PendingFile, kind: 'video' | 'audio', staged: StagedImport, registry: MediaDeps,
+  projectId: string, file: PendingFile, kind: 'video' | 'audio', staged: StagedImport, registry: MediaDeps, onBytes?: UploadBytes,
 ): Promise<AssetMetadata | undefined> {
-  const probe = await registry.native.probe(staged.uploadUri);
-  if (probe.status !== 'ok') return undefined;
-  const { duration, audio, geometry } = probe.fingerprint;
+  const probe = await registry.native.probe(staged.uploadUri).catch(() => undefined);
+  if (probe?.status !== 'ok') return undefined;
+  const { duration, audio, geometry, bytes } = probe.fingerprint;
   if (!(duration > 0) || (kind === 'video' && !geometry)) return undefined;
   const mimeType = /^(video|audio)\//.test(file.mimeType ?? '') ? file.mimeType as string : kind === 'audio' ? 'audio/mp4' : 'video/quicktime';
+  const size = bytes || sizeOf(file);
   const asset = await api.registerAsset(projectId, {
     name: file.name, mimeType, duration, width: geometry?.width ?? 0, height: geometry?.height ?? 0, hasAudio: audio !== null,
-  });
-  // From here the clip is the server's: a registry hiccup shows up as a failed upload, never a lost clip.
-  await staged.commit(asset.id).catch(() => undefined);
+    ...(size > 0 ? { bytes: size } : {}),
+  }).catch(() => undefined);
+  if (!asset) return undefined;
+  try {
+    await uploads.enqueue({ assetId: asset.id, projectId, kind, name: file.name, mimeType }, async () => { await staged.commit(asset.id); });
+  } catch {
+    await uploadOriginal(asset.id, projectId, { uri: staged.uploadUri, name: file.name, mimeType }, onBytes);
+    return asset;
+  }
   localSources.set(asset.id, staged.uploadUri);
-  await uploads.enqueue({ assetId: asset.id, projectId, kind, name: file.name, mimeType });
   return asset;
 }
 

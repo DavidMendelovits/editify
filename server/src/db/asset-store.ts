@@ -86,9 +86,16 @@ export class AssetStore {
     `).run(path, path, path, id);
   }
 
-  /** A clip registered from the phone gets its frame rate once its original arrives. */
-  setFps(id: string, fps: number): void {
-    this.database.prepare('UPDATE assets SET fps = ? WHERE id = ?').run(fps, id);
+  /**
+   * A clip registered from the phone (land first) takes its first original, and the server's
+   * own measurements replace the phone's. Only while no original is recorded: of two uploads
+   * racing for the same clip, one wins (true) and the other leaves the row as it found it.
+   */
+  landOriginal(id: string, path: string, measured: Pick<StoredAsset, 'duration' | 'width' | 'height' | 'fps' | 'hasAudio'>): boolean {
+    return this.database.prepare(`
+      UPDATE assets SET original_path = ?, duration = ?, width = ?, height = ?, fps = ?, has_audio = ?
+       WHERE id = ? AND original_path = ''
+    `).run(path, measured.duration, measured.width, measured.height, measured.fps, measured.hasAudio ? 1 : 0, id).changes === 1;
   }
 
   /** An empty/blank label clears it, so the card falls back to the file name. */

@@ -1,6 +1,7 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { uploadOriginal } from './api';
 import { localMedia } from './local-media-native';
+import { onAuthStateChange } from './supabase';
 import { createUploadQueue, type UploadEntry } from './upload-queue';
 
 /**
@@ -9,9 +10,14 @@ import { createUploadQueue, type UploadEntry } from './upload-queue';
  */
 export const localSources = new Map<string, string>();
 
+/** The signed-in account, so each pending upload goes only with its own account's session. */
+let signedIn: string | null = null;
+onAuthStateChange((session) => { signedIn = session?.user.id ?? null; });
+
 /** The app's one queue of land-first originals (upload-queue.ts), wired to the registry and PUT /assets/:id/original. */
 export const uploads = createUploadQueue({
   media: localMedia,
+  user: () => signedIn,
   upload: async (entry, file, onBytes, signal) => {
     // The registry's file name and type; the type it was registered with when the name says nothing.
     const mimeType = file.mimeType ?? entry.mimeType;

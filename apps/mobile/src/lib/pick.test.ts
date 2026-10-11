@@ -55,6 +55,7 @@ vi.mock('./api', () => ({
     await state.hold;
   },
 }));
+vi.mock('./supabase', () => ({ onAuthStateChange: (listener: (session: { user: { id: string } }) => void) => { listener({ user: { id: 'alice' } }); return () => undefined; } }));
 vi.mock('./shared-files', () => ({ discardSharedCopy: (uri: string) => { state.discarded.push(uri); } }));
 vi.mock('expo-file-system', () => ({ File: class { size = 0; constructor(public uri: string) {} } }));
 vi.mock('expo-image-picker', () => ({
@@ -125,11 +126,12 @@ describe('Photos access', () => {
   it('explains and asks once, before opening the picker, then references by asset id', async () => {
     access = 'undetermined';
     state.picked = { canceled: false, assets: [{ uri: 'file:///cache/IMG_1.mov', fileName: 'IMG_1.mov', assetId: 'PH-1' }] };
-    await pickFromPhotos('p1');
+    // No project: nothing lands first, so the Photos original is referenced, not copied.
+    await pickFromPhotos(undefined);
     expect(state.alerts).toEqual(['Use your originals']);
     expect(state.pickerOpenedAfterAlert).toBe(true);
     expect(await state.deps?.store.lookup('asset-IMG_1.mov')).toMatchObject({ phLocalId: 'PH-1', fileUri: null });
-    await pickFromPhotos('p1');
+    await pickFromPhotos(undefined);
     expect(state.alerts).toHaveLength(1);
   });
 
@@ -147,7 +149,7 @@ describe('Photos access', () => {
 describe('import hooks', () => {
   it('references a Photos video by asset id under full access and uploads the picked file', async () => {
     state.picked = { canceled: false, assets: [{ uri: 'file:///cache/IMG_1.mov', fileName: 'IMG_1.mov', assetId: 'PH-1' }] };
-    const result = await pickFromPhotos('p1');
+    const result = await pickFromPhotos(undefined);
     expect(result.failed).toEqual([]);
     expect(state.uploads).toEqual([{ uri: 'file:///cache/IMG_1.mov', name: 'IMG_1.mov' }]);
     expect(await state.deps?.store.lookup('asset-IMG_1.mov')).toMatchObject({ phLocalId: 'PH-1', fileUri: null, fingerprint: 'e1:abcd' });
@@ -222,7 +224,7 @@ describe('land first', () => {
     stop();
     expect(result).toEqual({ assets: [expect.objectContaining({ id: 'asset-take.mov', duration: 3 })], failed: [] });
     expect(state.uploads).toEqual([]);
-    expect(state.registered).toEqual([{ projectId: 'p1', name: 'take.mov', mimeType: 'video/quicktime', duration: 3, width: 3840, height: 2160, hasAudio: true }]);
+    expect(state.registered).toEqual([{ projectId: 'p1', name: 'take.mov', mimeType: 'video/quicktime', duration: 3, width: 3840, height: 2160, hasAudio: true, bytes: 900 }]);
     // Playable from this phone right away, and announced for words before any byte is sent.
     expect(await state.deps?.store.lookup('asset-take.mov')).toMatchObject({ fileUri: 'media/1-take.mov' });
     expect(announced).toEqual(['asset-take.mov']);
@@ -244,6 +246,25 @@ describe('land first', () => {
     expect(state.registered.map((probe) => [probe.name, probe.width, probe.height])).toEqual([['take.m4a', 0, 0], ['memo.m4a', 0, 0]]);
     expect(state.discarded).toEqual(['file:///group/memo.m4a']);
     expect(await uploads.settled(['asset-take.m4a', 'asset-memo.m4a'])).toBe(true);
+  });
+
+  it('lands a Photos original from its own copy, so deleting it in Photos before the upload loses nothing', async () => {
+    state.picked = { canceled: false, assets: [{ uri: 'file:///cache/IMG_9.mov', fileName: 'IMG_9.mov', assetId: 'PH-9', mimeType: 'video/quicktime' }] };
+    await pickFromPhotos('p1');
+    expect(await state.deps?.store.lookup('asset-IMG_9.mov')).toMatchObject({ phLocalId: 'PH-9', fileUri: 'media/1-IMG_9.mov' });
+    expect(await uploads.settled(['asset-IMG_9.mov'])).toBe(true);
+    expect(state.originals).toEqual([{ assetId: 'asset-IMG_9.mov', projectId: 'p1', uri: `${ROOT}media/1-IMG_9.mov` }]);
+  });
+
+  it('sends the original at once, and queues nothing, when the registry row can\'t be written', async () => {
+    const store = state.deps!.store;
+    state.deps = { ...state.deps!, store: { ...store, record: async () => { throw new Error('disk I/O error'); } } };
+    state.documents = { canceled: false, assets: [{ uri: 'file:///cache/DocumentPicker/take.mov', name: 'take.mov', mimeType: 'video/quicktime' }] };
+    const result = await pickFromFiles('p1');
+    expect(result).toEqual({ assets: [expect.objectContaining({ id: 'asset-take.mov' })], failed: [] });
+    expect(state.originals).toEqual([{ assetId: 'asset-take.mov', projectId: 'p1', uri: `${ROOT}media/1-take.mov` }]);
+    expect(uploads.get('asset-take.mov')).toBeUndefined();
+    expect(await pendingUploads(store)).toEqual([]);
   });
 
   it('uploads first without a project, for a still, when the probe fails, and on an older server', async () => {

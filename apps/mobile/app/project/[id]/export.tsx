@@ -292,16 +292,20 @@ export default function ExportScreen() {
   const needsUpload = route.data?.kind === 'server' && route.data.server?.state === 'upload' ? route.data.server.clips : null;
   const waitingFor = queued.filter((entry) => needsUpload?.some((clip) => clip.assetId === entry.assetId));
   const waitingFailed = waitingFor.filter((entry) => entry.state === 'failed');
+  // The server will never take these (over the cap, or not the clip it registered): no retry.
+  const waitingStuck = waitingFailed.filter((entry) => entry.stuck);
   const blocked = route.data?.kind === 'server' && route.data.server?.state === 'blocked';
   const renderLabel = waitingFor.length > 0
-    ? waitingFailed.length > 0 ? 'retry upload' : `waiting for upload… ${uploadLabel(waitingFor[0]!).replace('uploading', '').trim()}`
+    ? waitingStuck.length > 0 ? 'can\'t render on the server' : waitingFailed.length > 0 ? 'retry upload' : `waiting for upload… ${uploadLabel(waitingFor[0]!).replace('uploading', '').trim()}`
     : uploading
     ? `uploading… ${describeImport(uploading)}`
     : start.isPending ? 'joining the queue…'
       : needsUpload ? `upload ${needsUpload.length === 1 ? 'clip' : `${needsUpload.length} clips`}`
         : `render ${resolution} master`;
   const routeLine = waitingFor.length > 0
-    ? waitingFailed.length > 0
+    ? waitingStuck.length > 0
+      ? `${waitingStuck.map((entry) => `"${entry.name}"`).join(', ')}: ${waitingStuck[0]!.stuck} Export at 720p or 1080p to render on this iPhone.`
+      : waitingFailed.length > 0
       ? `${waitingFailed.map((entry) => `"${entry.name}"`).join(', ')} didn't upload: ${waitingFailed[0]!.error ?? 'the upload failed'}.`
       : `This export renders on the server, which needs ${waitingFor.map((entry) => `"${entry.name}"`).join(', ')}. Render once the upload finishes.`
     : route.data?.kind === 'device' ? 'Exports on this iPhone. Keep Editify open until it finishes.' : route.data ? serverRouteLine(route.data) : null;
@@ -341,7 +345,7 @@ export default function ExportScreen() {
           {loudnessOptions.map((item) => <Pressable key={item.value} testID={`loudness-${item.value}`} disabled={locked} onPress={() => setLoudness(item.value)} style={[styles.resolution, loudness === item.value && styles.resolutionSelected]}><View style={[styles.radio, loudness === item.value && styles.radioSelected]}>{loudness === item.value && <View style={styles.radioDot} />}</View><View style={styles.resolutionText}><Text style={styles.resolutionTitle}>{item.label}</Text><Text style={styles.resolutionDetail}>{item.detail}</Text></View></Pressable>)}
         </View>
       </View>
-      {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || Boolean(uploading) || blocked || (waitingFor.length > 0 && waitingFailed.length === 0) || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{renderLabel}</Button>}
+      {!renderId && !device && <Button onPress={onRender} disabled={start.isPending || Boolean(uploading) || blocked || (waitingFor.length > 0 && (waitingFailed.length === 0 || waitingStuck.length > 0)) || !project.data || (Boolean(engine) && route.isLoading)} style={styles.renderButton}>{renderLabel}</Button>}
       {!renderId && !device && (serverNote ?? routeLine) && <Text testID="export-route" style={styles.note}>{serverNote ?? routeLine}</Text>}
       {uploading && <Button secondary style={styles.downloadButton} onPress={() => abort.current?.abort()}>cancel upload</Button>}
       {serverError && <Text style={styles.error}>{serverError}</Text>}

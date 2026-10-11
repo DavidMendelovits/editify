@@ -178,7 +178,8 @@ export function MediaLibrary({ projectId, busy, progress, error, onPickPhotos, o
 
 /**
  * The server's thumb once it is made; before that, a frame from the clip on this phone, and
- * where its upload stands (land first: "uploading 34%", or failed with a retry).
+ * where its upload stands (land first: "uploading 34%", failed with a retry, or only on this
+ * iPhone when the server will never take it).
  */
 function CardThumb({ asset }: { asset: AssetMetadata }) {
   const upload = useUpload(asset.id);
@@ -193,7 +194,9 @@ function CardThumb({ asset }: { asset: AssetMetadata }) {
       <>
         {thumb}
         <View style={styles.uploadStrip}>
-          {upload.state === 'failed' ? (
+          {upload.stuck ? (
+            <Text style={[styles.processingText, styles.uploadFailed]} numberOfLines={2} accessibilityLabel={upload.stuck}>only on this iPhone</Text>
+          ) : upload.state === 'failed' ? (
             <Pressable onPress={() => uploads.retry(asset.id)} accessibilityRole="button" accessibilityLabel={`retry the upload of ${asset.label ?? asset.originalName}`} hitSlop={8}>
               <Text style={[styles.processingText, styles.uploadFailed]} numberOfLines={2}>upload failed · retry</Text>
             </Pressable>

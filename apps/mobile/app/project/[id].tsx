@@ -449,7 +449,7 @@ export default function EditorScreen() {
   async function syncAudio(clipId: string, auto = false): Promise<void> {
     setSync({ clipId, busy: true });
     // The server measures from the originals: a clip still uploading (land first) is waited for.
-    const waiting = uploads.entries().filter((entry) => entry.projectId === id).map((entry) => entry.assetId);
+    const waiting = uploads.entries().filter((entry) => entry.projectId === id && !entry.stuck).map((entry) => entry.assetId);
     if (waiting.length > 0) {
       setSync({ clipId, busy: true, message: 'Syncs once the upload finishes.' });
       if (!(await uploads.settled(waiting))) {
