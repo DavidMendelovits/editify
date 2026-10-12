@@ -30,3 +30,5 @@ docs/qa/
 
 # App Store screenshots and their build, from scripts/screenshots.sh.
 .screenshots/
+
+/stand-up audio sync test/
